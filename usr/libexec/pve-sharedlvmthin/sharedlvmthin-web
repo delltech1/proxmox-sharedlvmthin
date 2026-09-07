@@ -1,4 +1,7 @@
 #!/usr/bin/python3
+# Copyright (C) 2026 Stanislav Baran
+# SPDX-License-Identifier: GPL-3.0-only
+
 import configparser, copy, datetime, html, json, os, secrets, ssl, subprocess, threading, time
 import urllib.parse, urllib.request
 from collections import defaultdict, deque

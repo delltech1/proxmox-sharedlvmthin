@@ -107,7 +107,14 @@ other sensitive infrastructure identifiers in a public report.
 
 ## License and support
 
-Licensed under GPL-3.0-only. This project is independent community software and
+Copyright (C) 2026 Stanislav Baran.
+
+Licensed under GPL-3.0-only. Commercial redistribution is permitted by the
+license, but distributors must comply with all GPLv3 obligations, including
+preserving applicable notices and providing Corresponding Source when
+required. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
+
+This project is independent community software and
 is not affiliated with or endorsed by Proxmox Server Solutions GmbH.
 
 Report vulnerabilities through GitHub Private Vulnerability Reporting. General

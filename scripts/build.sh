@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (C) 2026 Stanislav Baran
+# SPDX-License-Identifier: GPL-3.0-only
+
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
