@@ -33,7 +33,7 @@ runs an LVM mutation.
   and exact WWID/PV/VG identity.
 - Two package builds were byte-for-byte identical and passed package
   security/content validation. DEB SHA256:
-  `f3d2eee2b939f2112f17a73052565c4fd78aceed58b0691ac96d8f4f712738f3`.
+  `fd0e9b1ce0fc8a49261668bc19a1fba35ee3a772c64409e4894ffaf23cc9cf10`.
 - Sequential upgrade from RC5 and same-version reinstall passed on all three
   qualification nodes. Each of the six `dpkg -i` runs completed successfully.
 - After the three-node deployment, both configured SharedLvmThin storages
