@@ -18,7 +18,7 @@
 - Report bounded `queue` behavior as a warning, immediate `error` behavior as
   explicit evidence rather than a safety guarantee, and `queue` with a zero
   kernel timeout as critical. The plugin never changes either policy.
-- Classified current Proxmox, StarWind/StarLVM, and upstream LVM-thin incident
+- Classified current Proxmox, third-party storage, and upstream LVM-thin incident
   reports against RC5 invariants and recorded unsupported stacked-backend and
   manual-repair boundaries.
 

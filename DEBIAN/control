@@ -4,7 +4,7 @@ Section: admin
 Priority: optional
 Architecture: all
 Depends: lvm2, perl, python3, openssl, multipath-tools, pve-manager, libpve-storage-perl
-Maintainer: OKE
+Maintainer: SharedLvmThin Community <noreply@users.noreply.github.com>
 Description: Shared LVM Thin storage plugin and health dashboard for Proxmox VE
  Shared block storage backend using one LVM thin pool per VM,
  Proxmox cluster locking and dmeventd-based cluster-safe autogrow.
