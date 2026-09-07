@@ -5,6 +5,10 @@ Build date: 2026-09-07
 RC5.2 adds a conservative, side-effect-free post-incident recovery
 qualification. It does not add automatic storage recovery.
 
+This release candidate is intended exclusively for Proxmox VE 9. It was
+qualified on the PVE 9.2.x release line with Storage API 14 and 15. Proxmox VE
+8 and earlier, Storage API 13 and Storage API 16+ are unsupported by RC5.2.
+
 ## New command
 
 ```text

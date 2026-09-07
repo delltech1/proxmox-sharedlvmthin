@@ -11,15 +11,17 @@ replication, fencing, quorum, or automatic metadata repair.
 
 ## Release status
 
-`0.9.0~rc5.2` is a release candidate. It passed extensive unit,
-fault-injection and three-node integration qualification on Proxmox VE Storage
-API 14 and 15, but this is not universal certification of every SAN, HBA,
+`0.9.0~rc5.2` is a release candidate intended exclusively for Proxmox VE 9.
+It passed extensive unit, fault-injection and three-node integration
+qualification on the Proxmox VE 9.2.x release line with Storage API 14 and 15,
+but this is not universal certification of every SAN, HBA,
 array, multipath policy, firmware, or failure mode. Validate it on disposable
 storage matching your production design before carrying production data.
 
 ## Requirements
 
-- Proxmox VE with Storage API 14 or 15.
+- Proxmox VE 9 with Storage API 14 or 15. Proxmox VE 8 and earlier are not
+  supported by this release candidate.
 - The same existing shared LUN, multipath identity, PV and VG visible on every
   participating node.
 - Working cluster quorum, fencing and storage locking.
