@@ -29,6 +29,7 @@ storage matching your production design before carrying production data.
 - A dedicated VG; do not point the plugin at a VG containing unrelated data.
 
 Read [storage requirements](docs/storage-requirements.md),
+[iSCSI/FC/FCoE setup examples](docs/transport-setup-examples.md),
 [known issues](docs/known-issues.md), and
 [critical recovery guidance](docs/critical-storage-recovery.md) first.
 

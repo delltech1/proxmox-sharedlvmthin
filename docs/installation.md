@@ -22,6 +22,10 @@ The storage/SAN administrator must first:
 The plugin does not create sessions, zoning, ACLs or multipath policy. Do not
 use a raw `/dev/sdX` path when the LUN is multipathed.
 
+For worked transport examples, continue with
+[iSCSI, FC and FCoE setup examples](transport-setup-examples.md), then return
+to this guide for common PV/VG and plugin configuration.
+
 Install the required host packages as appropriate for the selected transport.
 For a typical multipathed block device this includes `lvm2` and
 `multipath-tools`; FC/iSCSI packages and configuration are vendor- and
