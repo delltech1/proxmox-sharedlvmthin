@@ -97,6 +97,14 @@ content and common credential leaks.
 See [data-safety invariants](docs/data-safety-invariants.md) and
 [recovery-check](docs/recovery-check.md).
 
+## Support the project
+
+If SharedLvmThin helped you, consider giving the repository a GitHub Star.
+Feedback, reproducible issue reports, and anonymized compatibility results for
+Proxmox VE, SAN arrays, HBAs, multipath configurations, and firmware versions
+are also appreciated. Never include credentials, private addresses, WWIDs, or
+other sensitive infrastructure identifiers in a public report.
+
 ## License and support
 
 Licensed under GPL-3.0-only. This project is independent community software and
