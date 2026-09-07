@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and test dependencies
+        run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl
+      - name: Python unit tests
+        run: python3 -m unittest discover -s tests/unit -v
+      - name: Perl unit tests
+        run: prove -v tests/unit/*.t
+      - name: Syntax checks
+        run: |
+          bash -n usr/sbin/* DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
+          python3 -m py_compile usr/libexec/pve-sharedlvmthin/sharedlvmthin-web usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
+      - name: Reproducible package build
+        run: sh scripts/build.sh
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pve-sharedlvmthin-package
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS

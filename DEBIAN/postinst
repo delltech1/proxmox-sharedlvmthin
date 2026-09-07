@@ -1,0 +1,180 @@
+#!/bin/sh
+set -e
+
+PLUGIN=/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm
+MONITOR=/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor
+HEALTH=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json
+WEB=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web
+CONF=/etc/pve-sharedlvmthin/web.conf
+SERVICE=pve-sharedlvmthin-web.service
+LVMLOCAL=/etc/lvm/lvmlocal.conf
+STATE_DIR=/var/lib/pve-sharedlvmthin
+LVM_BEGIN='# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW'
+LVM_END='# END PVE-SHAREDLVMTHIN MANAGED AUTOGROW'
+
+echo
+echo "Configuring SharedLvmThin..."
+
+perl -c "$PLUGIN"
+perl -c "$MONITOR"
+python3 -m py_compile "$HEALTH"
+python3 -m py_compile "$WEB"
+
+chmod 0755 "$MONITOR" "$HEALTH" "$WEB" \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
+    /usr/sbin/sharedlvmthin \
+    /usr/sbin/sharedlvmthin-web-configure
+
+# Install the tested dmeventd policy only when the administrator has not
+# already selected any of these settings.  Never overwrite a vendor or local
+# SAN policy.  The marked fragment is removable independently during purge.
+mkdir -p "$STATE_DIR"
+if grep -Eq '^[[:space:]]*(thin_command|thin_pool_autoextend_threshold|thin_pool_autoextend_percent)[[:space:]]*=' "$LVMLOCAL" 2>/dev/null; then
+    if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null; then
+        echo "Existing SharedLvmThin managed LVM autogrow configuration preserved."
+    else
+        echo "WARNING: Existing local LVM autogrow policy detected."
+        echo "SharedLvmThin did not overwrite administrator-owned LVM settings."
+    fi
+else
+    [ -e "$LVMLOCAL" ] && cp -a "$LVMLOCAL" "$STATE_DIR/lvmlocal.conf.before-autogrow"
+    cat >>"$LVMLOCAL" <<EOF
+
+$LVM_BEGIN
+activation {
+    thin_pool_autoextend_threshold = 80
+    thin_pool_autoextend_percent = 10
+}
+dmeventd {
+    thin_command = "$MONITOR"
+}
+$LVM_END
+EOF
+    echo "Installed fail-closed SharedLvmThin dmeventd autogrow policy."
+fi
+
+systemctl daemon-reload
+
+# Long-running PVE workers cache the storage-plugin registry. Installing or
+# upgrading the module on disk is not sufficient: an already-running HA LRM
+# can otherwise reject the storage type during recovery even though CLI
+# processes load it successfully. Refresh only consumers that are already
+# active; never start a disabled service and never touch corosync/VMs.
+PVE_REFRESH_OK=1
+for PVE_SERVICE in \
+    pvedaemon.service \
+    pvestatd.service \
+    pveproxy.service \
+    pve-ha-lrm.service
+do
+    if systemctl is-active --quiet "$PVE_SERVICE"; then
+        if systemctl try-restart "$PVE_SERVICE"; then
+            echo "Refreshed active PVE storage consumer: $PVE_SERVICE"
+        else
+            PVE_REFRESH_OK=0
+            echo "WARNING: failed to refresh active PVE storage consumer: $PVE_SERVICE"
+        fi
+    fi
+done
+
+# Existing web configuration is persistent and must never be overwritten.
+if [ -f "$CONF" ]; then
+    echo "Existing web configuration detected."
+    echo "Preserving $CONF"
+
+    systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+
+    if systemctl restart "$SERVICE"; then
+        echo "SharedLvmThin web dashboard started."
+    else
+        echo "WARNING: web dashboard failed to start."
+        echo "Run: systemctl status $SERVICE"
+    fi
+else
+    echo
+    echo "SharedLvmThin Web Dashboard is not configured."
+
+    #
+    # Fresh interactive installation:
+    # offer the configuration wizard automatically.
+    #
+    # Non-interactive package management must never block waiting
+    # for user input. In that case only print the configure command.
+    #
+    if [ -t 0 ] && [ -t 1 ]; then
+        echo
+        printf "Configure Web Dashboard now? [Y/n]: "
+        read ANSWER
+        ANSWER="${ANSWER:-Y}"
+
+        case "$ANSWER" in
+            y|Y|yes|YES)
+                echo
+                /usr/sbin/sharedlvmthin-web-configure
+                ;;
+            *)
+                echo
+                echo "Web Dashboard configuration skipped."
+                echo
+                echo "Configure later with:"
+                echo "  sharedlvmthin-web-configure"
+                ;;
+        esac
+    else
+        echo
+        echo "Non-interactive installation detected."
+        echo
+        echo "The storage plugin files are installed. Operational status is"
+        echo "determined by the compatibility health check below."
+        echo "The optional Web Dashboard can be configured later with:"
+        echo
+        echo "  sharedlvmthin-web-configure"
+    fi
+fi
+
+echo
+echo "Running SharedLvmThin health check..."
+
+HEALTH_OK=0
+set +e
+timeout --foreground --kill-after=10 120 /usr/sbin/sharedlvmthin doctor
+DOCTOR_RC=$?
+set -e
+if [ "$DOCTOR_RC" -eq 0 ]; then
+    HEALTH_OK=1
+    echo "SharedLvmThin health check passed."
+elif [ "$DOCTOR_RC" -eq 1 ]; then
+    HEALTH_OK=1
+    echo "SharedLvmThin health check passed with diagnostic warnings."
+else
+    echo "WARNING: SharedLvmThin health check reported a problem."
+    echo "SharedLvmThin is installed but must NOT be treated as operational."
+    echo "Review the output above."
+fi
+
+echo
+echo "SharedLvmThin installation complete."
+if [ "$HEALTH_OK" -eq 1 ] && [ "$PVE_REFRESH_OK" -eq 1 ]; then
+    echo "Operational status: HEALTH CHECK PASSED"
+else
+    echo "Operational status: NOT READY (health check or PVE service refresh failed)"
+fi
+echo
+echo "CLI:"
+echo "  sharedlvmthin doctor"
+echo
+echo "Web configuration:"
+echo "  sharedlvmthin-web-configure"
+
+if [ -f "$CONF" ]; then
+    ADDRESS="$(sed -n 's/^address=//p' "$CONF" | head -1)"
+    PORT="$(sed -n 's/^port=//p' "$CONF" | head -1)"
+
+    if [ -n "$ADDRESS" ] && [ -n "$PORT" ]; then
+        echo
+        echo "Dashboard:"
+        echo "  https://$ADDRESS:$PORT"
+    fi
+fi
+
+exit 0

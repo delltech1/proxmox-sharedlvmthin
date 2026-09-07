@@ -1,0 +1,1101 @@
+#!/bin/bash
+set -u
+
+VERSION="0.3-doctor"
+PLUGIN="/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+MONITOR="/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor"
+LVMCONF="/etc/lvm/lvmlocal.conf"
+STORAGECFG="/etc/pve/storage.cfg"
+
+PASS=0
+WARN=0
+FAIL=0
+
+green='\033[0;32m'
+yellow='\033[1;33m'
+red='\033[0;31m'
+blue='\033[0;34m'
+reset='\033[0m'
+
+pass() {
+    printf "${green}[PASS]${reset} %s\n" "$*"
+    PASS=$((PASS+1))
+}
+
+warn() {
+    printf "${yellow}[WARN]${reset} %s\n" "$*"
+    WARN=$((WARN+1))
+}
+
+fail() {
+    printf "${red}[FAIL]${reset} %s\n" "$*"
+    FAIL=$((FAIL+1))
+}
+
+info() {
+    printf "${blue}[INFO]${reset} %s\n" "$*"
+}
+
+section() {
+    echo
+    echo "=== $* ==="
+}
+
+get_package_version() {
+    dpkg-query -W -f='${Version}' pve-sharedlvmthin 2>/dev/null || true
+}
+
+get_pve_version() {
+    pveversion 2>/dev/null | sed 's#pve-manager/##' | cut -d/ -f1
+}
+
+get_storage_pkg_version() {
+    dpkg-query -W -f='${Version}' libpve-storage-perl 2>/dev/null || true
+}
+
+get_plugin_api() {
+    perl -I/usr/share/perl5 \
+        -MPVE::Storage::Custom::SharedLvmThinPlugin \
+        -e 'print PVE::Storage::Custom::SharedLvmThinPlugin->api()' \
+        2>/dev/null || true
+}
+
+get_pve_api() {
+    perl -I/usr/share/perl5 \
+        -MPVE::Storage \
+        -e 'print PVE::Storage::APIVER' \
+        2>/dev/null || true
+}
+
+get_pve_apiage() {
+    perl -I/usr/share/perl5 \
+        -MPVE::Storage \
+        -e 'print PVE::Storage::APIAGE' \
+        2>/dev/null || true
+}
+
+header() {
+    echo "SharedLvmThin Health & Compatibility Check"
+    echo "=========================================="
+    echo "doctor version: $VERSION"
+    echo "host: $(hostname)"
+    echo "time: $(date --iso-8601=seconds)"
+}
+
+doctor() {
+    header
+
+    section "Package"
+
+    PKGVER="$(get_package_version)"
+
+    if [ -n "$PKGVER" ]; then
+        pass "Package installed: pve-sharedlvmthin $PKGVER"
+    else
+        fail "Package pve-sharedlvmthin is not installed"
+    fi
+
+    if [ -f "$PLUGIN" ]; then
+        pass "Plugin file present"
+    else
+        fail "Plugin file missing: $PLUGIN"
+    fi
+
+    if [ -x "$MONITOR" ]; then
+        pass "Autogrow monitor present and executable"
+    else
+        fail "Autogrow monitor missing/not executable: $MONITOR"
+    fi
+
+    section "Proxmox compatibility"
+
+    PVEVER="$(get_pve_version)"
+    STORAGEVER="$(get_storage_pkg_version)"
+    PLUGINAPI="$(get_plugin_api)"
+    PVEAPI="$(get_pve_api)"
+    APIAGE="$(get_pve_apiage)"
+
+    info "PVE manager: ${PVEVER:-unknown}"
+    info "libpve-storage-perl: ${STORAGEVER:-unknown}"
+    info "Kernel: $(uname -r)"
+
+    if perl -MPVE::Storage -e '1' >/dev/null 2>&1; then
+        pass "PVE::Storage Perl modules load"
+    else
+        fail "PVE::Storage Perl modules cannot be loaded"
+    fi
+
+    if [ -n "$PLUGINAPI" ]; then
+        pass "SharedLvmThin plugin loads (API $PLUGINAPI)"
+    else
+        fail "SharedLvmThin plugin cannot be loaded"
+    fi
+
+    if [ -n "$PVEAPI" ] && [ -n "$APIAGE" ] && [ -n "$PLUGINAPI" ]; then
+        MINAPI=$((PVEAPI - APIAGE))
+
+        info "PVE Storage API: current=$PVEAPI age=$APIAGE accepted-range=$MINAPI..$PVEAPI"
+
+        if [ "$PVEAPI" -lt 14 ] || [ "$PVEAPI" -gt 15 ]; then
+            fail "Running PVE Storage API $PVEAPI is outside tested SharedLvmThin range 14..15"
+        elif [ "$PLUGINAPI" -gt "$PVEAPI" ]; then
+            fail "Plugin API $PLUGINAPI is newer than running PVE API $PVEAPI"
+        elif [ "$PLUGINAPI" -lt "$MINAPI" ]; then
+            fail "Plugin API $PLUGINAPI is older than minimum supported API $MINAPI"
+        else
+            pass "Running PVE Storage API $PVEAPI is explicitly supported (tested range 14..15)"
+        fi
+    else
+        fail "Unable to determine Storage API compatibility"
+    fi
+
+    # Exact package minors are evidence, not the compatibility boundary.  The
+    # audited Storage API range above is the release gate; avoid warning merely
+    # because Proxmox shipped a compatible package update.
+    info "Runtime package versions: pve-manager=$PVEVER libpve-storage-perl=$STORAGEVER"
+
+    section "Cluster"
+
+    if [ ! -f /etc/pve/corosync.conf ]; then
+        pass "Standalone PVE; cluster quorum is not applicable"
+    else
+        CLUSTER_STATUS="$(timeout --foreground 10 pvecm status 2>&1 || true)"
+
+        if grep -q 'Quorate:[[:space:]]*Yes' <<<"$CLUSTER_STATUS"; then
+            pass "Cluster is quorate"
+        elif grep -q 'Quorate:[[:space:]]*No' <<<"$CLUSTER_STATUS"; then
+            fail "Cluster is not quorate"
+        else
+            fail "Cluster is configured but quorum state is unavailable"
+        fi
+    fi
+
+    section "LVM"
+
+    if command -v lvm >/dev/null 2>&1; then
+        LVMVER="$(lvm version 2>/dev/null | awk '/LVM version:/ {print $3; exit}')"
+        pass "LVM available (${LVMVER:-unknown})"
+    else
+        fail "LVM executable not found"
+    fi
+
+    if command -v dmeventd >/dev/null 2>&1; then
+        DMEV="$(dmeventd -V 2>&1 | head -1)"
+        pass "dmeventd installed: $DMEV"
+    else
+        fail "dmeventd executable not found"
+    fi
+
+    if systemctl is-active --quiet dm-event.service; then
+        pass "dm-event.service active"
+    elif lvs --noheadings -o lv_name,segtype 2>/dev/null |
+         awk '$1 ~ /^sltp-[0-9]+$/ && $2 == "thin-pool" { found=1 } END { exit !found }'; then
+        fail "dm-event.service not active while a per-VM thin pool exists"
+    else
+        warn "dm-event.service inactive; no per-VM thin pool currently requires monitoring"
+    fi
+
+    if grep -Fq \
+       'thin_command = "/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor"' \
+       "$LVMCONF" 2>/dev/null; then
+        pass "dmeventd thin_command points to SharedLvmThin monitor"
+    else
+        fail "dmeventd thin_command does not point to packaged monitor"
+    fi
+
+    THRESHOLD="$(sed -n 's/^[[:space:]]*thin_pool_autoextend_threshold[[:space:]]*=[[:space:]]*//p' "$LVMCONF" | head -1)"
+    GROW="$(sed -n 's/^[[:space:]]*thin_pool_autoextend_percent[[:space:]]*=[[:space:]]*//p' "$LVMCONF" | head -1)"
+
+    if [ "$THRESHOLD" = "80" ]; then
+        pass "Thin autoextend threshold = 80%"
+    else
+        warn "Thin autoextend threshold is '${THRESHOLD:-unset}', RC1 tested with 80"
+    fi
+
+    if [ "$GROW" = "10" ]; then
+        pass "Thin autoextend growth = 10%"
+    else
+        warn "Thin autoextend growth is '${GROW:-unset}', RC1 tested with 10"
+    fi
+
+    section "Configured SharedLvmThin storage"
+
+    STOREIDS="$(
+        awk '
+            /^sharedlvmthin:[[:space:]]+/ {
+                print $2
+            }
+        ' "$STORAGECFG" 2>/dev/null
+    )"
+
+    if [ -z "$STOREIDS" ]; then
+        warn "No sharedlvmthin storage configured"
+    fi
+
+    for SID in $STOREIDS; do
+        info "Checking storage '$SID'"
+
+        VG="$(
+            awk -v sid="$SID" '
+                $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+                /^[^[:space:]]/ {inside=0}
+                inside && $1 == "slt-vgname" {print $2; exit}
+            ' "$STORAGECFG"
+        )"
+
+        if [ -z "$VG" ]; then
+            fail "$SID: slt-vgname missing"
+            continue
+        fi
+
+        if timeout --foreground 15 vgs "$VG" >/dev/null 2>&1; then
+            pass "$SID: VG '$VG' visible"
+        else
+            fail "$SID: VG '$VG' not visible"
+            continue
+        fi
+
+        ALLOCATION_MODE="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-initial-pool-mode" {print $2; exit}
+        ' "$STORAGECFG")"
+        ALLOCATION_MODE="${ALLOCATION_MODE:-fixed}"
+        ALLOCATION_SIZE="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-initial-pool-size" {print $2; exit}
+        ' "$STORAGECFG")"
+        ALLOCATION_SIZE="${ALLOCATION_SIZE:-16}"
+        ALLOCATION_PERCENT="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-initial-pool-percent" {print $2; exit}
+        ' "$STORAGECFG")"
+        ALLOCATION_PERCENT="${ALLOCATION_PERCENT:-50}"
+        ALLOCATION_MAX="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-initial-pool-max" {print $2; exit}
+        ' "$STORAGECFG")"
+
+        case "$ALLOCATION_MODE" in
+            fixed)
+                warn "$SID: allocation headroom=fixed ${ALLOCATION_SIZE} GiB; burst capacity guarantee=NO"
+                info "Impact: fast bulk write, clone, restore, import, or storage copy may outrun asynchronous autogrow"
+                info "Performance: PVE raw full-copy may scan the complete virtual disk even when sparseinit avoids zero writes"
+                info "Action: review proportional/full policy; Doctor made no change"
+                ;;
+            proportional)
+                if [[ ! "$ALLOCATION_PERCENT" =~ ^[0-9]+$ ]] || [ "$ALLOCATION_PERCENT" -lt 1 ] || [ "$ALLOCATION_PERCENT" -gt 100 ]; then
+                    fail "$SID: invalid proportional allocation percentage '$ALLOCATION_PERCENT'"
+                else
+                    pass "$SID: allocation headroom=proportional ${ALLOCATION_PERCENT}% minimum ${ALLOCATION_SIZE} GiB${ALLOCATION_MAX:+ max ${ALLOCATION_MAX} GiB}"
+                    info "Performance: PVE raw full-copy may still scan the complete virtual disk"
+                fi
+                ;;
+            full)
+                pass "$SID: allocation headroom=full-at-admission${ALLOCATION_MAX:+; allocations above max ${ALLOCATION_MAX} GiB fail closed}"
+                info "Performance: PVE raw full-copy may still scan the complete virtual disk"
+                ;;
+            *)
+                fail "$SID: invalid allocation headroom mode '$ALLOCATION_MODE'"
+                ;;
+        esac
+
+        VG_LINE="$(timeout --foreground 15 vgs --readonly --noheadings --units b --nosuffix \
+            --separator '|' -o vg_uuid,vg_size,vg_free "$VG" 2>/dev/null | head -1)"
+        ACTUAL_VG_UUID="$(echo "$VG_LINE" | cut -d'|' -f1 | xargs)"
+        VG_SIZE="$(echo "$VG_LINE" | cut -d'|' -f2 | xargs | cut -d. -f1)"
+        VG_FREE="$(echo "$VG_LINE" | cut -d'|' -f3 | xargs | cut -d. -f1)"
+        EXPECTED_VG_UUID="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-expected-vg-uuid" {print $2; exit}
+        ' "$STORAGECFG")"
+
+        if [ -n "$EXPECTED_VG_UUID" ] && [ "$ACTUAL_VG_UUID" != "$EXPECTED_VG_UUID" ]; then
+            fail "$SID: VG UUID mismatch (expected $EXPECTED_VG_UUID, found $ACTUAL_VG_UUID)"
+        elif [ -n "$EXPECTED_VG_UUID" ]; then
+            pass "$SID: VG UUID identity matches"
+        else
+            warn "$SID: fail-closed VG UUID identity is not configured"
+        fi
+
+        CONFIG_RESERVE_PERCENT="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-vg-reserve-percent" {print $2; exit}
+        ' "$STORAGECFG")"
+        CONFIG_RESERVE_GIB="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-vg-reserve-gib" {print $2; exit}
+        ' "$STORAGECFG")"
+
+        if [[ "$VG_SIZE" =~ ^[0-9]+$ ]] && [[ "$VG_FREE" =~ ^[0-9]+$ ]] && [ "$VG_SIZE" -gt 0 ]; then
+            VG_SIZE_GIB="$(awk -v bytes="$VG_SIZE" 'BEGIN {printf "%.2f", bytes / 1073741824}')"
+            VG_FREE_GIB="$(awk -v bytes="$VG_FREE" 'BEGIN {printf "%.2f", bytes / 1073741824}')"
+            info "$SID: physical VG size=${VG_SIZE_GIB} GiB free=${VG_FREE_GIB} GiB"
+
+            if [ -z "$CONFIG_RESERVE_PERCENT" ] && [ -z "$CONFIG_RESERVE_GIB" ]; then
+                warn "$SID: autogrow physical VG reserve is not configured"
+                info "Action: qualify and configure slt-vg-reserve-percent and/or slt-vg-reserve-gib; Doctor made no change"
+            else
+                CONFIG_RESERVE_PERCENT="${CONFIG_RESERVE_PERCENT:-0}"
+                CONFIG_RESERVE_GIB="${CONFIG_RESERVE_GIB:-0}"
+                PERCENT_RESERVE_BYTES=$((VG_SIZE * CONFIG_RESERVE_PERCENT / 100))
+                FIXED_RESERVE_BYTES=$((CONFIG_RESERVE_GIB * 1073741824))
+                if [ "$PERCENT_RESERVE_BYTES" -gt "$FIXED_RESERVE_BYTES" ]; then
+                    EFFECTIVE_RESERVE_BYTES=$PERCENT_RESERVE_BYTES
+                else
+                    EFFECTIVE_RESERVE_BYTES=$FIXED_RESERVE_BYTES
+                fi
+                if [ "$VG_FREE" -gt "$EFFECTIVE_RESERVE_BYTES" ]; then
+                    USABLE_FREE_BYTES=$((VG_FREE - EFFECTIVE_RESERVE_BYTES))
+                    RESERVE_STATE="HEALTHY"
+                else
+                    USABLE_FREE_BYTES=0
+                    RESERVE_STATE="CRITICAL"
+                fi
+                EFFECTIVE_RESERVE_GIB="$(awk -v bytes="$EFFECTIVE_RESERVE_BYTES" 'BEGIN {printf "%.2f", bytes / 1073741824}')"
+                USABLE_FREE_GIB="$(awk -v bytes="$USABLE_FREE_BYTES" 'BEGIN {printf "%.2f", bytes / 1073741824}')"
+                if [ "$RESERVE_STATE" = "HEALTHY" ]; then
+                    pass "$SID: autogrow reserve HEALTHY; protected=${EFFECTIVE_RESERVE_GIB} GiB usable-above-reserve=${USABLE_FREE_GIB} GiB"
+                else
+                    warn "$SID: autogrow reserve CRITICAL; protected=${EFFECTIVE_RESERVE_GIB} GiB usable-above-reserve=0 GiB"
+                fi
+            fi
+        else
+            warn "$SID: unable to evaluate physical VG reserve"
+        fi
+
+        PV_LINE="$(timeout --foreground 15 pvs --readonly --noheadings --separator '|' \
+            --units b --nosuffix -o pv_uuid,pv_name,pv_mda_size,pv_mda_free \
+            --select "vg_name=$VG" 2>/dev/null || true)"
+        PV_COUNT="$(grep -c '[^[:space:]]' <<<"$PV_LINE" || true)"
+        EXPECTED_PV_UUID="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-expected-pv-uuid" {print $2; exit}
+        ' "$STORAGECFG")"
+        EXPECTED_WWID="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-expected-wwid" {print tolower($2); exit}
+        ' "$STORAGECFG")"
+        EXPECTED_MIN_PATHS="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-expected-min-paths" {print $2; exit}
+        ' "$STORAGECFG")"
+
+        if [ "$PV_COUNT" -ne 1 ]; then
+            fail "$SID: expected exactly one backing PV, found $PV_COUNT"
+        else
+            ACTUAL_PV_UUID="$(echo "$PV_LINE" | cut -d'|' -f1 | xargs)"
+            PV_NAME="$(echo "$PV_LINE" | cut -d'|' -f2 | xargs)"
+            PV_MDA_SIZE="$(echo "$PV_LINE" | cut -d'|' -f3 | xargs | cut -d. -f1)"
+            PV_MDA_FREE="$(echo "$PV_LINE" | cut -d'|' -f4 | xargs | cut -d. -f1)"
+            ALL_BINDINGS="$(
+                timeout --foreground 15 pvs --readonly --noheadings --separator '|' \
+                    -o pv_uuid,pv_name 2>/dev/null |
+                awk -F'|' -v uuid="$ACTUAL_PV_UUID" '
+                    {
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+                        if (tolower($1) == tolower(uuid)) print $2
+                    }
+                ' | sort -u
+            )"
+            BINDING_COUNT="$(grep -c '[^[:space:]]' <<<"$ALL_BINDINGS" || true)"
+            if [ "$BINDING_COUNT" -gt 1 ]; then
+                fail "$SID: duplicate PV device bindings detected for $ACTUAL_PV_UUID"
+                info "Devices: $(tr '\n' ' ' <<<"$ALL_BINDINGS" | xargs)"
+                info "Impact: LVM activation, VM start, or migration may bind the wrong path"
+                info "Action: review LVM devices/filter and multipath configuration; Doctor made no change"
+            else
+                pass "$SID: PV device binding is unique"
+            fi
+            if [ -n "$EXPECTED_PV_UUID" ] && [ "$ACTUAL_PV_UUID" != "$EXPECTED_PV_UUID" ]; then
+                fail "$SID: PV UUID mismatch (expected $EXPECTED_PV_UUID, found $ACTUAL_PV_UUID)"
+            elif [ -n "$EXPECTED_PV_UUID" ]; then
+                pass "$SID: PV UUID identity matches"
+            else
+                warn "$SID: fail-closed PV UUID identity is not configured"
+            fi
+
+            if [[ "$PV_MDA_SIZE" =~ ^[0-9]+$ ]] && [[ "$PV_MDA_FREE" =~ ^[0-9]+$ ]] && [ "$PV_MDA_SIZE" -gt 0 ]; then
+                PV_MDA_FREE_PERCENT=$((PV_MDA_FREE * 100 / PV_MDA_SIZE))
+                if [ "$PV_MDA_FREE" -eq 0 ]; then
+                    warn "$SID: PV/VG metadata area is CRITICAL with 0% free"
+                    info "Impact: new LVs, snapshots, resize, or cleanup can fail even when VG data extents remain free"
+                    info "Action: stop new mutations and review PV metadata capacity; Doctor made no change"
+                elif [ "$PV_MDA_FREE_PERCENT" -lt 20 ]; then
+                    warn "$SID: PV/VG metadata area is low at ${PV_MDA_FREE_PERCENT}% free"
+                    info "Impact: high per-VM pool/LV counts can exhaust LVM metadata before VG data capacity"
+                    info "Action: review PV metadata sizing and object scale; Doctor made no change"
+                else
+                    pass "$SID: PV/VG metadata area has ${PV_MDA_FREE_PERCENT}% free"
+                fi
+            else
+                warn "$SID: PV/VG metadata area capacity is unavailable; Doctor made no change"
+            fi
+
+            if [[ "$PV_NAME" =~ ^/dev/mapper/([0-9A-Fa-f]+)$ ]]; then
+                ACTUAL_WWID="${BASH_REMATCH[1],,}"
+                if [ -n "$EXPECTED_WWID" ] && [ "$ACTUAL_WWID" != "$EXPECTED_WWID" ]; then
+                    fail "$SID: WWID mismatch (expected $EXPECTED_WWID, found $ACTUAL_WWID)"
+                elif [ -n "$EXPECTED_WWID" ]; then
+                    pass "$SID: multipath WWID identity matches"
+                else
+                    warn "$SID: fail-closed multipath WWID identity is not configured"
+                fi
+
+                MP_STATE="$(timeout --foreground 10 multipath -ll "$ACTUAL_WWID" 2>/dev/null || true)"
+                if [ -n "$EXPECTED_MIN_PATHS" ]; then
+                    HEALTHY_PATHS="$(grep -Ec '[[:space:]]active[[:space:]]+ready[[:space:]]+running([[:space:]]|$)' <<<"$MP_STATE" || true)"
+                    if [ "$HEALTHY_PATHS" -ge "$EXPECTED_MIN_PATHS" ]; then
+                        pass "$SID: $HEALTHY_PATHS healthy paths meet configured minimum $EXPECTED_MIN_PATHS"
+                    else
+                        warn "$SID: $HEALTHY_PATHS healthy paths are below configured minimum $EXPECTED_MIN_PATHS"
+                        info "Impact: storage redundancy is below the administrator-defined diagnostic expectation"
+                        info "Action: inspect SAN paths; SharedLvmThin made no policy or storage change"
+                    fi
+                else
+                    info "$SID: expected minimum path count is not configured"
+                fi
+                if grep -q "queue_if_no_path" <<<"$MP_STATE"; then
+                    warn "$SID: multipath no-path policy is queue_if_no_path"
+                    info "Impact: complete path loss may cause LVM/PVE operations to wait indefinitely"
+                    info "Action: review the bounded no-path policy with the storage vendor; SharedLvmThin made no change"
+                else
+                    pass "$SID: multipath map does not advertise queue_if_no_path"
+                fi
+            elif [ -n "$EXPECTED_WWID" ]; then
+                fail "$SID: WWID cannot be verified from unstable PV path '$PV_NAME'"
+            else
+                info "$SID: PV '$PV_NAME' is not a multipath WWID path"
+            fi
+        fi
+
+        EXPECTED_TAG="pve-slt-sid-$SID"
+
+        PMSPARE_SIZE="$(
+            timeout --foreground 15 lvs -a --noheadings --separator '|' \
+                --units b --nosuffix -o lv_name,lv_size "$VG" 2>/dev/null |
+            awk -F'|' '
+                $1 ~ /_pmspare/ {
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+                    gsub(/^\[/, "", $1)
+                    gsub(/\]$/, "", $1)
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+                    if (($2 + 0) > max) max=$2 + 0
+                }
+                END {if (max > 0) printf "%.0f", max}
+            '
+        )"
+
+        if ! LVS_REPORT="$(
+            timeout --foreground 15 lvs --binary --noheadings \
+                --separator '|' --units b --nosuffix \
+                -o lv_name,lv_attr,lv_tags,seg_monitor,lv_size,chunk_size,data_percent,metadata_percent,lv_health_status,lv_check_needed,lv_metadata_size,zero,discards,lv_autoactivation,pool_lv,lv_when_full \
+                "$VG" 2>/dev/null
+        )"; then
+            fail "$SID: unable to collect the read-only LVM diagnostic inventory"
+            continue
+        fi
+        POOLS="$(
+            awk -F'|' '{name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); if (name ~ /^sltp-[0-9]+$/) print name}' <<<"$LVS_REPORT"
+        )"
+
+        for POOL in $POOLS; do
+            LINE="$(
+                awk -F'|' -v wanted="$POOL" '
+                    {name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)}
+                    name == wanted {print; exit}
+                ' <<<"$LVS_REPORT"
+            )"
+
+            ATTR="$(echo "$LINE" | cut -d'|' -f2 | xargs)"
+            TAGS="$(echo "$LINE" | cut -d'|' -f3 | xargs)"
+            MON="$(echo "$LINE" | cut -d'|' -f4 | xargs)"
+            POOL_SIZE="$(echo "$LINE" | cut -d'|' -f5 | xargs | cut -d. -f1)"
+            CHUNK_SIZE="$(echo "$LINE" | cut -d'|' -f6 | xargs | cut -d. -f1)"
+            DATA_PERCENT="$(echo "$LINE" | cut -d'|' -f7 | xargs)"
+            META_PERCENT="$(echo "$LINE" | cut -d'|' -f8 | xargs)"
+            HEALTH_STATUS="$(echo "$LINE" | cut -d'|' -f9 | xargs)"
+            CHECK_NEEDED="$(echo "$LINE" | cut -d'|' -f10 | xargs)"
+            METADATA_SIZE="$(echo "$LINE" | cut -d'|' -f11 | xargs | cut -d. -f1)"
+            ZERO_POLICY="$(echo "$LINE" | cut -d'|' -f12 | xargs)"
+            DISCARD_POLICY="$(echo "$LINE" | cut -d'|' -f13 | xargs)"
+            AUTOACTIVATION="$(echo "$LINE" | cut -d'|' -f14 | xargs)"
+            WHEN_FULL="$(echo "$LINE" | cut -d'|' -f16 | xargs)"
+
+            if [[ "${ATTR:0:1}" != "t" ]]; then
+                fail "$SID: $VG/$POOL exists but is not a thin pool"
+                continue
+            fi
+
+            if [[ ",$TAGS," != *",$EXPECTED_TAG,"* ]]; then
+                # Old PoC pools can legitimately pre-date tagging.
+                warn "$SID: $VG/$POOL missing ownership tag '$EXPECTED_TAG'"
+                continue
+            fi
+
+            if [ "$AUTOACTIVATION" = "0" ]; then
+                pass "$SID: $POOL generic LVM autoactivation is disabled"
+            elif [ -n "$ATTR" ]; then
+                warn "$SID: $POOL generic LVM autoactivation is enabled on shared storage"
+                info "Impact: legacy autoactivation flags may activate shared LVs outside PVE lifecycle control"
+                info "Action: review PVE/LVM upgrade state; Doctor made no change"
+            else
+                warn "$SID: $POOL LVM autoactivation state is unavailable"
+                info "Action: verify activation-skip flags manually; Doctor made no change"
+            fi
+
+            MANAGED_AUTOACTIVATION="$(
+                awk -F'|' -v wanted="$POOL" '
+                    {
+                        pool=$15
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", pool)
+                        if (pool == wanted) print $1 "|" $14
+                    }
+                ' <<<"$LVS_REPORT"
+            )"
+            while IFS='|' read -r MANAGED_LV MANAGED_AUTO; do
+                MANAGED_LV="$(xargs <<<"$MANAGED_LV")"
+                MANAGED_AUTO="$(xargs <<<"$MANAGED_AUTO")"
+                [[ "$MANAGED_LV" =~ ^vm-[0-9]+-(disk-[0-9]+|state-.+|fleece-[0-9]+|cloudinit)$ ]] || continue
+                if [ "$MANAGED_AUTO" = "0" ]; then
+                    pass "$SID: $MANAGED_LV generic LVM autoactivation is disabled"
+                else
+                    warn "$SID: $MANAGED_LV has lv_autoactivation='${MANAGED_AUTO:-unknown}' on shared storage"
+                    info "Action: review legacy flags; Doctor made no change"
+                fi
+            done <<<"$MANAGED_AUTOACTIVATION"
+
+            if [ "${ATTR:4:1}" = "c" ] || [[ "${CHECK_NEEDED,,}" =~ ^(1|yes|check_needed)$ ]]; then
+                fail "$SID: $POOL CRITICAL: thin pool needs metadata check; mutations must remain disabled"
+                info "Action: preserve data and perform manual recovery assessment; Doctor ran no repair"
+            elif [ "${ATTR:8:1}" = "M" ]; then
+                fail "$SID: $POOL CRITICAL: thin-pool metadata is read-only; mutations must remain disabled"
+                info "Action: preserve data and perform manual recovery assessment; Doctor ran no repair"
+            elif [[ ! "$ATTR" =~ ^twi-[-a][o-]t[z-]--$ ]]; then
+                fail "$SID: $POOL CRITICAL: unexpected thin-pool attributes '$ATTR'; mutations must remain disabled"
+                info "Action: preserve data and investigate attributes; Doctor ran no repair"
+            elif [ -n "$HEALTH_STATUS" ] && [ "${HEALTH_STATUS,,}" != "ok" ]; then
+                fail "$SID: $POOL CRITICAL: thin-pool health status is '$HEALTH_STATUS'; mutations must remain disabled"
+                info "Action: preserve data and perform manual recovery assessment; Doctor ran no repair"
+            else
+                pass "$SID: $POOL thin-pool flags are healthy and writable"
+            fi
+
+            if [[ "$METADATA_SIZE" =~ ^[0-9]+$ ]] && [ "$METADATA_SIZE" -gt 0 ]; then
+                META_MIB="$(awk -v bytes="$METADATA_SIZE" 'BEGIN {printf "%.2f", bytes / 1048576}')"
+                info "$SID: $POOL metadata LV size=${META_MIB} MiB"
+                if [[ "$PMSPARE_SIZE" =~ ^[0-9]+$ ]] && [ "$PMSPARE_SIZE" -ge "$METADATA_SIZE" ]; then
+                    PMSPARE_MIB="$(awk -v bytes="$PMSPARE_SIZE" 'BEGIN {printf "%.2f", bytes / 1048576}')"
+                    pass "$SID: metadata spare ${PMSPARE_MIB} MiB covers $POOL metadata requirement"
+                elif [[ "$PMSPARE_SIZE" =~ ^[0-9]+$ ]]; then
+                    warn "$SID: metadata spare is smaller than $POOL metadata LV; diagnostic only"
+                else
+                    warn "$SID: no metadata spare LV is visible for $POOL; diagnostic only"
+                fi
+            else
+                warn "$SID: $POOL metadata LV size is unavailable"
+            fi
+
+            case "${ZERO_POLICY,,}" in
+                y|yes|1|zero) pass "$SID: $POOL zeroing policy is enabled" ;;
+                *) warn "$SID: $POOL zeroing policy is '${ZERO_POLICY:-unknown}'"
+                   info "Impact: disabling zeroing can create data-remanence risk; SharedLvmThin made no change" ;;
+            esac
+            info "$SID: $POOL discard policy is '${DISCARD_POLICY:-unknown}'; this does not prove SAN UNMAP"
+
+            NO_SPACE_TIMEOUT="$(cat /sys/module/dm_thin_pool/parameters/no_space_timeout 2>/dev/null || true)"
+            case "${WHEN_FULL,,}" in
+                queue)
+                    if [ "$NO_SPACE_TIMEOUT" = "0" ]; then
+                        fail "$SID: $POOL CRITICAL: when-full=queue with dm_thin_pool no_space_timeout=0"
+                        info "Impact: a full thin pool can leave guest writes waiting without a bounded kernel timeout"
+                    elif [[ "$NO_SPACE_TIMEOUT" =~ ^[0-9]+$ ]]; then
+                        warn "$SID: $POOL when-full=queue; kernel no-space window is up to ${NO_SPACE_TIMEOUT}s"
+                        info "Impact: pool exhaustion can stall guest I/O while LVM has an opportunity to extend the pool"
+                    else
+                        warn "$SID: $POOL when-full=queue; kernel no-space timeout is unavailable"
+                        info "Impact: bounded pool-full behavior is unconfirmed"
+                    fi
+                    info "Action: review site capacity policy; Doctor made no LVM or kernel change"
+                    ;;
+                error)
+                    pass "$SID: $POOL when-full=error avoids queueing on pool exhaustion"
+                    info "Impact: exhaustion returns I/O errors and is not data-safe; reserve/autogrow must still prevent it"
+                    ;;
+                *)
+                    warn "$SID: $POOL when-full policy is '${WHEN_FULL:-unknown}'"
+                    info "Action: verify LVM exhaustion behavior; Doctor made no change"
+                    ;;
+            esac
+
+            if [ "$MON" = "monitored" ]; then
+                pass "$SID: $POOL ownership + monitoring OK"
+            elif [[ "$ATTR" == *"a"* ]]; then
+                warn "$SID: active pool $POOL is not monitored"
+            else
+                info "$SID: inactive pool $POOL ownership OK (monitoring inactive)"
+            fi
+
+            META_WHOLE="${META_PERCENT%%.*}"
+            if [[ "$META_WHOLE" =~ ^[0-9]+$ ]] && [ "$META_WHOLE" -ge 90 ]; then
+                warn "$SID: $POOL metadata health is CRITICAL at ${META_PERCENT}%"
+                info "Impact: thin metadata exhaustion can make the pool read-only or unavailable"
+                info "Action: investigate metadata capacity immediately; Doctor does not block or resize the pool"
+            elif [[ "$META_WHOLE" =~ ^[0-9]+$ ]] && [ "$META_WHOLE" -ge 75 ]; then
+                warn "$SID: $POOL metadata usage is ${META_PERCENT}%"
+            elif [[ "$META_WHOLE" =~ ^[0-9]+$ ]]; then
+                pass "$SID: $POOL metadata usage is ${META_PERCENT}%"
+            elif [[ "$ATTR" != *"a"* ]]; then
+                info "$SID: $POOL metadata usage N/A (pool inactive)"
+            else
+                warn "$SID: $POOL metadata usage is unavailable"
+            fi
+
+            if [[ "$POOL_SIZE" =~ ^[0-9]+$ ]] && [[ "$CHUNK_SIZE" =~ ^[0-9]+$ ]] && [ "$CHUNK_SIZE" -gt 0 ]; then
+                CHUNK_COUNT=$((POOL_SIZE / CHUNK_SIZE))
+                if [ "$CHUNK_COUNT" -gt 15800000 ]; then
+                    POOL_TIB="$(awk -v bytes="$POOL_SIZE" 'BEGIN {printf "%.2f", bytes / 1099511627776}')"
+                    CHUNK_KIB="$(awk -v bytes="$CHUNK_SIZE" 'BEGIN {printf "%.0f", bytes / 1024}')"
+                    warn "$SID: $POOL chunk geometry may be undersized for this pool scale"
+                    info "Pool: $POOL; size: ${POOL_TIB} TiB; chunk size: ${CHUNK_KIB} KiB; chunks: $CHUNK_COUNT"
+                    info "Reason: chunk count exceeds the 15.8M validation ceiling and may increase metadata pressure"
+                    info "Action: validate chunk size for this workload before creating a replacement pool; Doctor made no change"
+                else
+                    POOL_TIB="$(awk -v bytes="$POOL_SIZE" 'BEGIN {printf "%.2f", bytes / 1099511627776}')"
+                    CHUNK_KIB="$(awk -v bytes="$CHUNK_SIZE" 'BEGIN {printf "%.0f", bytes / 1024}')"
+                    pass "$SID: $POOL chunk geometry is within the 15.8M-chunk validation ceiling (${POOL_TIB} TiB, ${CHUNK_KIB} KiB)"
+                fi
+            else
+                warn "$SID: $POOL chunk geometry is unavailable"
+            fi
+        done
+    done
+
+    section "PVE storage status"
+
+    PVE_STATUS="$(timeout --foreground 20 pvesm status 2>/dev/null || true)"
+
+    for SID in $STOREIDS; do
+        STATE="$(awk -v sid="$SID" '$1 == sid {print $3}' <<<"$PVE_STATUS")"
+
+        if [ "$STATE" = "active" ]; then
+            pass "$SID: PVE storage active"
+        else
+            fail "$SID: PVE storage state '${STATE:-unknown}'"
+        fi
+    done
+
+    section "Summary"
+
+    echo "PASS: $PASS"
+    echo "WARN: $WARN"
+    echo "FAIL: $FAIL"
+    echo
+
+    if [ "$FAIL" -gt 0 ]; then
+        printf "${red}RESULT: FAIL${reset}\n"
+        exit 2
+    elif [ "$WARN" -gt 0 ]; then
+        printf "${yellow}RESULT: PASS WITH WARNINGS${reset}\n"
+        exit 1
+    else
+        printf "${green}RESULT: PASS${reset}\n"
+        exit 0
+    fi
+}
+
+
+deep_doctor() {
+    local TEST_VMID=999999
+    local TEST_NAME="SharedLvmThin-DeepTest"
+    local SNAP="SLT-DEEP-SNAP"
+    local TEST_MB=64
+    local CREATED_VM=0
+    local SID=""
+    local VG=""
+    local DEV=""
+    local HASH_A=""
+    local HASH_B=""
+    local HASH_R=""
+
+    echo
+    echo "SharedLvmThin Deep Storage Validation"
+    echo "====================================="
+    echo "host: $(hostname)"
+    echo "time: $(date --iso-8601=seconds)"
+    echo
+
+    #
+    # Pick the first configured SharedLvmThin storage.
+    #
+    SID="$(
+        awk '
+            /^sharedlvmthin:[[:space:]]+/ {
+                print $2
+                exit
+            }
+        ' "$STORAGECFG" 2>/dev/null
+    )"
+
+    if [ -z "$SID" ]; then
+        fail "No sharedlvmthin storage configured"
+        echo
+        echo "RESULT: DEEP TEST FAIL"
+        return 2
+    fi
+
+    VG="$(
+        awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-vgname" {print $2; exit}
+        ' "$STORAGECFG"
+    )"
+
+    if [ -z "$VG" ]; then
+        fail "$SID: slt-vgname missing"
+        echo
+        echo "RESULT: DEEP TEST FAIL"
+        return 2
+    fi
+
+    info "Storage: $SID"
+    info "VG: $VG"
+    info "Reserved test VMID: $TEST_VMID"
+
+    #
+    # Safety checks. Never touch a pre-existing VM or LVM object.
+    #
+    if qm config "$TEST_VMID" >/dev/null 2>&1; then
+        fail "VMID $TEST_VMID already exists - refusing destructive test"
+        echo
+        echo "RESULT: DEEP TEST FAIL"
+        return 2
+    fi
+
+    if lvs "$VG/sltp-$TEST_VMID" >/dev/null 2>&1; then
+        fail "$VG/sltp-$TEST_VMID already exists - refusing destructive test"
+        echo
+        echo "RESULT: DEEP TEST FAIL"
+        return 2
+    fi
+
+    if lvs --noheadings -o lv_name "$VG" 2>/dev/null \
+        | sed 's/^[[:space:]]*//' \
+        | grep -qE "^(vm-${TEST_VMID}-|snap_vm-${TEST_VMID}-)"; then
+        fail "LVM objects for VMID $TEST_VMID already exist - refusing destructive test"
+        echo
+        echo "RESULT: DEEP TEST FAIL"
+        return 2
+    fi
+
+    pass "Reserved VMID and LVM namespace are free"
+
+    if [ ! -f /etc/pve/corosync.conf ]; then
+        pass "Standalone PVE; cluster quorum is not applicable"
+    elif timeout --foreground 10 pvecm status 2>/dev/null | grep -q 'Quorate:[[:space:]]*Yes'; then
+        pass "Cluster is quorate"
+    else
+        fail "Cluster is not quorate"
+        echo
+        echo "RESULT: DEEP TEST FAIL"
+        return 2
+    fi
+
+    if ! pvesm status 2>/dev/null \
+        | awk -v sid="$SID" '$1 == sid && $3 == "active" {found=1} END {exit !found}'; then
+        fail "$SID is not active"
+        echo
+        echo "RESULT: DEEP TEST FAIL"
+        return 2
+    fi
+
+    pass "$SID is active"
+
+    cleanup_deep() {
+        local rc=$?
+
+        trap - EXIT INT TERM
+
+        echo
+        info "Deep-test cleanup starting"
+
+        if [ "$CREATED_VM" -eq 1 ]; then
+            qm stop "$TEST_VMID" >/dev/null 2>&1 || true
+            qm delsnapshot "$TEST_VMID" "$SNAP" >/dev/null 2>&1 || true
+
+            if qm destroy "$TEST_VMID" --purge 1 >/dev/null 2>&1; then
+                pass "Temporary VM removed"
+            else
+                warn "Could not completely remove temporary VM $TEST_VMID"
+            fi
+        fi
+
+        #
+        # Verification only. Do NOT force-remove leftovers here.
+        #
+        if qm config "$TEST_VMID" >/dev/null 2>&1; then
+            fail "Temporary VM $TEST_VMID still exists after cleanup"
+            rc=2
+        fi
+
+        if lvs "$VG/sltp-$TEST_VMID" >/dev/null 2>&1; then
+            fail "Temporary pool $VG/sltp-$TEST_VMID still exists after cleanup"
+            rc=2
+        fi
+
+        if lvs --noheadings -o lv_name "$VG" 2>/dev/null \
+            | sed 's/^[[:space:]]*//' \
+            | grep -qE "^(vm-${TEST_VMID}-|snap_vm-${TEST_VMID}-)"; then
+            fail "Temporary VM LVs remain after cleanup"
+            rc=2
+        else
+            pass "No deep-test LVM artifacts remain"
+        fi
+
+        echo
+        if [ "$rc" -eq 0 ]; then
+            printf "${green}RESULT: DEEP TEST PASS${reset}\n"
+        else
+            printf "${red}RESULT: DEEP TEST FAIL${reset}\n"
+        fi
+
+        exit "$rc"
+    }
+
+    trap cleanup_deep EXIT INT TERM
+
+    #
+    # Create a real PVE VM and allocate through SharedLvmThin.
+    #
+    qm create "$TEST_VMID" \
+        --name "$TEST_NAME" \
+        --memory 128 \
+        --cores 1 \
+        --ostype l26 \
+        --scsihw virtio-scsi-single \
+        >/dev/null
+
+    CREATED_VM=1
+    pass "Temporary PVE VM created"
+
+    if ! qm set "$TEST_VMID" --scsi0 "$SID:1" >/dev/null; then
+        fail "SharedLvmThin disk allocation failed"
+        return 2
+    fi
+
+    pass "1 GiB test disk allocated through PVE storage API"
+
+    if ! lvs "$VG/sltp-$TEST_VMID" >/dev/null 2>&1; then
+        fail "Expected thin pool sltp-$TEST_VMID was not created"
+        return 2
+    fi
+
+    local TAGS
+    local MON
+
+    TAGS="$(
+        lvs --noheadings -o lv_tags "$VG/sltp-$TEST_VMID" 2>/dev/null |
+        xargs
+    )"
+
+    MON="$(
+        lvs --noheadings -o seg_monitor "$VG/sltp-$TEST_VMID" 2>/dev/null |
+        xargs
+    )"
+
+    if [[ ",$TAGS," == *",pve-slt-sid-$SID,"* ]]; then
+        pass "Temporary pool ownership tag correct"
+    else
+        fail "Temporary pool ownership tag missing"
+        return 2
+    fi
+
+    if [ "$MON" = "monitored" ]; then
+        pass "Temporary pool is monitored by dmeventd"
+    else
+        fail "Temporary pool is not monitored"
+        return 2
+    fi
+
+    DEV="/dev/$VG/vm-$TEST_VMID-disk-0"
+
+    if ! lvchange -ay -K "$VG/vm-$TEST_VMID-disk-0" >/dev/null; then
+        fail "Could not activate temporary thin LV"
+        return 2
+    fi
+
+    pass "Temporary thin LV activated"
+
+    #
+    # DATA A
+    #
+    if ! dd if=/dev/urandom \
+        of="$DEV" \
+        bs=1M count="$TEST_MB" \
+        oflag=direct conv=notrunc \
+        status=none; then
+        fail "Initial test write failed"
+        return 2
+    fi
+
+    sync
+
+    HASH_A="$(
+        dd if="$DEV" \
+            bs=1M count="$TEST_MB" \
+            iflag=direct status=none |
+        sha256sum |
+        awk '{print $1}'
+    )"
+
+    [ -n "$HASH_A" ] || {
+        fail "Could not calculate baseline SHA256"
+        return 2
+    }
+
+    pass "Baseline data written and SHA256 calculated"
+
+    #
+    # Snapshot through PVE.
+    #
+    if ! qm snapshot "$TEST_VMID" "$SNAP" >/dev/null; then
+        fail "PVE snapshot creation failed"
+        return 2
+    fi
+
+    pass "PVE snapshot created"
+
+    #
+    # DATA B
+    #
+    if ! dd if=/dev/urandom \
+        of="$DEV" \
+        bs=1M count="$TEST_MB" \
+        oflag=direct conv=notrunc \
+        status=none; then
+        fail "Second test write failed"
+        return 2
+    fi
+
+    sync
+
+    HASH_B="$(
+        dd if="$DEV" \
+            bs=1M count="$TEST_MB" \
+            iflag=direct status=none |
+        sha256sum |
+        awk '{print $1}'
+    )"
+
+    if [ "$HASH_A" = "$HASH_B" ]; then
+        fail "Data did not change after overwrite"
+        return 2
+    fi
+
+    pass "Post-snapshot data change verified"
+
+    #
+    # Roll back through PVE.
+    #
+    if ! qm rollback "$TEST_VMID" "$SNAP" >/dev/null; then
+        fail "PVE snapshot rollback failed"
+        return 2
+    fi
+
+    pass "PVE snapshot rollback completed"
+
+    if ! lvchange -ay -K "$VG/vm-$TEST_VMID-disk-0" >/dev/null; then
+        fail "Could not reactivate LV after rollback"
+        return 2
+    fi
+
+    sync
+
+    HASH_R="$(
+        dd if="$DEV" \
+            bs=1M count="$TEST_MB" \
+            iflag=direct status=none |
+        sha256sum |
+        awk '{print $1}'
+    )"
+
+    if [ "$HASH_R" = "$HASH_A" ]; then
+        pass "Rollback restored data bit-for-bit (SHA256 match)"
+    else
+        fail "Rollback integrity mismatch"
+        return 2
+    fi
+
+    if ! qm delsnapshot "$TEST_VMID" "$SNAP" >/dev/null; then
+        fail "Snapshot delete failed"
+        return 2
+    fi
+
+    pass "Snapshot deleted"
+
+    #
+    # Explicit destroy here lets us report normal cleanup separately.
+    #
+    if ! qm destroy "$TEST_VMID" --purge 1 >/dev/null; then
+        fail "Temporary VM destroy failed"
+        return 2
+    fi
+
+    CREATED_VM=0
+    pass "Temporary VM and its storage removed"
+
+    if lvs "$VG/sltp-$TEST_VMID" >/dev/null 2>&1; then
+        fail "Per-VM pool remained after destroy"
+        return 2
+    fi
+
+    pass "Per-VM pool cleanup verified"
+
+    trap - EXIT INT TERM
+
+    echo
+    printf "${green}RESULT: DEEP TEST PASS${reset}\n"
+    return 0
+}
+
+case "${1:-doctor}" in
+    doctor)
+        if [ "${2:-}" = "--deep" ]; then
+            deep_doctor
+        else
+            doctor
+        fi
+        ;;
+    deep|--deep)
+        deep_doctor
+        ;;
+    recovery-check)
+        if [ -z "${2:-}" ] || [ -n "${3:-}" ]; then
+            echo "Usage: sharedlvmthin recovery-check <storage-id>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$2"
+        ;;
+    version|--version|-V)
+        echo "sharedlvmthin doctor $VERSION"
+        ;;
+    *)
+        echo "Usage:"
+        echo "  sharedlvmthin doctor"
+        echo "  sharedlvmthin doctor --deep"
+        echo "  sharedlvmthin recovery-check <storage-id>"
+        echo "  sharedlvmthin version"
+        exit 64
+        ;;
+esac

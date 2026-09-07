@@ -1,0 +1,1200 @@
+#!/usr/bin/python3
+
+import json
+import os
+import platform
+import re
+import socket
+import subprocess
+from datetime import datetime, timezone
+
+
+def run(cmd):
+    try:
+        p = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        return p.returncode, p.stdout.strip(), p.stderr.strip()
+    except Exception as e:
+        return 255, "", str(e)
+
+
+def value(cmd):
+    rc, out, _ = run(cmd)
+    return out if rc == 0 else None
+
+
+def package_version(name):
+    return value(["dpkg-query", "-W", "-f=${Version}", name])
+
+
+def read_file(path):
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def parse_storage_cfg():
+    path = "/etc/pve/storage.cfg"
+    storages = []
+
+    try:
+        lines = open(path).read().splitlines()
+    except Exception:
+        return storages
+
+    current = None
+
+    for line in lines:
+        if line.startswith("sharedlvmthin:"):
+            if current:
+                storages.append(current)
+
+            parts = line.split()
+            current = {
+                "id": parts[1] if len(parts) > 1 else "unknown",
+                "vg": None,
+                "initial_pool_size_gib": None,
+                "initial_pool_mode": "fixed",
+                "initial_pool_percent": 50,
+                "initial_pool_max_gib": None,
+                "expected_min_paths": None,
+                "expected_pv_uuid": None,
+                "expected_wwid": None,
+            }
+            continue
+
+        if current is not None:
+            if line and not line[0].isspace():
+                storages.append(current)
+                current = None
+                continue
+
+            s = line.strip()
+
+            if s.startswith("slt-vgname "):
+                current["vg"] = s.split(None, 1)[1]
+
+            elif s.startswith("slt-initial-pool-size "):
+                try:
+                    current["initial_pool_size_gib"] = int(
+                        s.split(None, 1)[1]
+                    )
+                except Exception:
+                    pass
+
+            elif s.startswith("slt-initial-pool-mode "):
+                current["initial_pool_mode"] = s.split(None, 1)[1]
+
+            elif s.startswith("slt-initial-pool-percent "):
+                try:
+                    current["initial_pool_percent"] = int(s.split(None, 1)[1])
+                except Exception:
+                    current["initial_pool_percent"] = None
+
+            elif s.startswith("slt-initial-pool-max "):
+                try:
+                    current["initial_pool_max_gib"] = int(s.split(None, 1)[1])
+                except Exception:
+                    current["initial_pool_max_gib"] = None
+
+            elif s.startswith("slt-expected-min-paths "):
+                try:
+                    current["expected_min_paths"] = int(
+                        s.split(None, 1)[1]
+                    )
+                except Exception:
+                    pass
+
+            elif s.startswith("slt-expected-pv-uuid "):
+                current["expected_pv_uuid"] = s.split(None, 1)[1]
+
+            elif s.startswith("slt-expected-wwid "):
+                current["expected_wwid"] = s.split(None, 1)[1].lower()
+
+    if current:
+        storages.append(current)
+
+    return storages
+
+
+def pve_api():
+    perl = (
+        'print PVE::Storage::APIVER . " " . '
+        'PVE::Storage::APIAGE'
+    )
+
+    rc, out, _ = run([
+        "perl",
+        "-I/usr/share/perl5",
+        "-MPVE::Storage",
+        "-e",
+        perl,
+    ])
+
+    if rc != 0:
+        return None, None
+
+    try:
+        a, b = out.split()
+        return int(a), int(b)
+    except Exception:
+        return None, None
+
+
+def plugin_api():
+    rc, out, _ = run([
+        "perl",
+        "-I/usr/share/perl5",
+        "-MPVE::Storage::Custom::SharedLvmThinPlugin",
+        "-e",
+        "print PVE::Storage::Custom::SharedLvmThinPlugin->api()",
+    ])
+
+    try:
+        return int(out) if rc == 0 else None
+    except Exception:
+        return None
+
+
+def evaluate_api_compatibility(api, apiage, plugin_api_value):
+    if api is None or plugin_api_value is None:
+        return "FAIL", "Unable to determine PVE/plugin Storage API"
+
+    if api < 14 or api > 15:
+        return (
+            "FAIL",
+            f"PVE Storage API {api} is outside tested SharedLvmThin "
+            "range 14..15",
+        )
+
+    minimum_accepted = api - (apiage or 0)
+    if not minimum_accepted <= plugin_api_value <= api:
+        return (
+            "FAIL",
+            f"Plugin API {plugin_api_value} incompatible with PVE API {api}",
+        )
+
+    return (
+        "PASS",
+        f"PVE Storage API {api} explicitly supported; plugin declares "
+        f"API {plugin_api_value}",
+    )
+
+
+def pve_manager_version():
+    out = value(["pveversion"])
+    if not out:
+        return None
+
+    m = re.search(r"pve-manager/([^/]+)", out)
+    return m.group(1) if m else out
+
+
+def cluster_info():
+    rc, out, _ = run(["pvecm", "status"])
+    configured = os.path.exists("/etc/pve/corosync.conf")
+
+    corosync_config = ""
+    if configured:
+        try:
+            with open("/etc/pve/corosync.conf", encoding="utf-8") as fh:
+                corosync_config = fh.read()
+        except OSError:
+            pass
+
+    result = {
+        "available": configured,
+        "status_available": rc == 0,
+        "quorate": None,
+        "name": None,
+        "nodes": None,
+        "online_nodes": None,
+        "configured_nodes": len(re.findall(r"(?m)^\s*node\s*\{", corosync_config)) or None,
+        "expected_votes": None,
+        "total_votes": None,
+        "qdevice_configured": bool(
+            re.search(r"(?ms)^\s*quorum\s*\{.*?^\s*device\s*\{", corosync_config)
+        ),
+    }
+
+    if rc != 0:
+        return result
+
+    m = re.search(r"^Name:\s+(.+)$", out, re.M)
+    if m:
+        result["name"] = m.group(1).strip()
+
+    m = re.search(r"^Quorate:\s+(Yes|No)", out, re.M)
+    if m:
+        result["quorate"] = m.group(1) == "Yes"
+
+    m = re.search(r"^Nodes:\s+(\d+)", out, re.M)
+    if m:
+        result["nodes"] = int(m.group(1))
+        result["online_nodes"] = result["nodes"]
+
+    for label, key in (
+        ("Expected votes", "expected_votes"),
+        ("Total votes", "total_votes"),
+    ):
+        m = re.search(rf"^{re.escape(label)}:\s+(\d+)", out, re.M)
+        if m:
+            result[key] = int(m.group(1))
+
+    return result
+
+
+def cluster_check_status(cluster):
+    if not cluster.get("available"):
+        return "PASS", "Standalone PVE; cluster quorum is not applicable"
+    if not cluster.get("status_available"):
+        return "FAIL", "Cluster is configured but quorum state is unavailable"
+    if cluster.get("quorate") is not True:
+        return "FAIL", "Cluster is not quorate; read-only diagnostics only and mutations fail closed"
+
+    configured = cluster.get("configured_nodes")
+    online = cluster.get("online_nodes") or cluster.get("nodes")
+    expected = cluster.get("expected_votes")
+    qdevice = cluster.get("qdevice_configured") is True
+
+    if configured and configured > 1 and online == 1 and expected == 1 and not qdevice:
+        return (
+            "FAIL",
+            "CRITICAL: multi-node cluster is quorate with one online node and "
+            "expected_votes=1 without qdevice; forced-quorum state detected, "
+            "SharedLvmThin mutations are blocked",
+        )
+
+    if configured == 2 and online == 2 and not qdevice:
+        return (
+            "WARN",
+            "Two-node cluster is quorate (2/2) without qdevice; operations are "
+            "allowed, but loss of either node removes quorum",
+        )
+
+    detail = "Cluster is quorate"
+    if configured and online:
+        detail += f" ({online}/{configured} configured nodes online)"
+    if qdevice:
+        detail += " with configured qdevice"
+    return "PASS", detail
+
+
+def host_info():
+    load = os.getloadavg()
+
+    mem_total = None
+    mem_available = None
+
+    try:
+        mem = {}
+        for line in open("/proc/meminfo"):
+            key, val = line.split(":", 1)
+            mem[key] = int(val.strip().split()[0]) * 1024
+
+        mem_total = mem.get("MemTotal")
+        mem_available = mem.get("MemAvailable")
+    except Exception:
+        pass
+
+    root_total = None
+    root_free = None
+
+    try:
+        st = os.statvfs("/")
+        root_total = st.f_blocks * st.f_frsize
+        root_free = st.f_bavail * st.f_frsize
+    except Exception:
+        pass
+
+    return {
+        "hostname": socket.gethostname(),
+        "kernel": platform.release(),
+        "uptime_seconds": float(
+            read_file("/proc/uptime").split()[0]
+        ) if read_file("/proc/uptime") else None,
+        "load": {
+            "1m": load[0],
+            "5m": load[1],
+            "15m": load[2],
+        },
+        "memory": {
+            "total_bytes": mem_total,
+            "available_bytes": mem_available,
+        },
+        "root_fs": {
+            "total_bytes": root_total,
+            "free_bytes": root_free,
+        },
+    }
+
+
+def lvm_info():
+    version = value(["lvm", "version"])
+    lvmver = None
+
+    if version:
+        m = re.search(r"LVM version:\s+([^\s]+)", version)
+        if m:
+            lvmver = m.group(1)
+
+    return {
+        "version": lvmver,
+        "dmeventd_active": (
+            run(["systemctl", "is-active", "--quiet", "dm-event.service"])[0]
+            == 0
+        ),
+    }
+
+
+def pvesm_states():
+    rc, out, _ = run(["pvesm", "status"])
+    states = {}
+
+    if rc != 0:
+        return states
+
+    for line in out.splitlines():
+        fields = line.split()
+
+        if len(fields) >= 3 and fields[0] != "Name":
+            states[fields[0]] = {
+                "type": fields[1],
+                "status": fields[2],
+            }
+
+    return states
+
+
+def vg_info(vg):
+    rc, out, err = run([
+        "vgs",
+        "--noheadings",
+        "--units", "b",
+        "--nosuffix",
+        "--separator", "|",
+        "-o", "vg_name,vg_size,vg_free",
+        vg,
+    ])
+
+    if rc != 0:
+        return {
+            "visible": False,
+            "error": err or out,
+        }
+
+    fields = [x.strip() for x in out.split("|")]
+
+    try:
+        return {
+            "visible": True,
+            "size_bytes": int(float(fields[1])),
+            "free_bytes": int(float(fields[2])),
+        }
+    except Exception:
+        return {
+            "visible": True,
+            "size_bytes": None,
+            "free_bytes": None,
+        }
+
+
+def pools(vg, sid):
+    rc, out, err = run([
+        "lvs",
+        "--noheadings",
+        "--separator", "|",
+        "--units", "b",
+        "--nosuffix",
+        "-o",
+        "lv_name,lv_size,lv_attr,lv_tags,seg_monitor,"
+        "data_percent,metadata_percent,lv_health_status,lv_check_needed,"
+        "lv_metadata_size,zero,discards,lv_autoactivation,lv_when_full",
+        vg,
+    ])
+
+    result = []
+
+    if rc != 0:
+        return None, err or out or f"lvs exited with status {rc}"
+
+    expected_tag = "pve-slt-sid-" + sid
+
+    for line in out.splitlines():
+        fields = [x.strip() for x in line.split("|")]
+
+        if len(fields) < 14:
+            continue
+
+        name = fields[0]
+
+        if not re.fullmatch(r"sltp-\d+", name):
+            continue
+
+        def fnum(v):
+            try:
+                return float(v) if v else None
+            except Exception:
+                return None
+
+        result.append({
+            "name": name,
+            "size_bytes": int(float(fields[1])),
+            "attr": fields[2],
+            "tags": [
+                x for x in fields[3].split(",") if x
+            ],
+            "owned": expected_tag in fields[3].split(","),
+            "monitor": fields[4] or None,
+            "data_percent": fnum(fields[5]),
+            "metadata_percent": fnum(fields[6]),
+            "health_status": fields[7] or None,
+            "check_needed": fields[8] or None,
+            "metadata_size_bytes": int(fnum(fields[9])) if fnum(fields[9]) is not None else None,
+            "zero": fields[10] or None,
+            "discards": fields[11] or None,
+            "autoactivation": fields[12] or None,
+            "when_full": fields[13] or None,
+        })
+
+    return result, None
+
+
+def evaluate_pool_flags(attr, health_status, check_needed=None):
+    if not attr:
+        return "UNKNOWN", "thin-pool attributes are unavailable"
+    if (
+        (len(attr) > 4 and attr[4] == "c")
+        or str(check_needed or "").strip().lower()
+        in {"1", "yes", "check_needed"}
+    ):
+        return "CRITICAL", "thin pool needs metadata check"
+    if len(attr) > 8 and attr[8] == "M":
+        return "CRITICAL", "thin-pool metadata is read-only"
+    if not re.fullmatch(r"twi-[-a][o-]t[z-]--", attr):
+        return "CRITICAL", f"unexpected thin-pool attributes '{attr}'"
+    health = (health_status or "").strip()
+    if health and health.lower() != "ok":
+        return "CRITICAL", f"thin-pool health status is '{health}'"
+    return "HEALTHY", "thin-pool attributes and metadata state are writable"
+
+
+def evaluate_autoactivation(state):
+    normalized = str(state or "").strip().lower()
+    if normalized == "0":
+        return "PASS", "generic LVM autoactivation is disabled"
+    if normalized:
+        return (
+            "WARN",
+            "generic LVM autoactivation is enabled on shared storage; "
+            "review legacy PVE/LVM flags; Doctor made no change",
+        )
+    return "WARN", "LVM autoactivation state is unavailable; Doctor made no change"
+
+
+def evaluate_thin_full_policy(when_full, no_space_timeout):
+    """Describe, but never alter, the kernel/LVM thin-pool full policy."""
+    policy = str(when_full or "").strip().lower()
+    try:
+        timeout = int(str(no_space_timeout).strip())
+    except (TypeError, ValueError):
+        timeout = None
+
+    if policy == "queue":
+        if timeout == 0:
+            return (
+                "CRITICAL",
+                "when-full policy queues writes and dm_thin_pool no_space_timeout=0; "
+                "a full pool can wait without a bounded kernel timeout; review the "
+                "site capacity policy; no setting was changed",
+            )
+        if timeout is None:
+            return (
+                "WARN",
+                "when-full policy queues writes but dm_thin_pool no_space_timeout "
+                "is unavailable; bounded behavior is unconfirmed; no setting was changed",
+            )
+        return (
+            "WARN",
+            f"when-full policy queues writes for a kernel window of up to "
+            f"{timeout} seconds while space may be extended; pool exhaustion can stall "
+            "guest I/O; no setting was changed",
+        )
+    if policy == "error":
+        return (
+            "PASS",
+            "when-full policy returns I/O errors instead of queueing; this avoids an "
+            "unbounded wait but does not make pool exhaustion data-safe",
+        )
+    return (
+        "WARN",
+        f"when-full policy is '{policy or 'unknown'}'; exhaustion behavior is "
+        "unconfirmed; no setting was changed",
+    )
+
+
+def thin_pool_no_space_timeout(path="/sys/module/dm_thin_pool/parameters/no_space_timeout"):
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            return int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def metadata_spares(vg):
+    rc, out, _ = run([
+        "lvs", "-a", "--noheadings", "--separator", "|",
+        "--units", "b", "--nosuffix", "-o", "lv_name,lv_size", vg,
+    ])
+    if rc != 0:
+        return []
+    result = []
+    for line in out.splitlines():
+        fields = [x.strip().strip("[]") for x in line.split("|")]
+        if len(fields) < 2 or not fields[0].endswith("_pmspare"):
+            continue
+        try:
+            result.append({"name": fields[0], "size_bytes": int(float(fields[1]))})
+        except Exception:
+            result.append({"name": fields[0], "size_bytes": None})
+    return result
+
+
+def evaluate_pmspare(metadata_size, spares):
+    if not metadata_size:
+        return "WARN", "thin-pool metadata size is unavailable"
+    sizes = [x.get("size_bytes") for x in spares if x.get("size_bytes")]
+    if not sizes:
+        return "WARN", "no metadata spare LV is visible"
+    largest = max(sizes)
+    if largest < metadata_size:
+        return "WARN", f"largest metadata spare {largest} B is smaller than metadata LV {metadata_size} B"
+    return "PASS", f"metadata spare {largest} B covers metadata LV {metadata_size} B"
+
+
+
+def pvs_json():
+    rc, out, _ = run([
+        "pvs",
+        "--units", "b", "--nosuffix",
+        "--reportformat", "json",
+        "-o",
+        "pv_name,pv_uuid,vg_name,pv_size,pv_free,pv_mda_size,pv_mda_free",
+    ])
+
+    if rc != 0:
+        return []
+
+    try:
+        data = json.loads(out)
+        return data["report"][0]["pv"]
+    except Exception:
+        return []
+
+
+def evaluate_pv_binding(pvs, expected_pv_uuid=None, expected_wwid=None):
+    expected_uuid = str(expected_pv_uuid or "").strip().lower()
+    expected_map = (
+        "/dev/mapper/" + str(expected_wwid).strip().lower()
+        if expected_wwid else None
+    )
+    candidates = pvs
+    if expected_uuid:
+        candidates = [
+            pv for pv in pvs
+            if str(pv.get("pv_uuid") or "").strip().lower() == expected_uuid
+        ]
+        if not candidates:
+            return "FAIL", "configured PV UUID is not visible"
+
+    by_uuid = {}
+    for pv in candidates:
+        uuid = str(pv.get("pv_uuid") or "").strip().lower()
+        name = str(pv.get("pv_name") or "").strip()
+        if uuid:
+            by_uuid.setdefault(uuid, set()).add(name)
+    duplicates = {
+        uuid: sorted(names) for uuid, names in by_uuid.items() if len(names) > 1
+    }
+    if duplicates:
+        detail = "; ".join(
+            f"{uuid}: {', '.join(names)}" for uuid, names in sorted(duplicates.items())
+        )
+        return "FAIL", f"duplicate PV device bindings detected ({detail}); no mutation attempted"
+
+    if expected_map and len(candidates) == 1:
+        actual = str(candidates[0].get("pv_name") or "").strip().lower()
+        if actual != expected_map:
+            return (
+                "FAIL",
+                f"LVM binds the configured PV to '{actual}', expected stable "
+                f"multipath map '{expected_map}'; no mutation attempted",
+            )
+    return "PASS", "PV device binding is unique and stable"
+
+
+def evaluate_pv_metadata(pvs):
+    if len(pvs) != 1:
+        return "WARN", "PV metadata capacity requires exactly one visible PV"
+    try:
+        size = int(float(pvs[0].get("pv_mda_size") or 0))
+        free = int(float(pvs[0].get("pv_mda_free") or 0))
+    except (TypeError, ValueError):
+        return "WARN", "PV metadata capacity is unavailable"
+    if size <= 0:
+        return "WARN", "PV metadata capacity is unavailable"
+    percent = free * 100 // size
+    if free <= 0:
+        return (
+            "WARN",
+            "PV/VG metadata area is CRITICAL with 0% free; LVM mutations may "
+            "fail before VG data extents are exhausted; diagnostic only",
+        )
+    if percent < 20:
+        return (
+            "WARN",
+            f"PV/VG metadata area is low at {percent}% free; review PV metadata "
+            "sizing and object scale; diagnostic only",
+        )
+    return "PASS", f"PV/VG metadata area has {percent}% free"
+
+
+def multipath_json():
+    rc, out, _ = run([
+        "multipathd",
+        "show",
+        "maps",
+        "json",
+    ])
+
+    if rc != 0:
+        return []
+
+    try:
+        return json.loads(out).get("maps", [])
+    except Exception:
+        return []
+
+
+def flatten_multipath_paths(mp):
+    result = []
+
+    for group in mp.get("path_groups", []):
+        for path in group.get("paths", []):
+            result.append(path)
+
+    return result
+
+
+def evaluate_expected_paths(transport, expected_min_paths):
+    if expected_min_paths is None:
+        return None
+
+    healthy = int(transport.get("paths_healthy") or 0)
+    if healthy >= expected_min_paths:
+        return (
+            "PASS",
+            f"{healthy} healthy paths meet configured minimum "
+            f"{expected_min_paths}",
+        )
+
+    return (
+        "WARN",
+        f"{healthy} healthy paths are below configured minimum "
+        f"{expected_min_paths}; diagnostic only, SAN policy unchanged",
+    )
+
+
+def evaluate_allocation_policy(storage):
+    mode = storage.get("initial_pool_mode") or "fixed"
+    fixed = storage.get("initial_pool_size_gib")
+    percent = storage.get("initial_pool_percent")
+    maximum = storage.get("initial_pool_max_gib")
+
+    if mode not in {"fixed", "proportional", "full"}:
+        return "FAIL", f"invalid allocation headroom mode '{mode}'"
+    if fixed is not None and (not isinstance(fixed, int) or fixed < 1):
+        return "FAIL", "invalid fixed allocation headroom"
+    if mode == "proportional" and (
+        not isinstance(percent, int) or percent < 1 or percent > 100
+    ):
+        return "FAIL", "proportional allocation percent must be 1..100"
+    if maximum is not None and (not isinstance(maximum, int) or maximum < 1):
+        return "FAIL", "allocation maximum must be a positive GiB value"
+
+    if mode == "fixed":
+        return (
+            "WARN",
+            f"fixed {fixed or 16} GiB headroom; burst capacity guarantee NO; "
+            "fast bulk write/clone/restore/import/storage copy may outrun asynchronous "
+            "autogrow; PVE raw full-copy may scan the complete virtual disk even "
+            "when sparseinit avoids zero writes; plugin made no change",
+        )
+    if mode == "proportional":
+        suffix = f", capped at {maximum} GiB" if maximum is not None else ""
+        return (
+            "PASS",
+            f"proportional headroom {percent}% with fixed minimum {fixed or 16} GiB"
+            f"{suffix}; bounded admission policy; PVE raw full-copy may still scan "
+            "the complete virtual disk",
+        )
+    suffix = (
+        f"; allocations requiring more than configured maximum {maximum} GiB fail closed"
+        if maximum is not None else ""
+    )
+    return "PASS", (
+        f"full-at-admission headroom policy{suffix}; PVE raw full-copy may still "
+        "scan the complete virtual disk"
+    )
+
+
+def normalize_wwid_from_pv(pv_name):
+    prefix = "/dev/mapper/"
+
+    if not pv_name.startswith(prefix):
+        return None
+
+    name = pv_name[len(prefix):]
+
+    if re.fullmatch(r"[0-9a-fA-F]{16,}", name):
+        return name.lower()
+
+    return None
+
+
+def block_transport_map():
+    rc, out, _ = run([
+        "lsblk",
+        "-J",
+        "-S",
+        "-o",
+        "NAME,HCTL,TRAN,VENDOR,MODEL,SERIAL,WWN",
+    ])
+
+    result = {}
+
+    if rc != 0:
+        return result
+
+    try:
+        data = json.loads(out)
+    except Exception:
+        return result
+
+    for dev in data.get("blockdevices", []):
+        name = dev.get("name")
+
+        if name:
+            result[name] = {
+                "transport": dev.get("tran"),
+                "vendor": dev.get("vendor"),
+                "model": dev.get("model"),
+                "serial": dev.get("serial"),
+                "wwn": dev.get("wwn"),
+                "hctl": dev.get("hctl"),
+            }
+
+    return result
+
+
+def iscsi_sessions():
+    rc, out, _ = run([
+        "iscsiadm",
+        "-m",
+        "session",
+    ])
+
+    sessions = []
+
+    if rc != 0:
+        return sessions
+
+    for line in out.splitlines():
+        m = re.search(
+            r"(\d+\.\d+\.\d+\.\d+):(\d+).*?\s+(iqn\.\S+)",
+            line,
+        )
+
+        if m:
+            sessions.append({
+                "portal": m.group(1),
+                "port": int(m.group(2)),
+                "target": m.group(3),
+            })
+
+    return sessions
+
+
+def build_transport(vg):
+    pvs = [
+        x for x in pvs_json()
+        if x.get("vg_name") == vg
+    ]
+
+    if not pvs:
+        return {
+            "detected": False,
+            "state": "UNKNOWN",
+        }
+
+    #
+    # v1 supports the common case of one backing PV per
+    # SharedLvmThin VG. Multiple PVs are reported explicitly
+    # instead of guessing.
+    #
+    if len(pvs) != 1:
+        return {
+            "detected": False,
+            "state": "UNKNOWN",
+            "reason": "multiple_pvs",
+            "pv_count": len(pvs),
+        }
+
+    pv = pvs[0]
+    pv_name = pv.get("pv_name")
+    wwid = normalize_wwid_from_pv(pv_name or "")
+
+    result = {
+        "detected": True,
+        "pv": pv_name,
+        "pv_uuid": pv.get("pv_uuid"),
+        "multipath": False,
+        "wwid": wwid,
+        "type": "unknown",
+        "state": "UNKNOWN",
+        "paths_total": 0,
+        "paths_healthy": 0,
+        "paths": [],
+    }
+
+    if not wwid:
+        result["state"] = "SINGLE_PATH_OR_UNKNOWN"
+        return result
+
+    maps = {
+        str(x.get("uuid", "")).lower(): x
+        for x in multipath_json()
+    }
+
+    mp = maps.get(wwid)
+
+    if not mp:
+        result["state"] = "MULTIPATH_MAP_MISSING"
+        return result
+
+    result["multipath"] = True
+    result["vendor"] = mp.get("vend")
+    result["product"] = mp.get("prod")
+    result["dm_device"] = mp.get("sysfs")
+    result["path_faults"] = mp.get("path_faults", 0)
+
+    block = block_transport_map()
+    paths = flatten_multipath_paths(mp)
+
+    transports = set()
+
+    for path in paths:
+        dev = path.get("dev")
+        b = block.get(dev, {})
+        transport = b.get("transport") or "unknown"
+
+        transports.add(transport)
+
+        healthy = (
+            path.get("dm_st") == "active"
+            and path.get("dev_st") == "running"
+            and path.get("chk_st") == "ready"
+        )
+
+        item = {
+            "device": dev,
+            "hctl": b.get("hctl"),
+            "transport": transport,
+            "healthy": healthy,
+            "dm_state": path.get("dm_st"),
+            "device_state": path.get("dev_st"),
+            "check_state": path.get("chk_st"),
+            "host_adapter": path.get("host_adapter"),
+            "target_wwnn": path.get("target_wwnn"),
+            "target_wwpn": path.get("target_wwpn"),
+            "lun": path.get("lun_hex"),
+        }
+
+        result["paths"].append(item)
+
+    result["paths_total"] = len(result["paths"])
+    result["paths_healthy"] = sum(
+        1 for x in result["paths"] if x["healthy"]
+    )
+
+    transports.discard("unknown")
+
+    if len(transports) == 1:
+        result["type"] = next(iter(transports))
+    elif len(transports) > 1:
+        result["type"] = "mixed"
+
+    #
+    # For iSCSI enrich path information with currently
+    # established target sessions.
+    #
+    if result["type"] == "iscsi":
+        sessions = iscsi_sessions()
+        result["sessions"] = sessions
+
+    if result["paths_total"] == 0:
+        result["state"] = "CRITICAL"
+    elif result["paths_healthy"] == result["paths_total"]:
+        result["state"] = "HEALTHY"
+    elif result["paths_healthy"] > 0:
+        result["state"] = "DEGRADED"
+    else:
+        result["state"] = "CRITICAL"
+
+    return result
+
+
+api, apiage = pve_api()
+papi = plugin_api()
+states = pvesm_states()
+
+doc = {
+    "schema": 1,
+    "timestamp": datetime.now(timezone.utc).astimezone().isoformat(),
+    "result": "PASS",
+    "host": host_info(),
+    "cluster": cluster_info(),
+    "platform": {
+        "pve_manager": pve_manager_version(),
+        "kernel": platform.release(),
+        "storage_api": api,
+        "storage_api_age": apiage,
+        "plugin_api": papi,
+        "plugin_version": package_version("pve-sharedlvmthin"),
+        "storage_package": package_version("libpve-storage-perl"),
+    },
+    "lvm": lvm_info(),
+    "storages": [],
+    "checks": [],
+    "thin_pool_runtime": {
+        "no_space_timeout_seconds": thin_pool_no_space_timeout(),
+    },
+}
+
+def check(name, status, message):
+    doc["checks"].append({
+        "name": name,
+        "status": status,
+        "message": message,
+    })
+
+    if status == "FAIL":
+        doc["result"] = "FAIL"
+    elif status == "WARN" and doc["result"] == "PASS":
+        doc["result"] = "WARN"
+
+
+api_status, api_message = evaluate_api_compatibility(api, apiage, papi)
+check("storage_api", api_status, api_message)
+
+
+if doc["lvm"]["dmeventd_active"]:
+    check("dmeventd", "PASS", "dm-event.service active")
+else:
+    check("dmeventd", "FAIL", "dm-event.service inactive")
+
+
+cluster_status, cluster_message = cluster_check_status(doc["cluster"])
+check("cluster_quorum", cluster_status, cluster_message)
+
+
+for storage in parse_storage_cfg():
+    sid = storage["id"]
+    vg = storage["vg"]
+
+    item = {
+        **storage,
+        "pve": states.get(sid, {}),
+        "vg_info": None,
+        "pools": [],
+        "pool_inventory_error": None,
+        "metadata_spares": [],
+        "transport": None,
+    }
+
+    allocation_status, allocation_message = evaluate_allocation_policy(storage)
+    check(
+        f"allocation_policy:{sid}", allocation_status,
+        f"{sid}: {allocation_message}",
+    )
+
+    if vg:
+        item["vg_info"] = vg_info(vg)
+
+        if item["vg_info"].get("visible"):
+            pool_inventory, pool_error = pools(vg, sid)
+            item["pool_inventory_error"] = pool_error
+            if pool_error is not None:
+                check(
+                    f"pool_inventory:{sid}", "FAIL",
+                    f"{sid}: read-only LVM pool inventory unavailable: "
+                    f"{pool_error}; no repair attempted",
+                )
+            else:
+                item["pools"] = pool_inventory
+            item["metadata_spares"] = metadata_spares(vg)
+            item["transport"] = build_transport(vg)
+
+            for pool in item["pools"]:
+                pool_status, pool_reason = evaluate_pool_flags(
+                    pool.get("attr"), pool.get("health_status"),
+                    pool.get("check_needed")
+                )
+                pool["health"] = {
+                    "status": pool_status,
+                    "reason": pool_reason,
+                }
+                if pool.get("owned") and pool_status != "HEALTHY":
+                    check(
+                        f"pool_health:{sid}:{pool.get('name')}",
+                        "FAIL",
+                        f"{sid}: {pool.get('name')} {pool_status}: "
+                        f"{pool_reason}; mutations disabled, no repair attempted",
+                    )
+                if pool.get("owned"):
+                    full_status, full_reason = evaluate_thin_full_policy(
+                        pool.get("when_full"),
+                        doc["thin_pool_runtime"]["no_space_timeout_seconds"],
+                    )
+                    pool["when_full_health"] = {
+                        "status": full_status,
+                        "reason": full_reason,
+                    }
+                    check(
+                        f"when_full:{sid}:{pool.get('name')}",
+                        "FAIL" if full_status == "CRITICAL" else full_status,
+                        f"{sid}: {pool.get('name')}: {full_reason}",
+                    )
+                    auto_status, auto_reason = evaluate_autoactivation(
+                        pool.get("autoactivation")
+                    )
+                    check(
+                        f"autoactivation:{sid}:{pool.get('name')}",
+                        auto_status,
+                        f"{sid}: {pool.get('name')}: {auto_reason}",
+                    )
+                    spare_status, spare_reason = evaluate_pmspare(
+                        pool.get("metadata_size_bytes"),
+                        item["metadata_spares"],
+                    )
+                    check(
+                        f"pmspare:{sid}:{pool.get('name')}",
+                        spare_status,
+                        f"{sid}: {pool.get('name')}: {spare_reason}; diagnostic only",
+                    )
+                    zero = str(pool.get("zero") or "").lower()
+                    check(
+                        f"zero:{sid}:{pool.get('name')}",
+                        "PASS" if zero in {"y", "yes", "1", "zero"} else "WARN",
+                        f"{sid}: {pool.get('name')} zeroing policy is "
+                        f"'{pool.get('zero') or 'unknown'}'; plugin made no change",
+                    )
+
+            t = item["transport"]
+
+            vg_pvs = [pv for pv in pvs_json() if pv.get("vg_name") == vg]
+            binding_status, binding_reason = evaluate_pv_binding(
+                vg_pvs,
+                storage.get("expected_pv_uuid"),
+                storage.get("expected_wwid"),
+            )
+            check(
+                f"pv_binding:{sid}", binding_status,
+                f"{sid}: {binding_reason}",
+            )
+            metadata_status, metadata_reason = evaluate_pv_metadata(vg_pvs)
+            check(
+                f"pv_metadata:{sid}", metadata_status,
+                f"{sid}: {metadata_reason}",
+            )
+
+            path_expectation = evaluate_expected_paths(
+                t, storage.get("expected_min_paths")
+            )
+            if path_expectation:
+                path_status, path_message = path_expectation
+                check(
+                    f"expected_paths:{sid}",
+                    path_status,
+                    f"{sid}: {path_message}",
+                )
+                if path_status == "WARN" and t.get("state") == "HEALTHY":
+                    t["state"] = "DEGRADED"
+
+            if t.get("state") == "HEALTHY":
+                check(
+                    f"paths:{sid}",
+                    "PASS",
+                    f"{sid}: {t.get('paths_healthy')}/"
+                    f"{t.get('paths_total')} storage paths healthy",
+                )
+            elif t.get("state") == "DEGRADED":
+                if path_expectation and path_expectation[0] == "WARN":
+                    degraded_message = (
+                        f"{sid}: {t.get('paths_healthy')}/"
+                        f"{t.get('paths_total')} paths healthy, below configured "
+                        f"minimum {storage.get('expected_min_paths')}"
+                    )
+                else:
+                    degraded_message = (
+                        f"{sid}: only {t.get('paths_healthy')}/"
+                        f"{t.get('paths_total')} storage paths healthy"
+                    )
+                check(
+                    f"paths:{sid}",
+                    "WARN",
+                    degraded_message,
+                )
+            elif t.get("state") == "CRITICAL":
+                check(
+                    f"paths:{sid}",
+                    "FAIL",
+                    f"{sid}: no healthy storage paths",
+                )
+
+            check(
+                f"storage:{sid}",
+                "PASS",
+                f"{sid}: VG {vg} visible",
+            )
+        else:
+            check(
+                f"storage:{sid}",
+                "FAIL",
+                f"{sid}: VG {vg} not visible",
+            )
+    else:
+        check(
+            f"storage:{sid}",
+            "FAIL",
+            f"{sid}: slt-vgname missing",
+        )
+
+    if states.get(sid, {}).get("status") != "active":
+        check(
+            f"pvesm:{sid}",
+            "FAIL",
+            f"{sid}: PVE storage not active",
+        )
+
+    doc["storages"].append(item)
+
+
+print(json.dumps(doc, indent=2, sort_keys=False))

@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|purge)
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        ;;
+
+    *)
+        ;;
+esac
+
+if [ "$1" = "purge" ]; then
+    LVMLOCAL=/etc/lvm/lvmlocal.conf
+    if [ -f "$LVMLOCAL" ]; then
+        sed -i '/^# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW$/,/^# END PVE-SHAREDLVMTHIN MANAGED AUTOGROW$/d' "$LVMLOCAL"
+    fi
+    rm -rf /etc/pve-sharedlvmthin
+    rm -rf /var/lib/pve-sharedlvmthin
+    # py_compile in postinst creates unowned cache artifacts.  Keep cleanup
+    # strictly inside the package's private executable directory.
+    rm -rf /usr/libexec/pve-sharedlvmthin/__pycache__
+    rmdir /usr/libexec/pve-sharedlvmthin 2>/dev/null || true
+fi
+
+exit 0

@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+SERVICE=pve-sharedlvmthin-web.service
+
+case "$1" in
+    remove|deconfigure)
+        systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+        systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+        ;;
+esac
+
+exit 0

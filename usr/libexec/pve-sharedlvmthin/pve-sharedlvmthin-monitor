@@ -1,0 +1,261 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use PVE::Tools qw(run_command trim);
+use PVE::Cluster;
+use PVE::Storage;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+use PVE::SharedLvmThinSafety;
+
+sub read_fields {
+    my ($command, $errmsg) = @_;
+    my @fields;
+    run_command(
+        $command,
+        outfunc => sub {
+            my ($line) = @_;
+            @fields = map { trim($_) } split(/\|/, $line) if !@fields;
+        },
+        errmsg => $errmsg,
+    );
+    return @fields;
+}
+
+sub read_growth_percent {
+    my $path = '/etc/lvm/lvmlocal.conf';
+    open(my $fh, '<', $path) or die "cannot read $path: $!\n";
+    while (my $line = <$fh>) {
+        if ($line =~ /^\s*thin_pool_autoextend_percent\s*=\s*(\d+)/) {
+            close($fh);
+            return 0 + $1;
+        }
+    }
+    close($fh);
+    die "thin_pool_autoextend_percent is not configured in $path\n";
+}
+
+sub read_data_threshold {
+    my $path = '/etc/lvm/lvmlocal.conf';
+    open(my $fh, '<', $path) or die "cannot read $path: $!\n";
+    while (my $line = <$fh>) {
+        if ($line =~ /^\s*thin_pool_autoextend_threshold\s*=\s*(\d+)/) {
+            close($fh);
+            return 0 + $1;
+        }
+    }
+    close($fh);
+    die "thin_pool_autoextend_threshold is not configured in $path\n";
+}
+
+sub main {
+my $vol = $ARGV[0] // '';
+
+die "missing VG/LV argument\n"
+    if !$vol;
+
+die "invalid volume '$vol'\n"
+    if $vol !~ m!^([A-Za-z0-9_.+-]+)/([A-Za-z0-9_.+-]+)$!;
+
+my ($vg, $pool) = ($1, $2);
+
+my $data = $ENV{DMEVENTD_THIN_POOL_DATA} // '?';
+my $meta = $ENV{DMEVENTD_THIN_POOL_METADATA} // '?';
+
+#
+# Our shared pools must always be named sltp-<VMID>.
+#
+if ($pool =~ /^sltp-\d+$/) {
+
+    my $tags = '';
+
+    run_command(
+        [
+            '/sbin/lvs',
+            '--noheadings',
+            '-o', 'lv_tags',
+            "$vg/$pool",
+        ],
+        outfunc => sub {
+            my ($line) = @_;
+            $tags .= trim($line);
+        },
+        errmsg => "unable to read tags from '$vg/$pool'",
+    );
+
+    my ($storeid) = $tags =~ /(?:^|,)pve-slt-sid-([A-Za-z0-9_-]+)(?:,|$)/;
+
+    die "missing pve-slt-sid-* tag on '$vg/$pool'\n"
+        if !$storeid;
+
+    print STDERR
+        "SharedLvmThin: event for '$vg/$pool', data=$data meta=$meta, "
+        . "locking storage '$storeid'\n";
+
+    my $lock_error;
+
+    eval {
+        PVE::Cluster::cfs_lock_storage(
+            $storeid,
+            30,
+            sub {
+                my $cfg = PVE::Storage::config();
+                my $scfg = PVE::Storage::storage_config($cfg, $storeid);
+                die "storage '$storeid' is not sharedlvmthin\n"
+                    if ($scfg->{type} // '') ne 'sharedlvmthin';
+                die "storage '$storeid' points to a different VG\n"
+                    if ($scfg->{'slt-vgname'} // '') ne $vg;
+
+                PVE::Storage::Custom::SharedLvmThinPlugin->_verify_mutation_quorum(
+                    $storeid, $scfg,
+                );
+                PVE::Storage::Custom::SharedLvmThinPlugin->_verify_storage_identity(
+                    $storeid, $scfg,
+                );
+
+                my ($locked_tags, $locked_attr, $locked_health, $locked_check_needed) = read_fields(
+                    ['/sbin/lvs', '--noheadings', '--separator', '|', '-o', 'lv_tags,lv_attr,lv_health_status,lv_check_needed', "$vg/$pool"],
+                    "unable to revalidate ownership of '$vg/$pool'",
+                );
+                die "ownership of '$vg/$pool' changed while waiting for the lock\n"
+                    if ($locked_tags // '') !~ /(?:^|,)pve-slt-sid-\Q$storeid\E(?:,|$)/;
+                my $pool_health = PVE::SharedLvmThinSafety::evaluate_pool_health(
+                    lv_attr => $locked_attr,
+                    health_status => $locked_health,
+                    check_needed => $locked_check_needed,
+                );
+                die "CRITICAL: '$vg/$pool': $pool_health->{reason}; autogrow disabled; no repair attempted\n"
+                    if $pool_health->{blocks_operation};
+                die "pool '$vg/$pool' is inactive; refusing autogrow\n"
+                    if ($locked_attr // '') !~ /^t...a/;
+
+                my ($current_data_percent) = read_fields(
+                    ['/sbin/lvs', '--noheadings', '-o', 'data_percent', "$vg/$pool"],
+                    "unable to read current data usage of '$vg/$pool'",
+                );
+                my $data_threshold = read_data_threshold();
+                die "current data usage of '$vg/$pool' is unavailable; refusing autogrow\n"
+                    if !defined($current_data_percent) || $current_data_percent !~ /^\d+(?:\.\d+)?$/;
+                if ($current_data_percent < $data_threshold) {
+                    print STDERR
+                        "SharedLvmThin: stale/coalesced event for '$vg/$pool'; current data usage "
+                        . "$current_data_percent% is below threshold $data_threshold%; no growth\n";
+                    return;
+                }
+
+                my $reserve_percent = $scfg->{'slt-vg-reserve-percent'};
+                my $reserve_gib = $scfg->{'slt-vg-reserve-gib'};
+                die "autogrow reserve is not configured for storage '$storeid'; refusing automatic growth\n"
+                    if !defined($reserve_percent) && !defined($reserve_gib);
+                $reserve_percent //= 0;
+                $reserve_gib //= 0;
+
+                my ($vg_size, $vg_free) = read_fields(
+                    [
+                        '/sbin/vgs', '--readonly', '--noheadings', '--units', 'b',
+                        '--nosuffix', '--separator', '|', '-o', 'vg_size,vg_free', $vg,
+                    ],
+                    "unable to read reserve state of VG '$vg'",
+                );
+                my ($pool_size) = read_fields(
+                    [
+                        '/sbin/lvs', '--readonly', '--noheadings', '--units', 'b',
+                        '--nosuffix', '-o', 'lv_size', "$vg/$pool",
+                    ],
+                    "unable to read size of '$vg/$pool'",
+                );
+                my $growth_percent = read_growth_percent();
+                my $decision = PVE::SharedLvmThinSafety::evaluate_autogrow_reserve(
+                    vg_size => $vg_size,
+                    vg_free => $vg_free,
+                    pool_size => $pool_size,
+                    growth_percent => $growth_percent,
+                    reserve_percent => $reserve_percent,
+                    reserve_gib => $reserve_gib,
+                );
+
+                if (!$decision->{allowed}) {
+                    die "CRITICAL: refusing autogrow of '$vg/$pool': projected free "
+                        . "$decision->{free_after_bytes} bytes would cross protected reserve "
+                        . "$decision->{reserve_bytes} bytes; no lvextend was run\n";
+                }
+
+                #
+                # LVM reevaluates the current pool usage while we hold
+                # the cluster-wide PVE storage lock.
+                #
+                my $extend_error;
+                eval {
+                    run_command(
+                        ['/sbin/lvextend', '--use-policies', "$vg/$pool"],
+                        errmsg =>
+                            "cluster-locked policy extend of '$vg/$pool' failed",
+                    );
+                };
+                $extend_error = $@;
+
+                if ($extend_error) {
+                    my $actual_size;
+                    my $post_error;
+                    eval {
+                        ($actual_size) = read_fields(
+                            [
+                                '/sbin/lvs', '--readonly', '--noheadings', '--units', 'b',
+                                '--nosuffix', '-o', 'lv_size', "$vg/$pool",
+                            ],
+                            "unable to read uncertain autogrow postcondition for '$vg/$pool'",
+                        );
+                    };
+                    $post_error = $@;
+
+                    if ($post_error || !defined($actual_size) || $actual_size !~ /^\d+(?:\.\d+)?$/) {
+                        die "$extend_error"
+                            . "UNKNOWN: lvextend outcome cannot be verified; no automatic retry or cleanup will be attempted\n";
+                    }
+                    if ($actual_size > $pool_size) {
+                        print STDERR
+                            "SharedLvmThin PARTIAL/COMPLETED: lvextend reported an error but pool size increased "
+                            . "from $pool_size to $actual_size bytes; no retry will be attempted\n";
+                        return;
+                    }
+                    die "$extend_error"
+                        . "controlled failure: pool size remains $actual_size bytes; no immediate retry will be attempted\n";
+                }
+
+                return;
+            },
+        );
+
+        # cfs_lock_storage reports lock failures through $@.
+        die $@ if $@;
+    };
+
+    $lock_error = $@;
+
+    if ($lock_error) {
+        chomp $lock_error;
+
+        print STDERR
+            "SharedLvmThin ERROR: storage '$storeid', pool '$vg/$pool': "
+            . "$lock_error\n";
+
+        return 1;
+    }
+
+    return 0;
+}
+
+#
+# Never modify thin pools not owned by SharedLvmThin.
+# This helper is cluster-aware only for sltp-<VMID> pools carrying
+# a valid pve-slt-sid-* ownership tag.
+#
+print STDERR
+    "SharedLvmThin: ignoring unmanaged thin pool '$vg/$pool'\n";
+
+return 0;
+}
+
+exit(main()) unless caller;
+1;

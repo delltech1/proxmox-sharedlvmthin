@@ -1,0 +1,310 @@
+#!/bin/bash
+set -euo pipefail
+
+CONF=/etc/pve-sharedlvmthin/web.conf
+TLS_DIR=/etc/pve-sharedlvmthin/tls
+SERVICE=pve-sharedlvmthin-web.service
+
+green='\033[0;32m'
+yellow='\033[0;33m'
+red='\033[0;31m'
+reset='\033[0m'
+
+echo
+echo "SharedLvmThin Web Configuration"
+echo "==============================="
+echo
+
+mapfile -t NETS < <(
+    ip -o -4 addr show scope global |
+    awk '{split($4,a,"/"); print $2 "|" a[1] "|" $4}'
+)
+
+if [ "${#NETS[@]}" -eq 0 ]; then
+    echo -e "${red}No IPv4 interfaces detected.${reset}"
+    exit 1
+fi
+
+DEFDEV="$(
+    ip -4 route show default |
+    awk 'NR==1 {print $5}'
+)"
+
+echo "Available interfaces:"
+echo
+
+for i in "${!NETS[@]}"; do
+    IFS='|' read -r DEV IP CIDR <<<"${NETS[$i]}"
+
+    EXTRA=""
+    if [ "$DEV" = "$DEFDEV" ]; then
+        EXTRA=" [RECOMMENDED / DEFAULT ROUTE]"
+    fi
+
+    printf " [%d] %-14s %-18s%s\n" \
+        "$((i+1))" "$DEV" "$CIDR" "$EXTRA"
+done
+
+echo
+read -rp "Select interface: " SEL
+
+if ! [[ "$SEL" =~ ^[0-9]+$ ]] ||
+   [ "$SEL" -lt 1 ] ||
+   [ "$SEL" -gt "${#NETS[@]}" ]; then
+    echo "Invalid selection."
+    exit 1
+fi
+
+IFS='|' read -r INTERFACE ADDRESS CIDR \
+    <<<"${NETS[$((SEL-1))]}"
+
+echo
+echo "Selected:"
+echo "  Interface : $INTERFACE"
+echo "  Address   : $ADDRESS"
+echo
+
+DEFAULT_PORT=9443
+
+if ss -H -lnt |
+   awk '{print $4}' |
+   grep -Eq "[:.]${DEFAULT_PORT}$"; then
+
+    PORT=$((DEFAULT_PORT+1))
+
+    while ss -H -lnt |
+          awk '{print $4}' |
+          grep -Eq "[:.]${PORT}$"; do
+        PORT=$((PORT+1))
+    done
+
+    echo "Port $DEFAULT_PORT is already in use."
+    echo "Suggested free port: $PORT"
+else
+    PORT=$DEFAULT_PORT
+    echo "Recommended port: $PORT [AVAILABLE]"
+fi
+
+read -rp "Web port [$PORT]: " INPUT_PORT
+PORT="${INPUT_PORT:-$PORT}"
+
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] ||
+   [ "$PORT" -lt 1 ] ||
+   [ "$PORT" -gt 65535 ]; then
+    echo "Invalid TCP port."
+    exit 1
+fi
+
+if ss -H -lnt |
+   awk '{print $4}' |
+   grep -Eq "[:.]${PORT}$"; then
+
+    CURRENT_PID="$(
+        ss -H -lntp "sport = :$PORT" 2>/dev/null || true
+    )"
+
+    if ! grep -q 'sharedlvmthin' <<<"$CURRENT_PID"; then
+        echo -e "${red}Port $PORT is already in use.${reset}"
+        exit 1
+    fi
+fi
+
+echo
+echo "TLS configuration:"
+echo " [1] HTTPS - automatically generated certificate [RECOMMENDED]"
+echo " [2] HTTPS - existing certificate and key"
+echo
+
+read -rp "Select [1]: " TLSSEL
+TLSSEL="${TLSSEL:-1}"
+
+mkdir -p "$TLS_DIR"
+chmod 0750 "$TLS_DIR"
+
+case "$TLSSEL" in
+    1)
+        CERT="$TLS_DIR/server.crt"
+        KEY="$TLS_DIR/server.key"
+
+        HOST="$(hostname)"
+
+        echo
+        echo "Generating HTTPS certificate..."
+
+        openssl req \
+            -x509 \
+            -newkey rsa:3072 \
+            -sha256 \
+            -nodes \
+            -days 825 \
+            -keyout "$KEY" \
+            -out "$CERT" \
+            -subj "/CN=$HOST" \
+            -addext "subjectAltName=DNS:$HOST,IP:$ADDRESS" \
+            >/dev/null 2>&1
+
+        chmod 0600 "$KEY"
+        chmod 0644 "$CERT"
+        ;;
+
+    2)
+        read -rp "Certificate path: " CERT
+        read -rp "Private key path: " KEY
+
+        [ -r "$CERT" ] || {
+            echo "Certificate not readable."
+            exit 1
+        }
+
+        [ -r "$KEY" ] || {
+            echo "Private key not readable."
+            exit 1
+        }
+
+        CERT_PUB="$(
+            openssl x509 -in "$CERT" -pubkey -noout |
+            openssl pkey -pubin -outform DER |
+            sha256sum |
+            awk '{print $1}'
+        )"
+
+        KEY_PUB="$(
+            openssl pkey -in "$KEY" -pubout -outform DER |
+            sha256sum |
+            awk '{print $1}'
+        )"
+
+        if [ "$CERT_PUB" != "$KEY_PUB" ]; then
+            echo -e "${red}Certificate and private key do not match.${reset}"
+            exit 1
+        fi
+        ;;
+
+    *)
+        echo "Invalid TLS selection."
+        exit 1
+        ;;
+esac
+
+echo
+echo "Dashboard access:"
+echo " [1] PVE Administrators only [RECOMMENDED]"
+echo " [2] Selected PVE group"
+echo
+
+read -rp "Select [1]: " ACCESSSEL
+ACCESSSEL="${ACCESSSEL:-1}"
+
+case "$ACCESSSEL" in
+    1)
+        ACCESS_MODE="administrator"
+        ACCESS_GROUP=""
+        ;;
+
+    2)
+        echo
+        echo "Existing PVE groups:"
+
+        pvesh get /access/groups \
+            --output-format json 2>/dev/null |
+        python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    for x in d:
+        print("  " + x.get("groupid",""))
+except Exception:
+    pass
+'
+
+        echo
+        read -rp "Allowed PVE group: " ACCESS_GROUP
+
+        [ -n "$ACCESS_GROUP" ] || {
+            echo "Group cannot be empty."
+            exit 1
+        }
+
+        ACCESS_MODE="group"
+        ;;
+
+    *)
+        echo "Invalid access selection."
+        exit 1
+        ;;
+esac
+
+echo
+echo "Configuration summary"
+echo "---------------------"
+echo "Interface : $INTERFACE"
+echo "Address   : $ADDRESS"
+echo "Port      : $PORT"
+echo "Protocol  : HTTPS"
+echo "Access    : $ACCESS_MODE"
+
+if [ "$ACCESS_MODE" = "group" ]; then
+    echo "PVE group : $ACCESS_GROUP"
+fi
+
+echo
+read -rp "Apply configuration? [Y/n]: " APPLY
+APPLY="${APPLY:-Y}"
+
+case "$APPLY" in
+    y|Y|yes|YES) ;;
+    *)
+        echo "Cancelled."
+        exit 0
+        ;;
+esac
+
+mkdir -p "$(dirname "$CONF")"
+
+cat >"$CONF" <<EOF
+[web]
+interface=$INTERFACE
+address=$ADDRESS
+port=$PORT
+protocol=https
+
+[tls]
+mode=$TLSSEL
+certificate=$CERT
+private_key=$KEY
+
+[auth]
+provider=pve
+access_mode=$ACCESS_MODE
+group=$ACCESS_GROUP
+session_idle_seconds=1800
+
+[health]
+refresh_interval_seconds=30
+collector_timeout_seconds=120
+EOF
+
+chmod 0640 "$CONF"
+
+echo
+echo -e "${green}Configuration written:${reset}"
+echo "  $CONF"
+echo
+echo "Dashboard:"
+echo "  https://$ADDRESS:$PORT"
+echo
+
+if systemctl list-unit-files |
+   grep -q "^${SERVICE}"; then
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE" >/dev/null
+
+    if systemctl restart "$SERVICE"; then
+        echo -e "${green}Web service started successfully.${reset}"
+    else
+        echo -e "${red}Web service failed to start.${reset}"
+        systemctl status "$SERVICE" --no-pager || true
+        exit 1
+    fi
+fi

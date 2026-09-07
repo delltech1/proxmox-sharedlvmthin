@@ -1,0 +1,227 @@
+#!/usr/bin/python3
+
+"""Side-effect-free recovery qualification for one SharedLvmThin storage."""
+
+import os
+import re
+import signal
+import subprocess
+import sys
+
+
+PROBE_TIMEOUT = 10
+FORBIDDEN = {
+    "pvcreate", "vgcreate", "lvcreate", "lvremove", "vgremove", "pvremove",
+    "wipefs", "thin_repair", "vgcfgrestore", "lvchange", "multipathd",
+}
+
+
+def storage_config(storage_id, path="/etc/pve/storage.cfg"):
+    current = None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"cannot read {path}: {exc}") from exc
+    for line in lines + [""]:
+        if line.startswith("sharedlvmthin:"):
+            parts = line.split()
+            current = {"id": parts[1], "type": "sharedlvmthin"} if len(parts) > 1 else None
+            continue
+        if current is None:
+            continue
+        if line and line[0].isspace():
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                current[parts[0]] = parts[1].strip()
+            continue
+        if current.get("id") == storage_id:
+            return current
+        current = None
+    raise RuntimeError(f"SharedLvmThin storage '{storage_id}' is not configured")
+
+
+def process_state(pid):
+    try:
+        text = open(f"/proc/{pid}/stat", encoding="ascii").read()
+        return text[text.rfind(")") + 2:].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def bounded_probe(argv):
+    if os.path.basename(argv[0]) in FORBIDDEN:
+        raise RuntimeError("internal safety violation: mutating command requested")
+    proc = subprocess.Popen(
+        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=PROBE_TIMEOUT)
+        return {"status": "PASS" if proc.returncode == 0 else "FAIL",
+                "rc": proc.returncode, "out": out.strip(), "err": err.strip(),
+                "pid": proc.pid, "state": None}
+    except subprocess.TimeoutExpired:
+        state = process_state(proc.pid)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return {"status": "BLOCKED" if state == "D" else "TIMEOUT",
+                "rc": None, "out": "", "err": "probe exceeded bounded timeout",
+                "pid": proc.pid, "state": state}
+
+
+def dstate_evidence(tokens):
+    relevant = []
+    unknown = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit() or process_state(name) != "D":
+            continue
+        evidence = []
+        for leaf in ("cmdline", "wchan", "stack"):
+            try:
+                data = open(f"/proc/{name}/{leaf}", "rb").read().decode("utf-8", "replace")
+                evidence.append(data.replace("\x00", " "))
+            except OSError:
+                pass
+        joined = " ".join(evidence)
+        item = f"pid={name} evidence={joined[:300].strip() or 'unavailable'}"
+        if any(token and token in joined for token in tokens):
+            relevant.append(item)
+        else:
+            unknown.append(item)
+    if relevant:
+        return "FAIL", relevant, unknown
+    if unknown:
+        return "UNKNOWN", [], unknown
+    return "PASS", [], []
+
+
+def clean(value):
+    return str(value or "").strip()
+
+
+def main(argv=None):
+    argv = argv or sys.argv[1:]
+    if len(argv) != 1 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", argv[0]):
+        print("Usage: sharedlvmthin recovery-check <storage-id>", file=sys.stderr)
+        return 64
+    sid = argv[0]
+    try:
+        cfg = storage_config(sid)
+    except RuntimeError as exc:
+        print(f"STATE=RECOVERY_REQUIRED\nSAFE_FOR_MUTATION=NO\nREASON={exc}")
+        return 2
+
+    vg = clean(cfg.get("slt-vgname"))
+    expected_vg = clean(cfg.get("slt-expected-vg-uuid"))
+    expected_pv = clean(cfg.get("slt-expected-pv-uuid"))
+    expected_wwid = clean(cfg.get("slt-expected-wwid")).lower()
+    expected_paths = clean(cfg.get("slt-expected-min-paths"))
+    results = {}
+    details = []
+
+    # Stop the sequence at the first timeout/blocked probe. This guarantees
+    # one outstanding LVM/PVE probe maximum and prevents the checker itself
+    # from accumulating tasks during a storage incident.
+    probes = [
+        ("VG", ["/sbin/vgs", "--readonly", "--noheadings", "--separator", "|", "-o", "vg_uuid", vg]),
+        ("PV", ["/sbin/pvs", "--readonly", "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
+        # Plain lvs is observational and is required for live device-mapper
+        # flags. --readonly suppresses that runtime query and yields X/unknown.
+        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags", vg]),
+        ("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]),
+    ]
+    evidence = {}
+    for label, command in probes:
+        result = bounded_probe(command)
+        evidence[label] = result
+        if result["status"] in {"BLOCKED", "TIMEOUT"}:
+            details.append(f"{label} probe {result['status']} pid={result['pid']} state={result['state'] or 'unknown'}")
+            break
+
+    results["BOUNDED_LVM_PROBES"] = "PASS" if all(
+        evidence.get(x, {}).get("status") == "PASS" for x in ("VG", "PV", "POOL")
+    ) else "FAIL"
+
+    vg_lines = [x.strip() for x in evidence.get("VG", {}).get("out", "").splitlines() if x.strip()]
+    actual_vg = vg_lines[0] if len(vg_lines) == 1 else ""
+    results["VG_UUID_MATCH"] = "PASS" if expected_vg and actual_vg.lower() == expected_vg.lower() else "FAIL"
+
+    pv_lines = [x.strip() for x in evidence.get("PV", {}).get("out", "").splitlines() if x.strip()]
+    actual_pv = actual_dev = ""
+    if len(pv_lines) == 1:
+        fields = [x.strip() for x in pv_lines[0].split("|", 1)]
+        if len(fields) == 2:
+            actual_pv, actual_dev = fields
+    results["PV_UUID_MATCH"] = "PASS" if expected_pv and actual_pv.lower() == expected_pv.lower() else "FAIL"
+    actual_wwid = ""
+    match = re.fullmatch(r"/dev/mapper/([0-9A-Fa-f]+)", actual_dev)
+    if match:
+        actual_wwid = match.group(1).lower()
+    results["WWID_MATCH"] = "PASS" if expected_wwid and actual_wwid == expected_wwid else "FAIL"
+
+    pool_ok = True
+    owned_count = 0
+    for line in evidence.get("POOL", {}).get("out", "").splitlines():
+        fields = [x.strip() for x in line.split("|")]
+        if len(fields) < 5 or not re.fullmatch(r"sltp-\d+", fields[0]):
+            continue
+        if f"pve-slt-sid-{sid}" not in fields[4].split(","):
+            continue
+        owned_count += 1
+        attr, health, check_needed = fields[1:4]
+        canonical = bool(re.fullmatch(r"twi-[-a][o-]t[z-]--", attr))
+        pool_ok = canonical and (not health or health.lower() == "ok") and check_needed.lower() not in {"1", "yes", "check_needed"}
+        if not pool_ok:
+            break
+    results["POOL_FLAGS_HEALTHY"] = "PASS" if pool_ok else "FAIL"
+    if owned_count == 0:
+        details.append("no owned thin pool currently exists; pool-health gate is not applicable")
+
+    pve_out = evidence.get("PVE", {}).get("out", "")
+    results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
+        rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
+    ) else "FAIL"
+
+    if expected_wwid:
+        mp = bounded_probe(["/sbin/multipath", "-ll", expected_wwid])
+        path_count = len(re.findall(r"\bactive\s+ready\s+running\b", mp.get("out", "")))
+        required = int(expected_paths) if expected_paths.isdigit() else 1
+        results["PATHS_HEALTHY"] = "PASS" if mp["status"] == "PASS" and path_count >= required else "FAIL"
+        details.append(f"healthy_paths={path_count} required_paths={required}")
+    else:
+        results["PATHS_HEALTHY"] = "UNKNOWN"
+        details.append("expected WWID is not pinned")
+
+    if os.path.exists("/etc/pve/corosync.conf"):
+        quorum = bounded_probe(["/usr/bin/pvecm", "status"])
+        results["QUORUM"] = "PASS" if quorum["status"] == "PASS" and re.search(
+            r"(?m)^Quorate:\s+Yes\s*$", quorum.get("out", "")
+        ) else "FAIL"
+    else:
+        results["QUORUM"] = "PASS"
+
+    dstatus, relevant, unknown = dstate_evidence([vg, expected_wwid, actual_dev])
+    results["NO_RELEVANT_DSTATE"] = dstatus
+    details.extend(relevant)
+    if unknown:
+        details.append(f"unscoped_dstate_tasks={len(unknown)}; positive storage attribution unavailable")
+
+    ordered = ["PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
+               "POOL_FLAGS_HEALTHY", "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
+               "PVE_STORAGE_HEALTH", "QUORUM"]
+    safe = all(results.get(name) == "PASS" for name in ordered)
+    print(f"STORAGE_ID={sid}")
+    for name in ordered:
+        print(f"{name}={results.get(name, 'UNKNOWN')}")
+    print(f"STATE={'HEALTHY' if safe else 'RECOVERY_REQUIRED'}")
+    print(f"SAFE_FOR_MUTATION={'YES' if safe else 'NO'}")
+    for detail in details:
+        print(f"DETAIL={detail}")
+    return 0 if safe else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

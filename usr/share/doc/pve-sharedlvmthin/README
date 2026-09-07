@@ -1,0 +1,61 @@
+SharedLvmThin for Proxmox VE
+============================
+
+Components
+----------
+
+SharedLvmThinPlugin.pm
+    Proxmox VE shared LVM thin storage backend.
+
+pve-sharedlvmthin-monitor
+    dmeventd thin-pool monitoring and cluster-safe autogrow helper.
+
+sharedlvmthin
+    Health, compatibility and deep validation CLI.
+
+sharedlvmthin-health-json
+    Read-only machine-readable health collector.
+
+sharedlvmthin-web
+    Optional read-only HTTPS health dashboard.
+
+sharedlvmthin-web-configure
+    Interactive dashboard network, TLS and access configuration.
+
+
+Health Check
+------------
+
+    sharedlvmthin doctor
+
+
+Deep Validation
+---------------
+
+Deep validation performs temporary write operations and must only be
+started explicitly by an administrator from the CLI.
+
+    sharedlvmthin doctor --deep
+
+Deep validation is intentionally not exposed as a web action.
+
+
+Web Dashboard
+-------------
+
+Configure or reconfigure:
+
+    sharedlvmthin-web-configure
+
+The dashboard:
+
+- uses HTTPS
+- binds only to the selected host IP
+- delegates authentication to Proxmox VE
+- does not store PVE passwords
+- requires an authenticated administrator
+- exposes health information read-only
+- does not expose storage write operations
+
+The storage plugin does not depend on the web dashboard. Failure or
+disablement of the web service does not affect the storage data path.

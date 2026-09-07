@@ -1,0 +1,27 @@
+[Unit]
+Description=SharedLvmThin Read-Only Health Dashboard
+Documentation=man:systemd.service(5)
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

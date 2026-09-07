@@ -1,0 +1,385 @@
+#!/usr/bin/python3
+import configparser, copy, datetime, html, json, os, secrets, ssl, subprocess, threading, time
+import urllib.parse, urllib.request
+from collections import defaultdict, deque
+from http.cookies import SimpleCookie
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from urllib.parse import urlparse
+
+CONFIG=os.environ.get("SHAREDLVMTHIN_WEB_CONFIG","/etc/pve-sharedlvmthin/web.conf"); WEBROOT="/usr/share/pve-sharedlvmthin/web"
+COLLECTOR="/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json"
+PVE="https://127.0.0.1:8006/api2/json"; COOKIE="SLTSESSION"
+DEFAULT_IDLE=1800; MIN_IDLE=60; MAX_IDLE=86400
+DEFAULT_REFRESH=30; MIN_REFRESH=5; MAX_REFRESH=3600
+DEFAULT_COLLECTOR_TIMEOUT=120; MIN_COLLECTOR_TIMEOUT=5; MAX_COLLECTOR_TIMEOUT=600
+TFA_TTL=120; TFA_MAX_ATTEMPTS=8; MAX_BODY=32768
+REQUIRED={"Sys.Audit","Sys.Modify","Datastore.Audit","Permissions.Modify"}
+
+cfg=configparser.ConfigParser(); cfg.read(CONFIG)
+ADDR=cfg["web"]["address"]; PORT=cfg["web"].getint("port")
+CERT=cfg["tls"]["certificate"]; KEY=cfg["tls"]["private_key"]
+
+ACCESS_MODE=cfg.get("auth","access_mode",fallback="administrator").strip()
+ACCESS_GROUP=cfg.get("auth","group",fallback="").strip()
+
+def bounded_int(section,key,default,minimum,maximum):
+    try:
+        value=cfg.getint(section,key,fallback=default)
+    except ValueError as e:
+        raise RuntimeError(f"{section}.{key} must be an integer") from e
+    if value < minimum or value > maximum:
+        raise RuntimeError(
+            f"{section}.{key} must be between {minimum} and {maximum}"
+        )
+    return value
+
+IDLE=bounded_int("auth","session_idle_seconds",DEFAULT_IDLE,MIN_IDLE,MAX_IDLE)
+HEALTH_REFRESH=bounded_int("health","refresh_interval_seconds",DEFAULT_REFRESH,MIN_REFRESH,MAX_REFRESH)
+COLLECTOR_TIMEOUT=bounded_int("health","collector_timeout_seconds",DEFAULT_COLLECTOR_TIMEOUT,MIN_COLLECTOR_TIMEOUT,MAX_COLLECTOR_TIMEOUT)
+
+if ACCESS_MODE not in {"administrator","group"}:
+    raise RuntimeError("invalid auth.access_mode")
+
+if ACCESS_MODE == "group" and not ACCESS_GROUP:
+    raise RuntimeError("auth.group is required for group access mode")
+
+sessions={}; pending={}; attempts=defaultdict(deque); lock=threading.RLock()
+
+def pve_ctx():
+    ca="/etc/pve/pve-root-ca.pem"
+    if os.path.exists(ca):
+        c=ssl.create_default_context(cafile=ca); c.check_hostname=False; return c
+    c=ssl.create_default_context(); c.check_hostname=False; c.verify_mode=ssl.CERT_NONE; return c
+PVE_SSL=pve_ctx()
+
+def pve(path,data=None,ticket=None):
+    h={"Accept":"application/json"}; body=None; method="GET"
+    if data is not None:
+        body=urllib.parse.urlencode(data).encode(); h["Content-Type"]="application/x-www-form-urlencoded"; method="POST"
+    if ticket: h["Cookie"]="PVEAuthCookie="+ticket
+    req=urllib.request.Request(PVE+path,data=body,method=method,headers=h)
+    with urllib.request.urlopen(req,context=PVE_SSL,timeout=10) as r:
+        return json.loads(r.read()).get("data")
+
+def authorized(user,ticket):
+    if ACCESS_MODE == "administrator":
+        if user == "root@pam":
+            return True,"pve-superuser"
+
+        d=pve(
+            "/access/permissions?"
+            + urllib.parse.urlencode({"path":"/"}),
+            ticket=ticket,
+        )
+
+        if not isinstance(d,dict):
+            return False,"permissions unavailable"
+
+        perms=d.get("/") if isinstance(d.get("/"),dict) else d
+        effective={k for k,v in perms.items() if v}
+
+        ok=REQUIRED.issubset(effective)
+
+        return ok,(
+            "pve-rbac"
+            if ok
+            else "administrator privileges required"
+        )
+
+    if ACCESS_MODE == "group":
+        groups=pve("/access/groups",ticket=ticket)
+
+        if not isinstance(groups,list):
+            return False,"unable to read PVE groups"
+
+        for group in groups:
+            if group.get("groupid") != ACCESS_GROUP:
+                continue
+
+            members=group.get("users") or ""
+
+            if isinstance(members,str):
+                users={
+                    x.strip()
+                    for x in members.split(",")
+                    if x.strip()
+                }
+            elif isinstance(members,list):
+                users=set(members)
+            else:
+                users=set()
+
+            if user in users:
+                return True,"pve-group:" + ACCESS_GROUP
+
+            return False,"user is not member of allowed PVE group"
+
+        return False,"configured PVE group not found"
+
+    return False,"invalid access policy"
+
+def cleanup():
+    n=time.monotonic()
+    with lock:
+        for k in list(sessions):
+            if n-sessions[k]["seen"]>IDLE: sessions.pop(k,None)
+        for k in list(pending):
+            if n>pending[k]["expires"]: pending.pop(k,None)
+        for ip in list(attempts):
+            while attempts[ip] and n-attempts[ip][0]>60: attempts[ip].popleft()
+            if not attempts[ip]: attempts.pop(ip,None)
+
+def session_from(headers):
+    cleanup(); raw=headers.get("Cookie")
+    if not raw: return None,None
+    c=SimpleCookie()
+    try: c.load(raw)
+    except Exception: return None,None
+    m=c.get(COOKIE)
+    if not m: return None,None
+    with lock:
+        s=sessions.get(m.value)
+        if not s: return None,None
+        s["seen"]=time.monotonic(); return m.value,dict(s)
+
+def session_cookie(token):
+    # The server enforces a sliding idle timeout. A fixed browser Max-Age
+    # would expire an actively used session exactly IDLE seconds after login.
+    return f"{COOKIE}={token}; Path=/; Secure; HttpOnly; SameSite=Strict"
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+class HealthCache:
+    def __init__(self,collector,interval,timeout,runner=subprocess.run):
+        self.collector=collector
+        self.interval=interval
+        self.timeout=timeout
+        self.runner=runner
+        self.lock=threading.RLock()
+        self.payload=None
+        self.generated_monotonic=None
+        self.generated_at=None
+        self.last_success=None
+        self.last_error=None
+        self.refresh_running=False
+        self.stop_event=threading.Event()
+        self.thread=None
+
+    def refresh(self):
+        with self.lock:
+            if self.refresh_running:
+                return False
+            self.refresh_running=True
+        try:
+            result=self.runner(
+                [self.collector],capture_output=True,text=True,
+                timeout=self.timeout,
+            )
+            if result.returncode:
+                raise RuntimeError(
+                    result.stderr.strip() or f"collector exit {result.returncode}"
+                )
+            payload=json.loads(result.stdout)
+            if not isinstance(payload,dict):
+                raise RuntimeError("collector did not return a JSON object")
+            now=utc_now()
+            with self.lock:
+                self.payload=payload
+                self.generated_monotonic=time.monotonic()
+                self.generated_at=now
+                self.last_success=now
+                self.last_error=None
+            return True
+        except Exception as e:
+            with self.lock:
+                self.last_error=str(e)
+            return False
+        finally:
+            with self.lock:
+                self.refresh_running=False
+
+    def snapshot(self):
+        with self.lock:
+            payload=(
+                copy.deepcopy(self.payload)
+                if self.payload is not None
+                else {"result":"UNKNOWN","error":"health snapshot not ready"}
+            )
+            age=(
+                max(0,int(time.monotonic()-self.generated_monotonic))
+                if self.generated_monotonic is not None
+                else None
+            )
+            payload["cache"]={
+                "refresh_running":self.refresh_running,
+                "generated_at":self.generated_at,
+                "age_seconds":age,
+                "last_success":self.last_success,
+                "last_error":self.last_error,
+            }
+            return payload
+
+    def _loop(self):
+        while not self.stop_event.is_set():
+            self.refresh()
+            self.stop_event.wait(self.interval)
+
+    def start(self):
+        self.thread=threading.Thread(
+            target=self._loop,name="sharedlvmthin-health-cache",daemon=True,
+        )
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        if self.thread:
+            self.thread.join(timeout=min(self.timeout+1,10))
+
+CSS="""
+:root{--bg:#0b1118;--p:#111a24;--b:#263442;--t:#e7edf3;--m:#8fa0af;--blue:#3b93ff;--g:#39d27d}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--t);font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
+.w{width:min(430px,calc(100vw - 32px))}.brand{font-size:24px;font-weight:800;text-align:center;margin-bottom:18px}.brand span{color:var(--blue)}
+.card{background:var(--p);border:1px solid var(--b);border-radius:10px;padding:24px}h1{font-size:18px;margin:0 0 6px}.sub,.note{color:var(--m);font-size:12px}
+label{display:block;color:var(--m);font-size:12px;margin:14px 0 6px}input,select{width:100%;padding:11px;background:#0d151e;color:var(--t);border:1px solid #314252;border-radius:6px}
+button{width:100%;margin-top:18px;padding:11px;background:#1768c4;color:white;border:1px solid #2c6db8;border-radius:6px;font-weight:700}
+.err{padding:10px;background:#2a1111;border:1px solid #6b2b2b;color:#ffb0b0;border-radius:6px;margin:12px 0;font-size:12px}.ro{color:var(--g);font-weight:700}
+"""
+
+def page(title,body):
+    return "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>"+html.escape(title)+"</title><style>"+CSS+"</style></head><body><div class='w'><div class='brand'>SharedLvmThin <span>Health</span></div>"+body+"<div class='note' style='text-align:center;margin-top:14px'>Authentication handled by Proxmox VE · <span class='ro'>READ ONLY</span></div></div></body></html>"
+
+def login(error="",user=""):
+    e="<div class='err'>"+html.escape(error)+"</div>" if error else ""
+    b="<div class='card'><h1>Proxmox VE Authentication</h1><div class='sub'>Use an existing PVE administrator account.</div>"+e
+    b+="<form method='post' action='/auth/login'><label>Username / realm</label><input name='username' value='"+html.escape(user)+"' placeholder='admin@pve' maxlength='256' required autofocus>"
+    b+="<label>Password</label><input type='password' name='password' maxlength='4096' required><button>Sign in</button></form></div>"
+    return page("SharedLvmThin Login",b)
+
+def tfa(pid,user,error=""):
+    e="<div class='err'>"+html.escape(error)+"</div>" if error else ""
+    b="<div class='card'><h1>Two-Factor Authentication</h1><div class='sub'>Additional PVE factor required for "+html.escape(user)+".</div>"+e
+    b+="<form method='post' action='/auth/tfa'><input type='hidden' name='pending_id' value='"+html.escape(pid)+"'><label>Factor</label>"
+    b+="<select name='factor'><option value='totp'>TOTP</option><option value='recovery'>Recovery key</option><option value='yubico'>YubiKey OTP</option></select>"
+    b+="<label>Response</label><input name='response' maxlength='1024' required autofocus><button>Verify</button></form>"
+    b+="<div class='note' style='margin-top:12px'>The response is verified by Proxmox VE. WebAuthn needs a browser-origin ceremony and is not emulated in this version; use another configured PVE factor.</div></div>"
+    return page("Two-Factor Authentication",b)
+
+class H(SimpleHTTPRequestHandler):
+    server_version="SharedLvmThinHealth/0.2"
+    def __init__(self,*a,**kw): super().__init__(*a,directory=WEBROOT,**kw)
+    def log_message(self,fmt,*a): print(f"{self.client_address[0]} - {fmt%a}",flush=True)
+    def end_headers(self):
+        for k,v in [("X-Content-Type-Options","nosniff"),("X-Frame-Options","DENY"),("Referrer-Policy","no-referrer"),("Cache-Control","no-store"),("Content-Security-Policy","default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:")]: self.send_header(k,v)
+        super().end_headers()
+    def send_html(self,s,status=200):
+        b=s.encode(); self.send_response(status); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
+    def send_json(self,d,status=200):
+        b=json.dumps(d).encode(); self.send_response(status); self.send_header("Content-Type","application/json"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
+    def redirect(self,p,cookie=None):
+        self.send_response(303); self.send_header("Location",p)
+        if cookie: self.send_header("Set-Cookie",cookie)
+        self.end_headers()
+    def form(self):
+        try: n=int(self.headers.get("Content-Length","0"))
+        except: n=0
+        if n<1 or n>MAX_BODY: return {}
+        raw=self.rfile.read(n).decode("utf-8","replace")
+        return {k:v[-1] for k,v in urllib.parse.parse_qs(raw,keep_blank_values=True).items()}
+    def do_GET(self):
+        p=urlparse(self.path).path
+        if p=="/login":
+            _,s=session_from(self.headers); return self.redirect("/") if s else self.send_html(login())
+        if p=="/logout":
+            tok,_=session_from(self.headers)
+            if tok:
+                with lock: sessions.pop(tok,None)
+            return self.redirect("/login",f"{COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
+        if p=="/api/health":
+            _,s=session_from(self.headers)
+            if not s: return self.send_json({"error":"unauthorized"},401)
+            return self.send_json(self.server.health_cache.snapshot())
+        if p=="/api/version":
+            _,s=session_from(self.headers)
+            if not s: return self.send_json({"error":"unauthorized"},401)
+            return self.send_json({
+                "service":"SharedLvmThin Health",
+                "api":2,
+                "mode":"read-only",
+                "user":s["user"],
+                "authorization":s.get("auth","pve"),
+            })
+        if p=="/":
+            _,s=session_from(self.headers)
+            if not s: return self.redirect("/login")
+        return super().do_GET()
+    def do_POST(self):
+        p=urlparse(self.path).path; ip=self.client_address[0]; cleanup()
+        if p=="/auth/login":
+            if len(attempts[ip])>=8: return self.send_html(login("Too many attempts. Try again shortly."),429)
+            f=self.form(); user=f.get("username","").strip(); pw=f.get("password","")
+            if not user or not pw: return self.send_html(login("Username and password required.",user),400)
+            try:
+                a=pve("/access/ticket",{"username":user,"password":pw})
+                if not isinstance(a,dict) or not a.get("ticket"): raise RuntimeError()
+                if a.get("NeedTFA") is not None:
+                    pid=secrets.token_urlsafe(24)
+                    with lock: pending[pid]={"user":a.get("username") or user,"challenge":a["ticket"],"expires":time.monotonic()+TFA_TTL,"attempts":0}
+                    return self.send_html(tfa(pid,a.get("username") or user))
+                user=a.get("username") or user; ok,why=authorized(user,a["ticket"])
+                if not ok: return self.send_html(login("Authenticated, but PVE administrator privileges are required.",user),403)
+                tok=secrets.token_urlsafe(32)
+                with lock: sessions[tok]={"user":user,"auth":why,"seen":time.monotonic()}
+                attempts.pop(ip,None)
+                return self.redirect("/",session_cookie(tok))
+            except Exception:
+                attempts[ip].append(time.monotonic()); return self.send_html(login("Authentication failed.",user),401)
+        if p=="/auth/tfa":
+            f=self.form(); pid=f.get("pending_id",""); factor=f.get("factor",""); response=f.get("response","").strip()
+            with lock: q=pending.get(pid)
+            if not q: return self.send_html(login("Two-factor challenge expired. Please sign in again."),401)
+            if q.get("attempts",0) >= TFA_MAX_ATTEMPTS:
+                with lock: pending.pop(pid,None)
+                return self.send_html(login("Too many two-factor attempts. Please sign in again."),429)
+            if factor not in {"totp","recovery","yubico"} or not response: return self.send_html(tfa(pid,q["user"],"Invalid factor response."),400)
+            try:
+                a=pve("/access/ticket",{"username":q["user"],"password":f"{factor}:{response}","tfa-challenge":q["challenge"]})
+                if not isinstance(a,dict) or not a.get("ticket") or a.get("NeedTFA") is not None: raise RuntimeError()
+                user=a.get("username") or q["user"]; ok,why=authorized(user,a["ticket"])
+                if not ok:
+                    with lock: pending.pop(pid,None)
+                    return self.send_html(login("Authenticated, but PVE administrator privileges are required.",user),403)
+                tok=secrets.token_urlsafe(32)
+                with lock:
+                    pending.pop(pid,None); sessions[tok]={"user":user,"auth":why,"seen":time.monotonic()}
+                attempts.pop(ip,None)
+                return self.redirect("/",session_cookie(tok))
+            except Exception:
+                with lock:
+                    if pid in pending: pending[pid]["attempts"]=pending[pid].get("attempts",0)+1
+                return self.send_html(tfa(pid,q["user"],"Two-factor verification failed."),401)
+        if p=="/auth/logout":
+            tok,_=session_from(self.headers)
+            if tok:
+                with lock: sessions.pop(tok,None)
+            return self.redirect("/login",f"{COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
+        return self.send_error(405,"Read-only service")
+    def do_PUT(self): self.send_error(405,"Read-only service")
+    def do_DELETE(self): self.send_error(405,"Read-only service")
+    def do_PATCH(self): self.send_error(405,"Read-only service")
+
+def main():
+    health_cache=HealthCache(COLLECTOR,HEALTH_REFRESH,COLLECTOR_TIMEOUT)
+    health_cache.start()
+    srv=ThreadingHTTPServer((ADDR,PORT),H)
+    srv.health_cache=health_cache
+    ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.minimum_version=ssl.TLSVersion.TLSv1_2; ctx.load_cert_chain(CERT,KEY)
+    srv.socket=ctx.wrap_socket(srv.socket,server_side=True)
+    print(f"SharedLvmThin Health listening on https://{ADDR}:{PORT} (PVE auth enabled)",flush=True)
+    try:
+        srv.serve_forever()
+    finally:
+        health_cache.stop()
+
+if __name__ == "__main__":
+    main()
