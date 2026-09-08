@@ -1,5 +1,8 @@
 # SharedLvmThin for Proxmox VE
 
+An open-source storage project developed and published under the **BASTRIX**
+brand.
+
 SharedLvmThin is a safety-focused Proxmox VE storage plugin for an existing
 shared LVM volume group. It provides one LVM-thin pool per VM, snapshots,
 rollback, migration support, cluster locking, guarded autogrow, storage
@@ -115,9 +118,18 @@ license, but distributors must comply with all GPLv3 obligations, including
 preserving applicable notices and providing Corresponding Source when
 required. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
+BASTRIX is a registered European Union word trade mark owned by Stanislav Baran
+(EUIPO No. `019343330`), covering Nice classes 9 and 42. The official EUIPO
+record controls its current status and exact scope. The GPL license applies to
+the code but does not grant rights to present a third-party build, fork,
+product or support service as official, certified or endorsed. Truthful
+compatibility and attribution statements remain welcome. See the
+[trademark policy](TRADEMARKS.md).
+
 This project is independent community software and
 is not affiliated with or endorsed by Proxmox Server Solutions GmbH.
 
 Report vulnerabilities through GitHub Private Vulnerability Reporting. General
 bugs should include sanitized diagnostics only—never credentials, PVE tickets,
 private keys, guest data, or organization-specific storage identities.
+
