@@ -36,6 +36,22 @@ Read [storage requirements](docs/storage-requirements.md),
 [known issues](docs/known-issues.md), and
 [critical recovery guidance](docs/critical-storage-recovery.md) first.
 
+## Per-VM thin-pool trade-off
+
+The per-VM thin-pool model deliberately gives every VM a smaller metadata,
+ownership, snapshot, and failure domain. The cost is reduced space elasticity
+between VMs. Once physical extents have been assigned from the shared VG to one
+VM's thin pool, blocks later discarded by that VM are reusable inside that pool
+by the VM and its snapshots, but are not automatically returned to the VG for a
+different VM's pool to consume.
+
+Guarded incremental growth and conservative initial sizing reduce unnecessary
+allocation, but do not remove this architectural trade-off. Administrators must
+therefore monitor both free space inside each per-VM pool and unallocated free
+space in the shared VG. SharedLvmThin favors isolation and deterministic
+lifecycle behavior over the maximum space elasticity of one large thin pool
+shared by many VMs.
+
 ## Install a release package
 
 Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
