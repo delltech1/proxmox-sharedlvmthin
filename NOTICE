@@ -13,3 +13,11 @@ Source as required by the license.
 The SharedLvmThin name does not imply endorsement of modified or third-party
 distributions. This project is independent community software and is not
 affiliated with or endorsed by Proxmox Server Solutions GmbH.
+
+BASTRIX is a registered European Union word trade mark owned by Stanislav Baran
+(EUIPO No. 019343330), covering Nice classes 9 and 42. The official EUIPO
+record controls its current status and exact scope. SharedLvmThin is developed
+and published under the BASTRIX brand. The GPL license for the code does not
+grant trademark rights or permission to imply that a third-party build, fork,
+service or product is official, certified or endorsed. See TRADEMARKS.md.
+
