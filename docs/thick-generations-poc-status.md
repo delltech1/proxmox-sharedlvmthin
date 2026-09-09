@@ -175,6 +175,14 @@ LIVE_C9_SNAPSHOT_AND_HEAD_SHA=PASS
 LIVE_C9_FORWARD_LINEAR_DEPENDENCY=PASS
 LIVE_C9_TRANSITION_ARTIFACT_CLEANUP=PASS
 LIVE_C9_DSTATE_AFTER_RECOVERY=0
+LIVE_REBOOT_RUNTIME_STATE_LOST=PASS
+LIVE_REBOOT_ANCHOR_AND_HEAD_PRESERVED=PASS
+LIVE_REBOOT_LINEAR_RECONSTRUCTION=PASS
+LIVE_REBOOT_DATA_INTEGRITY=PASS
+LIVE_CROSS_NODE_IDENTITY=PASS
+LIVE_CROSS_NODE_LINEAR_RECONSTRUCTION=PASS
+LIVE_CROSS_NODE_DATA_INTEGRITY=PASS
+LIVE_CROSS_NODE_ROUND_TRIP=PASS
 ```
 
 Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
@@ -273,6 +281,26 @@ performed only the linear pivot and transaction-scoped cleanup, and returned
 the object to HEALTHY. The final frontend depended only on generation 8, the
 snapshot and HEAD matched the original SHA-256, no transition artifact or
 D-state task remained, and quorum stayed healthy.
+
+A controlled reboot of the canary node started with a healthy materialized
+frontend and no guest consumer. After reboot, the volatile device-mapper
+frontend was absent while the schema-v5 anchor and generation-8 HEAD remained
+present, inactive, and protected from autoactivation. Reconstruction first
+rejected an incomplete test configuration without mutation. With the complete
+pinned identity and reserve policy, activation recreated the exact `SLT-TG2`
+UUID as a destination-only linear frontend. Its SHA-256 matched the pre-reboot
+baseline, quorum remained healthy, and no D-state task appeared.
+
+Cross-node qualification used the same disposable shared LUN on a second PVE
+node. Because `find_multipaths strict` was active, the target's second LUN was
+not mapped until its exact WWID was registered locally; adding the WWID did not
+alter the existing shared-thin LUN or its automatic iSCSI startup policy. The
+test positively matched WWID, PV UUID, and VG UUID before activation. It then
+deactivated the zero-open frontend on the source node, proved its absence,
+reconstructed the same `SLT-TG2` linear frontend on the destination node, and
+verified the destination-only dependency and original SHA-256. A second
+serialized handoff returned the object to the original node with identical
+results, healthy quorum, and zero D-state tasks.
 
 ## Geometry gate
 
@@ -375,9 +403,7 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Execute reboot recovery on disposable local storage.
-4. Execute fenced cross-node reconstruction on a disposable shared test LUN.
-5. Qualify single-path and total-path loss without automatic repair.
-6. Integrate PVE create, snapshot, rollback, clone, migration, backup, restore,
+3. Qualify single-path and total-path loss without automatic repair.
+4. Integrate PVE create, snapshot, rollback, clone, migration, backup, restore,
    and thin-to-thick and thick-to-thin storage moves.
-7. Run Linux and Windows data-integrity workloads and a long-duration soak.
+5. Run Linux and Windows data-integrity workloads and a long-duration soak.
