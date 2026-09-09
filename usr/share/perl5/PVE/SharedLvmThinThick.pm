@@ -348,6 +348,7 @@ sub classify_recovery {
     my $objects = $evidence{objects};
     my $runtime = $evidence{runtime} // 'unknown';
     my $clone_status = $evidence{clone_status} // 'none';
+    my $clone_source = $evidence{clone_source} // 'none';
     my $expected_anchor = $evidence{expected_anchor};
 
     my $blocked = sub {
@@ -364,7 +365,20 @@ sub classify_recovery {
     return $blocked->("anchor evidence is invalid: $@") if $@;
     return $blocked->('runtime evidence is invalid')
         if $runtime !~ /^(?:absent|linear-old|linear-head|linear-new|clone|unknown)$/;
+    return $blocked->('clone source evidence is invalid')
+        if $clone_source !~ /^(?:none|source|old|unknown)$/;
     return $blocked->('authoritative HEAD object is missing') if !$objects->{head};
+
+    my $require_stable_objects = sub {
+        return 'materialized transition metadata still exists' if $objects->{meta};
+        return 'materialized snapshot source is missing'
+            if $anchor->{op} ne 'ALLOC' && !$objects->{source};
+        return 'materialized snapshot lost its retained source generation'
+            if $anchor->{op} eq 'SNAPSHOT' && !$objects->{old};
+        return 'materialized rollback retained the superseded HEAD'
+            if $anchor->{op} eq 'ROLLBACK' && $objects->{old};
+        return undef;
+    };
 
     my $result = sub {
         my ($state, $transaction, $materialization, $reason) = @_;
@@ -376,6 +390,8 @@ sub classify_recovery {
     };
 
     if ($anchor->{phase} eq 'MATERIALIZED' && !defined($intent)) {
+        my $object_error = $require_stable_objects->();
+        return $blocked->($object_error) if defined($object_error);
         return $blocked->('materialized HEAD has an unexpected runtime mapping')
             if $runtime !~ /^(?:absent|linear-head|linear-new)$/;
         return $result->('HEALTHY', 'COMMITTED', 'MATERIALIZED',
@@ -388,16 +404,20 @@ sub classify_recovery {
         return $blocked->('VG intent refers to another anchor')
             if !defined($expected_anchor) || $intent->{object} ne $expected_anchor;
         return $blocked->('materialized object has an unsupported OPEN operation')
-            if $intent->{op} ne 'DM_CUTOVER';
+            if $intent->{op} !~ /^(?:DM_CUTOVER|DM_PIVOT)$/;
         if ($intent->{tx} ne $anchor->{tx}) {
             return $blocked->('new transition has modified runtime before PREPARED was recorded')
                 if $runtime !~ /^(?:absent|linear-head)$/;
             return $result->('RECOVERY_REQUIRED', 'PREPARE_INCOMPLETE', 'MATERIALIZED',
                 'OPEN cutover intent exists but PREPARED anchor was not recorded');
         }
+        my $expected_op = $anchor->{op} eq 'ROLLBACK' ? 'DM_PIVOT' : 'DM_CUTOVER';
+        return $blocked->('finalized transition and VG intent operations differ')
+            if $anchor->{op} ne 'ALLOC' && $intent->{op} ne $expected_op;
         return $blocked->('finalized transition has an unexpected runtime mapping')
             if $runtime !~ /^(?:absent|linear-head|linear-new)$/;
-        return $blocked->('finalized transition still has clone metadata') if $objects->{meta};
+        my $object_error = $require_stable_objects->();
+        return $blocked->($object_error) if defined($object_error);
         return $result->('RECOVERY_REQUIRED', 'FINALIZE_PENDING', 'MATERIALIZED',
             'materialization is proven but OPEN intent remains');
     }
@@ -408,12 +428,15 @@ sub classify_recovery {
     return $blocked->("VG intent is invalid: $@") if $@;
     return $blocked->('transition transaction and VG intent differ')
         if $intent->{tx} ne $anchor->{tx};
-    return $blocked->('transition VG intent operation is not DM_CUTOVER')
-        if $intent->{op} ne 'DM_CUTOVER';
+    my $expected_op = $anchor->{op} eq 'ROLLBACK' ? 'DM_PIVOT'
+        : $anchor->{op} eq 'SNAPSHOT' ? 'DM_CUTOVER' : '';
+    return $blocked->('transition anchor operation is unsupported') if !$expected_op;
+    return $blocked->('transition and VG intent operations differ')
+        if $intent->{op} ne $expected_op;
     return $blocked->('VG intent refers to another anchor')
         if !defined($expected_anchor) || $intent->{object} ne $expected_anchor;
-    return $blocked->('transition source or destination is missing')
-        if !$objects->{old} || !$objects->{new};
+    return $blocked->('transition source, old HEAD, or destination is missing')
+        if !$objects->{source} || !$objects->{old} || !$objects->{new};
 
     if ($anchor->{phase} eq 'PREPARED') {
         return $blocked->('PREPARED transition metadata is missing') if !$objects->{meta};
@@ -429,6 +452,8 @@ sub classify_recovery {
             if $runtime eq 'absent';
         return $blocked->('committed transition has an unexpected runtime mapping')
             if $runtime ne 'clone';
+        return $blocked->('clone runtime dependency does not prove the signed source generation')
+            if $clone_source ne 'source';
         return $blocked->('clone target reports failed or unknown metadata state')
             if $clone_status !~ /^(?:incomplete|complete)$/;
         return $result->('RECOVERY_REQUIRED', $anchor->{phase},
@@ -441,6 +466,8 @@ sub classify_recovery {
             'runtime mapping is absent; persistent clone metadata must be reopened and verified')
             if $runtime eq 'absent';
         if ($runtime eq 'clone') {
+            return $blocked->('clone runtime dependency does not prove the signed source generation')
+                if $clone_source ne 'source';
             return $blocked->('anchor claims complete hydration but clone status does not')
                 if $clone_status ne 'complete';
             return $result->('RECOVERY_REQUIRED', 'HYDRATION_COMPLETE', 'PIVOT_READY',

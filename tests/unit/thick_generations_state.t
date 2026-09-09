@@ -171,7 +171,7 @@ my $recovery_prepared = {
     %$recovery_materialized, phase => 'PREPARED', tx => $new_tx,
     old => 'g0', new => 'g1', head => 'g0', op => 'SNAPSHOT', source => 'g0',
 };
-my %transition_objects = (head => 1, old => 1, new => 1, meta => 1);
+my %transition_objects = (head => 1, source => 1, old => 1, new => 1, meta => 1);
 my @crash_matrix = (
     ['C0', $recovery_materialized, undef, { head => 1 }, 'absent', 'none', 'COMMITTED'],
     ['C1', $recovery_materialized, $cutover_intent, { head => 1 }, 'absent', 'none', 'PREPARE_INCOMPLETE'],
@@ -182,17 +182,18 @@ my @crash_matrix = (
     ['C6', { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
         $cutover_intent, { %transition_objects }, 'absent', 'none', 'COMMITTED'],
     ['C7', { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
-        $cutover_intent, { %transition_objects }, 'clone', 'incomplete', 'COMMITTED'],
+        $cutover_intent, { %transition_objects }, 'clone', 'incomplete', 'COMMITTED', 'source'],
     ['C8', { %$recovery_prepared, phase => 'HYDRATING', head => 'g1', generation => 1 },
-        $cutover_intent, { %transition_objects }, 'clone', 'incomplete', 'HYDRATING'],
+        $cutover_intent, { %transition_objects }, 'clone', 'incomplete', 'HYDRATING', 'source'],
     ['C9', { %$recovery_prepared, phase => 'HYDRATION_COMPLETE', head => 'g1', generation => 1 },
-        $cutover_intent, { %transition_objects }, 'clone', 'complete', 'HYDRATION_COMPLETE'],
+        $cutover_intent, { %transition_objects }, 'clone', 'complete', 'HYDRATION_COMPLETE', 'source'],
 );
 for my $case (@crash_matrix) {
-    my ($point, $anchor_state, $open_intent, $objects, $runtime, $status, $transaction) = @$case;
+    my ($point, $anchor_state, $open_intent, $objects, $runtime, $status, $transaction, $clone_source) = @$case;
     my $classification = classify_recovery(
         anchor => $anchor_state, intent => $open_intent, objects => $objects,
-        runtime => $runtime, clone_status => $status, expected_anchor => $anchor_object,
+        runtime => $runtime, clone_status => $status,
+        clone_source => ($clone_source // 'none'), expected_anchor => $anchor_object,
     );
     is($classification->{transaction_state}, $transaction, "$point has deterministic transaction classification");
     is($classification->{safe_for_mutation}, ($point eq 'C0' ? 1 : 0),
@@ -207,5 +208,78 @@ is($ambiguous_recovery->{data_state}, 'AMBIGUOUS',
     'contradictory committed runtime evidence is never guessed');
 is($ambiguous_recovery->{safe_for_mutation}, 0,
     'contradictory recovery evidence blocks mutation');
+
+my $rollback_intent = {
+    %$cutover_intent, op => 'DM_PIVOT', tx => ('3' x 32),
+};
+my $rollback_recovery = {
+    %$recovery_prepared, tx => $rollback_intent->{tx}, op => 'ROLLBACK',
+    source => 'g-snapshot', old => 'g1', new => 'g2', head => 'g1', generation => 1,
+};
+my %rollback_objects = (head => 1, source => 1, old => 1, new => 1, meta => 1);
+for my $case (
+    ['PREPARED', $rollback_recovery, 'linear-old', 'none', 'none'],
+    ['COMMITTED', { %$rollback_recovery, phase => 'COMMITTED', head => 'g2', generation => 2 },
+        'clone', 'incomplete', 'source'],
+    ['HYDRATING', { %$rollback_recovery, phase => 'HYDRATING', head => 'g2', generation => 2 },
+        'clone', 'incomplete', 'source'],
+    ['HYDRATION_COMPLETE', { %$rollback_recovery, phase => 'HYDRATION_COMPLETE', head => 'g2', generation => 2 },
+        'clone', 'complete', 'source'],
+    ['LINEAR_PIVOTED', { %$rollback_recovery, phase => 'LINEAR_PIVOTED', head => 'g2', generation => 2 },
+        'linear-new', 'none', 'none'],
+) {
+    my ($phase, $anchor_state, $runtime, $status, $source) = @$case;
+    my $classification = classify_recovery(
+        anchor => $anchor_state, intent => $rollback_intent,
+        objects => { %rollback_objects }, runtime => $runtime,
+        clone_status => $status, clone_source => $source,
+        expected_anchor => $anchor_object,
+    );
+    is($classification->{data_state}, 'VALID', "rollback $phase has deterministic data authority");
+    is($classification->{safe_for_mutation}, 0, "rollback $phase remains fail-closed");
+}
+
+my $rollback_materialized = {
+    %$rollback_recovery, phase => 'MATERIALIZED', head => 'g2', generation => 2,
+};
+my $rollback_healthy = classify_recovery(
+    anchor => $rollback_materialized, intent => undef,
+    objects => { head => 1, source => 1 }, runtime => 'linear-head',
+    expected_anchor => $anchor_object,
+);
+is($rollback_healthy->{state}, 'HEALTHY',
+    'materialized rollback is healthy only after superseded HEAD and metadata are gone');
+
+my $wrong_rollback_source = classify_recovery(
+    anchor => { %$rollback_recovery, phase => 'COMMITTED', head => 'g2', generation => 2 },
+    intent => $rollback_intent, objects => { %rollback_objects }, runtime => 'clone',
+    clone_status => 'incomplete', clone_source => 'old', expected_anchor => $anchor_object,
+);
+is($wrong_rollback_source->{data_state}, 'AMBIGUOUS',
+    'rollback clone depending on old HEAD instead of signed snapshot fails closed');
+
+my $unclean_rollback = classify_recovery(
+    anchor => $rollback_materialized, intent => undef,
+    objects => { head => 1, source => 1, old => 1 }, runtime => 'linear-head',
+    expected_anchor => $anchor_object,
+);
+is($unclean_rollback->{state}, 'RECOVERY_REQUIRED',
+    'materialized rollback cannot hide a retained superseded HEAD');
+
+my $snapshot_healthy = classify_recovery(
+    anchor => $materialized, intent => undef,
+    objects => { head => 1, source => 1, old => 1 }, runtime => 'linear-head',
+    expected_anchor => $anchor_object,
+);
+is($snapshot_healthy->{state}, 'HEALTHY',
+    'materialized snapshot retains its immutable source generation');
+
+my $snapshot_source_missing = classify_recovery(
+    anchor => $materialized, intent => undef,
+    objects => { head => 1 }, runtime => 'linear-head',
+    expected_anchor => $anchor_object,
+);
+is($snapshot_source_missing->{state}, 'RECOVERY_REQUIRED',
+    'materialized snapshot with a missing source fails closed');
 
 done_testing();

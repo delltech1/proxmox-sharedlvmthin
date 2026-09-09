@@ -83,16 +83,20 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
   absent or matching linear runtime frontend can return `SAFE_FOR_MUTATION=1`.
   Every partial or contradictory combination returns `RECOVERY_REQUIRED`;
   contradictory data evidence is classified `AMBIGUOUS` rather than guessed.
+- Recovery classification is operation-aware. A rollback clone must prove that
+  its runtime source is the signed retained snapshot, not the superseded HEAD.
+  A completed rollback is healthy only after clone metadata and the superseded
+  HEAD are absent while the retained source snapshot and new HEAD remain.
 - At most one potentially blocking probe of each type may exist.
 - Timed-out probes must terminate before a later probe is permitted.
 
 Current automated result:
 
 ```ini
-ANCHOR_GEOMETRY_AND_C0_C9_TESTS=50/50_PASS
+ANCHOR_GEOMETRY_AND_C0_C9_TESTS=69/69_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=66_PASS
-COMBINED_PERL_REGRESSION=153_PASS
+COMBINED_PERL_REGRESSION=168_PASS
 ```
 
 ## Geometry gate
