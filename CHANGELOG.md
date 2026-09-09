@@ -4,6 +4,9 @@
 
 - Recognize the qualified 50% elastic early-grow threshold as healthy in
   Doctor while retaining 80% as the qualified legacy-policy value.
+- Scope the dm-event health requirement to locally active pools so a healthy
+  non-owner cluster node does not fail merely because it sees inactive shared
+  pool metadata.
 - Qualified the public package with a live 4 GiB -> 7 GiB elastic grow at
   approximately 400 MiB/s, exact one-event enforcement, pattern readback,
   reserve verification, and complete disposable cleanup.
