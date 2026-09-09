@@ -88,7 +88,7 @@ Current automated result:
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=50/50_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=66_PASS
-COMBINED_PERL_REGRESSION=146_PASS
+COMBINED_PERL_REGRESSION=148_PASS
 ```
 
 ## Geometry gate
@@ -155,10 +155,23 @@ active frontend through verified inactive-table load followed by explicit
 `suspend --noflush`, `resume`, and live-table verification. Any uncertain
 outcome preserves the OPEN VG intent and is never retried automatically.
 
+Snapshot delete now resolves exactly one signed generation, refuses the
+authoritative HEAD and any open snapshot, brackets the operation with a
+dedicated `REMOVE_SNAPSHOT` intent, removes only that exact generation, and
+proves that HEAD and generation did not change before clearing the intent. Its
+first live execution removed the independent snapshot while the linear HEAD,
+its SHA-256, and storage identity remained intact.
+
+```ini
+LIVE_SNAPSHOT_DELETE=PASS
+HEAD_UNCHANGED_AFTER_SNAPSHOT_DELETE=PASS
+SNAPSHOT_DELETE_INTENT=PASS
+```
+
 ## Open gates
 
-1. Repeat live snapshot creation with data-bearing and active-QEMU workloads,
-   then complete snapshot-delete, rollback, and recovery lifecycle code.
+1. Repeat live snapshot creation and delete with data-bearing and active-QEMU
+   workloads, then complete rollback and recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
 3. Qualify persistent anchor updates and VG intent recovery.
 4. Execute process-crash tests at C0 through C9.

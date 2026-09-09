@@ -448,7 +448,7 @@ sub vg_intent_tags {
         if !defined($values{tx}) || $values{tx} !~ /^$TX$/;
     die "invalid VG intent state\n" if ($values{state} // '') ne 'OPEN';
     die "invalid VG intent operation\n"
-        if ($values{op} // '') !~ /^(?:ALLOC|EXTEND|REMOVE|DM_CUTOVER|DM_PIVOT)$/;
+        if ($values{op} // '') !~ /^(?:ALLOC|EXTEND|REMOVE|REMOVE_SNAPSHOT|DM_CUTOVER|DM_PIVOT)$/;
     _token('VG intent object', $values{object});
     die "invalid VG intent before digest\n"
         if ($values{before} // '') !~ /^[0-9a-f]{16,64}$/;

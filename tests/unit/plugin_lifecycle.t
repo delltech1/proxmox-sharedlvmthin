@@ -2075,6 +2075,63 @@ subtest 'thick snapshot lookup accepts exactly one signed immutable generation' 
     like($@, qr/missing or ambiguous/, 'duplicate signed snapshot identity fails closed');
 };
 
+subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $snapshot = 'sltg-g-key-00000000';
+    my $head = 'sltg-g-key-00000001';
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $state = { head => $head, generation => 1 };
+    my @inventory = (
+        { testvg => { $snapshot => {}, $head => {}, anchor => {} } },
+        { testvg => { $head => {}, anchor => {} } },
+    );
+    my @events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub { return ($state, {}, 'anchor') };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_find_snapshot = sub { return ($snapshot, 0, {}) };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { '7' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { '8' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { push @events, 'OPEN'; 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub { push @events, 'CLEAR'; 1 };
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { shift @inventory };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['0'] };
+
+    is($class->volume_snapshot_delete($cfg, $storeid, $volname, 'snap1'), undef,
+        'exact closed snapshot is deleted');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange -an testvg/sltg-g-key-00000000',
+        '/sbin/lvremove -f testvg/sltg-g-key-00000000',
+    ], 'delete deactivates and removes only the signed snapshot generation');
+    is_deeply(\@events, [qw(OPEN CLEAR)], 'intent brackets the verified delete');
+
+    reset_mocks();
+    @inventory = ({ testvg => { $snapshot => {}, $head => {}, anchor => {} } });
+    @events = ();
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['1'] };
+    eval { $class->volume_snapshot_delete($cfg, $storeid, $volname, 'snap1') };
+    like($@, qr/refusing to delete open snapshot/, 'open snapshot is refused');
+    is_deeply([command_lines()], [], 'open snapshot refusal performs no mutation');
+    is_deeply(\@events, [], 'open snapshot refusal creates no intent');
+};
+
 subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
     reset_mocks();
     my $storeid = 'thick-test';

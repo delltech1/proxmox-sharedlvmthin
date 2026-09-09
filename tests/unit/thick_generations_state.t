@@ -114,6 +114,12 @@ my $intent = vg_intent_tags(
     before => ('a' x 32),
 );
 is(decode_vg_intent_tags($intent)->{tx}, $tx, 'VG intent round-trip validates');
+my $remove_snapshot_intent = vg_intent_tags(
+    tx => $tx, state => 'OPEN', op => 'REMOVE_SNAPSHOT', object => 'sltg-g-test',
+    before => ('b' x 32),
+);
+is(decode_vg_intent_tags($remove_snapshot_intent)->{op}, 'REMOVE_SNAPSHOT',
+    'snapshot deletion has an explicit transaction intent');
 
 my $small_geometry = clone_geometry(32 * 1024 * 1024 * 1024);
 is($small_geometry->{region_sectors}, 8, 'ordinary VM disk retains 4 KiB regions');

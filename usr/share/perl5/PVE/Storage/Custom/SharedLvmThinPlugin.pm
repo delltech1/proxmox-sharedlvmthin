@@ -2481,6 +2481,9 @@ sub _volume_snapshot_locked {
 sub volume_snapshot_delete {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
+    return $class->_thick_volume_snapshot_delete($scfg, $storeid, $volname, $snap)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
+
     return $class->cluster_lock_storage(
         $storeid,
         $scfg->{shared},
@@ -2491,6 +2494,78 @@ sub volume_snapshot_delete {
             );
         },
     );
+}
+
+sub _thick_volume_snapshot_delete {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    $snap = _thick_snapshot_name($snap);
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($vg);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my ($state, undef, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        my ($snapshot, $generation) = $class->_thick_find_snapshot(
+            $storeid, $scfg, $volname, $snap, $lvs,
+        );
+        die "refusing to delete authoritative HEAD as a snapshot\n"
+            if $snapshot eq $state->{head};
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
+        $class->_verify_autoactivation_disabled($vg, $snapshot);
+
+        my $path = "/dev/$vg/$snapshot";
+        if (_block_device_exists($path)) {
+            my $open = _command_lines(
+                ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $path],
+                "reading open count of snapshot '$vg/$snapshot' failed",
+            );
+            die "snapshot '$vg/$snapshot' open count is ambiguous\n"
+                if @$open != 1 || $open->[0] !~ /^\d+$/;
+            die "refusing to delete open snapshot '$vg/$snapshot'\n" if int($open->[0]) != 0;
+        }
+
+        my %intent = (
+            tx => $class->_new_transaction_id(), state => 'OPEN',
+            op => 'REMOVE_SNAPSHOT', object => $snapshot,
+            before => $class->_vg_state_digest($vg),
+        );
+        $class->_set_vg_intent($vg, %intent);
+        eval {
+            if (_block_device_exists($path)) {
+                run_command(
+                    ['/sbin/lvchange', '-an', "$vg/$snapshot"],
+                    errmsg => "deactivating snapshot '$vg/$snapshot' before delete failed",
+                );
+            }
+            run_command(
+                ['/sbin/lvremove', '-f', "$vg/$snapshot"],
+                errmsg => "removing snapshot '$vg/$snapshot' failed",
+            );
+        };
+        my $error = $@;
+
+        eval { $class->_verify_storage_identity($storeid, $scfg); };
+        die "PARTIAL SNAPSHOT DELETE for '$storeid:$volname\@$snap': identity is uncertain; "
+            . "OPEN intent preserved and no retry attempted: $@" if $@;
+        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $objects = $after->{$vg} // {};
+        die "PARTIAL SNAPSHOT DELETE for '$storeid:$volname\@$snap': exact object remains; "
+            . "OPEN intent preserved and no retry attempted"
+            . ($error ? ": $error" : "\n") if exists($objects->{$snapshot});
+        die "PARTIAL SNAPSHOT DELETE for '$storeid:$volname\@$snap': command failed after "
+            . "the exact object disappeared; OPEN intent preserved for manual classification: $error"
+            if $error;
+        my ($after_state) = $class->_thick_anchor(
+            $storeid, $scfg, $volname, $after,
+        );
+        die "snapshot delete changed authoritative HEAD or generation\n"
+            if $after_state->{head} ne $state->{head}
+            || int($after_state->{generation}) != int($state->{generation});
+        $class->_clear_vg_intent($vg, %intent);
+        return;
+    });
 }
 
 sub _volume_snapshot_delete_locked {
