@@ -825,6 +825,42 @@ subtest 'multi-disk proportional allocation pre-grows from live usage' => sub {
     is(scalar(@numeric), 0, 'all live capacity and postcondition reads consumed');
 };
 
+subtest 'inactive pool allocation never repeats headroom growth' => sub {
+    reset_mocks();
+    my $policy = {
+        %$scfg,
+        'slt-initial-pool-mode' => 'elastic',
+        'slt-burst-headroom-gib' => 16,
+        'slt-vg-reserve-gib' => 10,
+    };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $disk = { pool_lv => 'sltp-999900' };
+    @lvm_results = (
+        { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
+        { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
+    );
+    my @numeric = (
+        [400 * 1024**3, 300 * 1024**3, 4 * 1024**2],
+        [68 * 1024**3, undef],
+        [400 * 1024**3, 300 * 1024**3],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_numeric_fields = sub {
+        return @{shift @numeric};
+    };
+    my $warning = '';
+    local $SIG{__WARN__} = sub { $warning .= shift };
+    my $name = $class->alloc_image(
+        'sharedthin-test', $policy, 999900, 'raw',
+        'vm-999900-disk-1', 32 * 1024 * 1024,
+    );
+    is($name, 'vm-999900-disk-1', 'allocation can proceed without speculative pre-growth');
+    my @lines = command_lines();
+    is(scalar(grep { /lvextend/ } @lines), 0, 'inactive pool is not grown from unknown usage');
+    like($warning, qr/automatic pre-growth disabled until usage is known/, 'operator sees the downgraded guarantee');
+    is(scalar(@numeric), 0, 'capacity and reserve checks remain bounded');
+};
+
 subtest 'allocation reserve rejection runs zero mutations' => sub {
     reset_mocks();
     my $policy = {

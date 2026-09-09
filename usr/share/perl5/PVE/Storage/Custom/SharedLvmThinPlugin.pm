@@ -1573,7 +1573,7 @@ sub _allocation_headroom_plan {
         "reading allocation capacity of VG '$vg' failed", 3,
     );
 
-    my ($current_pool, $used) = (0, 0);
+    my ($current_pool, $used, $usage_known) = (0, 0, 1);
     if ($pool_exists) {
         my ($pool_size, $data_percent) = _allocation_numeric_fields(
             [
@@ -1587,12 +1587,14 @@ sub _allocation_headroom_plan {
             $used = int(($current_pool * $data_percent + 99) / 100);
         } else {
             # Inactive thin pools can legitimately omit Data%.  Never activate
-            # shared storage merely to improve an admission estimate.  Treat
-            # the entire current pool as used, which can over-reserve but
-            # cannot under-provision the next bulk allocation.
-            $used = $current_pool;
+            # shared storage merely to improve an admission estimate.  An
+            # unknown value must not be converted into used=current-size:
+            # doing so adds headroom again after every cancelled allocation.
+            # The policy engine keeps an existing pool unchanged, while full
+            # admission fails closed because its guarantee cannot be proven.
+            $usage_known = 0;
             warn "SharedLvmThin: Data% unavailable for inactive '$vg/$pool'; "
-                . "using conservative used=current-size allocation estimate\n";
+                . "automatic pre-growth disabled until usage is known\n";
         }
     }
 
@@ -1602,6 +1604,7 @@ sub _allocation_headroom_plan {
         requested_kib => $size_kib,
         used_bytes => $used,
         current_pool_bytes => $current_pool,
+        usage_known => $usage_known,
     );
     $target_args{percent} = $percent if $mode eq 'proportional';
     $target_args{headroom_gib} = $headroom if $mode eq 'elastic';
