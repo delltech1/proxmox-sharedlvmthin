@@ -10,4 +10,3 @@ Description: Shared LVM Thin storage plugin and health dashboard for Proxmox VE
  Proxmox cluster locking and dmeventd-based cluster-safe autogrow.
  Includes read-only HTTPS health dashboard with native Proxmox VE
  authentication and storage path monitoring.
-
