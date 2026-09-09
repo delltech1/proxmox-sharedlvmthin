@@ -18,12 +18,13 @@ our @EXPORT_OK = qw(
 
 my @ANCHOR_FIELDS = qw(v sid vol phase tx op snapshot source old new head generation region);
 my %PHASE = map { $_ => 1 } qw(
-    PREPARED COMMITTED HYDRATING HYDRATION_COMPLETE LINEAR_PIVOTED MATERIALIZED
+    PREPARED SOURCE_READY COMMITTED HYDRATING HYDRATION_COMPLETE LINEAR_PIVOTED MATERIALIZED
 );
 my $TOKEN = qr/[A-Za-z0-9_.+-]+/;
 my $TX = qr/[0-9a-f]{32}/;
 my %ALLOWED_TRANSITION = (
-    PREPARED => { COMMITTED => 1, MATERIALIZED => 1 },
+    PREPARED => { SOURCE_READY => 1, MATERIALIZED => 1 },
+    SOURCE_READY => { COMMITTED => 1 },
     COMMITTED => { HYDRATING => 1, HYDRATION_COMPLETE => 1 },
     HYDRATING => { HYDRATION_COMPLETE => 1 },
     HYDRATION_COMPLETE => { LINEAR_PIVOTED => 1 },
@@ -122,8 +123,8 @@ sub anchor_tags {
         || $values{region} < 8 || $values{region} > 2_097_152
         || ($values{region} & ($values{region} - 1));
     $values{region} = int($values{region});
-    if ($values{phase} eq 'PREPARED') {
-        die "PREPARED anchor must keep the old generation authoritative\n"
+    if ($values{phase} eq 'PREPARED' || $values{phase} eq 'SOURCE_READY') {
+        die "$values{phase} anchor must keep the old generation authoritative\n"
             if $values{head} ne $values{old};
     } else {
         die "$values{phase} anchor must publish the new generation as HEAD\n"
@@ -224,7 +225,7 @@ sub validate_anchor_transition {
         }
     }
 
-    if ($from eq 'PREPARED' && $to eq 'COMMITTED') {
+    if ($from eq 'SOURCE_READY' && $to eq 'COMMITTED') {
         die "commit must move HEAD from the old generation to the new generation\n"
             if $before->{head} ne $before->{old} || $after->{head} ne $after->{new};
         die "commit generation must advance exactly once\n"
@@ -459,6 +460,13 @@ sub classify_recovery {
             if $runtime !~ /^(?:absent|linear-old|linear-head)$/;
         return $result->('RECOVERY_REQUIRED', 'PREPARED', 'NOT_STARTED',
             'persistent objects are prepared; cutover has not committed');
+    }
+    if ($anchor->{phase} eq 'SOURCE_READY') {
+        return $blocked->('SOURCE_READY transition metadata is missing') if !$objects->{meta};
+        return $blocked->('SOURCE_READY transition published an unexpected runtime mapping')
+            if $runtime !~ /^(?:linear-old|linear-head)$/;
+        return $result->('RECOVERY_REQUIRED', 'SOURCE_READY', 'READY',
+            'metadata and immutable source view are ready; cutover has not committed');
     }
     if ($anchor->{phase} eq 'COMMITTED' || $anchor->{phase} eq 'HYDRATING') {
         return $blocked->('committed transition metadata is missing') if !$objects->{meta};

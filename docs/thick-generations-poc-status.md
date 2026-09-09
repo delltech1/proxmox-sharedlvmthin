@@ -128,7 +128,7 @@ Current automated result:
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=79_PASS
-COMBINED_PERL_REGRESSION=174_PASS
+COMBINED_PERL_REGRESSION=177_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 LIVE_PROCESS_CRASH_C0=PASS
@@ -145,6 +145,13 @@ LIVE_C3_FORWARD_LINEAR_DEPENDENCY=PASS
 LIVE_PROCESS_CRASH_C4=PASS
 LIVE_C4_EXACT_SOURCE_MAPPER_RECOVERY=PASS
 LIVE_C4_FORWARD_LINEAR_DEPENDENCY=PASS
+LIVE_PROCESS_CRASH_C5=PASS
+LIVE_C5_SOURCE_READY_RECOVERY=PASS
+LIVE_C5_NO_METADATA_REINITIALIZATION=PASS
+LIVE_C5_FORWARD_SNAPSHOT_SHA=PASS
+LIVE_C5_FORWARD_LINEAR_DEPENDENCY=PASS
+LIVE_C5_TRANSITION_ARTIFACT_CLEANUP=PASS
+LIVE_C5_DSTATE_AFTER_RECOVERY=0
 ```
 
 Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
@@ -173,6 +180,32 @@ metadata, and left a destination-only linear HEAD with the original SHA-256.
 The orphaned pmxcfs lock expired through the normal cfs lock protocol; it was
 not removed manually and recovery retries were bounded and serial.
 
+A live C5 crash stopped the worker after the stable frontend had entered the
+suspended state. It exposed one remaining unscoped autoactivation verification
+inside the transition-metadata validator. That probe waited behind the
+suspended dependency chain, while the transaction itself performed no further
+mutation. Restoring the frontend allowed the probe to exit, confirming the
+known suspended-frontend/LVM-scan dependency rather than a corrupt metadata
+state.
+
+The transaction model now persists `SOURCE_READY` after clone metadata is
+initialized and the exact immutable source mapper is verified, but before the
+atomic frontend cutover. Recovery from `SOURCE_READY` never initializes clone
+metadata again. It requires the exact source mapper UUID, read-only flag,
+linear table, sector count, and single dependency, and it distinguishes an
+already suspended frontend from an active one before continuing. All LVM
+inventory, identity, autoactivation, tag, activation, creation, permission,
+and removal commands in this transition path are scoped to the pinned
+multipath device.
+
+The matching C5 recovery reused the persisted source view, published the new
+generation, completed hydration and the canonical linear pivot, and removed
+only the transaction metadata and temporary source mapper. The final frontend
+was active and depended only on generation 4. Its SHA-256 matched the pre-crash
+baseline, the old generation became the exact signed read-only snapshot, the
+classifier returned `HEALTHY` and `SAFE_FOR_MUTATION=YES`, quorum remained
+healthy, and no D-state task remained.
+
 ## Geometry gate
 
 The prototype no longer assigns a fixed 16 MiB clone-metadata LV to every
@@ -198,8 +231,9 @@ performance. Those remain explicit qualification gates.
 
 Allocation, list/path resolution, activation, deactivation, snapshot creation,
 grow-only resize, and exact delete are now present on the isolated branch.
-Snapshot creation is unit-qualified through the persisted PREPARED, COMMITTED,
-HYDRATING, HYDRATION_COMPLETE, LINEAR_PIVOTED, and MATERIALIZED phases. It
+Snapshot creation is unit-qualified through the persisted PREPARED,
+SOURCE_READY, COMMITTED, HYDRATING, HYDRATION_COMPLETE, LINEAR_PIVOTED, and
+MATERIALIZED phases. It
 requires an immutable read-only source, exact signed transition artifacts, one
 bounded event-numbered hydration wait, and a verified destination-only linear
 pivot before clearing the VG intent.
@@ -211,8 +245,8 @@ original linear table, preserved the PREPARED transaction evidence, and
 performed no speculative retry. A focused qualification proved that LVM
 commands scoped with `--devices /dev/mapper/<pinned-WWID>` complete while the
 unrelated frontend is suspended. The snapshot cutover now prepares the
-read-only source mapper before suspension and scopes the two necessary LVM tag
-transactions to the pinned multipath device.
+read-only source mapper before suspension and scopes every transition-specific
+LVM command to the pinned multipath device.
 
 The corrected live retry reached MATERIALIZED. The final frontend was a single
 linear segment with only the new generation as a dependency, the transition
@@ -273,8 +307,8 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Extend deterministic recovery to the persisted C5 through C9 states.
-4. Execute process-crash tests at C5 through C9.
+3. Extend deterministic recovery to the persisted C6 through C9 states.
+4. Execute process-crash tests at C6 through C9.
 5. Execute reboot recovery on disposable local storage.
 6. Execute fenced cross-node reconstruction on a disposable shared test LUN.
 7. Qualify single-path and total-path loss without automatic repair.

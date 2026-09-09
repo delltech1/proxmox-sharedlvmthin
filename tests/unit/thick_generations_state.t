@@ -47,9 +47,11 @@ like($@, qr/persist an exact snapshot name/,
 eval { anchor_tags(%$prepared, v => 4) };
 like($@, qr/unsupported/, 'pre-recovery anchor schema is rejected explicitly');
 
+my $source_ready = state(phase => 'SOURCE_READY');
+ok(validate_anchor_transition($prepared, $source_ready), 'PREPARED to SOURCE_READY is valid');
 my $committed = state(phase => 'COMMITTED', head => 'g1', generation => 1);
-ok(validate_anchor_transition($prepared, $committed), 'PREPARED to COMMITTED is valid');
-eval { validate_anchor_transition($prepared, { %$committed, snapshot => 'other' }) };
+ok(validate_anchor_transition($source_ready, $committed), 'SOURCE_READY to COMMITTED is valid');
+eval { validate_anchor_transition($source_ready, { %$committed, snapshot => 'other' }) };
 like($@, qr/immutable field 'snapshot'/,
     'snapshot identity cannot drift after PREPARED');
 my $complete = state(
@@ -73,10 +75,15 @@ my $rollback_prepared = state(
 );
 ok(validate_anchor_transition($materialized, $rollback_prepared),
     'rollback persists the retained snapshot as a source distinct from old HEAD');
+my $rollback_source_ready = {
+    %$rollback_prepared, phase => 'SOURCE_READY',
+};
+ok(validate_anchor_transition($rollback_prepared, $rollback_source_ready),
+    'rollback persists exact source readiness before cutover');
 my $rollback_committed = {
     %$rollback_prepared, phase => 'COMMITTED', head => 'g2', generation => 2,
 };
-ok(validate_anchor_transition($rollback_prepared, $rollback_committed),
+ok(validate_anchor_transition($rollback_source_ready, $rollback_committed),
     'rollback commit advances HEAD exactly once');
 eval { anchor_tags(%$rollback_prepared, source => 'g1') };
 like($@, qr/retained snapshot, not the previous HEAD/,
@@ -92,11 +99,13 @@ like($@, qr/distinct (?:old and new generations|destination)/,
 
 eval { validate_anchor_transition($prepared, $complete) };
 like($@, qr/illegal/, 'phase skipping fails closed');
-eval { validate_anchor_transition($prepared, state(%$committed, tx => ('f' x 32))) };
+eval { validate_anchor_transition($prepared, $committed) };
+like($@, qr/illegal/, 'PREPARED cannot publish COMMITTED before SOURCE_READY');
+eval { validate_anchor_transition($source_ready, state(%$committed, tx => ('f' x 32))) };
 like($@, qr/immutable field 'tx'/, 'transaction replacement fails closed');
-eval { validate_anchor_transition($prepared, state(%$committed, generation => 2)) };
+eval { validate_anchor_transition($source_ready, state(%$committed, generation => 2)) };
 like($@, qr/advance exactly once/, 'generation skipping fails closed');
-eval { validate_anchor_transition($prepared, state(%$committed, region => 16)) };
+eval { validate_anchor_transition($source_ready, state(%$committed, region => 16)) };
 like($@, qr/immutable field 'region'/, 'recovery geometry cannot drift during transition');
 
 my $initial_prepared = state(
@@ -186,8 +195,10 @@ my @crash_matrix = (
     ['C2', $recovery_materialized, $cutover_intent,
         { %transition_objects, candidate_new => 1 }, 'linear-head', 'none', 'PREPARE_UNRECORDED'],
     ['C3', $recovery_prepared, $cutover_intent, { %transition_objects }, 'absent', 'none', 'PREPARED'],
-    ['C4', $recovery_prepared, $cutover_intent, { %transition_objects }, 'linear-head', 'none', 'PREPARED'],
-    ['C5', $recovery_prepared, $cutover_intent, { %transition_objects }, 'linear-old', 'none', 'PREPARED'],
+    ['C4', { %$recovery_prepared, phase => 'SOURCE_READY' }, $cutover_intent,
+        { %transition_objects }, 'linear-head', 'none', 'SOURCE_READY'],
+    ['C5', { %$recovery_prepared, phase => 'SOURCE_READY' }, $cutover_intent,
+        { %transition_objects }, 'linear-old', 'none', 'SOURCE_READY'],
     ['C6', { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
         $cutover_intent, { %transition_objects }, 'absent', 'none', 'COMMITTED'],
     ['C7', { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },

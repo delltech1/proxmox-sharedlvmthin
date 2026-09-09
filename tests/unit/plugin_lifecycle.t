@@ -945,6 +945,22 @@ subtest 'shared LV autoactivation is a verified allocation postcondition' => sub
     );
 
     reset_mocks();
+    my @reads;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        push @reads, [@{$_[0]}];
+        return ['0'];
+    };
+    ok($class->_disable_and_verify_autoactivation(
+        'testvg', 'vm-900001-disk-0', '/dev/mapper/3600abcd',
+    ), 'device-scoped autoactivation postcondition succeeds');
+    is(join(' ', @{$commands[0]}),
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --setautoactivation n testvg/vm-900001-disk-0',
+        'autoactivation mutation is scoped to the exact device');
+    is(join(' ', @{$reads[0]}),
+        '/sbin/lvs --readonly --devices /dev/mapper/3600abcd --binary --noheadings -o lv_autoactivation testvg/vm-900001-disk-0',
+        'autoactivation verification is scoped to the exact device');
+
+    reset_mocks();
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation
         = $disable_and_verify_autoactivation;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
@@ -2221,7 +2237,7 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
 
-    my $tr = $class->_thick_resume_prepared_transition(
+    my $tr = $class->_thick_resume_transition(
         $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', $intent,
     );
     is($tr->{snapshot}, 'snap1', 'resume reconstructs the persisted snapshot request');
@@ -2229,11 +2245,11 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
     is($tr->{meta}, $meta, 'resume reconstructs the exact deterministic metadata object');
     is($tr->{state}->{tx}, $tx, 'resume retains the existing transaction ID');
 
-    eval { $class->_thick_resume_prepared_transition(
+    eval { $class->_thick_resume_transition(
         $cfg, $storeid, $volname, 'other', 'SNAPSHOT', $intent,
     ) };
     like($@, qr/request identity mismatch/, 'different snapshot request fails closed');
-    eval { $class->_thick_resume_prepared_transition(
+    eval { $class->_thick_resume_transition(
         $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', { %$intent, tx => ('8' x 32) },
     ) };
     like($@, qr/not the exact resumable transition/, 'different transaction fails closed');
@@ -2299,7 +2315,9 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $hydrating = {
         %$prepared, phase => 'HYDRATING', head => $new, generation => 1,
     };
+    my $source_ready = { %$prepared, phase => 'SOURCE_READY' };
     my $anchor_tags_prepared = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$prepared)});
+    my $anchor_tags_source_ready = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$source_ready)});
     my $anchor_tags_hydrating = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$hydrating)});
     my $old_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
@@ -2321,12 +2339,19 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         %{$prepared_inventory->{testvg}},
         $anchor => { tags => $anchor_tags_hydrating },
     } };
+    my $source_ready_inventory = { testvg => {
+        %{$prepared_inventory->{testvg}},
+        $anchor => { tags => $anchor_tags_source_ready },
+    } };
     my $after_cleanup = { testvg => {
         $anchor => { tags => $anchor_tags_hydrating },
         $old => { tags => $old_tags, lv_size => $size },
         $new => { tags => $new_tags, lv_size => $size },
     } };
-    my @inventories = ($initial, $prepared_inventory, $hydrating_inventory, $after_cleanup);
+    my @inventories = (
+        $initial, $prepared_inventory, $source_ready_inventory,
+        $hydrating_inventory, $after_cleanup,
+    );
     my @events;
     my @scoped_devices;
     my $phase_state = $materialized;
@@ -2372,8 +2397,15 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         return 1 if $path =~ /\/dev\/mapper\/sltg-[0-9a-f]{24}$/;
         return 0;
     };
-    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventories; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+        return shift @inventories;
+    };
+    my $suspend_reads = 0;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        my ($command) = @_;
+        if (grep { $_ eq 'suspended' } @$command) {
+            return [++$suspend_reads == 1 ? 'Active' : 'Suspended'];
+        }
         return ['0 65536 linear 253:7 0'];
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
@@ -2387,7 +2419,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'thick snapshot reaches materialized linear state');
     my @phases = grep { /^PHASE_/ } @events;
     is_deeply(\@phases, [qw(
-        PHASE_PREPARED PHASE_COMMITTED PHASE_HYDRATING
+        PHASE_PREPARED PHASE_SOURCE_READY PHASE_COMMITTED PHASE_HYDRATING
         PHASE_HYDRATION_COMPLETE PHASE_LINEAR_PIVOTED PHASE_MATERIALIZED
     )], 'persistent phases are monotonic and complete');
     is($phase_state->{tx}, $new_tx, 'every transition phase uses the new transaction ID');
@@ -2395,7 +2427,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my @snapshot_commands = command_lines();
     is(scalar(grep { /lvcreate/ } @snapshot_commands), 2,
         'snapshot creates exactly one destination and one metadata LV');
-    like(join("\n", @snapshot_commands), qr{lvcreate -L 20971520B -n \Q$meta\E},
+    like(join("\n", @snapshot_commands), qr{lvcreate .* -L 20971520B -n \Q$meta\E},
         'metadata capacity comes from persisted geometry, not a fixed 16 MiB value');
     is(scalar(grep { /dmsetup .*suspend --noflush/ } @snapshot_commands), 2,
         'clone cutover and linear pivot each use one explicit noflush suspend');
@@ -2406,15 +2438,16 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my ($cutover_resume) = grep {
         $_ > $cutover_suspend && $snapshot_commands[$_] =~ /dmsetup .*resume/
     } 0 .. $#snapshot_commands;
-    my ($readonly_index) = grep { $snapshot_commands[$_] =~ /lvchange -pr/ } 0 .. $#snapshot_commands;
+    my ($readonly_index) = grep { $snapshot_commands[$_] =~ /lvchange .* -pr/ } 0 .. $#snapshot_commands;
     ok(defined($source_index) && defined($cutover_suspend) && $source_index < $cutover_suspend,
         'read-only source mapper is prepared before the atomic cutover');
     ok(defined($cutover_resume) && defined($readonly_index) && $readonly_index > $cutover_resume,
         'persistent snapshot LV becomes read-only only after the frontend is resumed');
-    is_deeply(\@scoped_devices,
-        ['/dev/mapper/3600abcd', '/dev/mapper/3600abcd'],
-        'anchor commit and snapshot retag are scoped to the pinned multipath device');
-    is(scalar(grep { /lvremove -f testvg\/\Q$meta\E/ } @snapshot_commands), 1,
+    is(scalar(@scoped_devices), 10,
+        'every transition tag mutation carries an explicit device scope');
+    ok(!scalar(grep { $_ ne '/dev/mapper/3600abcd' } @scoped_devices),
+        'every scoped metadata mutation uses the pinned multipath device');
+    is(scalar(grep { /lvremove .* -f testvg\/\Q$meta\E/ } @snapshot_commands), 1,
         'only the exact detached metadata LV is removed');
     is($events[-1], 'INTENT_CLEAR', 'VG intent clears only after MATERIALIZED');
     is(scalar(@inventories), 0, 'all lifecycle inventories were consumed');
