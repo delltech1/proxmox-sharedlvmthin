@@ -486,6 +486,53 @@ CLONE_EXACT_CLEANUP=PASS
 SOURCE_UNCHANGED_AFTER_CLONE_DELETE=PASS
 ```
 
+## Online hydration tuning qualification
+
+The kernel-recommended 4 KiB region size remains unchanged because it bounds
+foreground copy-on-write amplification. The dm-clone defaults of one active
+region and one-region copy requests were nevertheless too conservative for a
+shared-SAN VM disk: a data-bearing online snapshot progressed at only roughly
+18 MiB/s and slowed further while guest I/O was active.
+
+Hydration concurrency and contiguous-copy batching are now explicit,
+independently configurable storage properties. The prototype defaults both to
+32 regions, producing at most 32 concurrent 4 KiB regions and 128 KiB
+contiguous background copy requests. Values outside 1..256, or a batch size
+larger than the threshold, fail closed. Recovery verifies the exact live clone
+table, including both configured tuning values, before it may continue.
+
+An aggressive runtime-only 256/256 experiment greatly increased hydration
+throughput but coincided with a reset of the shared lab hypervisor datastore
+and is rejected as a default. The persistent transaction survived that reset,
+reconstructed the same committed generation, completed materialization after
+boot, and returned to a destination-only linear frontend without ambiguity.
+This is useful crash-recovery evidence, not a performance qualification.
+
+A subsequent controlled online test used the proposed 32/32 defaults. A 6 GiB
+disk materialized in approximately 80 seconds while a guest completed and
+flushed a 768 MiB write. The guest remained reachable, the written file digest
+verified, no D-state task appeared, quorum and both storage modes remained
+healthy, and the final frontend was again a single destination-only linear
+target. A second snapshot followed by rollback restored an fsynced canary to
+its exact pre-snapshot digest, restarted the guest, and materialized a fresh
+independent linear HEAD in approximately 82 seconds. Deleting the earlier
+independent snapshot while the guest was active removed only its signed
+generation and left the recovered HEAD healthy.
+
+```ini
+FOREGROUND_REGION_SIZE_4_KIB=PASS
+DEFAULT_1_1_PERFORMANCE=FAIL
+AGGRESSIVE_256_256_DEFAULT=REJECTED
+CRASH_RECOVERY_DURING_HYDRATION=PASS
+CONSERVATIVE_32_32_ONLINE_SNAPSHOT=PASS
+ONLINE_SNAPSHOT_ELAPSED_APPROX=80_SECONDS
+CONSERVATIVE_32_32_ROLLBACK=PASS
+ROLLBACK_CANARY_DIGEST=PASS
+ONLINE_SNAPSHOT_DELETE_AFTER_TUNING=PASS
+FINAL_FRONTEND_LINEAR=PASS
+POST_TEST_DSTATE=0
+```
+
 ## Open gates
 
 1. Repeat snapshot, delete, rollback, and resize with data-bearing active-QEMU

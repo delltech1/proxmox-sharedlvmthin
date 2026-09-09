@@ -2020,7 +2020,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
     my $uuid = 'SLT-TG2-' . PVE::SharedLvmThinThick::object_key('vg-uuid', $volname);
     my @reads = (
         ["$uuid|writeable"],
-        ['0 8192 clone 253:1 253:2 253:3 8 2 no_hydration no_discard_passdown'],
+        ['0 8192 clone 253:1 253:2 253:3 8 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32'],
         ['3 dependencies : (test--vg-meta--x), (source-map), (test--vg-new--x)'],
     );
     no warnings 'redefine';
@@ -2059,6 +2059,29 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
     eval { $class->_thick_wait_for_hydration($mapper, 60) };
     like($@, qr/not positively complete/, 'non-completion is recovery-required');
     is(scalar(@commands), 1, 'non-completion never spawns a second wait probe');
+};
+
+subtest 'thick hydration tuning is bounded and internally consistent' => sub {
+    is_deeply([$class->_thick_hydration_tuning({})], [32, 32],
+        'conservative default tuning is explicit');
+    is_deeply([$class->_thick_hydration_tuning({
+        'slt-tg-hydration-threshold' => 64,
+        'slt-tg-hydration-batch-size' => 16,
+    })], [64, 16], 'valid custom tuning is accepted');
+
+    for my $case (
+        [{ 'slt-tg-hydration-threshold' => 0 }, qr/invalid thick-generations hydration threshold/],
+        [{ 'slt-tg-hydration-threshold' => 257 }, qr/invalid thick-generations hydration threshold/],
+        [{ 'slt-tg-hydration-batch-size' => 0 }, qr/invalid thick-generations hydration batch size/],
+        [{ 'slt-tg-hydration-batch-size' => 257 }, qr/invalid thick-generations hydration batch size/],
+        [{
+            'slt-tg-hydration-threshold' => 16,
+            'slt-tg-hydration-batch-size' => 32,
+        }, qr/hydration batch size cannot exceed its threshold/],
+    ) {
+        eval { $class->_thick_hydration_tuning($case->[0]) };
+        like($@, $case->[1], 'unsafe hydration tuning fails closed');
+    }
 };
 
 subtest 'thick snapshot lookup accepts exactly one signed immutable generation' => sub {

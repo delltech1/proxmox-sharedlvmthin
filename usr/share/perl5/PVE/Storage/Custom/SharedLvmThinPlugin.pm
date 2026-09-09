@@ -83,6 +83,20 @@ sub properties {
             maximum => 86400,
             default => 3600,
         },
+        'slt-tg-hydration-threshold' => {
+            description => 'Maximum number of Thick Generations regions copied concurrently during background hydration.',
+            type => 'integer',
+            minimum => 1,
+            maximum => 256,
+            default => 32,
+        },
+        'slt-tg-hydration-batch-size' => {
+            description => 'Maximum contiguous Thick Generations regions combined into one background copy request.',
+            type => 'integer',
+            minimum => 1,
+            maximum => 256,
+            default => 32,
+        },
         'slt-initial-pool-size' => {
             description => 'Initial physical size of each per-VM thin pool in GiB.',
             type => 'integer',
@@ -154,6 +168,8 @@ sub options {
         'slt-vgname' => { fixed => 1 },
         'slt-allocation-mode' => { fixed => 1, optional => 1 },
         'slt-tg-hydration-timeout' => { optional => 1 },
+        'slt-tg-hydration-threshold' => { optional => 1 },
+        'slt-tg-hydration-batch-size' => { optional => 1 },
         'slt-initial-pool-size' => { optional => 1 },
         'slt-initial-pool-mode' => { optional => 1 },
         'slt-initial-pool-percent' => { optional => 1 },
@@ -180,6 +196,19 @@ sub _allocation_mode {
     die "unknown SharedLvmThin allocation mode '$mode'\n"
         if $mode ne 'thin' && $mode ne 'thick-generations';
     return $mode;
+}
+
+sub _thick_hydration_tuning {
+    my ($class, $scfg) = @_;
+    my $threshold = $scfg->{'slt-tg-hydration-threshold'} // 32;
+    my $batch = $scfg->{'slt-tg-hydration-batch-size'} // 32;
+    die "invalid thick-generations hydration threshold\n"
+        if $threshold !~ /^\d+$/ || $threshold < 1 || $threshold > 256;
+    die "invalid thick-generations hydration batch size\n"
+        if $batch !~ /^\d+$/ || $batch < 1 || $batch > 256;
+    die "thick-generations hydration batch size cannot exceed its threshold\n"
+        if $batch > $threshold;
+    return (int($threshold), int($batch));
 }
 
 sub _require_thick_identity_config {
@@ -497,6 +526,7 @@ sub _thick_verify_transition_metadata {
 
 sub _thick_verify_clone_frontend {
     my ($class, $scfg, $volname, %expected) = @_;
+    my ($threshold, $batch) = $class->_thick_hydration_tuning($scfg);
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
     my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
@@ -518,7 +548,7 @@ sub _thick_verify_clone_frontend {
     );
     die "dm-clone frontend '$mapper' table mismatch\n"
         if @$table != 1
-        || $table->[0] !~ /^0\s+\Q$expected{sectors}\E\s+clone\s+\S+\s+\S+\s+\S+\s+\Q$expected{region}\E(?:\s|$)/;
+        || $table->[0] !~ /^0\s+\Q$expected{sectors}\E\s+clone\s+\S+\s+\S+\s+\S+\s+\Q$expected{region}\E\s+2\s+no_hydration\s+no_discard_passdown\s+4\s+hydration_threshold\s+\Q$threshold\E\s+hydration_batch_size\s+\Q$batch\E$/;
 
     my $deps = _command_lines(
         ['/sbin/dmsetup', 'deps', '-o', 'devname', $mapper],
@@ -2265,6 +2295,7 @@ sub _thick_volume_snapshot {
         );
         my $sectors = int($tr->{size} / 512);
         if ($class->_thick_mapper_is_suspended($front)) {
+            my ($threshold, $batch) = $class->_thick_hydration_tuning($scfg);
             $class->_thick_verify_frontend(
                 $scfg, $volname, $tr->{old}, int($tr->{old_size} / 512),
             );
@@ -2273,7 +2304,8 @@ sub _thick_volume_snapshot {
                     "0 $sectors clone /dev/$vg/$tr->{meta} /dev/$vg/$tr->{new} "
                         . "/dev/mapper/$tr->{source_map} "
                         . $tr->{geometry}->{region_sectors} . " "
-                        . "2 no_hydration no_discard_passdown"],
+                        . "2 no_hydration no_discard_passdown "
+                        . "4 hydration_threshold $threshold hydration_batch_size $batch"],
                 errmsg => "loading dm-clone snapshot transition failed",
             );
             run_command(
