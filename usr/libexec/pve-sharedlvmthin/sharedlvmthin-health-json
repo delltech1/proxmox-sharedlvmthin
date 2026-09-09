@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
 import json
+import glob
 import os
 import platform
 import re
@@ -62,6 +63,7 @@ def parse_storage_cfg():
             current = {
                 "id": parts[1] if len(parts) > 1 else "unknown",
                 "vg": None,
+                "allocation_mode": "thin",
                 "initial_pool_size_gib": None,
                 "initial_pool_mode": "fixed",
                 "initial_pool_percent": 50,
@@ -82,6 +84,9 @@ def parse_storage_cfg():
 
             if s.startswith("slt-vgname "):
                 current["vg"] = s.split(None, 1)[1]
+
+            elif s.startswith("slt-allocation-mode "):
+                current["allocation_mode"] = s.split(None, 1)[1]
 
             elif s.startswith("slt-initial-pool-size "):
                 try:
@@ -429,9 +434,10 @@ def pools(vg, sid):
     ])
 
     result = []
+    thick_anchors = []
 
     if rc != 0:
-        return None, err or out or f"lvs exited with status {rc}"
+        return None, err or out or f"lvs exited with status {rc}", None
 
     expected_tag = "pve-slt-sid-" + sid
 
@@ -442,6 +448,25 @@ def pools(vg, sid):
             continue
 
         name = fields[0]
+
+        tags = [x for x in fields[3].split(",") if x]
+        tag_values = {}
+        for tag in tags:
+            if not tag.startswith("slt_tg_") or "=" not in tag:
+                continue
+            key, tag_value = tag.split("=", 1)
+            tag_values[key[7:]] = tag_value
+
+        if name.startswith("sltg-a-") and tag_values.get("sid") == sid:
+            thick_anchors.append({
+                "name": name,
+                "volume": tag_values.get("vol"),
+                "phase": tag_values.get("phase"),
+                "operation": tag_values.get("op"),
+                "transaction": tag_values.get("tx"),
+                "head": tag_values.get("head"),
+                "generation": tag_values.get("generation"),
+            })
 
         if not re.fullmatch(r"sltp-\d+", name):
             continue
@@ -456,9 +481,7 @@ def pools(vg, sid):
             "name": name,
             "size_bytes": int(float(fields[1])),
             "attr": fields[2],
-            "tags": [
-                x for x in fields[3].split(",") if x
-            ],
+            "tags": tags,
             "owned": expected_tag in fields[3].split(","),
             "monitor": fields[4] or None,
             "data_percent": fnum(fields[5]),
@@ -472,7 +495,64 @@ def pools(vg, sid):
             "when_full": fields[13] or None,
         })
 
-    return result, None
+    return result, None, thick_anchors
+
+
+def pve_volume_reference_files(volid):
+    """Return config files that contain an exact PVE volume reference."""
+    if not volid or not re.fullmatch(r"[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+-]+", volid):
+        return []
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_.+-])" + re.escape(volid) + r"(?=[,\s]|$)"
+    )
+    cluster_paths = (
+        glob.glob("/etc/pve/nodes/*/qemu-server/*.conf")
+        + glob.glob("/etc/pve/nodes/*/lxc/*.conf")
+    )
+    config_paths = cluster_paths or (
+        glob.glob("/etc/pve/qemu-server/*.conf")
+        + glob.glob("/etc/pve/lxc/*.conf")
+    )
+    matches = []
+    for cfg_path in sorted(set(config_paths)):
+        content = read_file(cfg_path)
+        if content is not None and pattern.search(content):
+            matches.append(cfg_path)
+    return matches
+
+
+def evaluate_thick_anchor_references(sid, anchors):
+    """Classify anchors without mutating or guessing cleanup eligibility."""
+    results = []
+    for anchor in anchors or []:
+        volume = anchor.get("volume")
+        volid = f"{sid}:{volume}" if volume else None
+        references = pve_volume_reference_files(volid) if volid else []
+        item = {
+            **anchor,
+            "volid": volid,
+            "reference_count": len(references),
+        }
+        if not volume:
+            item["status"] = "WARN"
+            item["reason"] = "anchor volume identity is unavailable; no cleanup attempted"
+        elif not references:
+            item["status"] = "WARN"
+            item["reason"] = (
+                "unreferenced Thick Generations volume; it may be an incomplete "
+                "destination after an interrupted import, clone, or move; prove its "
+                "purpose and identity before any explicit cleanup"
+            )
+        elif len(references) > 1:
+            item["status"] = "WARN"
+            item["reason"] = (
+                "volume is referenced by multiple PVE configs; ownership is ambiguous"
+            )
+        else:
+            item["status"] = "PASS"
+            item["reason"] = "volume has exactly one PVE configuration reference"
+        results.append(item)
+    return results
 
 
 def evaluate_pool_flags(attr, health_status, check_needed=None):
@@ -1040,6 +1120,7 @@ for storage in parse_storage_cfg():
         "pve": states.get(sid, {}),
         "vg_info": None,
         "pools": [],
+        "thick_anchors": [],
         "pool_inventory_error": None,
         "metadata_spares": [],
         "transport": None,
@@ -1055,7 +1136,7 @@ for storage in parse_storage_cfg():
         item["vg_info"] = vg_info(vg)
 
         if item["vg_info"].get("visible"):
-            pool_inventory, pool_error = pools(vg, sid)
+            pool_inventory, pool_error, thick_anchors = pools(vg, sid)
             item["pool_inventory_error"] = pool_error
             if pool_error is not None:
                 check(
@@ -1065,6 +1146,17 @@ for storage in parse_storage_cfg():
                 )
             else:
                 item["pools"] = pool_inventory
+                item["thick_anchors"] = evaluate_thick_anchor_references(
+                    sid, thick_anchors
+                )
+                for anchor in item["thick_anchors"]:
+                    if anchor.get("status") == "WARN":
+                        check(
+                            f"thick_reference:{sid}:{anchor.get('name')}",
+                            "WARN",
+                            f"{sid}: {anchor.get('volid') or anchor.get('name')}: "
+                            f"{anchor.get('reason')}; no cleanup attempted",
+                        )
             item["metadata_spares"] = metadata_spares(vg)
             item["transport"] = build_transport(vg)
 

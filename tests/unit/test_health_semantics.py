@@ -266,7 +266,7 @@ class PoolBatchCollectionTests(unittest.TestCase):
             compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
             namespace,
         )
-        result, error = namespace["pools"]("testvg", "test")
+        result, error, thick_anchors = namespace["pools"]("testvg", "test")
         self.assertEqual(len(calls), 1)
         self.assertIn("lv_autoactivation", " ".join(calls[0]))
         self.assertIn("lv_when_full", " ".join(calls[0]))
@@ -274,6 +274,7 @@ class PoolBatchCollectionTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["autoactivation"], "0")
         self.assertEqual(result[0]["when_full"], "queue")
+        self.assertEqual(thick_anchors, [])
 
     def test_lvs_failure_is_not_reported_as_an_empty_inventory(self):
         tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
@@ -286,9 +287,98 @@ class PoolBatchCollectionTests(unittest.TestCase):
             compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
             namespace,
         )
-        result, error = namespace["pools"]("testvg", "test")
+        result, error, thick_anchors = namespace["pools"]("testvg", "test")
         self.assertIsNone(result)
         self.assertEqual(error, "timed out")
+        self.assertIsNone(thick_anchors)
+
+
+class ThickAnchorReferenceTests(unittest.TestCase):
+    def test_cluster_wide_reference_scan_and_exact_token_matching(self):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "pve_volume_reference_files"
+        )
+
+        class FakeGlob:
+            @staticmethod
+            def glob(pattern):
+                if pattern == "/etc/pve/nodes/*/qemu-server/*.conf":
+                    return ["/etc/pve/nodes/node-a/qemu-server/100.conf"]
+                if pattern == "/etc/pve/qemu-server/*.conf":
+                    return ["/etc/pve/qemu-server/duplicate-local.conf"]
+                return []
+
+        contents = {
+            "/etc/pve/nodes/node-a/qemu-server/100.conf": (
+                "scsi0: thick:vm-100-disk-0,size=1G\n"
+            ),
+            "/etc/pve/qemu-server/duplicate-local.conf": (
+                "scsi0: thick:vm-100-disk-0,size=1G\n"
+            ),
+        }
+        namespace = {
+            "re": re,
+            "glob": FakeGlob,
+            "read_file": lambda path: contents.get(path),
+        }
+        exec(
+            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            namespace,
+        )
+        scan = namespace["pve_volume_reference_files"]
+        self.assertEqual(
+            scan("thick:vm-100-disk-0"),
+            ["/etc/pve/nodes/node-a/qemu-server/100.conf"],
+        )
+        self.assertEqual(scan("thick:vm-100-disk"), [])
+
+    def evaluate_with_counts(self, counts):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "evaluate_thick_anchor_references"
+        )
+        namespace = {
+            "pve_volume_reference_files": lambda volid: [
+                f"config-{index}" for index in range(counts.get(volid, 0))
+            ],
+        }
+        exec(
+            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            namespace,
+        )
+        return namespace["evaluate_thick_anchor_references"]
+
+    def test_exactly_one_reference_passes(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MATERIALIZED",
+        }])
+        self.assertEqual(result[0]["status"], "PASS")
+        self.assertEqual(result[0]["reference_count"], 1)
+
+    def test_unreferenced_anchor_warns_without_cleanup_claim(self):
+        evaluate = self.evaluate_with_counts({})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MATERIALIZED",
+        }])
+        self.assertEqual(result[0]["status"], "WARN")
+        self.assertIn("incomplete destination", result[0]["reason"])
+        self.assertIn("before any explicit cleanup", result[0]["reason"])
+
+    def test_multiple_references_are_ambiguous(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 2})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+        }])
+        self.assertEqual(result[0]["status"], "WARN")
+        self.assertIn("ambiguous", result[0]["reason"])
 
 
 class PvBindingPolicyTests(unittest.TestCase):

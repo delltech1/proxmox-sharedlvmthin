@@ -500,9 +500,12 @@ After quorum returned, exact config and inventory evidence proved that the VM
 still referenced only the original thin source. The orphan destination was
 then removed by its exact volume identity; the source and VM configuration
 remained unchanged. This is a fail-safe interruption result, not a successful
-Windows move qualification. Unreferenced-volume diagnosis should be added as a
-read-only operational warning, but cleanup must remain explicit and must never
-infer that an unreferenced volume is disposable.
+Windows move qualification. Doctor now reports unreferenced Thick Generations
+anchors as a read-only operational warning. It scans cluster-wide VM and
+container configurations on an arbitrary number of nodes, includes snapshot
+and unused-disk references, and reuses the existing per-VG LVM inventory
+instead of spawning another LVM probe. Cleanup remains explicit and never
+infers that an unreferenced volume is disposable.
 
 ```ini
 INTERRUPTED_WINDOWS_THIN_TO_THICK=BLOCKED_LAB_INFRA
@@ -510,6 +513,8 @@ SOURCE_PRESERVED=PASS
 DESTINATION_NOT_PUBLISHED=PASS
 NO_SOURCE_DELETE_BEFORE_COPY_COMMIT=PASS
 EXACT_ORPHAN_CLEANUP_AFTER_IDENTITY_PROOF=PASS
+MULTINODE_ORPHAN_DIAGNOSTIC=PASS
+ORPHAN_DIAGNOSTIC_SIDE_EFFECTS=0
 WINDOWS_THIN_TO_THICK=NOT_YET_QUALIFIED
 ```
 
