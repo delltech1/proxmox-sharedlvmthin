@@ -34,6 +34,16 @@ jobs:
           sh scripts/build.sh
           sh scripts/check-release.sh dist/*.deb
 
+      - name: Prepare GitHub-safe assets and checksum
+        run: |
+          for source in dist/*.deb; do
+            target="$(printf '%s' "$source" | tr '~' '.')"
+            if [ "$target" != "$source" ]; then
+              mv "$source" "$target"
+            fi
+          done
+          (cd dist && sha256sum ./*.deb > SHA256SUMS)
+
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,9 +53,17 @@ jobs:
           release_name="$(printf '%s' "$suffix" | tr '[:lower:]' '[:upper:]')"
           notes="docs/RELEASE-NOTES-${release_name}.md"
           test -f "$notes"
-          gh release create "$tag_name" \
-            dist/*.deb dist/SHA256SUMS \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "SharedLvmThin ${release_name}" \
-            --notes-file "$notes"
+          if gh release view "$tag_name" >/dev/null 2>&1; then
+            gh release upload "$tag_name" dist/*.deb dist/SHA256SUMS --clobber
+            gh release edit "$tag_name" \
+              --prerelease \
+              --title "SharedLvmThin ${release_name}" \
+              --notes-file "$notes"
+          else
+            gh release create "$tag_name" \
+              dist/*.deb dist/SHA256SUMS \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "SharedLvmThin ${release_name}" \
+              --notes-file "$notes"
+          fi
