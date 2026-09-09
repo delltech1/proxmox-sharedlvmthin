@@ -3,6 +3,9 @@
 RC5.3.1 is a diagnostic correctness patch for RC5.3. The Doctor now reports
 the qualified 50% elastic early-grow threshold as healthy while continuing to
 accept 80% for explicitly selected legacy fixed or proportional policies.
+It also scopes the dm-event service gate to pools active on the current node;
+an inactive shared pool visible on a non-owner node no longer causes a false
+failure.
 
 The elastic grow path was qualified on a three-node PVE 9 cluster with mixed
 Storage API 15/15/14. A disposable 8 GiB virtual disk started with a 4 GiB
