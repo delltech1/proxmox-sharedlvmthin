@@ -499,8 +499,8 @@ host.
 After quorum returned, exact config and inventory evidence proved that the VM
 still referenced only the original thin source. The orphan destination was
 then removed by its exact volume identity; the source and VM configuration
-remained unchanged. This is a fail-safe interruption result, not a successful
-Windows move qualification. Doctor now reports unreferenced Thick Generations
+remained unchanged. This is a fail-safe interruption result from the first
+Windows move attempt. Doctor now reports unreferenced Thick Generations
 anchors as a read-only operational warning. It scans cluster-wide VM and
 container configurations on an arbitrary number of nodes, includes snapshot
 and unused-disk references, and reuses the existing per-VG LVM inventory
@@ -515,7 +515,43 @@ NO_SOURCE_DELETE_BEFORE_COPY_COMMIT=PASS
 EXACT_ORPHAN_CLEANUP_AFTER_IDENTITY_PROOF=PASS
 MULTINODE_ORPHAN_DIAGNOSTIC=PASS
 ORPHAN_DIAGNOSTIC_SIDE_EFFECTS=0
-WINDOWS_THIN_TO_THICK=NOT_YET_QUALIFIED
+FIRST_WINDOWS_THIN_TO_THICK=INTERRUPTED_BY_LAB_INFRA
+```
+
+The same stopped 32 GiB Windows system disk was subsequently moved from thin
+mode to Thick Generations with PVE's native bandwidth control. The full copy
+completed, PVE deleted the thin source only after publishing the destination,
+and the VM configuration referenced the new Thick Generations volume. The
+anchor identified generation zero as the authoritative HEAD, while the live
+frontend was a single destination-only linear target. Both multipath maps
+retained two usable paths, the cluster remained quorate, no D-state task was
+present after the operation, and Windows started from the moved disk.
+
+The successful retry used 20 MiB/s for the individual operation. A 60 MiB/s
+cluster migration limit was then selected for subsequent tests. These are
+protective limits for this nested lab, whose NAS and all PVE nodes share one
+physical hypervisor datastore. They are not plugin defaults or production
+throughput recommendations. The earlier unrestricted attempt coincided with a
+confirmed 4.726-second physical datastore I/O latency excursion and a prolonged
+datastore degradation interval, followed by two nested PVE guest-requested hard
+resets. ESXi and the NAS guest did not reboot. This evidence classifies that
+event as a lab-infrastructure failure rather than a Thick Generations data-path
+failure.
+
+```ini
+WINDOWS_THIN_TO_THICK=PASS
+WINDOWS_SYSTEM_DISK_SIZE=32_GIB
+FULL_COPY=PASS
+SOURCE_DELETE_ONLY_AFTER_COMMIT=PASS
+AUTHORITATIVE_HEAD=PASS
+FINAL_FRONTEND_LINEAR=PASS
+FINAL_DEPENDENCY_DESTINATION_ONLY=PASS
+WINDOWS_START_AFTER_MOVE=PASS
+MULTIPATH_PATHS=2_OF_2
+CLUSTER_QUORUM=PASS
+POST_MOVE_DSTATE=0
+UNRESTRICTED_NESTED_LAB_MOVE=INFRASTRUCTURE_FAIL
+LAB_MIGRATION_BWLIMIT=60_MIB_PER_SECOND
 ```
 
 ## Online hydration tuning qualification
@@ -596,8 +632,7 @@ UNRELATED_HOST_DSTATE_DOES_NOT_POISON_STORAGE=PASS
 
 ## Open gates
 
-1. Repeat snapshot, delete, rollback, and resize with data-bearing active-QEMU
-   workloads, then complete any recovery paths exposed by those tests.
-2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Qualify physical FC/FCoE path loss and active-guest application outcomes.
-4. Run Linux and Windows data-integrity workloads and a long-duration soak.
+1. Qualify full-hydration metadata occupancy and geometry performance.
+2. Qualify physical FC/FCoE path loss and active-guest application outcomes.
+3. Complete a long-duration Windows data-integrity soak and interrupted
+   Windows-operation recovery tests.
