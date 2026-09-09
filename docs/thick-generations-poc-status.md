@@ -183,6 +183,13 @@ LIVE_CROSS_NODE_IDENTITY=PASS
 LIVE_CROSS_NODE_LINEAR_RECONSTRUCTION=PASS
 LIVE_CROSS_NODE_DATA_INTEGRITY=PASS
 LIVE_CROSS_NODE_ROUND_TRIP=PASS
+LIVE_ISCSI_SINGLE_PATH_2_TO_1_TO_2=PASS
+LIVE_ISCSI_SINGLE_PATH_READ_ONLY_IO=PASS
+LIVE_ISCSI_TOTAL_PATH_LOSS_BOUNDED=PASS
+LIVE_ISCSI_TOTAL_PATH_LOSS_QEMU_OUTCOME=BOUNDED_EIO
+LIVE_ISCSI_TOTAL_PATH_RECOVERY_2_OF_2=PASS
+LIVE_ISCSI_TOTAL_PATH_RECOVERY_DATA_INTEGRITY=PASS
+LIVE_ISCSI_TOTAL_PATH_RECOVERY_DSTATE=0
 ```
 
 Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
@@ -302,6 +309,33 @@ verified the destination-only dependency and original SHA-256. A second
 serialized handoff returned the object to the original node with identical
 results, healthy quorum, and zero D-state tasks.
 
+The iSCSI path-loss gate first removed and restored one portal on the canary
+node while the second portal remained active. Both the existing shared-thin
+map and the disposable Thick Generations map changed from two paths to one and
+back to two. Forty repeated direct read-only QEMU reads completed with the
+original SHA-256. A one-second passive sampler observed no D-state task during
+the 15-second single-path workload, and the iSCSI node startup policy remained
+unchanged.
+
+The isolated total-path-loss test ran only after proving that the canary node
+had no guest, container, active shared-thin pool, or open Thick Generations
+frontend consumer. The effective policy reported numeric `no_path_retry 12`,
+five-second polling, and `queue_without_daemon no`. Both iSCSI network links
+were disabled with an independent transient systemd recovery timer already
+armed. Exactly one direct read-only QEMU request was issued; no LVM or PVE
+probe was spawned during loss. Multipath exposed a decreasing bounded queue
+window, changed queueing to `off` after approximately 75 seconds in this run,
+and the QEMU request returned a controlled `EIO` instead of remaining blocked.
+This measured duration is evidence for this lab stack, not a general timing
+guarantee.
+
+After both links returned, the two iSCSI maps recovered to two usable paths.
+The Thick Generations frontend remained a canonical linear mapping to the same
+signed generation-8 HEAD, its SHA-256 matched the pre-loss baseline, quorum was
+healthy, and no D-state task remained. This qualifies the disposable iSCSI
+canary path only. Physical FC/FCoE targets and guest-visible application
+behavior still require their own transport-specific qualification.
+
 ## Geometry gate
 
 The prototype no longer assigns a fixed 16 MiB clone-metadata LV to every
@@ -403,7 +437,7 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Qualify single-path and total-path loss without automatic repair.
+3. Qualify physical FC/FCoE path loss and active-guest application outcomes.
 4. Integrate PVE create, snapshot, rollback, clone, migration, backup, restore,
    and thin-to-thick and thick-to-thin storage moves.
 5. Run Linux and Windows data-integrity workloads and a long-duration soak.
