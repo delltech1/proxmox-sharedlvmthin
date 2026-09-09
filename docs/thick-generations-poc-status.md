@@ -470,11 +470,26 @@ POST_TEST_DSTATE=0
 POST_TEST_QUORUM=PASS
 ```
 
+PVE full-clone qualification copied the complete thick disk into a separately
+owned anchor and generation. The clone's full-volume digest matched the
+source, it completed a start/stop cycle through a destination-only linear
+frontend, and deleting the clone removed only its two owned objects. The
+source was started again after cleanup and retained its original full-volume
+digest.
+
+```ini
+PVE_FULL_CLONE=PASS
+CLONE_INDEPENDENT_OWNERSHIP=PASS
+CLONE_FULL_VOLUME_DIGEST=PASS
+CLONE_LINEAR_FRONTEND=PASS
+CLONE_EXACT_CLEANUP=PASS
+SOURCE_UNCHANGED_AFTER_CLONE_DELETE=PASS
+```
+
 ## Open gates
 
 1. Repeat snapshot, delete, rollback, and resize with data-bearing active-QEMU
    workloads, then complete any recovery paths exposed by those tests.
 2. Qualify full-hydration metadata occupancy and geometry performance.
 3. Qualify physical FC/FCoE path loss and active-guest application outcomes.
-4. Qualify PVE full-clone behavior and cleanup.
-5. Run Linux and Windows data-integrity workloads and a long-duration soak.
+4. Run Linux and Windows data-integrity workloads and a long-duration soak.
