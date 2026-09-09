@@ -1804,4 +1804,191 @@ subtest 'thick tag mutation enforces exact precondition and postcondition' => su
     is(scalar(@commands), 1, 'uncertain outcome is never retried');
 };
 
+subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $namespace = $cfg->{'slt-expected-vg-uuid'};
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $tx = '1' x 32;
+    my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
+        sid => $storeid, vol => $volname, phase => 'MATERIALIZED', tx => $tx,
+        old => $head, new => $head, head => $head, generation => 0,
+    )});
+    my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'head', generation => 0,
+    )});
+    my $inventory = { testvg => {
+        $anchor => { tags => $anchor_tags, lv_size => 4096 },
+        $head => { tags => $head_tags, lv_size => 4096 },
+    } };
+    my @intent_events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { return '2' x 32; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { return 'a' x 32; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub {
+        push @intent_events, 'OPEN'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        push @intent_events, 'CLEAR'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub {
+        return $inventory if !@commands;
+        return {};
+    };
+    is($class->free_image($storeid, $cfg, $volname, 0), undef, 'exact thick delete completes');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove -f testvg/$head",
+        "/sbin/lvremove -f testvg/$anchor",
+    ], 'only the exact head and anchor are removed');
+    is_deeply(\@intent_events, ['OPEN', 'CLEAR'], 'intent brackets the verified delete');
+
+    reset_mocks();
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 1; };
+    eval { $class->free_image($storeid, $cfg, $volname, 0) };
+    like($@, qr/refusing to delete active/, 'active frontend blocks delete');
+    is(scalar(@commands), 0, 'active frontend rejection performs zero mutation');
+
+    reset_mocks();
+    my $snapshot = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 1);
+    my $with_snapshot = { testvg => { %{$inventory->{testvg}}, $snapshot => { tags => '' } } };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1; };
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return $with_snapshot; };
+    eval { $class->free_image($storeid, $cfg, $volname, 0) };
+    like($@, qr/snapshots or ambiguous generations remain/, 'dependent generation blocks delete');
+    is(scalar(@commands), 0, 'dependency rejection performs zero mutation');
+};
+
+subtest 'thick resize is grow-only and publishes zeroed capacity after exact proof' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $namespace = $cfg->{'slt-expected-vg-uuid'};
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $tx = '3' x 32;
+    my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
+        sid => $storeid, vol => $volname, phase => 'MATERIALIZED', tx => $tx,
+        old => $head, new => $head, head => $head, generation => 0,
+    )});
+    my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'head', generation => 0,
+    )});
+    my $old = 4 * 1024 * 1024;
+    my $new = 8 * 1024 * 1024;
+    my $old_inventory = { testvg => {
+        $anchor => { tags => $anchor_tags, lv_size => $old },
+        $head => { tags => $head_tags, lv_size => $old },
+    } };
+    my $new_inventory = { testvg => {
+        $anchor => { tags => $anchor_tags, lv_size => $old },
+        $head => { tags => $head_tags, lv_size => $new },
+    } };
+    my @inventories = ($old_inventory, $new_inventory, $new_inventory);
+    my @intent_events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { return '4' x 32; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { return 'b' x 32; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub {
+        push @intent_events, 'OPEN'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        push @intent_events, 'CLEAR'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventories; };
+    is($class->volume_resize($cfg, $storeid, $volname, $new, 0, undef), undef,
+        'offline grow completes');
+    my @resize_commands = command_lines();
+    like($resize_commands[0], qr{^/sbin/lvextend -L ${new}B testvg/\Q$head\E$},
+        'backing head is extended exactly once');
+    like(join("\n", @resize_commands), qr{/usr/bin/dd if=/dev/zero},
+        'new range is explicitly zero initialized');
+    like(join("\n", @resize_commands), qr{/sbin/blockdev --flushbufs},
+        'zeroed range is flushed before publication');
+    is(scalar(grep { m{/sbin/lvextend} } @resize_commands), 1,
+        'lvextend is never retried');
+    is_deeply(\@intent_events, ['OPEN', 'CLEAR'], 'intent clears only after publication proof');
+
+    reset_mocks();
+    @inventories = ($old_inventory);
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventories; };
+    eval { $class->volume_resize($cfg, $storeid, $volname, $old - 512, 0, undef) };
+    like($@, qr/shrinking thick-generations volumes is not supported/, 'shrink fails closed');
+    is(scalar(@commands), 0, 'shrink rejection performs zero mutation');
+
+    {
+        reset_mocks();
+        @inventories = ($old_inventory, $new_inventory, $new_inventory);
+        my @frontend_sectors;
+        local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventories; };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 1; };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
+            my (undef, undef, undef, undef, $sectors) = @_;
+            push @frontend_sectors, $sectors;
+            return 1;
+        };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+            return ["0 " . int($new / 512) . " linear 253:7 0"];
+        };
+        is($class->volume_resize($cfg, $storeid, $volname, $new, 1, undef), undef,
+            'online grow completes');
+        my @online = command_lines();
+        my ($reload) = grep { /dmsetup --verifyudev reload/ } @online;
+        my ($suspend) = grep { /dmsetup --verifyudev suspend --noflush/ } @online;
+        my ($resume) = grep { /dmsetup --verifyudev resume/ } @online;
+        ok(defined($reload) && defined($suspend) && defined($resume),
+            'online cutover contains reload, bounded noflush suspend, and resume');
+        my %position;
+        for my $index (0 .. $#online) {
+            $position{reload} = $index if $online[$index] =~ /dmsetup --verifyudev reload/;
+            $position{suspend} = $index if $online[$index] =~ /dmsetup --verifyudev suspend --noflush/;
+            $position{resume} = $index if $online[$index] =~ /dmsetup --verifyudev resume/;
+        }
+        ok($position{reload} < $position{suspend} && $position{suspend} < $position{resume},
+            'inactive table is verified before the explicit suspend/resume cutover');
+        is_deeply(\@frontend_sectors, [int($old / 512), int($old / 512), int($new / 512)],
+            'frontend identity is proven before load, before cutover, and after resume');
+    }
+};
+
 done_testing();

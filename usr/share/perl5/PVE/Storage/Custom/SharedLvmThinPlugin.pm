@@ -1549,8 +1549,86 @@ sub deactivate_volume {
     return 1;
 }
 
+sub _thick_free_image {
+    my ($class, $storeid, $scfg, $volname, $isBase) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    die "refusing to delete active thick-generations volume '$volname'; "
+        . "stable frontend '$mapper' still exists\n"
+        if _block_device_exists("/dev/mapper/$mapper");
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($vg);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        die "thick-generations storage '$storeid' is unavailable: VG '$vg' is not visible\n"
+            if !$lvs->{$vg};
+
+        my ($state, undef, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        my $head = $state->{head};
+        my $key = object_key($namespace, $volname);
+        my @generations = sort grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %{$lvs->{$vg}};
+        die "refusing to delete thick-generations volume '$volname': "
+            . "owned snapshots or ambiguous generations remain\n"
+            if @generations != 1 || $generations[0] ne $head;
+        validate_generation_tags(
+            $lvs->{$vg}->{$head}->{tags} // '', sid => $storeid, vol => $volname,
+            role => 'head', generation => $state->{generation},
+        );
+        $class->_verify_autoactivation_disabled($vg, $head);
+        $class->_verify_autoactivation_disabled($vg, $anchor);
+
+        my $tx = $class->_new_transaction_id();
+        my %intent = (
+            tx => $tx, state => 'OPEN', op => 'REMOVE', object => $anchor,
+            before => $class->_vg_state_digest($vg),
+        );
+        $class->_set_vg_intent($vg, %intent);
+
+        my $command_error = '';
+        eval {
+            run_command(
+                ['/sbin/lvremove', '-f', "$vg/$head"],
+                errmsg => "removing thick generation '$vg/$head' failed",
+            );
+            run_command(
+                ['/sbin/lvremove', '-f', "$vg/$anchor"],
+                errmsg => "removing thick generation anchor '$vg/$anchor' failed",
+            );
+        };
+        $command_error = $@ if $@;
+
+        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        eval { $class->_verify_storage_identity($storeid, $scfg); };
+        die "PARTIAL DELETE for '$storeid:$volname': storage identity/availability "
+            . "could not be revalidated; OPEN REMOVE intent preserved and no retry attempted: $@"
+            if $@;
+        # lvm_list_volumes() omits an otherwise healthy VG when it becomes empty.
+        # Positive identity revalidation above distinguishes that from disappearance.
+        my $after_objects = $after->{$vg} // {};
+        my $head_remains = exists($after_objects->{$head});
+        my $anchor_remains = exists($after_objects->{$anchor});
+        die "PARTIAL DELETE for '$storeid:$volname': head=$head_remains "
+            . "anchor=$anchor_remains; OPEN REMOVE intent preserved and no retry attempted\n"
+            if $head_remains || $anchor_remains;
+
+        warn "thick-generations delete command reported an error, but exact postcondition "
+            . "proves both owned objects absent; treating operation as completed without retry: "
+            . $command_error
+            if $command_error;
+        $class->_clear_vg_intent($vg, %intent);
+        return undef;
+    });
+}
+
 sub free_image {
     my ($class, $storeid, $scfg, $volname, $isBase) = @_;
+
+    return $class->_thick_free_image($storeid, $scfg, $volname, $isBase)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     $class->_verify_mutation_quorum($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
@@ -1678,8 +1756,173 @@ sub free_image {
     return undef;
 }
 
+sub _thick_volume_resize {
+    my ($class, $scfg, $storeid, $volname, $size, $running, $snapname) = @_;
+    die "resizing thick-generations snapshots is not supported\n" if defined($snapname);
+    die "invalid resize size\n" if !defined($size) || $size !~ /^\d+$/ || $size < 1;
+    $class->_require_thick_identity_config($storeid, $scfg);
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    my %resize;
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($vg);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        my $head = $state->{head};
+        my $old_size = $head_info->{lv_size};
+        die "thick-generations head '$vg/$head' size is unknown\n"
+            if !defined($old_size) || $old_size !~ /^\d+$/ || $old_size < 1;
+        die "shrinking thick-generations volumes is not supported\n" if $size < $old_size;
+        return if $size == $old_size;
+        die "thick-generations size is not sector aligned\n"
+            if $old_size % 512 || $size % 512;
+
+        my $delta = $size - $old_size;
+        $class->_thick_capacity_gate(
+            $storeid, $scfg, int(($delta + 1023) / 1024), 0,
+        );
+        my $frontend = _block_device_exists("/dev/mapper/$mapper") ? 1 : 0;
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $head, int($old_size / 512),
+        ) if $frontend;
+
+        my $tx = $class->_new_transaction_id();
+        my %intent = (
+            tx => $tx, state => 'OPEN', op => 'EXTEND', object => $anchor,
+            before => $class->_vg_state_digest($vg),
+        );
+        $class->_set_vg_intent($vg, %intent);
+
+        my $extend_error = '';
+        eval {
+            run_command(
+                ['/sbin/lvextend', '-L', "${size}B", "$vg/$head"],
+                errmsg => "extending thick generation '$vg/$head' failed",
+            );
+        };
+        $extend_error = $@ if $@;
+        eval { $class->_verify_storage_identity($storeid, $scfg); };
+        die "PARTIAL RESIZE for '$storeid:$volname': storage identity/availability "
+            . "could not be revalidated; OPEN EXTEND intent preserved: $@"
+            if $@;
+        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my ($after_state, $after_head) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $after);
+        die "PARTIAL RESIZE for '$storeid:$volname': authoritative head changed; "
+            . "OPEN EXTEND intent preserved\n"
+            if $after_state->{head} ne $head;
+        my $new_size = $after_head->{lv_size};
+        die "PARTIAL RESIZE for '$storeid:$volname': resulting size is unknown or "
+            . "smaller than requested; OPEN EXTEND intent preserved; no retry attempted"
+            . ($extend_error ? ": $extend_error" : "\n")
+            if !defined($new_size) || $new_size !~ /^\d+$/ || $new_size < $size;
+        die "PARTIAL RESIZE for '$storeid:$volname': resulting size is not sector aligned; "
+            . "OPEN EXTEND intent preserved\n"
+            if $new_size % 512;
+        warn "thick-generations lvextend reported an error, but its exact postcondition "
+            . "proves the requested size was reached; continuing without retry: $extend_error"
+            if $extend_error;
+        %resize = (
+            intent => \%intent, anchor => $anchor, head => $head,
+            old_size => int($old_size), new_size => int($new_size),
+            frontend => $frontend,
+        );
+        return;
+    });
+    return if !%resize;
+
+    my $zero_error = '';
+    eval {
+        run_command(
+            ['/sbin/lvchange', '-ay', '-K', "$vg/$resize{head}"],
+            errmsg => "activating extended thick generation '$vg/$resize{head}' failed",
+        ) if !$resize{frontend};
+        my $length = $resize{new_size} - $resize{old_size};
+        run_command(
+            ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$resize{head}", 'bs=4M',
+                "seek=$resize{old_size}", "count=$length", 'iflag=count_bytes',
+                'oflag=seek_bytes,direct', 'conv=fsync,nocreat', 'status=none'],
+            errmsg => "zero-initializing extended range of '$vg/$resize{head}' failed",
+        );
+        run_command(
+            ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$resize{head}"],
+            errmsg => "flushing extended thick generation '$vg/$resize{head}' failed",
+        );
+        run_command(
+            ['/sbin/lvchange', '-an', "$vg/$resize{head}"],
+            errmsg => "deactivating extended thick generation '$vg/$resize{head}' failed",
+        ) if !$resize{frontend};
+    };
+    $zero_error = $@ if $@;
+    die "PARTIAL RESIZE for '$storeid:$volname': the backing LV may be extended, but "
+        . "the new range was not safely published; OPEN EXTEND intent preserved: $zero_error"
+        if $zero_error;
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        my %intent = %{$resize{intent}};
+        $class->_require_exact_vg_intent($vg, %intent);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my ($state, $head_info) = $class->_thick_anchor(
+            $storeid, $scfg, $volname, $lvs,
+        );
+        die "PARTIAL RESIZE for '$storeid:$volname': head or size changed before "
+            . "publication; OPEN EXTEND intent preserved\n"
+            if $state->{head} ne $resize{head}
+            || !defined($head_info->{lv_size})
+            || $head_info->{lv_size} != $resize{new_size};
+        $class->_verify_autoactivation_disabled($vg, $resize{head});
+
+        my $frontend_now = _block_device_exists("/dev/mapper/$mapper") ? 1 : 0;
+        die "PARTIAL RESIZE for '$storeid:$volname': frontend presence changed; "
+            . "OPEN EXTEND intent preserved\n"
+            if $frontend_now != $resize{frontend};
+        if ($frontend_now) {
+            my $old_sectors = int($resize{old_size} / 512);
+            my $new_sectors = int($resize{new_size} / 512);
+            $class->_thick_verify_frontend(
+                $scfg, $volname, $resize{head}, $old_sectors,
+            );
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'reload', $mapper, '--table',
+                    "0 $new_sectors linear /dev/$vg/$resize{head} 0"],
+                errmsg => "loading extended thick-generations frontend '$mapper' failed",
+            );
+            my $inactive = _command_lines(
+                ['/sbin/dmsetup', 'table', '--inactive', $mapper],
+                "reading inactive table of '$mapper' failed",
+            );
+            die "PARTIAL RESIZE for '$storeid:$volname': inactive frontend table "
+                . "postcondition failed; OPEN EXTEND intent preserved\n"
+                if @$inactive != 1
+                || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+/;
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $mapper],
+                errmsg => "suspending thick-generations frontend '$mapper' for resize failed",
+            );
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'resume', $mapper],
+                errmsg => "publishing extended thick-generations frontend '$mapper' failed",
+            );
+            $class->_thick_verify_frontend(
+                $scfg, $volname, $resize{head}, $new_sectors,
+            );
+        }
+        $class->_clear_vg_intent($vg, %intent);
+        return;
+    });
+    return;
+}
+
 sub volume_resize {
     my ($class, $scfg, $storeid, $volname, $size, $running, $snapname) = @_;
+
+    return $class->_thick_volume_resize(
+        $scfg, $storeid, $volname, $size, $running, $snapname,
+    ) if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     return $class->cluster_lock_storage(
         $storeid,
