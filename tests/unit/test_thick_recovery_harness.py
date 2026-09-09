@@ -8,6 +8,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 COLLECTOR = ROOT / "experiments/thick-generations/recovery-evidence.sh"
 CLASSIFIER = ROOT / "experiments/thick-generations/classify-evidence.pl"
 PLUGIN = ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+FAULT_DRIVER = ROOT / "experiments/thick-generations/fault-driver.pl"
+PREPARE_RECOVERY = ROOT / "experiments/thick-generations/recover-prepare-incomplete.pl"
 
 
 class ThickRecoveryHarnessTests(unittest.TestCase):
@@ -79,6 +81,24 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertIsNotNone(body)
         self.assertEqual(body.group("body").strip(), "return;")
         self.assertNotIn("SLT_FAULT", source)
+
+    def test_fault_driver_requires_disposable_ack_and_process_local_override(self):
+        source = FAULT_DRIVER.read_text(encoding="utf-8")
+        self.assertIn("DISPOSABLE-DATA-WILL-BE-LEFT-INCOMPLETE", source)
+        self.assertIn("no warnings 'redefine'", source)
+        self.assertIn("POSIX::_exit(137)", source)
+        self.assertNotIn("$ENV", source)
+
+    def test_prepare_recovery_is_exact_and_refuses_partial_objects(self):
+        source = PREPARE_RECOVERY.read_text(encoding="utf-8")
+        self.assertIn("CLEAR-ONLY-PROVEN-PREPARE-INCOMPLETE", source)
+        self.assertIn("_with_vg_lock", source)
+        self.assertIn("_thick_verify_frontend", source)
+        self.assertIn("transition metadata exists", source)
+        self.assertIn("a second HEAD exists", source)
+        self.assertEqual(source.count("_clear_vg_intent"), 1)
+        for command in ("lvremove", "dmsetup remove", "pvcreate", "vgcreate"):
+            self.assertNotIn(command, source)
 
 
 if __name__ == "__main__":

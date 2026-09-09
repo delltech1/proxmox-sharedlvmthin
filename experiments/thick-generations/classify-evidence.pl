@@ -147,7 +147,13 @@ if (($manifest{DM_INFO_EXIT} // 'x') ne '0') {
     my $table = slurp("$dir/dm-table.stdout");
     my $deps = slurp("$dir/dm-deps.stdout");
     if ($table =~ /^0\s+\d+\s+linear\s+/m) {
-        if ($new && $deps =~ /\(\Q@{[lv_dm_name($anchor->{new})]}\E\)/) {
+        if ($anchor->{phase} eq 'MATERIALIZED' && $head
+            && $deps =~ /\(\Q@{[lv_dm_name($anchor->{head})]}\E\)/) {
+            $runtime = 'linear-head';
+        } elsif ($anchor->{phase} eq 'PREPARED' && $old
+            && $deps =~ /\(\Q@{[lv_dm_name($anchor->{old})]}\E\)/) {
+            $runtime = 'linear-old';
+        } elsif ($new && $deps =~ /\(\Q@{[lv_dm_name($anchor->{new})]}\E\)/) {
             $runtime = 'linear-new';
         } elsif ($old && $deps =~ /\(\Q@{[lv_dm_name($anchor->{old})]}\E\)/) {
             $runtime = 'linear-old';

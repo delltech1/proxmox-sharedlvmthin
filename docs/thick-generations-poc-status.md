@@ -105,16 +105,27 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
   disposable qualification driver must deliberately override the no-op method
   in its own process, allowing precise process termination without adding a
   fault switch to the installed product.
+- Live process termination at C0 left no persistent mutation and classified
+  healthy. Termination at C1 left only the signed OPEN intent and classified
+  `PREPARE_INCOMPLETE` with mutation blocked. An exact recovery helper acquired
+  the normal cluster lock, revalidated storage identity, anchor, frontend, and
+  the absence of transition metadata or a second HEAD, then removed only that
+  intent. Post-recovery classification was healthy with quorum and zero D-state
+  tasks. A lock directory left by `_exit(137)` was released through the normal
+  pmxcfs lock-request mechanism; it was never deleted manually.
 
 Current automated result:
 
 ```ini
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
-EXISTING_THIN_PYTHON_REGRESSION=75_PASS
+EXISTING_THIN_PYTHON_REGRESSION=77_PASS
 COMBINED_PERL_REGRESSION=169_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
+LIVE_PROCESS_CRASH_C0=PASS
+LIVE_PROCESS_CRASH_C1=PASS
+LIVE_C1_EXACT_RECOVERY=PASS
 ```
 
 ## Geometry gate
