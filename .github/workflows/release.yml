@@ -32,7 +32,7 @@ jobs:
       - name: Build and validate package
         run: |
           sh scripts/build.sh
-          sh scripts/check-release.sh
+          sh scripts/check-release.sh dist/*.deb
 
       - name: Publish prerelease
         env:
