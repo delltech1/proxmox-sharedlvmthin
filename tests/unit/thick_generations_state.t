@@ -15,8 +15,9 @@ use PVE::SharedLvmThinThick qw(
 my $tx = '0123456789abcdef0123456789abcdef';
 sub state {
     return {
-        v => 3, sid => 'store-a', vol => 'vm-100-disk-0',
+        v => 4, sid => 'store-a', vol => 'vm-100-disk-0',
         phase => 'PREPARED', tx => $tx,
+        op => 'SNAPSHOT', source => 'g0',
         old => 'g0', new => 'g1', head => 'g0', generation => 0, region => 8,
         @_,
     };
@@ -53,7 +54,7 @@ my $materialized = state(phase => 'MATERIALIZED', head => 'g1', generation => 1)
 ok(validate_anchor_transition($pivoted, $materialized), 'linear pivot to materialized is valid');
 my $next_prepared = state(
     phase => 'PREPARED', tx => ('a' x 32), old => 'g1', new => 'g2',
-    head => 'g1', generation => 1, region => 16,
+    head => 'g1', generation => 1, region => 16, source => 'g1',
 );
 ok(validate_anchor_transition($materialized, $next_prepared),
     'materialized object starts a fresh transaction with explicit recovery geometry');
@@ -63,7 +64,8 @@ eval { validate_anchor_transition($materialized, state(%$next_prepared, head => 
 like($@, qr/old generation authoritative|preserve the authoritative old HEAD/,
     'PREPARED cannot publish the new HEAD early');
 eval { validate_anchor_transition($materialized, state(%$next_prepared, new => 'g1')) };
-like($@, qr/distinct destination/, 'new transition requires a distinct destination');
+like($@, qr/distinct (?:old and new generations|destination)/,
+    'new transition requires a distinct destination');
 
 eval { validate_anchor_transition($prepared, $complete) };
 like($@, qr/illegal/, 'phase skipping fails closed');
@@ -74,9 +76,12 @@ like($@, qr/advance exactly once/, 'generation skipping fails closed');
 eval { validate_anchor_transition($prepared, state(%$committed, region => 16)) };
 like($@, qr/immutable field 'region'/, 'recovery geometry cannot drift during transition');
 
-my $initial_prepared = state(old => 'g0', new => 'g0', head => 'g0');
+my $initial_prepared = state(
+    old => 'g0', new => 'g0', head => 'g0', op => 'ALLOC', source => 'g0',
+);
 my $initial_done = state(
     phase => 'MATERIALIZED', old => 'g0', new => 'g0', head => 'g0',
+    op => 'ALLOC', source => 'g0',
 );
 ok(validate_anchor_transition($initial_prepared, $initial_done),
     'initial allocation may materialize without a clone transition');
@@ -139,9 +144,9 @@ my $anchor_object = 'sltg-a-recoverytest';
 my $old_tx = '1' x 32;
 my $new_tx = '2' x 32;
 my $recovery_materialized = {
-    v => 3, sid => 'store-a', vol => 'vm-100-disk-0', phase => 'MATERIALIZED',
+    v => 4, sid => 'store-a', vol => 'vm-100-disk-0', phase => 'MATERIALIZED',
     tx => $old_tx, old => 'g0', new => 'g0', head => 'g0', generation => 0,
-    region => 8,
+    region => 8, op => 'ALLOC', source => 'g0',
 };
 my $cutover_intent = {
     v => 1, tx => $new_tx, state => 'OPEN', op => 'DM_CUTOVER',
@@ -149,7 +154,7 @@ my $cutover_intent = {
 };
 my $recovery_prepared = {
     %$recovery_materialized, phase => 'PREPARED', tx => $new_tx,
-    old => 'g0', new => 'g1', head => 'g0',
+    old => 'g0', new => 'g1', head => 'g0', op => 'SNAPSHOT', source => 'g0',
 };
 my %transition_objects = (head => 1, old => 1, new => 1, meta => 1);
 my @crash_matrix = (

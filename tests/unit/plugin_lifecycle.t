@@ -1823,6 +1823,7 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     my $tx = '1' x 32;
     my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
         sid => $storeid, vol => $volname, phase => 'MATERIALIZED', tx => $tx,
+        op => 'ALLOC', source => $head,
         old => $head, new => $head, head => $head, generation => 0, region => 8,
     )});
     my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
@@ -1900,6 +1901,7 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     my $tx = '3' x 32;
     my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
         sid => $storeid, vol => $volname, phase => 'MATERIALIZED', tx => $tx,
+        op => 'ALLOC', source => $head,
         old => $head, new => $head, head => $head, generation => 0, region => 8,
     )});
     my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
@@ -2155,13 +2157,13 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $new_tx = '6' x 32;
     my $size = 32 * 1024 * 1024;
     my $materialized = {
-        v => 3, sid => $storeid, vol => $volname, phase => 'MATERIALIZED',
+        v => 4, sid => $storeid, vol => $volname, phase => 'MATERIALIZED',
         tx => $old_tx, old => $old, new => $old, head => $old,
-        generation => 0, region => 8,
+        generation => 0, region => 8, op => 'ALLOC', source => $old,
     };
     my $prepared = {
         %$materialized, phase => 'PREPARED', tx => $new_tx,
-        old => $old, new => $new, head => $old,
+        old => $old, new => $new, head => $old, op => 'SNAPSHOT', source => $old,
     };
     my $hydrating = {
         %$prepared, phase => 'HYDRATING', head => $new, generation => 1,

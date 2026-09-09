@@ -70,8 +70,12 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
 - Phase transitions are explicit and monotonic.
 - A new snapshot transition must replace the previous transaction identifier;
   transaction identity and generation edges are immutable after PREPARED.
-- Anchor schema v3 persists the selected dm-clone region size so recovery does
-  not depend on the version of the userspace policy that happens to run later.
+- Anchor schema v4 persists the operation, exact clone source, and selected
+  dm-clone region size so recovery does not infer rollback/snapshot semantics
+  or depend on the version of the userspace policy that happens to run later.
+- A clean live allocation and snapshot transition recreated the disposable
+  multipath-backed test object with schema v4 and reached a destination-only
+  MATERIALIZED linear state.
 - Persistent transition metadata has its own transaction-scoped ownership and
   integrity tags.
 - A pure read-only recovery classifier covers crash points C0 through C9. Only

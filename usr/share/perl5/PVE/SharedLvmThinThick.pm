@@ -16,7 +16,7 @@ our @EXPORT_OK = qw(
     transition_tags validate_transition_tags classify_recovery
 );
 
-my @ANCHOR_FIELDS = qw(v sid vol phase tx old new head generation region);
+my @ANCHOR_FIELDS = qw(v sid vol phase tx op source old new head generation region);
 my %PHASE = map { $_ => 1 } qw(
     PREPARED COMMITTED HYDRATING HYDRATION_COMPLETE LINEAR_PIVOTED MATERIALIZED
 );
@@ -101,11 +101,14 @@ sub _canonical {
 
 sub anchor_tags {
     my (%values) = @_;
-    $values{v} = 3 if !defined($values{v});
-    die "unsupported Thick Generations anchor version\n" if "$values{v}" ne '3';
-    for my $field (qw(sid vol old new head)) {
+    $values{v} = 4 if !defined($values{v});
+    die "unsupported Thick Generations anchor version\n" if "$values{v}" ne '4';
+    for my $field (qw(sid vol source old new head)) {
         _token("anchor $field", $values{$field});
     }
+    $values{op} = uc(_token('anchor operation', $values{op}));
+    die "unknown Thick Generations operation '$values{op}'\n"
+        if $values{op} !~ /^(?:ALLOC|SNAPSHOT|ROLLBACK)$/;
     $values{phase} = uc(_token('anchor phase', $values{phase}));
     die "unknown Thick Generations phase '$values{phase}'\n" if !$PHASE{$values{phase}};
     die "invalid Thick Generations transaction ID\n"
@@ -127,6 +130,20 @@ sub anchor_tags {
             if $values{head} ne $values{new};
         die "$values{phase} transition cannot have identical old and new generations\n"
             if $values{phase} ne 'MATERIALIZED' && $values{old} eq $values{new};
+    }
+    if ($values{op} eq 'ALLOC') {
+        die "ALLOC anchor must use one identical source, old, new, and head generation\n"
+            if $values{source} ne $values{old} || $values{old} ne $values{new}
+            || $values{head} ne $values{old};
+    } else {
+        die "$values{op} transition requires distinct old and new generations\n"
+            if $values{old} eq $values{new};
+        die "$values{op} transition source cannot be the new destination\n"
+            if $values{source} eq $values{new};
+        die "SNAPSHOT transition must clone the previous HEAD\n"
+            if $values{op} eq 'SNAPSHOT' && $values{source} ne $values{old};
+        die "ROLLBACK transition must clone a retained snapshot, not the previous HEAD\n"
+            if $values{op} eq 'ROLLBACK' && $values{source} eq $values{old};
     }
     my $digest = substr(sha256_hex(_canonical(\%values)), 0, 32);
     return [
@@ -197,7 +214,7 @@ sub validate_anchor_transition {
         die "new transition cannot advance generation before commit\n"
             if int($after->{generation}) != int($before->{generation});
     } else {
-        for my $field (qw(tx old new region)) {
+        for my $field (qw(tx op source old new region)) {
             die "anchor transition changed immutable field '$field'\n"
                 if "$before->{$field}" ne "$after->{$field}";
         }
@@ -209,8 +226,11 @@ sub validate_anchor_transition {
         die "commit generation must advance exactly once\n"
             if int($after->{generation}) != int($before->{generation}) + 1;
     } elsif ($from eq 'PREPARED' && $to eq 'MATERIALIZED') {
-        die "initial materialization requires one identical old/new/head generation\n"
-            if $before->{old} ne $before->{new}
+        die "initial materialization requires an ALLOC transaction\n"
+            if $before->{op} ne 'ALLOC';
+        die "initial materialization requires one identical source/old/new/head generation\n"
+            if $before->{source} ne $before->{old}
+            || $before->{old} ne $before->{new}
             || $before->{head} ne $before->{old}
             || $after->{head} ne $before->{head}
             || int($after->{generation}) != int($before->{generation});
