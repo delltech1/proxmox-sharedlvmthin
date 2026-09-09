@@ -16,6 +16,12 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('pass "Thin autoextend threshold = 50% (elastic early-grow policy)"', doctor)
         self.assertIn('pass "Thin autoextend threshold = 80% (legacy fixed/proportional policy)"', doctor)
 
+    def test_doctor_requires_dmeventd_only_for_locally_active_pool(self):
+        doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text()
+        self.assertIn("-o lv_name,segtype,lv_attr", doctor)
+        self.assertIn('$3 ~ /^....a/', doctor)
+        self.assertIn("no local per-VM thin pool currently requires monitoring", doctor)
+
     def test_package_does_not_contain_private_keys(self):
         forbidden = []
         for path in ROOT.rglob("*"):
