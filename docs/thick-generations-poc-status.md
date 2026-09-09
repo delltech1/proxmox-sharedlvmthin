@@ -432,12 +432,49 @@ ROLLBACK_TRANSITION_ARTIFACTS_DETACHED=PASS
 ROLLBACK_DSTATE=0
 ```
 
+## PVE lifecycle integration
+
+The experimental storage was registered on a three-node PVE 9 cluster with a
+mixed Storage API 14/15 test matrix. The same plugin build loaded through the
+appropriate API on every node while an existing SharedLvmThin thin-mode
+storage remained active and unchanged.
+
+A disposable VM completed allocation, start/stop, offline snapshot, divergent
+write, rollback, snapshot deletion, grow-only resize, offline migration, and
+live migration. Every published Thick Generations frontend was a single
+linear target. Snapshot and rollback generations remained independent, and
+the newly added resize range was fully zeroed before publication.
+
+A stopped-mode PVE backup and restore created a new independently owned thick
+disk. The restored disk matched the source over its full advertised size and
+completed a start/stop cycle. A separate round trip moved that restored disk
+from Thick Generations to the existing thin mode and back to Thick
+Generations. Both conversions preserved the full-volume digest. Each source
+object was removed only after the destination had been published, and the
+temporary per-VM thin pool was absent after the return move.
+
+```ini
+MIXED_API_14_15_CLUSTER=PASS
+THIN_MODE_COEXISTENCE=PASS
+PVE_ALLOCATE_START_STOP=PASS
+PVE_SNAPSHOT_ROLLBACK_DELETE=PASS
+PVE_GROW_RESIZE_ZERO_TAIL=PASS
+PVE_OFFLINE_MIGRATION=PASS
+PVE_LIVE_MIGRATION=PASS
+PVE_BACKUP_RESTORE=PASS
+THICK_TO_THIN_MOVE=PASS
+THIN_TO_THICK_MOVE=PASS
+FULL_VOLUME_DIGEST_AFTER_ROUND_TRIP=PASS
+SOURCE_CLEANUP_AFTER_PUBLISH=PASS
+POST_TEST_DSTATE=0
+POST_TEST_QUORUM=PASS
+```
+
 ## Open gates
 
-1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
-   workloads, then complete recovery lifecycle code.
+1. Repeat snapshot, delete, rollback, and resize with data-bearing active-QEMU
+   workloads, then complete any recovery paths exposed by those tests.
 2. Qualify full-hydration metadata occupancy and geometry performance.
 3. Qualify physical FC/FCoE path loss and active-guest application outcomes.
-4. Integrate PVE create, snapshot, rollback, clone, migration, backup, restore,
-   and thin-to-thick and thick-to-thin storage moves.
+4. Qualify PVE full-clone behavior and cleanup.
 5. Run Linux and Windows data-integrity workloads and a long-duration soak.
