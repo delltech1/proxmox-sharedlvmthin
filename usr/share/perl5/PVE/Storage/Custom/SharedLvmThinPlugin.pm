@@ -880,7 +880,7 @@ sub _thick_alloc_image {
         );
         my $anchor_tags = PVE::SharedLvmThinThick::anchor_tags(
             sid => $storeid, vol => $name, phase => 'PREPARED', tx => $tx,
-            op => 'ALLOC', source => $head,
+            op => 'ALLOC', snapshot => 'none', source => $head,
             old => $head, new => $head, head => $head, generation => $generation,
             region => $geometry->{region_sectors},
         );
@@ -931,13 +931,13 @@ sub _thick_alloc_image {
         );
         my $old_tags = PVE::SharedLvmThinThick::anchor_tags(
             sid => $storeid, vol => $name, phase => 'PREPARED', tx => $tx,
-            op => 'ALLOC', source => $head,
+            op => 'ALLOC', snapshot => 'none', source => $head,
             old => $head, new => $head, head => $head, generation => $generation,
             region => $geometry->{region_sectors},
         );
         my $new_tags = PVE::SharedLvmThinThick::anchor_tags(
             sid => $storeid, vol => $name, phase => 'MATERIALIZED', tx => $tx,
-            op => 'ALLOC', source => $head,
+            op => 'ALLOC', snapshot => 'none', source => $head,
             old => $head, new => $head, head => $head, generation => $generation,
             region => $geometry->{region_sectors},
         );
@@ -1844,7 +1844,7 @@ sub _thick_volume_snapshot {
         my $prepared = $class->_thick_transition_anchor(
             $vg, $anchor, $state,
             phase => 'PREPARED', tx => $intent{tx}, old => $old, new => $new,
-            op => $operation, source => $source,
+            op => $operation, snapshot => $snap, source => $source,
             head => $old, generation => $old_gen,
             region => $geometry->{region_sectors},
         );

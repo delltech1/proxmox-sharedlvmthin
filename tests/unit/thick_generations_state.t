@@ -15,9 +15,9 @@ use PVE::SharedLvmThinThick qw(
 my $tx = '0123456789abcdef0123456789abcdef';
 sub state {
     return {
-        v => 4, sid => 'store-a', vol => 'vm-100-disk-0',
+        v => 5, sid => 'store-a', vol => 'vm-100-disk-0',
         phase => 'PREPARED', tx => $tx,
-        op => 'SNAPSHOT', source => 'g0',
+        op => 'SNAPSHOT', snapshot => 'snap1', source => 'g0',
         old => 'g0', new => 'g1', head => 'g0', generation => 0, region => 8,
         @_,
     };
@@ -41,9 +41,17 @@ eval { decode_anchor_tags(\@duplicate) };
 like($@, qr/duplicate/, 'duplicate anchor field fails closed');
 eval { anchor_tags(%$prepared, head => 'g1') };
 like($@, qr/old generation authoritative/, 'internally inconsistent PREPARED state is rejected');
+eval { anchor_tags(%$prepared, snapshot => 'none') };
+like($@, qr/persist an exact snapshot name/,
+    'snapshot transition cannot omit its persistent snapshot identity');
+eval { anchor_tags(%$prepared, v => 4) };
+like($@, qr/unsupported/, 'pre-recovery anchor schema is rejected explicitly');
 
 my $committed = state(phase => 'COMMITTED', head => 'g1', generation => 1);
 ok(validate_anchor_transition($prepared, $committed), 'PREPARED to COMMITTED is valid');
+eval { validate_anchor_transition($prepared, { %$committed, snapshot => 'other' }) };
+like($@, qr/immutable field 'snapshot'/,
+    'snapshot identity cannot drift after PREPARED');
 my $complete = state(
     phase => 'HYDRATION_COMPLETE', head => 'g1', generation => 1,
 );
@@ -60,7 +68,7 @@ ok(validate_anchor_transition($materialized, $next_prepared),
     'materialized object starts a fresh transaction with explicit recovery geometry');
 my $rollback_prepared = state(
     phase => 'PREPARED', tx => ('b' x 32), op => 'ROLLBACK',
-    source => 'g0', old => 'g1', new => 'g2', head => 'g1',
+    snapshot => 'snap1', source => 'g0', old => 'g1', new => 'g2', head => 'g1',
     generation => 1, region => 8,
 );
 ok(validate_anchor_transition($materialized, $rollback_prepared),
@@ -92,11 +100,11 @@ eval { validate_anchor_transition($prepared, state(%$committed, region => 16)) }
 like($@, qr/immutable field 'region'/, 'recovery geometry cannot drift during transition');
 
 my $initial_prepared = state(
-    old => 'g0', new => 'g0', head => 'g0', op => 'ALLOC', source => 'g0',
+    old => 'g0', new => 'g0', head => 'g0', op => 'ALLOC', snapshot => 'none', source => 'g0',
 );
 my $initial_done = state(
     phase => 'MATERIALIZED', old => 'g0', new => 'g0', head => 'g0',
-    op => 'ALLOC', source => 'g0',
+    op => 'ALLOC', snapshot => 'none', source => 'g0',
 );
 ok(validate_anchor_transition($initial_prepared, $initial_done),
     'initial allocation may materialize without a clone transition');
@@ -159,9 +167,9 @@ my $anchor_object = 'sltg-a-recoverytest';
 my $old_tx = '1' x 32;
 my $new_tx = '2' x 32;
 my $recovery_materialized = {
-    v => 4, sid => 'store-a', vol => 'vm-100-disk-0', phase => 'MATERIALIZED',
+    v => 5, sid => 'store-a', vol => 'vm-100-disk-0', phase => 'MATERIALIZED',
     tx => $old_tx, old => 'g0', new => 'g0', head => 'g0', generation => 0,
-    region => 8, op => 'ALLOC', source => 'g0',
+    region => 8, op => 'ALLOC', snapshot => 'none', source => 'g0',
 };
 my $cutover_intent = {
     v => 1, tx => $new_tx, state => 'OPEN', op => 'DM_CUTOVER',
@@ -169,7 +177,7 @@ my $cutover_intent = {
 };
 my $recovery_prepared = {
     %$recovery_materialized, phase => 'PREPARED', tx => $new_tx,
-    old => 'g0', new => 'g1', head => 'g0', op => 'SNAPSHOT', source => 'g0',
+    old => 'g0', new => 'g1', head => 'g0', op => 'SNAPSHOT', snapshot => 'snap2', source => 'g0',
 };
 my %transition_objects = (head => 1, source => 1, old => 1, new => 1, meta => 1);
 my @crash_matrix = (
@@ -215,7 +223,7 @@ my $rollback_intent = {
 };
 my $rollback_recovery = {
     %$recovery_prepared, tx => $rollback_intent->{tx}, op => 'ROLLBACK',
-    source => 'g-snapshot', old => 'g1', new => 'g2', head => 'g1', generation => 1,
+    snapshot => 'snap1', source => 'g-snapshot', old => 'g1', new => 'g2', head => 'g1', generation => 1,
 };
 my %rollback_objects = (head => 1, source => 1, old => 1, new => 1, meta => 1);
 for my $case (

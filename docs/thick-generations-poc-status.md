@@ -70,7 +70,7 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
 - Phase transitions are explicit and monotonic.
 - A new snapshot transition must replace the previous transaction identifier;
   transaction identity and generation edges are immutable after PREPARED.
-- Anchor schema v4 persists the operation, exact clone source, and selected
+- Anchor schema v5 persists the operation, exact snapshot name, clone source, and selected
   dm-clone region size so recovery does not infer rollback/snapshot semantics
   or depend on the version of the userspace policy that happens to run later.
 - A clean live allocation and snapshot transition recreated the disposable
@@ -127,8 +127,8 @@ Current automated result:
 ```ini
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
-EXISTING_THIN_PYTHON_REGRESSION=78_PASS
-COMBINED_PERL_REGRESSION=169_PASS
+EXISTING_THIN_PYTHON_REGRESSION=79_PASS
+COMBINED_PERL_REGRESSION=172_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 LIVE_PROCESS_CRASH_C0=PASS
@@ -136,7 +136,19 @@ LIVE_PROCESS_CRASH_C1=PASS
 LIVE_C1_EXACT_RECOVERY=PASS
 LIVE_PROCESS_CRASH_C2=PASS
 LIVE_C2_EXACT_RECOVERY=PASS
+LIVE_PROCESS_CRASH_C3=PASS
+LIVE_C3_SNAPSHOT_IDENTITY_PERSISTED=PASS
+LIVE_C3_EXACT_PRIOR_EVIDENCE_RECOVERY=PASS
 ```
+
+Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
+transactions. A live C3 process-crash test proved that PREPARED state retains
+the requested snapshot identity while the original linear HEAD and its SHA-256
+remain authoritative. The recovery classifier returned `RECOVERY_REQUIRED`
+with mutations disabled, and the exact prior-evidence recovery restored the
+signed MATERIALIZED predecessor before removing only the inactive destination
+and metadata objects. This closes the lost-request-context defect exposed by
+the earlier v4 C3 test; resumable forward recovery remains an open gate.
 
 ## Geometry gate
 
@@ -238,8 +250,9 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Qualify persistent anchor updates and VG intent recovery.
-4. Execute process-crash tests at C0 through C9.
+3. Implement deterministic forward recovery from the persisted v5 PREPARED
+   transaction without relying on external request context.
+4. Execute process-crash tests at C4 through C9.
 5. Execute reboot recovery on disposable local storage.
 6. Execute fenced cross-node reconstruction on a disposable shared test LUN.
 7. Qualify single-path and total-path loss without automatic repair.

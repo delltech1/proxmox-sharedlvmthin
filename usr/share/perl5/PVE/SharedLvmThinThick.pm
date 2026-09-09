@@ -16,7 +16,7 @@ our @EXPORT_OK = qw(
     transition_tags validate_transition_tags classify_recovery
 );
 
-my @ANCHOR_FIELDS = qw(v sid vol phase tx op source old new head generation region);
+my @ANCHOR_FIELDS = qw(v sid vol phase tx op snapshot source old new head generation region);
 my %PHASE = map { $_ => 1 } qw(
     PREPARED COMMITTED HYDRATING HYDRATION_COMPLETE LINEAR_PIVOTED MATERIALIZED
 );
@@ -101,9 +101,9 @@ sub _canonical {
 
 sub anchor_tags {
     my (%values) = @_;
-    $values{v} = 4 if !defined($values{v});
-    die "unsupported Thick Generations anchor version\n" if "$values{v}" ne '4';
-    for my $field (qw(sid vol source old new head)) {
+    $values{v} = 5 if !defined($values{v});
+    die "unsupported Thick Generations anchor version\n" if "$values{v}" ne '5';
+    for my $field (qw(sid vol snapshot source old new head)) {
         _token("anchor $field", $values{$field});
     }
     $values{op} = uc(_token('anchor operation', $values{op}));
@@ -132,10 +132,14 @@ sub anchor_tags {
             if $values{phase} ne 'MATERIALIZED' && $values{old} eq $values{new};
     }
     if ($values{op} eq 'ALLOC') {
+        die "ALLOC anchor must use the reserved snapshot marker\n"
+            if $values{snapshot} ne 'none';
         die "ALLOC anchor must use one identical source, old, new, and head generation\n"
             if $values{source} ne $values{old} || $values{old} ne $values{new}
             || $values{head} ne $values{old};
     } else {
+        die "$values{op} anchor must persist an exact snapshot name\n"
+            if $values{snapshot} eq 'none';
         die "$values{op} transition requires distinct old and new generations\n"
             if $values{old} eq $values{new};
         die "$values{op} transition source cannot be the new destination\n"
@@ -214,7 +218,7 @@ sub validate_anchor_transition {
         die "new transition cannot advance generation before commit\n"
             if int($after->{generation}) != int($before->{generation});
     } else {
-        for my $field (qw(tx op source old new region)) {
+        for my $field (qw(tx op snapshot source old new region)) {
             die "anchor transition changed immutable field '$field'\n"
                 if "$before->{$field}" ne "$after->{$field}";
         }

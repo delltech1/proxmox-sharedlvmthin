@@ -11,6 +11,7 @@ PLUGIN = ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 FAULT_DRIVER = ROOT / "experiments/thick-generations/fault-driver.pl"
 PREPARE_RECOVERY = ROOT / "experiments/thick-generations/recover-prepare-incomplete.pl"
 UNRECORDED_RECOVERY = ROOT / "experiments/thick-generations/recover-unrecorded-prepare.pl"
+PRIOR_RECOVERY = ROOT / "experiments/thick-generations/recover-prepared-from-prior-evidence.pl"
 
 
 class ThickRecoveryHarnessTests(unittest.TestCase):
@@ -110,6 +111,19 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertIn("unrecorded transition object is active", source)
         self.assertEqual(source.count("['/sbin/lvremove'"), 1)
         self.assertIn('"$option{vg}/$meta", "$option{vg}/$new"', source)
+        self.assertNotIn("wipefs", source)
+
+    def test_prepared_evidence_recovery_orders_anchor_before_exact_cleanup(self):
+        source = PRIOR_RECOVERY.read_text(encoding="utf-8")
+        self.assertIn("RESTORE-ONLY-EXACT-PRIOR-SIGNED-ANCHOR", source)
+        self.assertIn("prior evidence is not the exact predecessor", source)
+        self.assertIn("live anchor changed after current evidence capture", source)
+        self.assertIn("PREPARED source mapper exists", source)
+        anchor_update = source.index("$class->_change_exact_tags(")
+        cleanup = source.index("['/sbin/lvremove'")
+        clear = source.index("$class->_clear_vg_intent")
+        self.assertLess(anchor_update, cleanup)
+        self.assertLess(cleanup, clear)
         self.assertNotIn("wipefs", source)
 
 
