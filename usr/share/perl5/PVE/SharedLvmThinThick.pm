@@ -412,6 +412,12 @@ sub classify_recovery {
         if ($intent->{tx} ne $anchor->{tx}) {
             return $blocked->('new transition has modified runtime before PREPARED was recorded')
                 if $runtime !~ /^(?:absent|linear-head)$/;
+            return $result->('RECOVERY_REQUIRED', 'PREPARE_UNRECORDED', 'NOT_STARTED',
+                'OPEN intent and signed transition objects exist but PREPARED anchor was not recorded')
+                if $objects->{candidate_new} && $objects->{meta};
+            return $result->('RECOVERY_REQUIRED', 'PREPARE_PARTIAL', 'NOT_STARTED',
+                'OPEN intent has an incomplete set of pre-PREPARED transition objects')
+                if $objects->{candidate_new} || $objects->{meta};
             return $result->('RECOVERY_REQUIRED', 'PREPARE_INCOMPLETE', 'MATERIALIZED',
                 'OPEN cutover intent exists but PREPARED anchor was not recorded');
         }

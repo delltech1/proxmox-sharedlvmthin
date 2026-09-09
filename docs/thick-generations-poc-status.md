@@ -113,19 +113,29 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
   intent. Post-recovery classification was healthy with quorum and zero D-state
   tasks. A lock directory left by `_exit(137)` was released through the normal
   pmxcfs lock-request mechanism; it was never deleted manually.
+- Live termination at C2 left the signed destination and clone-metadata LVs but
+  did not advance the anchor or runtime frontend. The classifier distinguished
+  this from C1 as `PREPARE_UNRECORDED`. The C1 recovery helper refused the C2
+  state. A separate exact recovery path verified both ownership proofs,
+  autoactivation-disabled and inactive state, the original linear frontend,
+  storage identity, quorum, and cluster lock before deleting only those two
+  unrecorded objects and clearing the exact intent. The original data SHA-256
+  remained unchanged and post-recovery state was healthy with zero D-state.
 
 Current automated result:
 
 ```ini
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
-EXISTING_THIN_PYTHON_REGRESSION=77_PASS
+EXISTING_THIN_PYTHON_REGRESSION=78_PASS
 COMBINED_PERL_REGRESSION=169_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 LIVE_PROCESS_CRASH_C0=PASS
 LIVE_PROCESS_CRASH_C1=PASS
 LIVE_C1_EXACT_RECOVERY=PASS
+LIVE_PROCESS_CRASH_C2=PASS
+LIVE_C2_EXACT_RECOVERY=PASS
 ```
 
 ## Geometry gate

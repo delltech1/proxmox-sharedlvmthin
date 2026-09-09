@@ -175,7 +175,8 @@ my %transition_objects = (head => 1, source => 1, old => 1, new => 1, meta => 1)
 my @crash_matrix = (
     ['C0', $recovery_materialized, undef, { head => 1 }, 'absent', 'none', 'COMMITTED'],
     ['C1', $recovery_materialized, $cutover_intent, { head => 1 }, 'absent', 'none', 'PREPARE_INCOMPLETE'],
-    ['C2', $recovery_materialized, $cutover_intent, { %transition_objects }, 'linear-head', 'none', 'PREPARE_INCOMPLETE'],
+    ['C2', $recovery_materialized, $cutover_intent,
+        { %transition_objects, candidate_new => 1 }, 'linear-head', 'none', 'PREPARE_UNRECORDED'],
     ['C3', $recovery_prepared, $cutover_intent, { %transition_objects }, 'absent', 'none', 'PREPARED'],
     ['C4', $recovery_prepared, $cutover_intent, { %transition_objects }, 'linear-head', 'none', 'PREPARED'],
     ['C5', $recovery_prepared, $cutover_intent, { %transition_objects }, 'linear-old', 'none', 'PREPARED'],

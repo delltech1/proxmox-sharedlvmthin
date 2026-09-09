@@ -10,6 +10,7 @@ CLASSIFIER = ROOT / "experiments/thick-generations/classify-evidence.pl"
 PLUGIN = ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 FAULT_DRIVER = ROOT / "experiments/thick-generations/fault-driver.pl"
 PREPARE_RECOVERY = ROOT / "experiments/thick-generations/recover-prepare-incomplete.pl"
+UNRECORDED_RECOVERY = ROOT / "experiments/thick-generations/recover-unrecorded-prepare.pl"
 
 
 class ThickRecoveryHarnessTests(unittest.TestCase):
@@ -99,6 +100,17 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertEqual(source.count("_clear_vg_intent"), 1)
         for command in ("lvremove", "dmsetup remove", "pvcreate", "vgcreate"):
             self.assertNotIn(command, source)
+
+    def test_unrecorded_prepare_recovery_removes_only_two_signed_inactive_objects(self):
+        source = UNRECORDED_RECOVERY.read_text(encoding="utf-8")
+        self.assertIn("REMOVE-ONLY-PROVEN-UNRECORDED-PREPARE", source)
+        self.assertIn("validate_generation_tags", source)
+        self.assertIn("validate_transition_tags", source)
+        self.assertIn("_verify_autoactivation_disabled", source)
+        self.assertIn("unrecorded transition object is active", source)
+        self.assertEqual(source.count("['/sbin/lvremove'"), 1)
+        self.assertIn('"$option{vg}/$meta", "$option{vg}/$new"', source)
+        self.assertNotIn("wipefs", source)
 
 
 if __name__ == "__main__":

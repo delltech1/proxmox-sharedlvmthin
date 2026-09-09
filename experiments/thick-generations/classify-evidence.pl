@@ -97,7 +97,16 @@ my $old = $anchor->{old} eq $anchor->{head} ? $head
 my $new = $anchor->{new} eq $anchor->{head} ? $head
     : owned_generation($anchor->{new}, 'head');
 
-my $new_generation = $anchor->{phase} eq 'PREPARED'
+my $intent;
+my $vg_tags = $vgs->[0]->{vg_tags} // '';
+if ($vg_tags =~ /(?:^|,)slt_tg_vgi_/) {
+    $intent = eval { decode_vg_intent_tags($vg_tags) };
+    fail("VG intent proof is invalid: $@") if $@;
+}
+
+my $unrecorded_prepare = $intent && $intent->{tx} ne $anchor->{tx};
+my $transition_tx = $unrecorded_prepare ? $intent->{tx} : $anchor->{tx};
+my $new_generation = ($anchor->{phase} eq 'PREPARED' || $unrecorded_prepare)
     ? $anchor->{generation} + 1 : $anchor->{generation};
 my $meta_name = sprintf(
     'sltg-m-%s-%08d', $object_key, $new_generation,
@@ -107,18 +116,19 @@ if ($meta) {
     eval {
         validate_transition_tags(
             $lv{$meta_name}->{lv_tags} // '', sid => $manifest{STORE_ID},
-            vol => $manifest{VOLUME}, tx => $anchor->{tx}, kind => 'metadata',
+            vol => $manifest{VOLUME}, tx => $transition_tx, kind => 'metadata',
             generation => $new_generation, region => $anchor->{region},
         );
     };
     fail("transition metadata proof is invalid: $@") if $@;
 }
-
-my $intent;
-my $vg_tags = $vgs->[0]->{vg_tags} // '';
-if ($vg_tags =~ /(?:^|,)slt_tg_vgi_/) {
-    $intent = eval { decode_vg_intent_tags($vg_tags) };
-    fail("VG intent proof is invalid: $@") if $@;
+my $candidate_new_name = sprintf('sltg-g-%s-%08d', $object_key, $new_generation);
+my $candidate_new = 0;
+if ($unrecorded_prepare && exists($lv{$candidate_new_name})) {
+    my $candidate = owned_generation($candidate_new_name, 'head');
+    fail('unrecorded destination generation number is inconsistent')
+        if $candidate->{generation} != $new_generation;
+    $candidate_new = 1;
 }
 
 sub dm_escape {
@@ -183,6 +193,7 @@ my $classification = classify_recovery(
     objects => {
         head => $head ? 1 : 0, source => $source ? 1 : 0,
         old => $old ? 1 : 0, new => $new ? 1 : 0, meta => $meta,
+        candidate_new => $candidate_new,
     },
     runtime => $runtime, clone_status => $clone_status,
     clone_source => $clone_source, runtime_suspended => $runtime_suspended,
