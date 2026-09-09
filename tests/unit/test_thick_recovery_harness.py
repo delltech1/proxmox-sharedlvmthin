@@ -7,6 +7,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 COLLECTOR = ROOT / "experiments/thick-generations/recovery-evidence.sh"
 CLASSIFIER = ROOT / "experiments/thick-generations/classify-evidence.pl"
+PLUGIN = ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 
 
 class ThickRecoveryHarnessTests(unittest.TestCase):
@@ -64,6 +65,20 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
             ], capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fault_boundaries_are_explicit_and_production_inert(self):
+        source = PLUGIN.read_text(encoding="utf-8")
+        for point in range(10):
+            self.assertEqual(
+                source.count(f"_thick_fault_point('C{point}'"), 1,
+                f"C{point} must identify exactly one crash boundary",
+            )
+        body = re.search(
+            r"sub _thick_fault_point \{(?P<body>.*?)\n\}", source, re.DOTALL
+        )
+        self.assertIsNotNone(body)
+        self.assertEqual(body.group("body").strip(), "return;")
+        self.assertNotIn("SLT_FAULT", source)
 
 
 if __name__ == "__main__":

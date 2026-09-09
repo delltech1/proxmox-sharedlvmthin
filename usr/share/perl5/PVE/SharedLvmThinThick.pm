@@ -349,6 +349,7 @@ sub classify_recovery {
     my $runtime = $evidence{runtime} // 'unknown';
     my $clone_status = $evidence{clone_status} // 'none';
     my $clone_source = $evidence{clone_source} // 'none';
+    my $runtime_suspended = $evidence{runtime_suspended} // 0;
     my $expected_anchor = $evidence{expected_anchor};
 
     my $blocked = sub {
@@ -367,6 +368,8 @@ sub classify_recovery {
         if $runtime !~ /^(?:absent|linear-old|linear-head|linear-new|clone|unknown)$/;
     return $blocked->('clone source evidence is invalid')
         if $clone_source !~ /^(?:none|source|old|unknown)$/;
+    return $blocked->('runtime suspension evidence is invalid')
+        if "$runtime_suspended" !~ /^(?:0|1)$/;
     return $blocked->('authoritative HEAD object is missing') if !$objects->{head};
 
     my $require_stable_objects = sub {
@@ -394,6 +397,7 @@ sub classify_recovery {
         return $blocked->($object_error) if defined($object_error);
         return $blocked->('materialized HEAD has an unexpected runtime mapping')
             if $runtime !~ /^(?:absent|linear-head|linear-new)$/;
+        return $blocked->('materialized frontend is suspended') if $runtime_suspended;
         return $result->('HEALTHY', 'COMMITTED', 'MATERIALIZED',
             'materialized anchor and authoritative HEAD agree');
     }
@@ -416,6 +420,7 @@ sub classify_recovery {
             if $anchor->{op} ne 'ALLOC' && $intent->{op} ne $expected_op;
         return $blocked->('finalized transition has an unexpected runtime mapping')
             if $runtime !~ /^(?:absent|linear-head|linear-new)$/;
+        return $blocked->('finalized frontend is suspended') if $runtime_suspended;
         my $object_error = $require_stable_objects->();
         return $blocked->($object_error) if defined($object_error);
         return $result->('RECOVERY_REQUIRED', 'FINALIZE_PENDING', 'MATERIALIZED',
@@ -452,6 +457,7 @@ sub classify_recovery {
             if $runtime eq 'absent';
         return $blocked->('committed transition has an unexpected runtime mapping')
             if $runtime ne 'clone';
+        return $blocked->('committed clone frontend is suspended') if $runtime_suspended;
         return $blocked->('clone runtime dependency does not prove the signed source generation')
             if $clone_source ne 'source';
         return $blocked->('clone target reports failed or unknown metadata state')
@@ -466,6 +472,8 @@ sub classify_recovery {
             'runtime mapping is absent; persistent clone metadata must be reopened and verified')
             if $runtime eq 'absent';
         if ($runtime eq 'clone') {
+            return $blocked->('hydration-complete clone frontend is suspended')
+                if $runtime_suspended;
             return $blocked->('clone runtime dependency does not prove the signed source generation')
                 if $clone_source ne 'source';
             return $blocked->('anchor claims complete hydration but clone status does not')
@@ -481,6 +489,7 @@ sub classify_recovery {
     if ($anchor->{phase} eq 'LINEAR_PIVOTED') {
         return $blocked->('linear-pivoted transition has an unexpected runtime mapping')
             if $runtime !~ /^(?:absent|linear-new|linear-head)$/;
+        return $blocked->('linear-pivoted frontend is suspended') if $runtime_suspended;
         return $result->('RECOVERY_REQUIRED', 'LINEAR_PIVOTED', 'FINALIZE_READY',
             'destination is authoritative; detached transition artifacts require exact cleanup');
     }

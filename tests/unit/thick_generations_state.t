@@ -282,4 +282,12 @@ my $snapshot_source_missing = classify_recovery(
 is($snapshot_source_missing->{state}, 'RECOVERY_REQUIRED',
     'materialized snapshot with a missing source fails closed');
 
+my $suspended_materialized = classify_recovery(
+    anchor => $materialized, intent => undef,
+    objects => { head => 1, source => 1, old => 1 }, runtime => 'linear-head',
+    runtime_suspended => 1, expected_anchor => $anchor_object,
+);
+is($suspended_materialized->{state}, 'RECOVERY_REQUIRED',
+    'a suspended materialized frontend is never declared healthy');
+
 done_testing();

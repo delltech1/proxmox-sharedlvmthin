@@ -360,6 +360,14 @@ sub _thick_source_mapper_name {
         . sprintf('-src-%08d', $generation);
 }
 
+# Intentionally inert production hook. Qualification drivers may locally
+# override this method to terminate only their own disposable worker at an
+# exact persisted crash boundary. No configuration or environment variable can
+# enable fault injection in the packaged plugin.
+sub _thick_fault_point {
+    return;
+}
+
 sub _thick_transition_anchor {
     my ($class, $vg, $anchor, $state, %change) = @_;
     my $device = delete $change{_device};
@@ -1799,12 +1807,14 @@ sub _thick_volume_snapshot {
             $storeid, $scfg, int(($size + 1023) / 1024),
             $geometry->{metadata_bytes},
         );
+        $class->_thick_fault_point('C0', $operation, $storeid, $volname);
         %intent = (
             tx => $class->_new_transaction_id(), state => 'OPEN',
             op => ($rollback ? 'DM_PIVOT' : 'DM_CUTOVER'), object => $anchor,
             before => $class->_vg_state_digest($vg),
         );
         $class->_set_vg_intent($vg, %intent);
+        $class->_thick_fault_point('C1', $operation, $storeid, $volname);
         run_command(
             ['/sbin/lvcreate', '-L', "${size}B", '-n', $new,
                 '--setactivationskip', 'y', $vg],
@@ -1830,6 +1840,7 @@ sub _thick_volume_snapshot {
         );
         $class->_disable_and_verify_autoactivation($vg, $new);
         $class->_disable_and_verify_autoactivation($vg, $meta);
+        $class->_thick_fault_point('C2', $operation, $storeid, $volname);
         my $prepared = $class->_thick_transition_anchor(
             $vg, $anchor, $state,
             phase => 'PREPARED', tx => $intent{tx}, old => $old, new => $new,
@@ -1844,6 +1855,7 @@ sub _thick_volume_snapshot {
             source_map => $source_map, size => int($size), old_size => int($old_size),
             geometry => $geometry, operation => $operation, snapshot => $snap,
         };
+        $class->_thick_fault_point('C3', $operation, $storeid, $volname);
         return;
     });
 
@@ -1922,10 +1934,12 @@ sub _thick_volume_snapshot {
                 "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{source} 0"],
             errmsg => "creating immutable snapshot source mapper failed",
         );
+        $class->_thick_fault_point('C4', $operation, $storeid, $volname);
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
             errmsg => "suspending thick-generations frontend for snapshot failed",
         );
+        $class->_thick_fault_point('C5', $operation, $storeid, $volname);
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'COMMITTED',
             head => $tr->{new}, generation => $tr->{new_gen},
@@ -1946,6 +1960,7 @@ sub _thick_volume_snapshot {
                 "/dev/mapper/$scfg->{'slt-expected-wwid'}",
             );
         }
+        $class->_thick_fault_point('C6', $operation, $storeid, $volname);
         my $sectors = int($tr->{size} / 512);
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'load', $front, '--table',
@@ -1974,10 +1989,12 @@ sub _thick_volume_snapshot {
         } else {
             $class->_thick_verify_snapshot_readonly($vg, $tr->{source});
         }
+        $class->_thick_fault_point('C7', $operation, $storeid, $volname);
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'HYDRATING',
         );
         $tr->{state} = $state;
+        $class->_thick_fault_point('C8', $operation, $storeid, $volname);
         return;
     });
 
@@ -2005,6 +2022,7 @@ sub _thick_volume_snapshot {
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'HYDRATION_COMPLETE',
         );
+        $class->_thick_fault_point('C9', $operation, $storeid, $volname);
 
         my $sectors = int($tr->{size} / 512);
         run_command(

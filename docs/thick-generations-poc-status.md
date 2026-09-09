@@ -100,14 +100,19 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
   D-state tasks. Removing the source from a copied evidence set classified
   `RECOVERY_REQUIRED`/`AMBIGUOUS`; reusing the evidence directory was refused
   before any probe ran.
+- Crash boundaries C0 through C9 now exist as explicit, production-inert method
+  calls. They cannot be enabled by storage configuration or environment. A
+  disposable qualification driver must deliberately override the no-op method
+  in its own process, allowing precise process termination without adding a
+  fault switch to the installed product.
 
 Current automated result:
 
 ```ini
-ANCHOR_GEOMETRY_AND_C0_C9_TESTS=69/69_PASS
+ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
-EXISTING_THIN_PYTHON_REGRESSION=74_PASS
-COMBINED_PERL_REGRESSION=168_PASS
+EXISTING_THIN_PYTHON_REGRESSION=75_PASS
+COMBINED_PERL_REGRESSION=169_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 ```

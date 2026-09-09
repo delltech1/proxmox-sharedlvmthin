@@ -134,9 +134,16 @@ sub lv_dm_name {
 my $runtime = 'unknown';
 my $clone_status = 'none';
 my $clone_source = 'none';
+my $runtime_suspended = 0;
 if (($manifest{DM_INFO_EXIT} // 'x') ne '0') {
     $runtime = 'absent';
 } else {
+    my $info = slurp("$dir/dm-info.stdout");
+    $info =~ /:([^:\r\n]+)\s*$/ or fail('device-mapper suspension evidence is malformed');
+    my $dm_state = $1;
+    $runtime_suspended = 1 if $dm_state eq 'Suspended';
+    fail('device-mapper suspension state is unknown')
+        if $dm_state ne 'Active' && $dm_state ne 'Suspended';
     my $table = slurp("$dir/dm-table.stdout");
     my $deps = slurp("$dir/dm-deps.stdout");
     if ($table =~ /^0\s+\d+\s+linear\s+/m) {
@@ -172,7 +179,8 @@ my $classification = classify_recovery(
         old => $old ? 1 : 0, new => $new ? 1 : 0, meta => $meta,
     },
     runtime => $runtime, clone_status => $clone_status,
-    clone_source => $clone_source, expected_anchor => $anchor_lv,
+    clone_source => $clone_source, runtime_suspended => $runtime_suspended,
+    expected_anchor => $anchor_lv,
 );
 
 print "STATE=$classification->{state}\n";
@@ -181,6 +189,7 @@ print "DATA_STATE=$classification->{data_state}\n";
 print "TRANSACTION_STATE=$classification->{transaction_state}\n";
 print "MATERIALIZATION_STATE=$classification->{materialization_state}\n";
 print "RUNTIME_STATE=$runtime\n";
+print 'RUNTIME_SUSPENDED=' . ($runtime_suspended ? 'YES' : 'NO') . "\n";
 print "CLONE_SOURCE=$clone_source\n";
 print "REASON=$classification->{reason}\n";
 exit($classification->{safe_for_mutation} ? 0 : 1);

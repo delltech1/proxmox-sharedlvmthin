@@ -79,7 +79,7 @@ for probe in info table status deps; do
     set +e
     case "$probe" in
         info)
-            dmsetup info -c --noheadings -o name,uuid,major,minor,open "$mapper" \
+            dmsetup info -c --noheadings -o name,uuid,major,minor,open,suspended "$mapper" \
                 >"$output_dir/dm-$probe.stdout" 2>"$output_dir/dm-$probe.stderr"
             ;;
         table)
