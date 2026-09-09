@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'release/v*'
 
 permissions:
   contents: write
@@ -36,13 +38,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          suffix="${GITHUB_REF_NAME##*-}"
+          tag_name="${GITHUB_REF_NAME##*/}"
+          suffix="${tag_name##*-}"
           release_name="$(printf '%s' "$suffix" | tr '[:lower:]' '[:upper:]')"
           notes="docs/RELEASE-NOTES-${release_name}.md"
           test -f "$notes"
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$tag_name" \
             dist/*.deb dist/SHA256SUMS \
+            --target "$GITHUB_SHA" \
             --prerelease \
             --title "SharedLvmThin ${release_name}" \
-            --notes-file "$notes" \
-            --verify-tag
+            --notes-file "$notes"
