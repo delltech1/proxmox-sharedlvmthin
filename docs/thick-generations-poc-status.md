@@ -74,16 +74,21 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
   not depend on the version of the userspace policy that happens to run later.
 - Persistent transition metadata has its own transaction-scoped ownership and
   integrity tags.
+- A pure read-only recovery classifier covers crash points C0 through C9. Only
+  a materialized anchor, present authoritative HEAD, no OPEN intent, and an
+  absent or matching linear runtime frontend can return `SAFE_FOR_MUTATION=1`.
+  Every partial or contradictory combination returns `RECOVERY_REQUIRED`;
+  contradictory data evidence is classified `AMBIGUOUS` rather than guessed.
 - At most one potentially blocking probe of each type may exist.
 - Timed-out probes must terminate before a later probe is permitted.
 
 Current automated result:
 
 ```ini
-ANCHOR_AND_GEOMETRY_TESTS=27/27_PASS
+ANCHOR_GEOMETRY_AND_C0_C9_TESTS=50/50_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=66_PASS
-COMBINED_PERL_REGRESSION=120_PASS
+COMBINED_PERL_REGRESSION=143_PASS
 ```
 
 ## Geometry gate

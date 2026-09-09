@@ -9,6 +9,7 @@ use PVE::SharedLvmThinThick qw(
     anchor_tags decode_anchor_tags generation_tags validate_anchor_transition
     validate_generation_tags vg_intent_tags decode_vg_intent_tags clone_geometry
     transition_tags validate_transition_tags
+    classify_recovery
 );
 
 my $tx = '0123456789abcdef0123456789abcdef';
@@ -37,6 +38,8 @@ like($@, qr/digest mismatch/, 'tampered anchor fails its digest gate');
 my @duplicate = (@$encoded, 'slt_tg_head=g0');
 eval { decode_anchor_tags(\@duplicate) };
 like($@, qr/duplicate/, 'duplicate anchor field fails closed');
+eval { anchor_tags(%$prepared, head => 'g1') };
+like($@, qr/old generation authoritative/, 'internally inconsistent PREPARED state is rejected');
 
 my $committed = state(phase => 'COMMITTED', head => 'g1', generation => 1);
 ok(validate_anchor_transition($prepared, $committed), 'PREPARED to COMMITTED is valid');
@@ -57,7 +60,8 @@ ok(validate_anchor_transition($materialized, $next_prepared),
 eval { validate_anchor_transition($materialized, state(%$next_prepared, tx => $materialized->{tx})) };
 like($@, qr/fresh transaction ID/, 'new transition cannot reuse the previous transaction ID');
 eval { validate_anchor_transition($materialized, state(%$next_prepared, head => 'g2')) };
-like($@, qr/preserve the authoritative old HEAD/, 'PREPARED cannot publish the new HEAD early');
+like($@, qr/old generation authoritative|preserve the authoritative old HEAD/,
+    'PREPARED cannot publish the new HEAD early');
 eval { validate_anchor_transition($materialized, state(%$next_prepared, new => 'g1')) };
 like($@, qr/distinct destination/, 'new transition requires a distinct destination');
 
@@ -124,5 +128,58 @@ cmp_ok($large_geometry->{metadata_bytes}, '>', 16 * 1024 * 1024,
     'large disk does not inherit a fixed 16 MiB metadata device');
 eval { clone_geometry(513) };
 like($@, qr/sector-aligned/, 'unaligned clone geometry fails closed');
+
+my $anchor_object = 'sltg-a-recoverytest';
+my $old_tx = '1' x 32;
+my $new_tx = '2' x 32;
+my $recovery_materialized = {
+    v => 3, sid => 'store-a', vol => 'vm-100-disk-0', phase => 'MATERIALIZED',
+    tx => $old_tx, old => 'g0', new => 'g0', head => 'g0', generation => 0,
+    region => 8,
+};
+my $cutover_intent = {
+    v => 1, tx => $new_tx, state => 'OPEN', op => 'DM_CUTOVER',
+    object => $anchor_object, before => ('c' x 32),
+};
+my $recovery_prepared = {
+    %$recovery_materialized, phase => 'PREPARED', tx => $new_tx,
+    old => 'g0', new => 'g1', head => 'g0',
+};
+my %transition_objects = (head => 1, old => 1, new => 1, meta => 1);
+my @crash_matrix = (
+    ['C0', $recovery_materialized, undef, { head => 1 }, 'absent', 'none', 'COMMITTED'],
+    ['C1', $recovery_materialized, $cutover_intent, { head => 1 }, 'absent', 'none', 'PREPARE_INCOMPLETE'],
+    ['C2', $recovery_materialized, $cutover_intent, { %transition_objects }, 'linear-head', 'none', 'PREPARE_INCOMPLETE'],
+    ['C3', $recovery_prepared, $cutover_intent, { %transition_objects }, 'absent', 'none', 'PREPARED'],
+    ['C4', $recovery_prepared, $cutover_intent, { %transition_objects }, 'linear-head', 'none', 'PREPARED'],
+    ['C5', $recovery_prepared, $cutover_intent, { %transition_objects }, 'linear-old', 'none', 'PREPARED'],
+    ['C6', { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
+        $cutover_intent, { %transition_objects }, 'absent', 'none', 'COMMITTED'],
+    ['C7', { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
+        $cutover_intent, { %transition_objects }, 'clone', 'incomplete', 'COMMITTED'],
+    ['C8', { %$recovery_prepared, phase => 'HYDRATING', head => 'g1', generation => 1 },
+        $cutover_intent, { %transition_objects }, 'clone', 'incomplete', 'HYDRATING'],
+    ['C9', { %$recovery_prepared, phase => 'HYDRATION_COMPLETE', head => 'g1', generation => 1 },
+        $cutover_intent, { %transition_objects }, 'clone', 'complete', 'HYDRATION_COMPLETE'],
+);
+for my $case (@crash_matrix) {
+    my ($point, $anchor_state, $open_intent, $objects, $runtime, $status, $transaction) = @$case;
+    my $classification = classify_recovery(
+        anchor => $anchor_state, intent => $open_intent, objects => $objects,
+        runtime => $runtime, clone_status => $status, expected_anchor => $anchor_object,
+    );
+    is($classification->{transaction_state}, $transaction, "$point has deterministic transaction classification");
+    is($classification->{safe_for_mutation}, ($point eq 'C0' ? 1 : 0),
+        "$point mutation policy is fail-closed until fully healthy");
+}
+my $ambiguous_recovery = classify_recovery(
+    anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
+    intent => $cutover_intent, objects => { %transition_objects },
+    runtime => 'linear-old', clone_status => 'none', expected_anchor => $anchor_object,
+);
+is($ambiguous_recovery->{data_state}, 'AMBIGUOUS',
+    'contradictory committed runtime evidence is never guessed');
+is($ambiguous_recovery->{safe_for_mutation}, 0,
+    'contradictory recovery evidence blocks mutation');
 
 done_testing();

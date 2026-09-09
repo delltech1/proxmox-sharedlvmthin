@@ -13,7 +13,7 @@ our @EXPORT_OK = qw(
     anchor_name anchor_tags decode_anchor_tags generation_name generation_tags
     mapper_name object_key validate_generation_tags vg_intent_tags
     decode_vg_intent_tags validate_anchor_transition clone_geometry
-    transition_tags validate_transition_tags
+    transition_tags validate_transition_tags classify_recovery
 );
 
 my @ANCHOR_FIELDS = qw(v sid vol phase tx old new head generation region);
@@ -119,6 +119,15 @@ sub anchor_tags {
         || $values{region} < 8 || $values{region} > 2_097_152
         || ($values{region} & ($values{region} - 1));
     $values{region} = int($values{region});
+    if ($values{phase} eq 'PREPARED') {
+        die "PREPARED anchor must keep the old generation authoritative\n"
+            if $values{head} ne $values{old};
+    } else {
+        die "$values{phase} anchor must publish the new generation as HEAD\n"
+            if $values{head} ne $values{new};
+        die "$values{phase} transition cannot have identical old and new generations\n"
+            if $values{phase} ne 'MATERIALIZED' && $values{old} eq $values{new};
+    }
     my $digest = substr(sha256_hex(_canonical(\%values)), 0, 32);
     return [
         (map { "slt_tg_$_=$values{$_}" } @ANCHOR_FIELDS),
@@ -285,6 +294,125 @@ sub validate_transition_tags {
     die "transition artifact ownership proof mismatch\n"
         if grep { !$observed{$_} } @$wanted;
     return 1;
+}
+
+sub classify_recovery {
+    my (%evidence) = @_;
+    my $anchor = $evidence{anchor};
+    my $intent = $evidence{intent};
+    my $objects = $evidence{objects};
+    my $runtime = $evidence{runtime} // 'unknown';
+    my $clone_status = $evidence{clone_status} // 'none';
+    my $expected_anchor = $evidence{expected_anchor};
+
+    my $blocked = sub {
+        my ($reason) = @_;
+        return {
+            state => 'RECOVERY_REQUIRED', safe_for_mutation => 0,
+            data_state => 'AMBIGUOUS', transaction_state => 'AMBIGUOUS',
+            materialization_state => 'UNKNOWN', reason => $reason,
+        };
+    };
+    return $blocked->('anchor evidence is missing') if ref($anchor) ne 'HASH';
+    return $blocked->('object evidence is missing') if ref($objects) ne 'HASH';
+    eval { anchor_tags(%$anchor); };
+    return $blocked->("anchor evidence is invalid: $@") if $@;
+    return $blocked->('runtime evidence is invalid')
+        if $runtime !~ /^(?:absent|linear-old|linear-head|linear-new|clone|unknown)$/;
+    return $blocked->('authoritative HEAD object is missing') if !$objects->{head};
+
+    my $result = sub {
+        my ($state, $transaction, $materialization, $reason) = @_;
+        return {
+            state => $state, safe_for_mutation => ($state eq 'HEALTHY' ? 1 : 0),
+            data_state => 'VALID', transaction_state => $transaction,
+            materialization_state => $materialization, reason => $reason,
+        };
+    };
+
+    if ($anchor->{phase} eq 'MATERIALIZED' && !defined($intent)) {
+        return $blocked->('materialized HEAD has an unexpected runtime mapping')
+            if $runtime !~ /^(?:absent|linear-head|linear-new)$/;
+        return $result->('HEALTHY', 'COMMITTED', 'MATERIALIZED',
+            'materialized anchor and authoritative HEAD agree');
+    }
+
+    if ($anchor->{phase} eq 'MATERIALIZED' && defined($intent)) {
+        eval { vg_intent_tags(%$intent); };
+        return $blocked->("VG intent is invalid: $@") if $@;
+        return $blocked->('VG intent refers to another anchor')
+            if !defined($expected_anchor) || $intent->{object} ne $expected_anchor;
+        return $blocked->('materialized object has an unsupported OPEN operation')
+            if $intent->{op} ne 'DM_CUTOVER';
+        if ($intent->{tx} ne $anchor->{tx}) {
+            return $blocked->('new transition has modified runtime before PREPARED was recorded')
+                if $runtime !~ /^(?:absent|linear-head)$/;
+            return $result->('RECOVERY_REQUIRED', 'PREPARE_INCOMPLETE', 'MATERIALIZED',
+                'OPEN cutover intent exists but PREPARED anchor was not recorded');
+        }
+        return $blocked->('finalized transition has an unexpected runtime mapping')
+            if $runtime !~ /^(?:absent|linear-head|linear-new)$/;
+        return $blocked->('finalized transition still has clone metadata') if $objects->{meta};
+        return $result->('RECOVERY_REQUIRED', 'FINALIZE_PENDING', 'MATERIALIZED',
+            'materialization is proven but OPEN intent remains');
+    }
+
+    return $blocked->('transition phase has no matching OPEN intent')
+        if ref($intent) ne 'HASH';
+    eval { vg_intent_tags(%$intent); };
+    return $blocked->("VG intent is invalid: $@") if $@;
+    return $blocked->('transition transaction and VG intent differ')
+        if $intent->{tx} ne $anchor->{tx};
+    return $blocked->('transition VG intent operation is not DM_CUTOVER')
+        if $intent->{op} ne 'DM_CUTOVER';
+    return $blocked->('VG intent refers to another anchor')
+        if !defined($expected_anchor) || $intent->{object} ne $expected_anchor;
+    return $blocked->('transition source or destination is missing')
+        if !$objects->{old} || !$objects->{new};
+
+    if ($anchor->{phase} eq 'PREPARED') {
+        return $blocked->('PREPARED transition metadata is missing') if !$objects->{meta};
+        return $blocked->('PREPARED transition published an unexpected runtime mapping')
+            if $runtime !~ /^(?:absent|linear-old|linear-head)$/;
+        return $result->('RECOVERY_REQUIRED', 'PREPARED', 'NOT_STARTED',
+            'persistent objects are prepared; cutover has not committed');
+    }
+    if ($anchor->{phase} eq 'COMMITTED' || $anchor->{phase} eq 'HYDRATING') {
+        return $blocked->('committed transition metadata is missing') if !$objects->{meta};
+        return $result->('RECOVERY_REQUIRED', $anchor->{phase}, 'RECONSTRUCT_REQUIRED',
+            'runtime clone mapping is absent and must be reconstructed from exact evidence')
+            if $runtime eq 'absent';
+        return $blocked->('committed transition has an unexpected runtime mapping')
+            if $runtime ne 'clone';
+        return $blocked->('clone target reports failed or unknown metadata state')
+            if $clone_status !~ /^(?:incomplete|complete)$/;
+        return $result->('RECOVERY_REQUIRED', $anchor->{phase},
+            ($clone_status eq 'complete' ? 'COMPLETE' : 'HYDRATING'),
+            'clone mapping remains authoritative pending explicit recovery');
+    }
+    if ($anchor->{phase} eq 'HYDRATION_COMPLETE') {
+        return $blocked->('hydration-complete transition metadata is missing') if !$objects->{meta};
+        return $result->('RECOVERY_REQUIRED', 'HYDRATION_COMPLETE', 'REVERIFY_REQUIRED',
+            'runtime mapping is absent; persistent clone metadata must be reopened and verified')
+            if $runtime eq 'absent';
+        if ($runtime eq 'clone') {
+            return $blocked->('anchor claims complete hydration but clone status does not')
+                if $clone_status ne 'complete';
+            return $result->('RECOVERY_REQUIRED', 'HYDRATION_COMPLETE', 'PIVOT_READY',
+                'complete clone mapping is ready for an explicit linear pivot');
+        }
+        return $result->('RECOVERY_REQUIRED', 'PIVOT_UNRECORDED', 'MATERIALIZED',
+            'linear destination is live but LINEAR_PIVOTED was not recorded')
+            if $runtime eq 'linear-new';
+        return $blocked->('hydration-complete transition has an unexpected runtime mapping');
+    }
+    if ($anchor->{phase} eq 'LINEAR_PIVOTED') {
+        return $blocked->('linear-pivoted transition has an unexpected runtime mapping')
+            if $runtime !~ /^(?:absent|linear-new|linear-head)$/;
+        return $result->('RECOVERY_REQUIRED', 'LINEAR_PIVOTED', 'FINALIZE_READY',
+            'destination is authoritative; detached transition artifacts require exact cleanup');
+    }
+    return $blocked->('unsupported recovery phase');
 }
 
 sub vg_intent_tags {
