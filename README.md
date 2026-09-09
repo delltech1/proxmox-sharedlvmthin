@@ -14,7 +14,7 @@ replication, fencing, quorum, or automatic metadata repair.
 
 ## Release status
 
-`0.9.0~rc5.3` is a release candidate intended exclusively for Proxmox VE 9.
+`0.9.0~rc5.3.1` is a release candidate intended exclusively for Proxmox VE 9.
 It passed extensive unit, fault-injection and three-node integration
 qualification on the Proxmox VE 9.2.x release line with Storage API 14 and 15,
 but this is not universal certification of every SAN, HBA,
@@ -153,4 +153,5 @@ is not affiliated with or endorsed by Proxmox Server Solutions GmbH.
 Report vulnerabilities through GitHub Private Vulnerability Reporting. General
 bugs should include sanitized diagnostics only—never credentials, PVE tickets,
 private keys, guest data, or organization-specific storage identities.
+
 
