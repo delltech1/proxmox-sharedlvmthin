@@ -34,7 +34,7 @@ jobs:
           sh scripts/build.sh
           sh scripts/check-release.sh dist/*.deb
 
-      - name: Prepare GitHub-safe assets and checksum
+      - name: Prepare and verify GitHub-safe assets
         run: |
           for source in dist/*.deb; do
             target="$(printf '%s' "$source" | tr '~' '.')"
@@ -43,6 +43,7 @@ jobs:
             fi
           done
           (cd dist && sha256sum ./*.deb > SHA256SUMS)
+          (cd dist && sha256sum --check SHA256SUMS)
 
       - name: Publish prerelease
         env:
