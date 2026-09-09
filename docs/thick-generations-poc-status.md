@@ -717,6 +717,39 @@ BRIEF_PEER_LINK_FLAP=OBSERVED_NO_SERVICE_IMPACT
 FULL_THICK_ZERO_INITIALIZATION=RETAINED_FOR_DATA_ISOLATION
 ```
 
+The same running Windows VM then completed cross-node migrations in both
+directions while its thick disk remained on shared storage. With the lab's
+global 20 MiB/s RAM-migration limit, the first 4 GiB migration took 5 minutes
+19 seconds because the running guest temporarily dirtied memory faster than
+the limit. PVE increased its convergence downtime allowance, but the actual
+measured downtime was 524 milliseconds and the migration completed normally.
+
+The return migration used an operation-specific 100 MiB/s limit on the
+dedicated internal migration network. It completed in 47 seconds at an
+average of 100.4 MiB/s with 4 milliseconds of downtime. After each direction,
+the exact Thick Generations frontend existed with open count one only on the
+destination node and was absent on both non-owner nodes. Corosync remained
+clean, quorum stayed three of three, and the D-state count remained zero.
+The operation-specific limit did not change the cluster-wide conservative
+default and is not a production recommendation.
+
+```ini
+WINDOWS_THICK_LIVE_MIGRATION_FORWARD=PASS
+WINDOWS_THICK_LIVE_MIGRATION_REVERSE=PASS
+SHARED_DISK_COPY_DURING_NODE_MIGRATION=NOT_REQUIRED
+FRONTEND_DESTINATION_ONLY_AFTER_EACH_MOVE=PASS
+STALE_FRONTEND_ON_NON_OWNER_NODES=0
+MIGRATION_20_MIB_PER_SECOND=PASS_SLOW_CONVERGENCE
+MIGRATION_20_MIB_PER_SECOND_ELAPSED=5_MIN_19_SEC
+MIGRATION_20_MIB_PER_SECOND_DOWNTIME=524_MS
+MIGRATION_100_MIB_PER_SECOND=PASS
+MIGRATION_100_MIB_PER_SECOND_ELAPSED=47_SEC
+MIGRATION_100_MIB_PER_SECOND_DOWNTIME=4_MS
+POST_MIGRATION_QUORUM=3_OF_3
+POST_MIGRATION_DSTATE=0
+COROSYNC_ERRORS_DURING_NODE_MIGRATIONS=0
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
