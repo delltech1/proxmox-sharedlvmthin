@@ -2461,9 +2461,6 @@ sub _thick_free_image {
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
-    die "refusing to delete active thick-generations volume '$volname'; "
-        . "stable frontend '$mapper' still exists\n"
-        if _block_device_exists("/dev/mapper/$mapper");
 
     return $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_no_vg_intent($vg);
@@ -2485,6 +2482,34 @@ sub _thick_free_image {
         );
         $class->_verify_autoactivation_disabled($vg, $head);
         $class->_verify_autoactivation_disabled($vg, $anchor);
+
+        # PVE can call free_image() directly after cancelling a storage mirror
+        # without first calling deactivate_volume().  The stable frontend is
+        # therefore not ownership proof that the target is still in use.  It
+        # is safe to dismantle only after exact identity/dependency checks and
+        # a positively verified zero open count.  An open or ambiguous mapper
+        # remains a hard refusal.
+        if (_block_device_exists("/dev/mapper/$mapper")) {
+            $class->_thick_verify_frontend($scfg, $volname, $head);
+            my $opens = _command_lines(
+                ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $mapper],
+                "reading thick-generations frontend open count '$mapper' before delete failed",
+            );
+            die "thick-generations frontend '$mapper' open count is ambiguous\n"
+                if @$opens != 1 || $opens->[0] !~ /^\s*\d+\s*$/;
+            die "refusing to delete open thick-generations volume '$volname'\n"
+                if int($opens->[0]) != 0;
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'remove', '--retry', $mapper],
+                errmsg => "removing idle thick-generations frontend '$mapper' before delete failed",
+            );
+            die "refusing thick-generations delete: frontend '$mapper' removal is unconfirmed\n"
+                if _block_device_exists("/dev/mapper/$mapper");
+            run_command(
+                ['/sbin/lvchange', '-an', "$vg/$anchor", "$vg/$head"],
+                errmsg => "deactivating thick-generations state for '$vg/$volname' before delete failed",
+            );
+        }
 
         my $tx = $class->_new_transaction_id();
         my %intent = (

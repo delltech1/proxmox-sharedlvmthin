@@ -1916,9 +1916,47 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
 
     reset_mocks();
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { return ['1']; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
     eval { $class->free_image($storeid, $cfg, $volname, 0) };
-    like($@, qr/refusing to delete active/, 'active frontend blocks delete');
+    like($@, qr/refusing to delete open/, 'open frontend blocks delete');
     is(scalar(@commands), 0, 'active frontend rejection performs zero mutation');
+
+    reset_mocks();
+    my @mapper_exists = (1, 0);
+    @intent_events = ();
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
+        return shift(@mapper_exists) // 0;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { return ['0']; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { return '2' x 32; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { return 'a' x 32; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub {
+        push @intent_events, 'OPEN'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        push @intent_events, 'CLEAR'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub {
+        return $inventory if !@commands;
+        return {};
+    };
+    is($class->free_image($storeid, $cfg, $volname, 0), undef,
+        'idle verified frontend is dismantled before cancelled-target cleanup');
+    is_deeply([command_lines()], [
+        "/sbin/dmsetup --verifyudev remove --retry " . PVE::SharedLvmThinThick::mapper_name($namespace, $volname),
+        "/sbin/lvchange -an testvg/$anchor testvg/$head",
+        "/sbin/lvremove -f testvg/$head",
+        "/sbin/lvremove -f testvg/$anchor",
+    ], 'cancel cleanup removes only the idle frontend and exact owned objects');
+    is_deeply(\@intent_events, ['OPEN', 'CLEAR'], 'cancel cleanup remains transaction-bracketed');
 
     reset_mocks();
     my $snapshot = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 1);

@@ -12,6 +12,26 @@ production feature and is not included in a public release.
   cleanup only.
 - Ambiguous persistent state must block reconstruction, mutation, and cleanup.
 
+## Online storage-move cancellation and network qualification
+
+- A bounded online thick-to-thin move completed at 60 MiB/s after replacing
+  emulated high-throughput lab NICs with paravirtualized adapters. The guest
+  remained online, quorum was retained, and the destination thin pool did not
+  grow speculatively while its usage was unavailable.
+- A reverse thin-to-thick move was deliberately cancelled by the evidence
+  guard after a cluster-network warning. The source remained authoritative.
+- The cancellation exposed a cleanup gap: PVE can call `free_image()` without
+  first deactivating an idle Thick Generations frontend. Cleanup now verifies
+  the exact frontend identity and dependency graph, requires an unambiguous
+  zero open count, removes the idle frontend, and then deletes only the exact
+  owned head and anchor under the VG transaction lock.
+- The real orphan produced by the cancelled move was removed through this
+  corrected lifecycle path. The original thin source remained attached and
+  running, the complete thick allocation was returned to its VG, quorum
+  remained healthy, and no D-state process survived.
+- A complete 60 MiB/s reverse move is still an open qualification item. The
+  cancellation result proves safe abort and cleanup, not round-trip success.
+
 ## Restored historical evidence
 
 The original Stage 1 experiment was performed with Proxmox VE 9.2.2, kernel
