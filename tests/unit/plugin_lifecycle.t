@@ -2267,6 +2267,20 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
             'C6 resume reconstructs a committed cutover without replaying preparation');
         is($committed->{old_gen}, 0, 'C6 resume derives the old generation from its signed name');
         is($committed->{new_gen}, 1, 'C6 resume derives the new generation from its signed name');
+
+        $state = { %$state, phase => 'HYDRATING' };
+        my $hydrating = $class->_thick_resume_transition(
+            $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', $intent,
+        );
+        is($hydrating->{state}->{phase}, 'HYDRATING',
+            'C8 resume reconstructs the exact persisted hydration state');
+
+        $state = { %$state, phase => 'HYDRATION_COMPLETE' };
+        my $hydration_complete = $class->_thick_resume_transition(
+            $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', $intent,
+        );
+        is($hydration_complete->{state}->{phase}, 'HYDRATION_COMPLETE',
+            'C9 resume reconstructs the exact persisted pre-pivot state');
     }
 };
 
@@ -2330,6 +2344,9 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $hydrating = {
         %$prepared, phase => 'HYDRATING', head => $new, generation => 1,
     };
+    my $hydration_complete = {
+        %$prepared, phase => 'HYDRATION_COMPLETE', head => $new, generation => 1,
+    };
     my $source_ready = { %$prepared, phase => 'SOURCE_READY' };
     my $committed = {
         %$prepared, phase => 'COMMITTED', head => $new, generation => 1,
@@ -2338,6 +2355,9 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $anchor_tags_source_ready = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$source_ready)});
     my $anchor_tags_committed = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$committed)});
     my $anchor_tags_hydrating = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$hydrating)});
+    my $anchor_tags_hydration_complete = join(',', @{
+        PVE::SharedLvmThinThick::anchor_tags(%$hydration_complete)
+    });
     my $old_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
     )});
@@ -2346,11 +2366,11 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     )});
     my $initial = { testvg => {
         $anchor => { tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$materialized)}) },
-        $old => { tags => $old_tags, lv_size => $size },
+        $old => { tags => $old_tags, lv_size => $size, lv_attr => '-wi-XX---k' },
     } };
     my $prepared_inventory = { testvg => {
         $anchor => { tags => $anchor_tags_prepared },
-        $old => { tags => $old_tags, lv_size => $size },
+        $old => { tags => $old_tags, lv_size => $size, lv_attr => '-wi-XX---k' },
         $new => { tags => $new_tags, lv_size => $size },
         $meta => { tags => '', lv_size => 24 * 1024 * 1024 },
     } };
@@ -2366,14 +2386,18 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         %{$prepared_inventory->{testvg}},
         $anchor => { tags => $anchor_tags_committed },
     } };
+    my $hydration_complete_inventory = { testvg => {
+        %{$prepared_inventory->{testvg}},
+        $anchor => { tags => $anchor_tags_hydration_complete },
+    } };
     my $after_cleanup = { testvg => {
-        $anchor => { tags => $anchor_tags_hydrating },
+        $anchor => { tags => $anchor_tags_hydration_complete },
         $old => { tags => $old_tags, lv_size => $size },
         $new => { tags => $new_tags, lv_size => $size },
     } };
     my @inventories = (
         $initial, $prepared_inventory, $source_ready_inventory, $committed_inventory,
-        $hydrating_inventory, $after_cleanup,
+        $hydrating_inventory, $hydration_complete_inventory, $after_cleanup,
     );
     my @events;
     my @scoped_devices;

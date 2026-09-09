@@ -158,6 +158,23 @@ LIVE_C6_EXACT_FORWARD_RECOVERY=PASS
 LIVE_C6_SNAPSHOT_AND_HEAD_SHA=PASS
 LIVE_C6_FORWARD_LINEAR_DEPENDENCY=PASS
 LIVE_C6_DSTATE_AFTER_RECOVERY=0
+LIVE_PROCESS_CRASH_C7=PASS
+LIVE_C7_IDEMPOTENT_READ_ONLY_RECOVERY=PASS
+LIVE_C7_SNAPSHOT_AND_HEAD_SHA=PASS
+LIVE_C7_FORWARD_LINEAR_DEPENDENCY=PASS
+LIVE_C7_DSTATE_AFTER_RECOVERY=0
+LIVE_PROCESS_CRASH_C8=PASS
+LIVE_C8_HYDRATING_RECOVERY=PASS
+LIVE_C8_SNAPSHOT_AND_HEAD_SHA=PASS
+LIVE_C8_FORWARD_LINEAR_DEPENDENCY=PASS
+LIVE_C8_DSTATE_AFTER_RECOVERY=0
+LIVE_PROCESS_CRASH_C9=PASS
+LIVE_C9_CLASSIFICATION=PIVOT_READY
+LIVE_C9_EXACT_PIVOT_RECOVERY=PASS
+LIVE_C9_SNAPSHOT_AND_HEAD_SHA=PASS
+LIVE_C9_FORWARD_LINEAR_DEPENDENCY=PASS
+LIVE_C9_TRANSITION_ARTIFACT_CLEANUP=PASS
+LIVE_C9_DSTATE_AFTER_RECOVERY=0
 ```
 
 Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
@@ -227,6 +244,35 @@ then performed only the pending clone publication and later lifecycle phases.
 The recovered snapshot and destination HEAD both matched the original
 SHA-256. Final state was an active destination-only linear frontend with the
 transition objects removed, healthy quorum, and zero D-state tasks.
+
+A live C7 crash terminated the worker after the clone frontend was published
+and the previous HEAD was already the signed read-only snapshot, but before the
+anchor advanced to HYDRATING. The first recovery attempt exposed an
+idempotency defect: repeating `lvchange -pr` against an already read-only LV
+returns an error. Recovery now consumes the scoped `lv_attr` evidence, changes
+permissions only while the exact LV remains writable, and otherwise verifies
+the existing read-only state. Exact recovery completed with matching snapshot
+and HEAD SHA-256, a destination-only linear frontend, no transition artifacts,
+healthy quorum, and zero D-state tasks.
+
+A live C8 crash left the signed anchor in HYDRATING with an active exact clone
+frontend whose background hydration was still disabled. The classifier kept
+mutation blocked while reporting valid data and an authoritative clone source.
+Exact recovery reused the existing transaction objects, enabled and completed
+hydration, persisted HYDRATION_COMPLETE before pivoting, and finalized a clean
+linear HEAD. The recovered snapshot and HEAD both matched the original
+SHA-256; the clone metadata and source mapper were absent afterward.
+
+A live C9 crash terminated the worker after full clone hydration and the
+durable HYDRATION_COMPLETE anchor update, but before any linear pivot. The
+read-only classifier proved an unsuspended exact clone at full region count and
+reported `MATERIALIZATION_STATE=PIVOT_READY`; it did not treat path health or
+completed copying alone as permission to mutate. After the normal stale-lock
+window, exact recovery verified the complete clone and persisted identities,
+performed only the linear pivot and transaction-scoped cleanup, and returned
+the object to HEALTHY. The final frontend depended only on generation 8, the
+snapshot and HEAD matched the original SHA-256, no transition artifact or
+D-state task remained, and quorum stayed healthy.
 
 ## Geometry gate
 
@@ -329,11 +375,9 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Extend deterministic recovery to the persisted C7 through C9 states.
-4. Execute process-crash tests at C7 through C9.
-5. Execute reboot recovery on disposable local storage.
-6. Execute fenced cross-node reconstruction on a disposable shared test LUN.
-7. Qualify single-path and total-path loss without automatic repair.
-8. Integrate PVE create, snapshot, rollback, clone, migration, backup, restore,
+3. Execute reboot recovery on disposable local storage.
+4. Execute fenced cross-node reconstruction on a disposable shared test LUN.
+5. Qualify single-path and total-path loss without automatic repair.
+6. Integrate PVE create, snapshot, rollback, clone, migration, backup, restore,
    and thin-to-thick and thick-to-thin storage moves.
-9. Run Linux and Windows data-integrity workloads and a long-duration soak.
+7. Run Linux and Windows data-integrity workloads and a long-duration soak.

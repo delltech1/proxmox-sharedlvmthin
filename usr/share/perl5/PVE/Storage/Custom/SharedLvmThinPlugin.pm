@@ -278,6 +278,22 @@ sub _thick_verify_snapshot_readonly {
     return 1;
 }
 
+sub _thick_ensure_snapshot_readonly {
+    my ($class, $vg, $lv, $info, $device) = @_;
+    die "snapshot permission inventory for '$vg/$lv' is missing\n"
+        if ref($info) ne 'HASH';
+    my $attr = $info->{lv_attr} // '';
+    die "snapshot permission inventory for '$vg/$lv' is ambiguous\n"
+        if $attr !~ /^.[rw]/;
+    if (substr($attr, 1, 1) eq 'w') {
+        run_command(
+            ['/sbin/lvchange', '--devices', $device, '-pr', "$vg/$lv"],
+            errmsg => "making snapshot generation '$vg/$lv' read-only failed",
+        );
+    }
+    return $class->_thick_verify_snapshot_readonly($vg, $lv, $device);
+}
+
 sub _thick_filesystem_path {
     my ($class, $scfg, $volname, $snapname) = @_;
     if (defined($snapname)) {
@@ -702,6 +718,7 @@ sub _thick_list_volumes_scoped {
             if exists($result->{$vg}->{$name});
         $result->{$vg}->{$name} = {
             lv_size => int($row->{lv_size}),
+            lv_attr => $row->{lv_attr},
             lv_state => substr($row->{lv_attr}, 4, 1),
             lv_type => substr($row->{lv_attr}, 0, 1),
             tags => $row->{lv_tags} // '',
@@ -1871,10 +1888,11 @@ sub _thick_resume_transition {
         || $intent->{op} ne $expected_intent_op || $intent->{object} ne $anchor
         || $intent->{tx} ne $state->{tx};
     die "recoverable transition request identity mismatch\n"
-        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED)$/
+        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE)$/
         || $state->{op} ne $operation || $state->{snapshot} ne $snap
         || ($state->{phase} =~ /^(?:PREPARED|SOURCE_READY)$/ && $state->{head} ne $state->{old})
-        || ($state->{phase} eq 'COMMITTED' && $state->{head} ne $state->{new});
+        || ($state->{phase} =~ /^(?:COMMITTED|HYDRATING|HYDRATION_COMPLETE)$/
+            && $state->{head} ne $state->{new});
 
     my ($old, $new, $source) = @{$state}{qw(old new source)};
     my ($old_gen) = $old =~ /-(\d{8})$/;
@@ -2270,11 +2288,9 @@ sub _thick_volume_snapshot {
         );
         $class->_thick_verify_clone_status($front, 0);
         if (!$rollback) {
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-pr', "$vg/$tr->{old}"],
-                errmsg => "making snapshot generation '$vg/$tr->{old}' read-only failed",
+            $class->_thick_ensure_snapshot_readonly(
+                $vg, $tr->{old}, $lvs->{$vg}->{$tr->{old}}, $device,
             );
-            $class->_thick_verify_snapshot_readonly($vg, $tr->{old}, $device);
         } else {
             $class->_thick_verify_snapshot_readonly($vg, $tr->{source}, $device);
         }
@@ -2288,19 +2304,20 @@ sub _thick_volume_snapshot {
         }, $device);
     }
 
-    run_command(
-        ['/sbin/dmsetup', 'message', $front, '0', 'enable_hydration'],
-        errmsg => "enabling dm-clone hydration failed",
-    );
-    $class->_thick_wait_for_hydration(
-        $front, $scfg->{'slt-tg-hydration-timeout'} // 3600,
-    );
+    if ($tr->{state}->{phase} eq 'HYDRATING') {
+        run_command(
+            ['/sbin/dmsetup', 'message', $front, '0', 'enable_hydration'],
+            errmsg => "enabling dm-clone hydration failed",
+        );
+        $class->_thick_wait_for_hydration(
+            $front, $scfg->{'slt-tg-hydration-timeout'} // 3600,
+        );
 
-    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_exact_vg_intent($vg, %intent, _device => $device);
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $state = decode_anchor_tags($lvs->{$vg}->{$tr->{anchor}}->{tags} // '');
-        die "snapshot transition changed before linear pivot\n"
+        die "snapshot transition changed before hydration completion\n"
             if $state->{phase} ne 'HYDRATING' || $state->{tx} ne $intent{tx}
             || $state->{head} ne $tr->{new};
         $class->_thick_verify_clone_frontend(
@@ -2312,8 +2329,26 @@ sub _thick_volume_snapshot {
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'HYDRATION_COMPLETE', _device => $device,
         );
+        $tr->{state} = $state;
         $class->_thick_fault_point('C9', $operation, $storeid, $volname);
+        return;
+        }, $device);
+    }
 
+    if ($tr->{state}->{phase} eq 'HYDRATION_COMPLETE') {
+        $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my $state = decode_anchor_tags($lvs->{$vg}->{$tr->{anchor}}->{tags} // '');
+        die "snapshot transition changed before linear pivot\n"
+            if $state->{phase} ne 'HYDRATION_COMPLETE' || $state->{tx} ne $intent{tx}
+            || $state->{head} ne $tr->{new};
+        $class->_thick_verify_clone_frontend(
+            $scfg, $volname, sectors => int($tr->{size} / 512),
+            region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
+            new => $tr->{new}, source_map => $tr->{source_map},
+        );
+        $class->_thick_verify_clone_status($front, 1);
         my $sectors = int($tr->{size} / 512);
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'reload', $front, '--table',
@@ -2380,6 +2415,7 @@ sub _thick_volume_snapshot {
         $class->_clear_vg_intent($vg, %intent, _device => $device);
         return;
     }, $device);
+    }
     return;
 }
 
