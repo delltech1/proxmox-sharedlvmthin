@@ -6,11 +6,17 @@ package PVE::Storage::Custom::SharedLvmThinPlugin;
 use strict;
 use warnings;
 
+use Digest::SHA qw(sha256_hex);
 use PVE::Storage::Plugin;
 use PVE::Storage::LVMPlugin;
 use PVE::Cluster;
 use PVE::Tools qw(run_command);
 use PVE::SharedLvmThinSafety;
+use PVE::SharedLvmThinThick qw(
+    anchor_name decode_anchor_tags generation_name mapper_name object_key
+    validate_anchor_transition validate_generation_tags
+    vg_intent_tags decode_vg_intent_tags
+);
 
 use base qw(PVE::Storage::Plugin);
 
@@ -60,6 +66,19 @@ sub properties {
         'slt-vgname' => {
             description => 'Backing shared LVM volume group.',
             type => 'string',
+        },
+        'slt-allocation-mode' => {
+            description => 'Volume backend: per-VM thin pools or experimental fully allocated Thick Generations.',
+            type => 'string',
+            enum => ['thin', 'thick-generations'],
+            default => 'thin',
+        },
+        'slt-tg-hydration-timeout' => {
+            description => 'Bounded Thick Generations hydration observation timeout in seconds.',
+            type => 'integer',
+            minimum => 60,
+            maximum => 86400,
+            default => 3600,
         },
         'slt-initial-pool-size' => {
             description => 'Initial physical size of each per-VM thin pool in GiB.',
@@ -130,6 +149,8 @@ sub properties {
 sub options {
     return {
         'slt-vgname' => { fixed => 1 },
+        'slt-allocation-mode' => { fixed => 1, optional => 1 },
+        'slt-tg-hydration-timeout' => { optional => 1 },
         'slt-initial-pool-size' => { optional => 1 },
         'slt-initial-pool-mode' => { optional => 1 },
         'slt-initial-pool-percent' => { optional => 1 },
@@ -150,6 +171,252 @@ sub options {
     };
 }
 
+sub _allocation_mode {
+    my ($class, $scfg) = @_;
+    my $mode = $scfg->{'slt-allocation-mode'} // 'thin';
+    die "unknown SharedLvmThin allocation mode '$mode'\n"
+        if $mode ne 'thin' && $mode ne 'thick-generations';
+    return $mode;
+}
+
+sub _require_thick_identity_config {
+    my ($class, $storeid, $scfg) = @_;
+    die "thick-generations storage '$storeid' must be configured as shared\n"
+        if !$scfg->{shared};
+    for my $field (qw(slt-expected-vg-uuid slt-expected-pv-uuid slt-expected-wwid)) {
+        die "thick-generations storage '$storeid' requires '$field'\n"
+            if !defined($scfg->{$field}) || $scfg->{$field} eq '';
+    }
+    die "thick-generations storage '$storeid' requires a protected VG reserve\n"
+        if !defined($scfg->{'slt-vg-reserve-percent'})
+        && !defined($scfg->{'slt-vg-reserve-gib'});
+    return 1;
+}
+
+sub _thick_namespace {
+    my ($class, $scfg) = @_;
+    my $uuid = $scfg->{'slt-expected-vg-uuid'};
+    die "thick-generations requires a pinned VG UUID before path resolution\n"
+        if !defined($uuid) || $uuid eq '';
+    return lc($uuid);
+}
+
+sub _thick_anchor {
+    my ($class, $storeid, $scfg, $volname, $lvs) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $anchor = anchor_name($namespace, $volname);
+    $lvs //= PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    die "thick-generations storage '$storeid' is unavailable: VG '$vg' is not visible\n"
+        if !$lvs->{$vg};
+    my $info = $lvs->{$vg}->{$anchor};
+    die "thick-generations anchor '$vg/$anchor' is missing\n" if !$info;
+    my $state = decode_anchor_tags($info->{tags} // '');
+    die "thick-generations anchor '$vg/$anchor' belongs to another storage or volume\n"
+        if $state->{sid} ne $storeid || $state->{vol} ne $volname;
+    die "thick-generations anchor '$vg/$anchor' is not materialized; recovery required\n"
+        if $state->{phase} ne 'MATERIALIZED';
+    my $head = $lvs->{$vg}->{$state->{head}};
+    die "thick-generations head '$vg/$state->{head}' is missing\n" if !$head;
+    validate_generation_tags(
+        $head->{tags} // '', sid => $storeid, vol => $volname,
+        role => 'head', generation => $state->{generation},
+    );
+    return ($state, $head, $anchor);
+}
+
+sub _thick_filesystem_path {
+    my ($class, $scfg, $volname, $snapname) = @_;
+    die "thick-generations snapshot path is not enabled by this experimental build\n"
+        if defined($snapname);
+    my $mapper = mapper_name($class->_thick_namespace($scfg), $volname);
+    my (undef, undef, $vmid) = $class->parse_volname($volname);
+    return wantarray ? ("/dev/mapper/$mapper", $vmid, 'images') : "/dev/mapper/$mapper";
+}
+
+sub _thick_list_images {
+    my ($class, $storeid, $scfg, $vmid, $vollist, $cache) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    my $res = [];
+    return $res if !$lvs->{$vg};
+    for my $anchor (sort grep { /^sltg-a-[0-9a-f]{24}$/ } keys %{$lvs->{$vg}}) {
+        my $state = decode_anchor_tags($lvs->{$vg}->{$anchor}->{tags} // '');
+        next if $state->{sid} ne $storeid;
+        my (undef, $name, $owner) = $class->parse_volname($state->{vol});
+        next if defined($vmid) && $owner != $vmid;
+        my $expected_anchor = anchor_name($class->_thick_namespace($scfg), $name);
+        die "thick-generations anchor name mismatch for '$vg/$anchor'\n"
+            if $anchor ne $expected_anchor;
+        die "thick-generations object '$vg/$anchor' requires recovery\n"
+            if $state->{phase} ne 'MATERIALIZED';
+        my $head = $lvs->{$vg}->{$state->{head}};
+        die "thick-generations head '$vg/$state->{head}' is missing\n" if !$head;
+        validate_generation_tags(
+            $head->{tags} // '', sid => $storeid, vol => $name,
+            role => 'head', generation => $state->{generation},
+        );
+        my $volid = "$storeid:$name";
+        next if $vollist && !grep { $_ eq $volid } @$vollist;
+        push @$res, {
+            volid => $volid, format => 'raw', size => $head->{lv_size},
+            vmid => $owner, ctime => $head->{ctime},
+        };
+    }
+    return $res;
+}
+
+sub _thick_verify_frontend {
+    my ($class, $scfg, $volname, $head_name, $expected_sectors) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+    my $info = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '--separator', '|',
+            '-o', 'uuid,readonly', $mapper],
+        "reading thick-generations frontend '$mapper' failed",
+    );
+    die "thick-generations frontend '$mapper' identity is ambiguous\n" if @$info != 1;
+    my ($actual_uuid, $readonly) = split(/\|/, $info->[0], -1);
+    for ($actual_uuid, $readonly) { s/^\s+|\s+$//g; }
+    die "thick-generations frontend '$mapper' UUID mismatch\n" if $actual_uuid ne $uuid;
+    die "thick-generations frontend '$mapper' is unexpectedly read-only\n"
+        if lc($readonly) ne 'writeable';
+    my $table = _command_lines(
+        ['/sbin/dmsetup', 'table', $mapper],
+        "reading thick-generations frontend table '$mapper' failed",
+    );
+    die "thick-generations frontend '$mapper' table is not one linear segment\n"
+        if @$table != 1 || $table->[0] !~ /^0\s+(\d+)\s+linear\s+/;
+    my ($actual_sectors) = $table->[0] =~ /^0\s+(\d+)\s+linear\s+/;
+    die "thick-generations frontend '$mapper' size mismatch\n"
+        if defined($expected_sectors) && $actual_sectors != $expected_sectors;
+    my $deps = _command_lines(
+        ['/sbin/dmsetup', 'deps', '-o', 'devname', $mapper],
+        "reading thick-generations frontend dependencies '$mapper' failed",
+    );
+    my $head_dm = $vg;
+    $head_dm =~ s/-/--/g;
+    my $escaped_head = $head_name;
+    $escaped_head =~ s/-/--/g;
+    my $expected = "$head_dm-$escaped_head";
+    die "thick-generations frontend '$mapper' does not depend only on '$vg/$head_name'\n"
+        if @$deps != 1 || $deps->[0] !~ /^1\s+dependencies\s*:\s*\(\Q$expected\E\)$/;
+    return 1;
+}
+
+sub _thick_source_mapper_name {
+    my ($class, $scfg, $volname, $generation) = @_;
+    return mapper_name($class->_thick_namespace($scfg), $volname)
+        . sprintf('-src-%08d', $generation);
+}
+
+sub _thick_transition_anchor {
+    my ($class, $vg, $anchor, $state, %change) = @_;
+    my $old = PVE::SharedLvmThinThick::anchor_tags(%$state);
+    my %next = (%$state, %change);
+    validate_anchor_transition($state, \%next);
+    my $new = PVE::SharedLvmThinThick::anchor_tags(%next);
+    $class->_change_exact_tags(
+        $vg, $anchor, $old, $new,
+        "advancing thick-generations anchor '$vg/$anchor' failed",
+    );
+    return \%next;
+}
+
+sub _thick_verify_clone_status {
+    my ($class, $mapper, $must_be_complete) = @_;
+    my $lines = _command_lines(
+        ['/sbin/dmsetup', 'status', '--noflush', $mapper],
+        "reading dm-clone status for '$mapper' failed",
+    );
+    die "dm-clone status for '$mapper' is ambiguous\n" if @$lines != 1;
+    my ($hydrated, $total, $hydrating) =
+        $lines->[0] =~ /^0\s+\d+\s+clone\s+\S+\s+\S+\s+\S+\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
+    die "dm-clone status for '$mapper' is malformed\n"
+        if !defined($hydrated) || !$total || !defined($hydrating);
+    die "dm-clone hydration for '$mapper' is incomplete ($hydrated/$total, $hydrating active)\n"
+        if $must_be_complete && ($hydrated != $total || $hydrating != 0);
+    return (int($hydrated), int($total), int($hydrating));
+}
+
+sub _thick_snapshot_name {
+    my ($snap) = @_;
+    die "snapshot name is missing\n" if !defined($snap) || $snap eq '';
+    die "snapshot name contains characters unsafe for persistent LVM metadata\n"
+        if $snap !~ /^[A-Za-z0-9_.+-]+$/;
+    return $snap;
+}
+
+sub _thick_activate_volume {
+    my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
+    die "thick-generations snapshot activation is not enabled by this experimental build\n"
+        if defined($snapname);
+    $class->_require_thick_identity_config($storeid, $scfg);
+    $class->_verify_mutation_quorum($storeid, $scfg);
+    $class->_verify_storage_identity($storeid, $scfg);
+    my ($state, undef, $anchor) = $class->_thick_anchor($storeid, $scfg, $volname);
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    if (_block_device_exists("/dev/mapper/$mapper")) {
+        $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        return 1;
+    }
+    run_command(
+        ['/sbin/lvchange', '-ay', '-K', "$vg/$state->{head}", "$vg/$anchor"],
+        errmsg => "activating thick-generations state for '$vg/$volname' failed",
+    );
+    $class->_verify_autoactivation_disabled($vg, $state->{head});
+    my $sectors = _command_lines(
+        ['/sbin/blockdev', '--getsz', "/dev/$vg/$state->{head}"],
+        "reading thick-generations head size '$vg/$state->{head}' failed",
+    );
+    die "thick-generations head size is ambiguous\n"
+        if @$sectors != 1 || $sectors->[0] !~ /^\d+$/ || $sectors->[0] == 0;
+    my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+    run_command(
+        ['/sbin/dmsetup', '--verifyudev', 'create', $mapper, '--uuid', $uuid,
+            '--table', "0 $sectors->[0] linear /dev/$vg/$state->{head} 0"],
+        errmsg => "creating stable thick-generations frontend '$mapper' failed",
+    );
+    $class->_thick_verify_frontend($scfg, $volname, $state->{head}, $sectors->[0]);
+    return 1;
+}
+
+sub _thick_deactivate_volume {
+    my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
+    die "thick-generations snapshot deactivation is not enabled by this experimental build\n"
+        if defined($snapname);
+    $class->_require_thick_identity_config($storeid, $scfg);
+    $class->_verify_storage_identity($storeid, $scfg);
+    my ($state, undef, $anchor) = $class->_thick_anchor($storeid, $scfg, $volname);
+    my $vg = $scfg->{'slt-vgname'};
+    my $mapper = mapper_name($class->_thick_namespace($scfg), $volname);
+    if (_block_device_exists("/dev/mapper/$mapper")) {
+        $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        my $opens = _command_lines(
+            ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $mapper],
+            "reading thick-generations frontend open count '$mapper' failed",
+        );
+        die "thick-generations frontend '$mapper' open count is ambiguous\n"
+            if @$opens != 1 || $opens->[0] !~ /^\s*\d+\s*$/;
+        die "refusing to deactivate open thick-generations frontend '$mapper'\n"
+            if int($opens->[0]) != 0;
+        run_command(
+            ['/sbin/dmsetup', 'remove', '--retry', $mapper],
+            errmsg => "removing stable thick-generations frontend '$mapper' failed",
+        );
+    }
+    run_command(
+        ['/sbin/lvchange', '-an', "$vg/$anchor", "$vg/$state->{head}"],
+        errmsg => "deactivating thick-generations state for '$vg/$volname' failed",
+    );
+    return 1;
+}
+
 sub _command_lines {
     my ($command, $errmsg) = @_;
     my @lines;
@@ -165,6 +432,338 @@ sub _command_lines {
     );
 
     return \@lines;
+}
+
+sub _block_device_exists {
+    my ($path) = @_;
+    return -b $path;
+}
+
+sub _canonical_vg_lock_id {
+    my ($class, $scfg) = @_;
+    my $uuid = $scfg->{'slt-expected-vg-uuid'};
+    die "shared VG mutation requires a pinned VG UUID\n"
+        if !defined($uuid) || $uuid eq '';
+    return 'slt-vg-' . substr(sha256_hex(lc($uuid)), 0, 32);
+}
+
+sub _with_vg_lock {
+    my ($class, $storeid, $scfg, $code) = @_;
+    my $lockid = $class->_canonical_vg_lock_id($scfg);
+    return $class->cluster_lock_storage(
+        $lockid, $scfg->{shared}, undef,
+        sub {
+            $class->_verify_mutation_quorum($storeid, $scfg);
+            $class->_verify_storage_identity($storeid, $scfg);
+            return $code->();
+        },
+    );
+}
+
+sub _vg_state_digest {
+    my ($class, $vg) = @_;
+    my $lines = _command_lines(
+        ['/sbin/vgs', '--readonly', '--noheadings', '--units', 'b', '--nosuffix', '--separator', '|',
+            '-o', 'vg_uuid,vg_seqno,vg_free_count,vg_extent_size', $vg],
+        "reading before-state of VG '$vg' failed",
+    );
+    die "VG '$vg' before-state is ambiguous\n" if @$lines != 1;
+    my $state = $lines->[0];
+    $state =~ s/\s+//g;
+    die "VG '$vg' before-state is malformed\n"
+        if $state !~ /^[A-Za-z0-9-]+\|\d+\|\d+\|\d+(?:\.\d+)?$/;
+    return substr(sha256_hex($state), 0, 32);
+}
+
+sub _vg_tags {
+    my ($class, $vg) = @_;
+    my $lines = _command_lines(
+        ['/sbin/vgs', '--readonly', '--noheadings', '--separator', '|',
+            '-o', 'vg_name,vg_tags', $vg],
+        "reading mutation intent of VG '$vg' failed",
+    );
+    die "VG '$vg' tag state is ambiguous\n" if @$lines != 1;
+    my ($observed_vg, $tags) = split(/\|/, $lines->[0], 2);
+    for ($observed_vg, $tags) { $_ //= ''; s/^\s+|\s+$//g; }
+    die "VG '$vg' tag state belongs to '$observed_vg'\n" if $observed_vg ne $vg;
+    return $tags;
+}
+
+sub _read_vg_intent {
+    my ($class, $vg) = @_;
+    return decode_vg_intent_tags($class->_vg_tags($vg));
+}
+
+sub _require_no_vg_intent {
+    my ($class, $vg) = @_;
+    my $intent = $class->_read_vg_intent($vg);
+    die "VG '$vg' has unresolved transaction '$intent->{tx}' ($intent->{op} $intent->{object}); mutation refused\n"
+        if $intent;
+    return 1;
+}
+
+sub _require_exact_vg_intent {
+    my ($class, $vg, %expected) = @_;
+    my $intent = $class->_read_vg_intent($vg);
+    die "VG '$vg' has no recoverable mutation intent\n" if !$intent;
+    die "VG '$vg' mutation intent does not match the requested transaction\n"
+        if grep { "$intent->{$_}" ne "$expected{$_}" }
+            qw(tx state op object before);
+    return 1;
+}
+
+sub _set_vg_intent {
+    my ($class, $vg, %intent) = @_;
+    $class->_require_no_vg_intent($vg);
+    my $observed = $class->_vg_state_digest($vg);
+    die "VG '$vg' changed before mutation intent could be committed\n"
+        if $observed ne $intent{before};
+    my $tags = vg_intent_tags(%intent);
+    my @command = ('/sbin/vgchange');
+    push @command, map { ('--addtag', $_) } @$tags;
+    push @command, $vg;
+    run_command(\@command, errmsg => "setting mutation intent on VG '$vg' failed");
+    my $after = $class->_read_vg_intent($vg);
+    die "VG '$vg' mutation-intent postcondition failed\n"
+        if !$after || grep { "$after->{$_}" ne "$intent{$_}" }
+            qw(tx state op object before);
+    return 1;
+}
+
+sub _clear_vg_intent {
+    my ($class, $vg, %expected) = @_;
+    my $current = $class->_read_vg_intent($vg);
+    die "VG '$vg' mutation-intent clear precondition failed\n"
+        if !$current || grep { "$current->{$_}" ne "$expected{$_}" }
+            qw(tx state op object before);
+    my $tags = vg_intent_tags(%$current);
+    my @command = ('/sbin/vgchange');
+    push @command, map { ('--deltag', $_) } @$tags;
+    push @command, $vg;
+    run_command(\@command, errmsg => "clearing mutation intent on VG '$vg' failed");
+    die "VG '$vg' mutation-intent clear postcondition failed\n"
+        if defined($class->_read_vg_intent($vg));
+    return 1;
+}
+
+sub _new_transaction_id {
+    open(my $fh, '<', '/proc/sys/kernel/random/uuid')
+        or die "cannot obtain kernel transaction UUID: $!\n";
+    my $tx = <$fh> // '';
+    close($fh);
+    $tx =~ s/[^0-9A-Fa-f]//g;
+    $tx = lc($tx);
+    die "kernel returned an invalid transaction UUID\n" if $tx !~ /^[0-9a-f]{32}$/;
+    return $tx;
+}
+
+sub _thick_capacity_gate {
+    my ($class, $storeid, $scfg, $size_kib, $overhead_bytes) = @_;
+    die "thick-generations allocation requires slt-vg-reserve-percent or slt-vg-reserve-gib\n"
+        if !defined($scfg->{'slt-vg-reserve-percent'})
+        && !defined($scfg->{'slt-vg-reserve-gib'});
+    my $vg = $scfg->{'slt-vgname'};
+    my ($vg_size, $vg_free, $extent_size) = _allocation_numeric_fields(
+        [
+            '/sbin/vgs', '--readonly', '--noheadings', '--units', 'b', '--nosuffix',
+            '--separator', '|', '-o', 'vg_size,vg_free,vg_extent_size', $vg,
+        ],
+        "reading thick-generations capacity of VG '$vg' failed", 3,
+    );
+    my $bytes = int($size_kib) * 1024;
+    $overhead_bytes = 8 * 1024 * 1024 if !defined($overhead_bytes);
+    my $decision = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(
+        vg_size => int($vg_size), vg_free => int($vg_free),
+        growth_bytes => $bytes, overhead_bytes => $overhead_bytes,
+        extent_bytes => int($extent_size),
+        reserve_percent => $scfg->{'slt-vg-reserve-percent'} // 0,
+        reserve_gib => $scfg->{'slt-vg-reserve-gib'} // 0,
+    );
+    die "thick-generations allocation rejected for '$vg': requires "
+        . "$decision->{required_physical_bytes} bytes; projected free "
+        . "$decision->{free_after_bytes} bytes would cross protected reserve "
+        . "$decision->{reserve_bytes} bytes; no LV was created\n"
+        if !$decision->{allowed};
+    return $decision;
+}
+
+sub _change_exact_tags {
+    my ($class, $vg, $lv, $remove, $add, $errmsg) = @_;
+    my $read_tags = sub {
+        my $lines = _command_lines(
+            ['/sbin/lvs', '--readonly', '--noheadings', '-o', 'lv_tags', "$vg/$lv"],
+            "reading exact tag state of '$vg/$lv' failed",
+        );
+        die "tag state of '$vg/$lv' is ambiguous\n" if @$lines > 1;
+        return [] if !@$lines || $lines->[0] eq '';
+        my @tags = split(/,/, $lines->[0]);
+        for (@tags) { s/^\s+|\s+$//g; }
+        die "tag state of '$vg/$lv' contains an empty or duplicate tag\n"
+            if grep { $_ eq '' } @tags
+            || do { my %seen; grep { $seen{$_}++ } @tags };
+        return \@tags;
+    };
+    my $same = sub {
+        my ($left, $right) = @_;
+        return 0 if @$left != @$right;
+        my %left = map { $_ => 1 } @$left;
+        return !grep { !$left{$_} } @$right;
+    };
+
+    my $before = $read_tags->();
+    die "tag mutation precondition failed for '$vg/$lv'\n"
+        if !$same->($before, $remove);
+    my %remove = map { $_ => 1 } @$remove;
+    my %add = map { $_ => 1 } @$add;
+    my @remove_delta = grep { !$add{$_} } @$remove;
+    my @add_delta = grep { !$remove{$_} } @$add;
+    my @command = ('/sbin/lvchange');
+    push @command, map { ('--deltag', $_) } @remove_delta;
+    push @command, map { ('--addtag', $_) } @add_delta;
+    push @command, "$vg/$lv";
+    run_command(\@command, errmsg => $errmsg);
+    my $after = $read_tags->();
+    die "tag mutation postcondition failed for '$vg/$lv'; state preserved for recovery\n"
+        if !$same->($after, $add);
+    return 1;
+}
+
+sub _thick_verify_allocation_state {
+    my ($class, $storeid, $scfg, $volname, $tx, $phase, $generation) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $anchor = anchor_name($namespace, $volname);
+    my $head = generation_name($namespace, $volname, $generation);
+    my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    die "thick-generations allocation state is unavailable\n" if !$lvs->{$vg};
+    die "thick-generations allocation object is incomplete\n"
+        if !$lvs->{$vg}->{$anchor} || !$lvs->{$vg}->{$head};
+    my $state = decode_anchor_tags($lvs->{$vg}->{$anchor}->{tags} // '');
+    die "thick-generations allocation anchor mismatch\n"
+        if $state->{sid} ne $storeid || $state->{vol} ne $volname
+        || $state->{tx} ne $tx || $state->{phase} ne $phase
+        || $state->{old} ne $head || $state->{new} ne $head
+        || $state->{head} ne $head || $state->{generation} != $generation;
+    validate_generation_tags(
+        $lvs->{$vg}->{$head}->{tags} // '', sid => $storeid, vol => $volname,
+        role => 'head', generation => $generation,
+    );
+    $class->_verify_autoactivation_disabled($vg, $head);
+    $class->_verify_autoactivation_disabled($vg, $anchor);
+    return ($state, $anchor, $head);
+}
+
+sub _thick_alloc_image {
+    my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
+    die "unsupported format '$fmt'\n" if defined($fmt) && $fmt ne 'raw';
+    $class->_require_thick_identity_config($storeid, $scfg);
+    $name = $class->find_free_diskname($storeid, $scfg, $vmid) if !$name;
+    my $is_guest = $name =~ /^vm-\Q$vmid\E-disk-\d+$/;
+    my $is_aux = $name =~ /^vm-\Q$vmid\E-(?:state-[A-Za-z0-9][A-Za-z0-9_.-]*|fleece-\d+|cloudinit)$/;
+    die "illegal volume name '$name'\n" if !$is_guest && !$is_aux;
+    die "invalid thick-generations allocation size\n"
+        if !defined($size) || $size !~ /^\d+$/ || $size < 1;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $generation = 0;
+    my $anchor = anchor_name($namespace, $name);
+    my $head = generation_name($namespace, $name, $generation);
+    my $tx = $class->_new_transaction_id();
+    my %intent;
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($vg);
+        $class->_thick_capacity_gate($storeid, $scfg, $size);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $objects = $lvs->{$vg} // {};
+        die "refusing thick-generations allocation: deterministic object already exists\n"
+            if $objects->{$anchor} || $objects->{$head} || $objects->{$name};
+        my $before = $class->_vg_state_digest($vg);
+        %intent = (
+            tx => $tx, state => 'OPEN', op => 'ALLOC', object => $anchor,
+            before => $before,
+        );
+        $class->_set_vg_intent($vg, %intent);
+        run_command(
+            ['/sbin/lvcreate', '-L', "${size}K", '-n', $head,
+                '--setactivationskip', 'y', $vg],
+            errmsg => "creating thick generation '$vg/$head' failed",
+        );
+        run_command(
+            ['/sbin/lvcreate', '-L', '8M', '-n', $anchor,
+                '--setactivationskip', 'y', $vg],
+            errmsg => "creating thick generation anchor '$vg/$anchor' failed",
+        );
+        my $head_tags = PVE::SharedLvmThinThick::generation_tags(
+            sid => $storeid, vol => $name, role => 'head', generation => $generation,
+        );
+        my $anchor_tags = PVE::SharedLvmThinThick::anchor_tags(
+            sid => $storeid, vol => $name, phase => 'PREPARED', tx => $tx,
+            old => $head, new => $head, head => $head, generation => $generation,
+        );
+        $class->_change_exact_tags($vg, $head, [], $head_tags,
+            "tagging thick generation '$vg/$head' failed");
+        $class->_change_exact_tags($vg, $anchor, [], $anchor_tags,
+            "tagging thick generation anchor '$vg/$anchor' failed");
+        $class->_disable_and_verify_autoactivation($vg, $head);
+        $class->_disable_and_verify_autoactivation($vg, $anchor);
+        $class->_thick_verify_allocation_state(
+            $storeid, $scfg, $name, $tx, 'PREPARED', $generation,
+        );
+        return;
+    });
+
+    eval {
+        run_command(
+            ['/sbin/lvchange', '-ay', '-K', "$vg/$head"],
+            errmsg => "activating new thick generation '$vg/$head' for zeroing failed",
+        );
+        my $zero_bytes = int($size) * 1024;
+        run_command(
+            ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$head", 'bs=4M',
+                "count=$zero_bytes", 'iflag=count_bytes', 'oflag=direct',
+                'conv=fsync,nocreat', 'status=none'],
+            errmsg => "zero-initializing new thick generation '$vg/$head' failed",
+        );
+        run_command(
+            ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$head"],
+            errmsg => "flushing new thick generation '$vg/$head' failed",
+        );
+        run_command(
+            ['/sbin/lvchange', '-an', "$vg/$head"],
+            errmsg => "deactivating zeroed thick generation '$vg/$head' failed",
+        );
+    };
+    if (my $error = $@) {
+        die _partial_allocation_error(
+            $storeid, $vmid, $name, $anchor, $error,
+            "PREPARED thick generation '$vg/$head' preserved with OPEN VG intent",
+        );
+    }
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_exact_vg_intent($vg, %intent);
+        $class->_thick_verify_allocation_state(
+            $storeid, $scfg, $name, $tx, 'PREPARED', $generation,
+        );
+        my $old_tags = PVE::SharedLvmThinThick::anchor_tags(
+            sid => $storeid, vol => $name, phase => 'PREPARED', tx => $tx,
+            old => $head, new => $head, head => $head, generation => $generation,
+        );
+        my $new_tags = PVE::SharedLvmThinThick::anchor_tags(
+            sid => $storeid, vol => $name, phase => 'MATERIALIZED', tx => $tx,
+            old => $head, new => $head, head => $head, generation => $generation,
+        );
+        $class->_change_exact_tags($vg, $anchor, $old_tags, $new_tags,
+            "committing materialized thick generation '$vg/$head' failed");
+        $class->_thick_verify_allocation_state(
+            $storeid, $scfg, $name, $tx, 'MATERIALIZED', $generation,
+        );
+        $class->_clear_vg_intent($vg, %intent);
+        return;
+    });
+    return $name;
 }
 
 sub _verify_storage_identity {
@@ -437,6 +1036,8 @@ sub parse_volname {
 
 sub filesystem_path {
     my ($class, $scfg, $volname, $snapname) = @_;
+    return $class->_thick_filesystem_path($scfg, $volname, $snapname)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
@@ -454,6 +1055,8 @@ sub filesystem_path {
 
 sub activate_storage {
     my ($class, $storeid, $scfg, $cache) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     my $vg = $scfg->{'slt-vgname'};
 
@@ -473,6 +1076,7 @@ sub deactivate_storage {
 
 sub status {
     my ($class, $storeid, $scfg, $cache) = @_;
+    $class->_allocation_mode($scfg);
 
     my $vg = $scfg->{'slt-vgname'};
 
@@ -497,6 +1101,8 @@ sub status {
 
 sub list_images {
     my ($class, $storeid, $scfg, $vmid, $vollist, $cache) = @_;
+    return $class->_thick_list_images($storeid, $scfg, $vmid, $vollist, $cache)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     my $vg = $scfg->{'slt-vgname'};
 
@@ -738,6 +1344,8 @@ sub _verify_allocation_reserve_postcondition {
 
 sub alloc_image {
     my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
+    return $class->_thick_alloc_image($storeid, $scfg, $vmid, $fmt, $name, $size)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     die "unsupported format '$fmt'\n"
         if defined($fmt) && $fmt ne 'raw';
@@ -911,6 +1519,8 @@ sub alloc_image {
 
 sub activate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
+    return $class->_thick_activate_volume($storeid, $scfg, $volname, $snapname, $cache)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     my $vg = $scfg->{'slt-vgname'};
     my $lv = $snapname ? "snap_${volname}_${snapname}" : $volname;
@@ -925,6 +1535,8 @@ sub activate_volume {
 
 sub deactivate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
+    return $class->_thick_deactivate_volume($storeid, $scfg, $volname, $snapname, $cache)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     my $vg = $scfg->{'slt-vgname'};
     my $lv = $snapname ? "snap_${volname}_${snapname}" : $volname;

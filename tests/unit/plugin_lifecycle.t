@@ -1731,4 +1731,77 @@ subtest 'thin volumes advertise zero-initialized copy destinations' => sub {
     );
 };
 
+subtest 'allocation mode defaults to thin and thick mode requires explicit safety identity' => sub {
+    is($class->_allocation_mode({}), 'thin', 'existing storage defaults to thin');
+    is(
+        $class->_allocation_mode({ 'slt-allocation-mode' => 'thick-generations' }),
+        'thick-generations',
+        'thick mode is explicit',
+    );
+    eval { $class->_allocation_mode({ 'slt-allocation-mode' => 'unknown' }) };
+    like($@, qr/unknown SharedLvmThin allocation mode/, 'unknown mode fails closed');
+
+    my $thick = {
+        shared => 1,
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    ok(
+        $class->_require_thick_identity_config('thick-test', $thick),
+        'fully pinned shared thick storage is accepted',
+    );
+    for my $missing (qw(slt-expected-vg-uuid slt-expected-pv-uuid slt-expected-wwid)) {
+        my %incomplete = %$thick;
+        delete $incomplete{$missing};
+        eval { $class->_require_thick_identity_config('thick-test', \%incomplete) };
+        like($@, qr/requires '\Q$missing\E'/, "$missing is mandatory");
+    }
+    my %not_shared = (%$thick, shared => 0);
+    eval { $class->_require_thick_identity_config('thick-test', \%not_shared) };
+    like($@, qr/must be configured as shared/, 'non-shared thick mode is rejected');
+    my %no_reserve = %$thick;
+    delete $no_reserve{'slt-vg-reserve-gib'};
+    eval { $class->_require_thick_identity_config('thick-test', \%no_reserve) };
+    like($@, qr/requires a protected VG reserve/, 'thick mode cannot consume the last VG extents');
+};
+
+subtest 'thick tag mutation enforces exact precondition and postcondition' => sub {
+    reset_mocks();
+    my @reads = (['old-a,old-b'], ['new-a,new-b']);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @reads;
+    };
+    ok(
+        $class->_change_exact_tags(
+            'testvg', 'anchor', ['old-a', 'old-b'], ['new-a', 'new-b'],
+            'test mutation failed',
+        ),
+        'exact mutation succeeds',
+    );
+    is(scalar(@commands), 1, 'exact mutation executes once');
+
+    reset_mocks();
+    @reads = (['foreign-tag']);
+    eval {
+        $class->_change_exact_tags(
+            'testvg', 'anchor', ['old-a'], ['new-a'], 'must not run',
+        );
+    };
+    like($@, qr/precondition failed/, 'foreign pre-state fails closed');
+    is(scalar(@commands), 0, 'failed precondition executes no mutation');
+
+    reset_mocks();
+    @reads = (['old-a'], ['unexpected']);
+    eval {
+        $class->_change_exact_tags(
+            'testvg', 'anchor', ['old-a'], ['new-a'], 'mutation failed',
+        );
+    };
+    like($@, qr/postcondition failed/, 'unexpected post-state is recovery-required');
+    is(scalar(@commands), 1, 'uncertain outcome is never retried');
+};
+
 done_testing();
