@@ -89,13 +89,17 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
   HEAD are absent while the retained source snapshot and new HEAD remain.
 - At most one potentially blocking probe of each type may exist.
 - Timed-out probes must terminate before a later probe is permitted.
+- The experimental recovery evidence collector requires an exact multipath
+  mapper, scopes its one-shot `vgs` and `lvs` inventories to that device, reads
+  device-mapper table/status with `--noflush`, and never overwrites an existing
+  evidence directory. It captures evidence only and performs no reconstruction.
 
 Current automated result:
 
 ```ini
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=69/69_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
-EXISTING_THIN_PYTHON_REGRESSION=66_PASS
+EXISTING_THIN_PYTHON_REGRESSION=72_PASS
 COMBINED_PERL_REGRESSION=168_PASS
 ```
 
