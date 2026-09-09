@@ -13,9 +13,11 @@ use PVE::Cluster;
 use PVE::Tools qw(run_command);
 use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinThick qw(
-    anchor_name clone_geometry decode_anchor_tags generation_name mapper_name object_key
+    anchor_name clone_geometry decode_anchor_tags decode_generation_tags
+    generation_name mapper_name object_key
     validate_anchor_transition validate_generation_tags
     vg_intent_tags decode_vg_intent_tags
+    transition_tags validate_transition_tags
 );
 
 use base qw(PVE::Storage::Plugin);
@@ -225,10 +227,55 @@ sub _thick_anchor {
     return ($state, $head, $anchor);
 }
 
+sub _thick_find_snapshot {
+    my ($class, $storeid, $scfg, $volname, $snapname, $lvs) = @_;
+    $snapname = _thick_snapshot_name($snapname);
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $key = object_key($namespace, $volname);
+    $lvs //= PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    die "thick-generations storage '$storeid' is unavailable: VG '$vg' is not visible\n"
+        if !$lvs->{$vg};
+    my @matches;
+    for my $name (sort grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %{$lvs->{$vg}}) {
+        my ($generation) = $name =~ /-(\d{8})$/;
+        my $valid = eval {
+            my $decoded = decode_generation_tags($lvs->{$vg}->{$name}->{tags} // '');
+            die "snapshot belongs to another storage\n"
+                if defined($storeid) && $decoded->{sid} ne $storeid;
+            die "snapshot identity mismatch\n"
+                if $decoded->{vol} ne $volname || $decoded->{role} ne 'snapshot'
+                || int($decoded->{generation}) != int($generation)
+                || $decoded->{snapshot} ne $snapname;
+            1;
+        };
+        push @matches, [$name, int($generation), $lvs->{$vg}->{$name}] if $valid;
+    }
+    die "snapshot '$snapname' for '$volname' is missing or ambiguous\n" if @matches != 1;
+    return @{$matches[0]};
+}
+
+sub _thick_verify_snapshot_readonly {
+    my ($class, $vg, $lv) = @_;
+    my $lines = _command_lines(
+        ['/sbin/lvs', '--readonly', '--noheadings', '-o', 'lv_attr', "$vg/$lv"],
+        "reading snapshot permissions of '$vg/$lv' failed",
+    );
+    die "snapshot permissions of '$vg/$lv' are ambiguous\n" if @$lines != 1;
+    die "snapshot '$vg/$lv' is not read-only\n" if $lines->[0] !~ /^.r/;
+    return 1;
+}
+
 sub _thick_filesystem_path {
     my ($class, $scfg, $volname, $snapname) = @_;
-    die "thick-generations snapshot path is not enabled by this experimental build\n"
-        if defined($snapname);
+    if (defined($snapname)) {
+        my ($snapshot) = $class->_thick_find_snapshot(
+            undef, $scfg, $volname, $snapname,
+        );
+        my (undef, undef, $vmid) = $class->parse_volname($volname);
+        my $path = "/dev/$scfg->{'slt-vgname'}/$snapshot";
+        return wantarray ? ($path, $vmid, 'images') : $path;
+    }
     my $mapper = mapper_name($class->_thick_namespace($scfg), $volname);
     my (undef, undef, $vmid) = $class->parse_volname($volname);
     return wantarray ? ("/dev/mapper/$mapper", $vmid, 'images') : "/dev/mapper/$mapper";
@@ -342,6 +389,102 @@ sub _thick_verify_clone_status {
     return (int($hydrated), int($total), int($hydrating));
 }
 
+sub _thick_verify_transition_metadata {
+    my ($class, $storeid, $scfg, $volname, $info, %expected) = @_;
+    die "transition metadata inventory is missing\n" if ref($info) ne 'HASH';
+    validate_transition_tags(
+        $info->{tags} // '', sid => $storeid, vol => $volname,
+        tx => $expected{tx}, kind => 'metadata',
+        generation => $expected{generation}, region => $expected{region},
+    );
+    die "transition metadata size is unknown or smaller than planned\n"
+        if !defined($info->{lv_size}) || $info->{lv_size} !~ /^\d+$/
+        || $info->{lv_size} < $expected{metadata_bytes};
+    $class->_verify_autoactivation_disabled($scfg->{'slt-vgname'}, $expected{name});
+    return 1;
+}
+
+sub _thick_verify_clone_frontend {
+    my ($class, $scfg, $volname, %expected) = @_;
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+    my $info = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '--separator', '|',
+            '-o', 'uuid,readonly', $mapper],
+        "reading dm-clone frontend '$mapper' failed",
+    );
+    die "dm-clone frontend '$mapper' identity is ambiguous\n" if @$info != 1;
+    my ($actual_uuid, $readonly) = split(/\|/, $info->[0], -1);
+    for ($actual_uuid, $readonly) { s/^\s+|\s+$//g; }
+    die "dm-clone frontend '$mapper' UUID mismatch\n" if $actual_uuid ne $uuid;
+    die "dm-clone frontend '$mapper' is unexpectedly read-only\n"
+        if lc($readonly) ne 'writeable';
+
+    my $table = _command_lines(
+        ['/sbin/dmsetup', 'table', $mapper],
+        "reading dm-clone frontend table '$mapper' failed",
+    );
+    die "dm-clone frontend '$mapper' table mismatch\n"
+        if @$table != 1
+        || $table->[0] !~ /^0\s+\Q$expected{sectors}\E\s+clone\s+\S+\s+\S+\s+\S+\s+\Q$expected{region}\E(?:\s|$)/;
+
+    my $deps = _command_lines(
+        ['/sbin/dmsetup', 'deps', '-o', 'devname', $mapper],
+        "reading dm-clone frontend dependencies '$mapper' failed",
+    );
+    die "dm-clone frontend '$mapper' dependency report is ambiguous\n" if @$deps != 1;
+    my @actual = sort($deps->[0] =~ /\(([^()]+)\)/g);
+    my $vg_dm = $scfg->{'slt-vgname'};
+    $vg_dm =~ s/-/--/g;
+    my @wanted;
+    for my $name ($expected{meta}, $expected{new}) {
+        my $escaped = $name;
+        $escaped =~ s/-/--/g;
+        push @wanted, "$vg_dm-$escaped";
+    }
+    push @wanted, $expected{source_map};
+    @wanted = sort @wanted;
+    die "dm-clone frontend '$mapper' dependency graph mismatch\n"
+        if @actual != @wanted || grep { $actual[$_] ne $wanted[$_] } 0 .. $#wanted;
+    return 1;
+}
+
+sub _thick_wait_for_hydration {
+    my ($class, $mapper, $timeout) = @_;
+    die "invalid thick-generations hydration timeout\n"
+        if !defined($timeout) || $timeout !~ /^\d+$/ || $timeout < 60 || $timeout > 86400;
+    my ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+    return 1 if $hydrated == $total && $hydrating == 0;
+
+    my $events = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'events', $mapper],
+        "reading dm-clone event counter for '$mapper' failed",
+    );
+    die "dm-clone event counter for '$mapper' is ambiguous\n"
+        if @$events != 1 || $events->[0] !~ /^\d+$/;
+    my $event = int($events->[0]);
+
+    # Close the completion-before-wait race after capturing the event number.
+    ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+    return 1 if $hydrated == $total && $hydrating == 0;
+
+    my $wait_error = '';
+    eval {
+        run_command(
+            ['/usr/bin/timeout', '--kill-after=5s', "${timeout}s",
+                '/sbin/dmsetup', 'wait', $mapper, "$event"],
+            errmsg => "waiting for dm-clone hydration event failed",
+        );
+    };
+    $wait_error = $@ if $@;
+    my $complete = eval { $class->_thick_verify_clone_status($mapper, 1); 1 };
+    die "dm-clone hydration is not positively complete; one bounded wait was used and "
+        . "no additional probe was spawned"
+        . ($wait_error ? ": $wait_error" : "\n") if !$complete;
+    return 1;
+}
+
 sub _thick_snapshot_name {
     my ($snap) = @_;
     die "snapshot name is missing\n" if !defined($snap) || $snap eq '';
@@ -352,11 +495,23 @@ sub _thick_snapshot_name {
 
 sub _thick_activate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
-    die "thick-generations snapshot activation is not enabled by this experimental build\n"
-        if defined($snapname);
     $class->_require_thick_identity_config($storeid, $scfg);
     $class->_verify_mutation_quorum($storeid, $scfg);
     $class->_verify_storage_identity($storeid, $scfg);
+    if (defined($snapname)) {
+        my ($snapshot) = $class->_thick_find_snapshot(
+            $storeid, $scfg, $volname, $snapname,
+        );
+        my $vg = $scfg->{'slt-vgname'};
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
+        $class->_verify_autoactivation_disabled($vg, $snapshot);
+        run_command(
+            ['/sbin/lvchange', '-ay', '-K', "$vg/$snapshot"],
+            errmsg => "activating thick-generations snapshot '$vg/$snapshot' failed",
+        );
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
+        return 1;
+    }
     my ($state, undef, $anchor) = $class->_thick_anchor($storeid, $scfg, $volname);
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
@@ -388,9 +543,19 @@ sub _thick_activate_volume {
 
 sub _thick_deactivate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
-    die "thick-generations snapshot deactivation is not enabled by this experimental build\n"
-        if defined($snapname);
     $class->_require_thick_identity_config($storeid, $scfg);
+    if (defined($snapname)) {
+        my ($snapshot) = $class->_thick_find_snapshot(
+            $storeid, $scfg, $volname, $snapname,
+        );
+        my $vg = $scfg->{'slt-vgname'};
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
+        run_command(
+            ['/sbin/lvchange', '-an', "$vg/$snapshot"],
+            errmsg => "deactivating thick-generations snapshot '$vg/$snapshot' failed",
+        );
+        return 1;
+    }
     $class->_verify_storage_identity($storeid, $scfg);
     my ($state, undef, $anchor) = $class->_thick_anchor($storeid, $scfg, $volname);
     my $vg = $scfg->{'slt-vgname'};
@@ -1553,6 +1718,295 @@ sub deactivate_volume {
     return 1;
 }
 
+sub _thick_volume_snapshot {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    $snap = _thick_snapshot_name($snap);
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $front = mapper_name($namespace, $volname);
+    my ($tr, %intent);
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($vg);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        my ($old, $old_gen) = ($state->{head}, int($state->{generation}));
+        my $new_gen = $old_gen + 1;
+        die "thick-generations generation limit reached\n" if $new_gen > 99_999_999;
+        my $key = object_key($namespace, $volname);
+        my $new = generation_name($namespace, $volname, $new_gen);
+        my $meta = sprintf('sltg-m-%s-%08d', $key, $new_gen);
+        my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $old_gen);
+        my $size = $head_info->{lv_size};
+        die "thick-generations source size is unknown or not sector aligned\n"
+            if !defined($size) || $size !~ /^\d+$/ || !$size || $size % 512;
+        my $geometry = clone_geometry(int($size));
+
+        for my $name (grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %{$lvs->{$vg}}) {
+            my ($generation) = $name =~ /-(\d{8})$/;
+            my $exists = eval {
+                validate_generation_tags(
+                    $lvs->{$vg}->{$name}->{tags} // '', sid => $storeid,
+                    vol => $volname, role => 'snapshot',
+                    generation => int($generation), snapshot => $snap,
+                );
+                1;
+            };
+            die "snapshot '$snap' already exists for '$volname'\n" if $exists;
+        }
+        die "thick-generations transition object already exists\n"
+            if $lvs->{$vg}->{$new} || $lvs->{$vg}->{$meta}
+            || _block_device_exists("/dev/mapper/$source_map");
+        $class->_thick_capacity_gate(
+            $storeid, $scfg, int(($size + 1023) / 1024),
+            $geometry->{metadata_bytes},
+        );
+        %intent = (
+            tx => $class->_new_transaction_id(), state => 'OPEN',
+            op => 'DM_CUTOVER', object => $anchor,
+            before => $class->_vg_state_digest($vg),
+        );
+        $class->_set_vg_intent($vg, %intent);
+        run_command(
+            ['/sbin/lvcreate', '-L', "${size}B", '-n', $new,
+                '--setactivationskip', 'y', $vg],
+            errmsg => "creating thick snapshot destination '$vg/$new' failed",
+        );
+        run_command(
+            ['/sbin/lvcreate', '-L', $geometry->{metadata_bytes} . 'B', '-n', $meta,
+                '--setactivationskip', 'y', $vg],
+            errmsg => "creating dm-clone metadata '$vg/$meta' failed",
+        );
+        $class->_change_exact_tags(
+            $vg, $new, [], PVE::SharedLvmThinThick::generation_tags(
+                sid => $storeid, vol => $volname, role => 'head',
+                generation => $new_gen,
+            ), "tagging thick snapshot destination '$vg/$new' failed",
+        );
+        $class->_change_exact_tags(
+            $vg, $meta, [], transition_tags(
+                sid => $storeid, vol => $volname, tx => $intent{tx},
+                kind => 'metadata', generation => $new_gen,
+                region => $geometry->{region_sectors},
+            ), "tagging dm-clone metadata '$vg/$meta' failed",
+        );
+        $class->_disable_and_verify_autoactivation($vg, $new);
+        $class->_disable_and_verify_autoactivation($vg, $meta);
+        my $prepared = $class->_thick_transition_anchor(
+            $vg, $anchor, $state,
+            phase => 'PREPARED', tx => $intent{tx}, old => $old, new => $new,
+            head => $old, generation => $old_gen,
+            region => $geometry->{region_sectors},
+        );
+        $tr = {
+            state => $prepared, anchor => $anchor, old => $old, new => $new,
+            old_gen => $old_gen, new_gen => $new_gen, meta => $meta,
+            source_map => $source_map, size => int($size), geometry => $geometry,
+        };
+        return;
+    });
+
+    eval {
+        run_command(
+            ['/sbin/lvchange', '-ay', '-K', "$vg/$tr->{meta}"],
+            errmsg => "activating dm-clone metadata failed",
+        );
+        run_command(
+            ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$tr->{meta}",
+                'bs=4096', 'count=1', 'conv=fsync,nocreat', 'status=none'],
+            errmsg => "initialising dm-clone metadata failed",
+        );
+        run_command(
+            ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$tr->{meta}"],
+            errmsg => "flushing dm-clone metadata failed",
+        );
+    };
+    die "PARTIAL SNAPSHOT for '$storeid:$volname': metadata initialisation is uncertain; "
+        . "OPEN intent and all objects preserved; no retry or cleanup: $@" if $@;
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_exact_vg_intent($vg, %intent);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
+        die "snapshot transition anchor disappeared\n" if !$info;
+        my $state = decode_anchor_tags($info->{tags} // '');
+        die "snapshot transition PREPARED state mismatch\n"
+            if $state->{phase} ne 'PREPARED' || $state->{tx} ne $intent{tx}
+            || $state->{head} ne $tr->{old} || $state->{old} ne $tr->{old}
+            || $state->{new} ne $tr->{new}
+            || $state->{region} != $tr->{geometry}->{region_sectors};
+        for my $lv ($tr->{old}, $tr->{new}, $tr->{meta}) {
+            die "snapshot transition object '$vg/$lv' is missing\n"
+                if !$lvs->{$vg}->{$lv};
+        }
+        validate_generation_tags(
+            $lvs->{$vg}->{$tr->{new}}->{tags} // '', sid => $storeid,
+            vol => $volname, role => 'head', generation => $tr->{new_gen},
+        );
+        $class->_thick_verify_transition_metadata(
+            $storeid, $scfg, $volname, $lvs->{$vg}->{$tr->{meta}},
+            tx => $intent{tx}, generation => $tr->{new_gen},
+            region => $tr->{geometry}->{region_sectors},
+            metadata_bytes => $tr->{geometry}->{metadata_bytes}, name => $tr->{meta},
+        );
+        if (!_block_device_exists("/dev/mapper/$front")) {
+            run_command(
+                ['/sbin/lvchange', '-ay', '-K', "$vg/$tr->{old}", "$vg/$tr->{anchor}"],
+                errmsg => "activating prepared thick-generations source failed",
+            );
+            my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+            my $sectors = int($tr->{size} / 512);
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
+                    '--table', "0 $sectors linear /dev/$vg/$tr->{old} 0"],
+                errmsg => "creating prepared thick-generations frontend failed",
+            );
+        }
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $tr->{old}, int($tr->{size} / 512),
+        );
+        run_command(
+            ['/sbin/lvchange', '-ay', '-K', "$vg/$tr->{new}", "$vg/$tr->{meta}"],
+            errmsg => "activating snapshot transition LVs failed",
+        );
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
+            errmsg => "suspending thick-generations frontend for snapshot failed",
+        );
+        run_command(
+            ['/sbin/lvchange', '-pr', "$vg/$tr->{old}"],
+            errmsg => "making snapshot generation '$vg/$tr->{old}' read-only failed",
+        );
+        $class->_thick_verify_snapshot_readonly($vg, $tr->{old});
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'create', $tr->{source_map},
+                '--readonly', '--uuid', "SLT-TG3-SOURCE-$intent{tx}", '--table',
+                "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{old} 0"],
+            errmsg => "creating immutable snapshot source mapper failed",
+        );
+        $state = $class->_thick_transition_anchor(
+            $vg, $tr->{anchor}, $state, phase => 'COMMITTED',
+            head => $tr->{new}, generation => $tr->{new_gen},
+        );
+        $class->_change_exact_tags(
+            $vg, $tr->{old},
+            PVE::SharedLvmThinThick::generation_tags(
+                sid => $storeid, vol => $volname, role => 'head',
+                generation => $tr->{old_gen},
+            ),
+            PVE::SharedLvmThinThick::generation_tags(
+                sid => $storeid, vol => $volname, role => 'snapshot',
+                generation => $tr->{old_gen}, snapshot => $snap,
+            ),
+            "committing immutable snapshot generation failed",
+        );
+        my $sectors = int($tr->{size} / 512);
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'load', $front, '--table',
+                "0 $sectors clone /dev/$vg/$tr->{meta} /dev/$vg/$tr->{new} "
+                    . "/dev/mapper/$tr->{source_map} "
+                    . $tr->{geometry}->{region_sectors} . " "
+                    . "2 no_hydration no_discard_passdown"],
+            errmsg => "loading dm-clone snapshot transition failed",
+        );
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'resume', $front],
+            errmsg => "publishing dm-clone snapshot transition failed",
+        );
+        $class->_thick_verify_clone_frontend(
+            $scfg, $volname, sectors => $sectors,
+            region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
+            new => $tr->{new}, source_map => $tr->{source_map},
+        );
+        $class->_thick_verify_clone_status($front, 0);
+        $state = $class->_thick_transition_anchor(
+            $vg, $tr->{anchor}, $state, phase => 'HYDRATING',
+        );
+        $tr->{state} = $state;
+        return;
+    });
+
+    run_command(
+        ['/sbin/dmsetup', 'message', $front, '0', 'enable_hydration'],
+        errmsg => "enabling dm-clone hydration failed",
+    );
+    $class->_thick_wait_for_hydration(
+        $front, $scfg->{'slt-tg-hydration-timeout'} // 3600,
+    );
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_exact_vg_intent($vg, %intent);
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $state = decode_anchor_tags($lvs->{$vg}->{$tr->{anchor}}->{tags} // '');
+        die "snapshot transition changed before linear pivot\n"
+            if $state->{phase} ne 'HYDRATING' || $state->{tx} ne $intent{tx}
+            || $state->{head} ne $tr->{new};
+        $class->_thick_verify_clone_frontend(
+            $scfg, $volname, sectors => int($tr->{size} / 512),
+            region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
+            new => $tr->{new}, source_map => $tr->{source_map},
+        );
+        $class->_thick_verify_clone_status($front, 1);
+        $state = $class->_thick_transition_anchor(
+            $vg, $tr->{anchor}, $state, phase => 'HYDRATION_COMPLETE',
+        );
+
+        my $sectors = int($tr->{size} / 512);
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'reload', $front, '--table',
+                "0 $sectors linear /dev/$vg/$tr->{new} 0"],
+            errmsg => "loading canonical linear frontend failed",
+        );
+        my $inactive = _command_lines(
+            ['/sbin/dmsetup', 'table', '--inactive', $front],
+            "reading inactive linear pivot table failed",
+        );
+        die "inactive linear pivot table postcondition failed\n"
+            if @$inactive != 1 || $inactive->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+/;
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
+            errmsg => "suspending hydrated frontend for linear pivot failed",
+        );
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'resume', $front],
+            errmsg => "publishing canonical linear frontend failed",
+        );
+        $class->_thick_verify_frontend($scfg, $volname, $tr->{new}, $sectors);
+        $state = $class->_thick_transition_anchor(
+            $vg, $tr->{anchor}, $state, phase => 'LINEAR_PIVOTED',
+        );
+
+        $class->_thick_verify_transition_metadata(
+            $storeid, $scfg, $volname, $lvs->{$vg}->{$tr->{meta}},
+            tx => $intent{tx}, generation => $tr->{new_gen},
+            region => $tr->{geometry}->{region_sectors},
+            metadata_bytes => $tr->{geometry}->{metadata_bytes}, name => $tr->{meta},
+        );
+        $class->_thick_verify_snapshot_readonly($vg, $tr->{old});
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'remove', $tr->{source_map}],
+            errmsg => "removing detached snapshot source mapper failed",
+        );
+        run_command(
+            ['/sbin/lvremove', '-f', "$vg/$tr->{meta}"],
+            errmsg => "removing detached dm-clone metadata failed",
+        );
+        die "detached snapshot source mapper still exists after removal\n"
+            if _block_device_exists("/dev/mapper/$tr->{source_map}");
+        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        die "detached dm-clone metadata still exists after removal\n"
+            if $after->{$vg} && $after->{$vg}->{$tr->{meta}};
+        $state = $class->_thick_transition_anchor(
+            $vg, $tr->{anchor}, $state, phase => 'MATERIALIZED',
+        );
+        $class->_clear_vg_intent($vg, %intent);
+        return;
+    });
+    return;
+}
+
 sub _thick_free_image {
     my ($class, $storeid, $scfg, $volname, $isBase) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
@@ -1975,6 +2429,9 @@ sub _volume_resize_locked {
 
 sub volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
+
+    return $class->_thick_volume_snapshot($scfg, $storeid, $volname, $snap)
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     return $class->cluster_lock_storage(
         $storeid,

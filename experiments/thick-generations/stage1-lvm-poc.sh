@@ -93,23 +93,27 @@ dmsetup --verifyudev create "$map_name" --uuid "$map_uuid" --table \
 
 event_before=$(dmsetup info -c --noheadings -o events "$map_name" | tr -d '[:space:]')
 dmsetup message "$map_name" 0 enable_hydration
-timeout 120 dmsetup wait "$map_name" "$event_before" || fail "no hydration DM event"
-i=0
-while :; do
-    status=$(dmsetup status --noflush "$map_name")
-    progress=$(printf '%s\n' "$status" | awk '{print $7}')
-    hydrating=$(printf '%s\n' "$status" | awk '{print $8}')
-    hydrated=${progress%/*}
-    total=${progress#*/}
-    [ "$total" -gt 0 ] && [ "$hydrated" -eq "$total" ] && [ "$hydrating" -eq 0 ] && break
-    [ "$i" -lt 120 ] || fail "hydration did not complete"
-    sleep 1
-    i=$((i + 1))
-done
+status=$(dmsetup status --noflush "$map_name")
+progress=$(printf '%s\n' "$status" | awk '{print $7}')
+hydrating=$(printf '%s\n' "$status" | awk '{print $8}')
+hydrated=${progress%/*}
+total=${progress#*/}
+if ! { [ "$total" -gt 0 ] && [ "$hydrated" -eq "$total" ] && [ "$hydrating" -eq 0 ]; }; then
+    timeout --kill-after=5s 120s dmsetup wait "$map_name" "$event_before" \
+        || fail "bounded hydration wait did not observe completion"
+fi
+status=$(dmsetup status --noflush "$map_name")
+progress=$(printf '%s\n' "$status" | awk '{print $7}')
+hydrating=$(printf '%s\n' "$status" | awk '{print $8}')
+hydrated=${progress%/*}
+total=${progress#*/}
+[ "$total" -gt 0 ] && [ "$hydrated" -eq "$total" ] && [ "$hydrating" -eq 0 ] \
+    || fail "hydration event did not produce an exact completed state"
 
-dmsetup suspend "$map_name"
 dmsetup load "$map_name" --table "0 $sectors linear /dev/$vg/$destination_lv 0"
 inactive=$(dmsetup table --inactive "$map_name")
+printf '%s\n' "$inactive" | grep -q ' linear ' || fail "inactive frontend is not linear"
+dmsetup --verifyudev suspend --noflush "$map_name"
 dmsetup --verifyudev resume "$map_name"
 active=$(dmsetup table "$map_name")
 printf '%s\n' "$active" | grep -q ' linear ' || fail "frontend is not linear after pivot"

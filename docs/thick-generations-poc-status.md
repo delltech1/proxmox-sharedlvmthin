@@ -88,7 +88,7 @@ Current automated result:
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=50/50_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=66_PASS
-COMBINED_PERL_REGRESSION=143_PASS
+COMBINED_PERL_REGRESSION=146_PASS
 ```
 
 ## Geometry gate
@@ -114,8 +114,14 @@ performance. Those remain explicit qualification gates.
 
 ## Ported lifecycle surface
 
-Allocation, list/path resolution, activation, deactivation, grow-only resize,
-and exact delete are now present on the isolated branch. Delete refuses active
+Allocation, list/path resolution, activation, deactivation, snapshot creation,
+grow-only resize, and exact delete are now present on the isolated branch.
+Snapshot creation is unit-qualified through the persisted PREPARED, COMMITTED,
+HYDRATING, HYDRATION_COMPLETE, LINEAR_PIVOTED, and MATERIALIZED phases. It
+requires an immutable read-only source, exact signed transition artifacts, one
+bounded event-numbered hydration wait, and a verified destination-only linear
+pivot before clearing the VG intent. It has not yet passed a live PVE gate.
+Delete refuses active
 frontends and any dependent or ambiguous generation. Resize uses one
 `lvextend`, zeroes and flushes the new range before publication, and changes an
 active frontend through verified inactive-table load followed by explicit
@@ -124,7 +130,8 @@ outcome preserves the OPEN VG intent and is never retried automatically.
 
 ## Open gates
 
-1. Complete snapshot, snapshot-delete, rollback, and recovery lifecycle code.
+1. Live-qualify snapshot creation, then complete snapshot-delete, rollback,
+   and recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
 3. Qualify persistent anchor updates and VG intent recovery.
 4. Execute process-crash tests at C0 through C9.

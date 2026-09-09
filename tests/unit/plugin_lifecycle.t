@@ -1991,4 +1991,226 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     }
 };
 
+subtest 'thick clone frontend and hydration wait require exact evidence' => sub {
+    reset_mocks();
+    my $cfg = {
+        'slt-vgname' => 'test-vg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+    };
+    my $volname = 'vm-900001-disk-0';
+    my $mapper = PVE::SharedLvmThinThick::mapper_name('vg-uuid', $volname);
+    my $uuid = 'SLT-TG2-' . PVE::SharedLvmThinThick::object_key('vg-uuid', $volname);
+    my @reads = (
+        ["$uuid|writeable"],
+        ['0 8192 clone 253:1 253:2 253:3 8 2 no_hydration no_discard_passdown'],
+        ['3 dependencies : (test--vg-meta--x), (source-map), (test--vg-new--x)'],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @reads;
+    };
+    ok($class->_thick_verify_clone_frontend(
+        $cfg, $volname, sectors => 8192, region => 8,
+        meta => 'meta-x', new => 'new-x', source_map => 'source-map',
+    ), 'clone frontend identity, table, and exact dependency set pass');
+    is(scalar(@reads), 0, 'all exact clone evidence was consumed');
+
+    my @status = ([8, 8, 0]);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub {
+        my (undef, undef, $must_be_complete) = @_;
+        my @row = @{shift @status};
+        die "incomplete\n" if $must_be_complete && ($row[0] != $row[1] || $row[2] != 0);
+        return @row;
+    };
+    ok($class->_thick_wait_for_hydration($mapper, 60),
+        'already complete hydration returns without waiting');
+    is(scalar(@commands), 0, 'already complete hydration spawns no wait probe');
+
+    reset_mocks();
+    @status = ([1, 8, 0], [2, 8, 1], [8, 8, 0]);
+    @reads = (['17']);
+    ok($class->_thick_wait_for_hydration($mapper, 60),
+        'one event-numbered wait closes the completion race');
+    is(scalar(@commands), 1, 'exactly one potentially blocking wait is spawned');
+    like((command_lines())[0], qr{/usr/bin/timeout --kill-after=5s 60s /sbin/dmsetup wait \Q$mapper\E 17$},
+        'wait is bounded and tied to the captured event number');
+
+    reset_mocks();
+    @status = ([1, 8, 0], [2, 8, 1], [2, 8, 0]);
+    @reads = (['18']);
+    eval { $class->_thick_wait_for_hydration($mapper, 60) };
+    like($@, qr/not positively complete/, 'non-completion is recovery-required');
+    is(scalar(@commands), 1, 'non-completion never spawns a second wait probe');
+};
+
+subtest 'thick snapshot lookup accepts exactly one signed immutable generation' => sub {
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $snapname = 'snap1';
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+    };
+    my $generation = PVE::SharedLvmThinThick::generation_name('vg-uuid', $volname, 3);
+    my $tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'snapshot',
+        generation => 3, snapshot => $snapname,
+    )});
+    my $inventory = { testvg => { $generation => { tags => $tags, lv_size => 4096 } } };
+    my ($found, $number) = $class->_thick_find_snapshot(
+        $storeid, $cfg, $volname, $snapname, $inventory,
+    );
+    is($found, $generation, 'signed snapshot resolves to its deterministic generation');
+    is($number, 3, 'snapshot generation number is verified against its name');
+
+    my $duplicate = PVE::SharedLvmThinThick::generation_name('vg-uuid', $volname, 4);
+    my $duplicate_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'snapshot',
+        generation => 4, snapshot => $snapname,
+    )});
+    my $ambiguous = { testvg => {
+        %{$inventory->{testvg}}, $duplicate => { tags => $duplicate_tags, lv_size => 4096 },
+    } };
+    eval { $class->_thick_find_snapshot($storeid, $cfg, $volname, $snapname, $ambiguous) };
+    like($@, qr/missing or ambiguous/, 'duplicate signed snapshot identity fails closed');
+};
+
+subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+        'slt-tg-hydration-timeout' => 60,
+    };
+    my $namespace = $cfg->{'slt-expected-vg-uuid'};
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $old = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $new = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 1);
+    my $meta = 'sltg-m-' . PVE::SharedLvmThinThick::object_key($namespace, $volname) . '-00000001';
+    my $old_tx = '5' x 32;
+    my $new_tx = '6' x 32;
+    my $size = 32 * 1024 * 1024;
+    my $materialized = {
+        v => 3, sid => $storeid, vol => $volname, phase => 'MATERIALIZED',
+        tx => $old_tx, old => $old, new => $old, head => $old,
+        generation => 0, region => 8,
+    };
+    my $prepared = {
+        %$materialized, phase => 'PREPARED', tx => $new_tx,
+        old => $old, new => $new, head => $old,
+    };
+    my $hydrating = {
+        %$prepared, phase => 'HYDRATING', head => $new, generation => 1,
+    };
+    my $anchor_tags_prepared = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$prepared)});
+    my $anchor_tags_hydrating = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$hydrating)});
+    my $old_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'head', generation => 0,
+    )});
+    my $new_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'head', generation => 1,
+    )});
+    my $initial = { testvg => {
+        $anchor => { tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$materialized)}) },
+        $old => { tags => $old_tags, lv_size => $size },
+    } };
+    my $prepared_inventory = { testvg => {
+        $anchor => { tags => $anchor_tags_prepared },
+        $old => { tags => $old_tags, lv_size => $size },
+        $new => { tags => $new_tags, lv_size => $size },
+        $meta => { tags => '', lv_size => 24 * 1024 * 1024 },
+    } };
+    my $hydrating_inventory = { testvg => {
+        %{$prepared_inventory->{testvg}},
+        $anchor => { tags => $anchor_tags_hydrating },
+    } };
+    my $after_cleanup = { testvg => {
+        $anchor => { tags => $anchor_tags_hydrating },
+        $old => { tags => $old_tags, lv_size => $size },
+        $new => { tags => $new_tags, lv_size => $size },
+    } };
+    my @inventories = ($initial, $prepared_inventory, $hydrating_inventory, $after_cleanup);
+    my @events;
+    my $phase_state = $materialized;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { return $new_tx; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { return 'd' x 32; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { push @events, 'INTENT_OPEN'; return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub { push @events, 'INTENT_CLEAR'; return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_change_exact_tags = sub { push @events, 'TAG_CHANGE'; return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_transition_metadata = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_frontend = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub { return (8, 8, 0); };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_for_hydration = sub { push @events, 'HYDRATION_WAIT'; return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
+        return ($materialized, { tags => $old_tags, lv_size => $size }, $anchor);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_transition_anchor = sub {
+        my (undef, undef, undef, $state, %change) = @_;
+        my %next = (%$state, %change);
+        PVE::SharedLvmThinThick::validate_anchor_transition($state, \%next);
+        push @events, "PHASE_$next{phase}";
+        $phase_state = \%next;
+        return \%next;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
+        my ($path) = @_;
+        return 1 if $path =~ /\/dev\/mapper\/sltg-[0-9a-f]{24}$/;
+        return 0;
+    };
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventories; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return ['0 65536 linear 253:7 0'];
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        push @commands, [@$command];
+        push @events, 'CMD_' . join('_', @$command[0 .. ($#$command < 2 ? $#$command : 2)]);
+        return;
+    };
+
+    is($class->volume_snapshot($cfg, $storeid, $volname, 'snap1'), undef,
+        'thick snapshot reaches materialized linear state');
+    my @phases = grep { /^PHASE_/ } @events;
+    is_deeply(\@phases, [qw(
+        PHASE_PREPARED PHASE_COMMITTED PHASE_HYDRATING
+        PHASE_HYDRATION_COMPLETE PHASE_LINEAR_PIVOTED PHASE_MATERIALIZED
+    )], 'persistent phases are monotonic and complete');
+    is($phase_state->{tx}, $new_tx, 'every transition phase uses the new transaction ID');
+    is($phase_state->{head}, $new, 'materialized HEAD is the independent destination');
+    my @snapshot_commands = command_lines();
+    is(scalar(grep { /lvcreate/ } @snapshot_commands), 2,
+        'snapshot creates exactly one destination and one metadata LV');
+    like(join("\n", @snapshot_commands), qr{lvcreate -L 20971520B -n \Q$meta\E},
+        'metadata capacity comes from persisted geometry, not a fixed 16 MiB value');
+    is(scalar(grep { /dmsetup .*suspend --noflush/ } @snapshot_commands), 2,
+        'clone cutover and linear pivot each use one explicit noflush suspend');
+    is(scalar(grep { /dmsetup .*resume/ } @snapshot_commands), 2,
+        'each suspended cutover has exactly one resume');
+    my ($readonly_index) = grep { $snapshot_commands[$_] =~ /lvchange -pr/ } 0 .. $#snapshot_commands;
+    my ($source_index) = grep { $snapshot_commands[$_] =~ /dmsetup .*create .*src-/ } 0 .. $#snapshot_commands;
+    ok(defined($readonly_index) && defined($source_index) && $readonly_index < $source_index,
+        'persistent snapshot LV is made read-only before its source mapper is published');
+    is(scalar(grep { /lvremove -f testvg\/\Q$meta\E/ } @snapshot_commands), 1,
+        'only the exact detached metadata LV is removed');
+    is($events[-1], 'INTENT_CLEAR', 'VG intent clears only after MATERIALIZED');
+    is(scalar(@inventories), 0, 'all lifecycle inventories were consumed');
+};
+
 done_testing();
