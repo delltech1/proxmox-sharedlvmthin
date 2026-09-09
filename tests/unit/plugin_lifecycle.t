@@ -2134,6 +2134,46 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     is_deeply(\@events, [], 'open snapshot refusal creates no intent');
 };
 
+subtest 'thick rollback refuses an open frontend before mutation' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['1'] };
+    eval {
+        $class->volume_snapshot_rollback(
+            $cfg, 'thick-test', 'vm-900001-disk-0', 'snap1',
+        );
+    };
+    like($@, qr/refusing thick-generations rollback while the frontend is open/,
+        'open frontend is rejected');
+    is_deeply([command_lines()], [], 'open frontend rejection performs no mutation');
+};
+
+subtest 'thick rollback dispatches to the generation materializer' => sub {
+    reset_mocks();
+    my $cfg = { 'slt-allocation-mode' => 'thick-generations' };
+    my @received;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_volume_snapshot = sub {
+        @received = @_[1 .. 5];
+        return 'rollback-result';
+    };
+    is($class->volume_snapshot_rollback(
+        $cfg, 'thick-test', 'vm-900001-disk-0', 'snap1',
+    ), 'rollback-result', 'thick rollback uses the common materialization engine');
+    is_deeply(\@received,
+        [$cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK'],
+        'rollback passes exact storage, volume, snapshot, and operation identity');
+};
+
 subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
     reset_mocks();
     my $storeid = 'thick-test';

@@ -92,7 +92,7 @@ Current automated result:
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=50/50_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=66_PASS
-COMBINED_PERL_REGRESSION=148_PASS
+COMBINED_PERL_REGRESSION=153_PASS
 ```
 
 ## Geometry gate
@@ -172,10 +172,28 @@ HEAD_UNCHANGED_AFTER_SNAPSHOT_DELETE=PASS
 SNAPSHOT_DELETE_INTENT=PASS
 ```
 
+Rollback uses the same persistent dm-clone materialization engine with an
+explicit `ROLLBACK` anchor operation. Its source is the exact signed snapshot,
+its `old` object is the superseded HEAD, and its `new` object is a fresh fully
+allocated generation. A live multipath-backed test wrote divergent data to the
+current HEAD, rolled back, and proved that the new HEAD SHA-256 exactly matched
+the retained snapshot. The divergent HEAD was removed only after a verified
+linear pivot; the snapshot remained read-only and all temporary transition
+objects were absent.
+
+```ini
+LIVE_ROLLBACK=PASS
+ROLLBACK_DATA_MATCH=PASS
+ROLLBACK_SOURCE_RETAINED=PASS
+SUPERSEDED_HEAD_REMOVED_AFTER_PIVOT=PASS
+ROLLBACK_TRANSITION_ARTIFACTS_DETACHED=PASS
+ROLLBACK_DSTATE=0
+```
+
 ## Open gates
 
-1. Repeat live snapshot creation and delete with data-bearing and active-QEMU
-   workloads, then complete rollback and recovery lifecycle code.
+1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
+   workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
 3. Qualify persistent anchor updates and VG intent recovery.
 4. Execute process-crash tests at C0 through C9.

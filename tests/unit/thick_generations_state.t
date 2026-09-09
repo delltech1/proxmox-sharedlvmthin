@@ -58,6 +58,21 @@ my $next_prepared = state(
 );
 ok(validate_anchor_transition($materialized, $next_prepared),
     'materialized object starts a fresh transaction with explicit recovery geometry');
+my $rollback_prepared = state(
+    phase => 'PREPARED', tx => ('b' x 32), op => 'ROLLBACK',
+    source => 'g0', old => 'g1', new => 'g2', head => 'g1',
+    generation => 1, region => 8,
+);
+ok(validate_anchor_transition($materialized, $rollback_prepared),
+    'rollback persists the retained snapshot as a source distinct from old HEAD');
+my $rollback_committed = {
+    %$rollback_prepared, phase => 'COMMITTED', head => 'g2', generation => 2,
+};
+ok(validate_anchor_transition($rollback_prepared, $rollback_committed),
+    'rollback commit advances HEAD exactly once');
+eval { anchor_tags(%$rollback_prepared, source => 'g1') };
+like($@, qr/retained snapshot, not the previous HEAD/,
+    'rollback cannot silently clone the current HEAD');
 eval { validate_anchor_transition($materialized, state(%$next_prepared, tx => $materialized->{tx})) };
 like($@, qr/fresh transaction ID/, 'new transition cannot reuse the previous transaction ID');
 eval { validate_anchor_transition($materialized, state(%$next_prepared, head => 'g2')) };

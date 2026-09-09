@@ -1728,7 +1728,11 @@ sub deactivate_volume {
 }
 
 sub _thick_volume_snapshot {
-    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    my ($class, $scfg, $storeid, $volname, $snap, $operation) = @_;
+    $operation //= 'SNAPSHOT';
+    die "invalid thick-generations materialization operation\n"
+        if $operation ne 'SNAPSHOT' && $operation ne 'ROLLBACK';
+    my $rollback = $operation eq 'ROLLBACK';
     $snap = _thick_snapshot_name($snap);
     $class->_require_thick_identity_config($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
@@ -1736,24 +1740,47 @@ sub _thick_volume_snapshot {
     my $front = mapper_name($namespace, $volname);
     my ($tr, %intent);
 
+    if ($rollback && _block_device_exists("/dev/mapper/$front")) {
+        my $open = _command_lines(
+            ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $front],
+            "reading thick-generations frontend open count before rollback failed",
+        );
+        die "thick-generations rollback frontend open count is ambiguous\n"
+            if @$open != 1 || $open->[0] !~ /^\d+$/;
+        die "refusing thick-generations rollback while the frontend is open\n"
+            if int($open->[0]) != 0;
+    }
+
     $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_no_vg_intent($vg);
         my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
         my ($state, $head_info, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
         my ($old, $old_gen) = ($state->{head}, int($state->{generation}));
+        my ($source, $source_gen, $source_info) = ($old, $old_gen, $head_info);
+        if ($rollback) {
+            ($source, $source_gen, $source_info) = $class->_thick_find_snapshot(
+                $storeid, $scfg, $volname, $snap, $lvs,
+            );
+            $class->_thick_verify_snapshot_readonly($vg, $source);
+            $class->_verify_autoactivation_disabled($vg, $source);
+        }
         my $new_gen = $old_gen + 1;
         die "thick-generations generation limit reached\n" if $new_gen > 99_999_999;
         my $key = object_key($namespace, $volname);
         my $new = generation_name($namespace, $volname, $new_gen);
         my $meta = sprintf('sltg-m-%s-%08d', $key, $new_gen);
-        my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $old_gen);
-        my $size = $head_info->{lv_size};
+        my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $source_gen);
+        my $size = $source_info->{lv_size};
+        my $old_size = $head_info->{lv_size};
         die "thick-generations source size is unknown or not sector aligned\n"
             if !defined($size) || $size !~ /^\d+$/ || !$size || $size % 512;
+        die "thick-generations previous HEAD size is unknown or not sector aligned\n"
+            if !defined($old_size) || $old_size !~ /^\d+$/ || !$old_size || $old_size % 512;
         my $geometry = clone_geometry(int($size));
 
         for my $name (grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %{$lvs->{$vg}}) {
+            next if $rollback;
             my ($generation) = $name =~ /-(\d{8})$/;
             my $exists = eval {
                 validate_generation_tags(
@@ -1774,7 +1801,7 @@ sub _thick_volume_snapshot {
         );
         %intent = (
             tx => $class->_new_transaction_id(), state => 'OPEN',
-            op => 'DM_CUTOVER', object => $anchor,
+            op => ($rollback ? 'DM_PIVOT' : 'DM_CUTOVER'), object => $anchor,
             before => $class->_vg_state_digest($vg),
         );
         $class->_set_vg_intent($vg, %intent);
@@ -1806,14 +1833,16 @@ sub _thick_volume_snapshot {
         my $prepared = $class->_thick_transition_anchor(
             $vg, $anchor, $state,
             phase => 'PREPARED', tx => $intent{tx}, old => $old, new => $new,
-            op => 'SNAPSHOT', source => $old,
+            op => $operation, source => $source,
             head => $old, generation => $old_gen,
             region => $geometry->{region_sectors},
         );
         $tr = {
             state => $prepared, anchor => $anchor, old => $old, new => $new,
+            source => $source, source_gen => $source_gen,
             old_gen => $old_gen, new_gen => $new_gen, meta => $meta,
-            source_map => $source_map, size => int($size), geometry => $geometry,
+            source_map => $source_map, size => int($size), old_size => int($old_size),
+            geometry => $geometry, operation => $operation, snapshot => $snap,
         };
         return;
     });
@@ -1847,7 +1876,7 @@ sub _thick_volume_snapshot {
             || $state->{head} ne $tr->{old} || $state->{old} ne $tr->{old}
             || $state->{new} ne $tr->{new}
             || $state->{region} != $tr->{geometry}->{region_sectors};
-        for my $lv ($tr->{old}, $tr->{new}, $tr->{meta}) {
+        for my $lv ($tr->{old}, $tr->{source}, $tr->{new}, $tr->{meta}) {
             die "snapshot transition object '$vg/$lv' is missing\n"
                 if !$lvs->{$vg}->{$lv};
         }
@@ -1867,7 +1896,7 @@ sub _thick_volume_snapshot {
                 errmsg => "activating prepared thick-generations source failed",
             );
             my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
-            my $sectors = int($tr->{size} / 512);
+            my $sectors = int($tr->{old_size} / 512);
             run_command(
                 ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
                     '--table', "0 $sectors linear /dev/$vg/$tr->{old} 0"],
@@ -1875,10 +1904,11 @@ sub _thick_volume_snapshot {
             );
         }
         $class->_thick_verify_frontend(
-            $scfg, $volname, $tr->{old}, int($tr->{size} / 512),
+            $scfg, $volname, $tr->{old}, int($tr->{old_size} / 512),
         );
         run_command(
-            ['/sbin/lvchange', '-ay', '-K', "$vg/$tr->{new}", "$vg/$tr->{meta}"],
+            ['/sbin/lvchange', '-ay', '-K', "$vg/$tr->{source}",
+                "$vg/$tr->{new}", "$vg/$tr->{meta}"],
             errmsg => "activating snapshot transition LVs failed",
         );
         # Construct the read-only source view while the old linear frontend is
@@ -1889,7 +1919,7 @@ sub _thick_volume_snapshot {
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'create', $tr->{source_map},
                 '--readonly', '--uuid', "SLT-TG3-SOURCE-$intent{tx}", '--table',
-                "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{old} 0"],
+                "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{source} 0"],
             errmsg => "creating immutable snapshot source mapper failed",
         );
         run_command(
@@ -1901,19 +1931,21 @@ sub _thick_volume_snapshot {
             head => $tr->{new}, generation => $tr->{new_gen},
             _device => "/dev/mapper/$scfg->{'slt-expected-wwid'}",
         );
-        $class->_change_exact_tags(
-            $vg, $tr->{old},
-            PVE::SharedLvmThinThick::generation_tags(
-                sid => $storeid, vol => $volname, role => 'head',
-                generation => $tr->{old_gen},
-            ),
-            PVE::SharedLvmThinThick::generation_tags(
-                sid => $storeid, vol => $volname, role => 'snapshot',
-                generation => $tr->{old_gen}, snapshot => $snap,
-            ),
-            "committing immutable snapshot generation failed",
-            "/dev/mapper/$scfg->{'slt-expected-wwid'}",
-        );
+        if (!$rollback) {
+            $class->_change_exact_tags(
+                $vg, $tr->{old},
+                PVE::SharedLvmThinThick::generation_tags(
+                    sid => $storeid, vol => $volname, role => 'head',
+                    generation => $tr->{old_gen},
+                ),
+                PVE::SharedLvmThinThick::generation_tags(
+                    sid => $storeid, vol => $volname, role => 'snapshot',
+                    generation => $tr->{old_gen}, snapshot => $snap,
+                ),
+                "committing immutable snapshot generation failed",
+                "/dev/mapper/$scfg->{'slt-expected-wwid'}",
+            );
+        }
         my $sectors = int($tr->{size} / 512);
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'load', $front, '--table',
@@ -1933,11 +1965,15 @@ sub _thick_volume_snapshot {
             new => $tr->{new}, source_map => $tr->{source_map},
         );
         $class->_thick_verify_clone_status($front, 0);
-        run_command(
-            ['/sbin/lvchange', '-pr', "$vg/$tr->{old}"],
-            errmsg => "making snapshot generation '$vg/$tr->{old}' read-only failed",
-        );
-        $class->_thick_verify_snapshot_readonly($vg, $tr->{old});
+        if (!$rollback) {
+            run_command(
+                ['/sbin/lvchange', '-pr', "$vg/$tr->{old}"],
+                errmsg => "making snapshot generation '$vg/$tr->{old}' read-only failed",
+            );
+            $class->_thick_verify_snapshot_readonly($vg, $tr->{old});
+        } else {
+            $class->_thick_verify_snapshot_readonly($vg, $tr->{source});
+        }
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'HYDRATING',
         );
@@ -2001,7 +2037,7 @@ sub _thick_volume_snapshot {
             region => $tr->{geometry}->{region_sectors},
             metadata_bytes => $tr->{geometry}->{metadata_bytes}, name => $tr->{meta},
         );
-        $class->_thick_verify_snapshot_readonly($vg, $tr->{old});
+        $class->_thick_verify_snapshot_readonly($vg, $tr->{source});
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'remove', $tr->{source_map}],
             errmsg => "removing detached snapshot source mapper failed",
@@ -2015,6 +2051,20 @@ sub _thick_volume_snapshot {
         my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
         die "detached dm-clone metadata still exists after removal\n"
             if $after->{$vg} && $after->{$vg}->{$tr->{meta}};
+        if ($rollback) {
+            run_command(
+                ['/sbin/lvremove', '-f', "$vg/$tr->{old}"],
+                errmsg => "removing superseded rollback HEAD failed",
+            );
+            $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+            die "superseded rollback HEAD still exists after removal\n"
+                if $after->{$vg} && $after->{$vg}->{$tr->{old}};
+            my ($kept_snapshot) = $class->_thick_find_snapshot(
+                $storeid, $scfg, $volname, $tr->{snapshot}, $after,
+            );
+            die "rollback source snapshot identity changed\n"
+                if $kept_snapshot ne $tr->{source};
+        }
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'MATERIALIZED',
         );
@@ -2598,6 +2648,10 @@ sub _volume_snapshot_delete_locked {
 
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
+
+    return $class->_thick_volume_snapshot(
+        $scfg, $storeid, $volname, $snap, 'ROLLBACK',
+    ) if $class->_allocation_mode($scfg) eq 'thick-generations';
 
     return $class->cluster_lock_storage(
         $storeid,
