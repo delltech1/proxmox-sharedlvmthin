@@ -470,6 +470,12 @@ sub classify_recovery {
     }
     if ($anchor->{phase} eq 'COMMITTED' || $anchor->{phase} eq 'HYDRATING') {
         return $blocked->('committed transition metadata is missing') if !$objects->{meta};
+        if ($anchor->{phase} eq 'COMMITTED' && $runtime eq 'linear-old') {
+            return $blocked->('committed old-generation frontend is unexpectedly active')
+                if !$runtime_suspended;
+            return $result->('RECOVERY_REQUIRED', 'COMMITTED', 'PUBLISH_REQUIRED',
+                'cutover is committed and the suspended old-generation frontend awaits exact clone publication');
+        }
         return $result->('RECOVERY_REQUIRED', $anchor->{phase}, 'RECONSTRUCT_REQUIRED',
             'runtime clone mapping is absent and must be reconstructed from exact evidence')
             if $runtime eq 'absent';

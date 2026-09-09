@@ -2253,6 +2253,21 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
         $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', { %$intent, tx => ('8' x 32) },
     ) };
     like($@, qr/not the exact resumable transition/, 'different transaction fails closed');
+
+    {
+        $state = {
+            %$state, phase => 'COMMITTED', head => $new, generation => 1,
+        };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 1; };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub { return 1; };
+        my $committed = $class->_thick_resume_transition(
+            $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', $intent,
+        );
+        is($committed->{state}->{phase}, 'COMMITTED',
+            'C6 resume reconstructs a committed cutover without replaying preparation');
+        is($committed->{old_gen}, 0, 'C6 resume derives the old generation from its signed name');
+        is($committed->{new_gen}, 1, 'C6 resume derives the new generation from its signed name');
+    }
 };
 
 subtest 'C4 source mapper verification is exact and read-only' => sub {
@@ -2316,8 +2331,12 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         %$prepared, phase => 'HYDRATING', head => $new, generation => 1,
     };
     my $source_ready = { %$prepared, phase => 'SOURCE_READY' };
+    my $committed = {
+        %$prepared, phase => 'COMMITTED', head => $new, generation => 1,
+    };
     my $anchor_tags_prepared = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$prepared)});
     my $anchor_tags_source_ready = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$source_ready)});
+    my $anchor_tags_committed = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$committed)});
     my $anchor_tags_hydrating = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$hydrating)});
     my $old_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
@@ -2343,13 +2362,17 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         %{$prepared_inventory->{testvg}},
         $anchor => { tags => $anchor_tags_source_ready },
     } };
+    my $committed_inventory = { testvg => {
+        %{$prepared_inventory->{testvg}},
+        $anchor => { tags => $anchor_tags_committed },
+    } };
     my $after_cleanup = { testvg => {
         $anchor => { tags => $anchor_tags_hydrating },
         $old => { tags => $old_tags, lv_size => $size },
         $new => { tags => $new_tags, lv_size => $size },
     } };
     my @inventories = (
-        $initial, $prepared_inventory, $source_ready_inventory,
+        $initial, $prepared_inventory, $source_ready_inventory, $committed_inventory,
         $hydrating_inventory, $after_cleanup,
     );
     my @events;

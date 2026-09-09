@@ -128,7 +128,7 @@ Current automated result:
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=79_PASS
-COMBINED_PERL_REGRESSION=177_PASS
+COMBINED_PERL_REGRESSION=180_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 LIVE_PROCESS_CRASH_C0=PASS
@@ -152,6 +152,12 @@ LIVE_C5_FORWARD_SNAPSHOT_SHA=PASS
 LIVE_C5_FORWARD_LINEAR_DEPENDENCY=PASS
 LIVE_C5_TRANSITION_ARTIFACT_CLEANUP=PASS
 LIVE_C5_DSTATE_AFTER_RECOVERY=0
+LIVE_PROCESS_CRASH_C6=PASS
+LIVE_C6_CLASSIFICATION=PUBLISH_REQUIRED
+LIVE_C6_EXACT_FORWARD_RECOVERY=PASS
+LIVE_C6_SNAPSHOT_AND_HEAD_SHA=PASS
+LIVE_C6_FORWARD_LINEAR_DEPENDENCY=PASS
+LIVE_C6_DSTATE_AFTER_RECOVERY=0
 ```
 
 Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
@@ -205,6 +211,22 @@ was active and depended only on generation 4. Its SHA-256 matched the pre-crash
 baseline, the old generation became the exact signed read-only snapshot, the
 classifier returned `HEALTHY` and `SAFE_FOR_MUTATION=YES`, quorum remained
 healthy, and no D-state task remained.
+
+A live C6 crash terminated the worker after the anchor had atomically
+committed the new HEAD and the previous HEAD had become the signed snapshot,
+but before the clone table was loaded. The runtime frontend therefore remained
+the exact suspended old-generation linear table. The classifier distinguishes
+this state as `DATA_STATE=VALID`, `TRANSACTION_STATE=COMMITTED`, and
+`MATERIALIZATION_STATE=PUBLISH_REQUIRED`; an active old-generation table after
+COMMITTED is rejected as ambiguous.
+
+Exact C6 recovery derived both generation numbers from their signed object
+names, verified the consecutive generation relationship, transaction objects,
+immutable source mapper, pinned device identity, and suspended old table, and
+then performed only the pending clone publication and later lifecycle phases.
+The recovered snapshot and destination HEAD both matched the original
+SHA-256. Final state was an active destination-only linear frontend with the
+transition objects removed, healthy quorum, and zero D-state tasks.
 
 ## Geometry gate
 
@@ -307,8 +329,8 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Extend deterministic recovery to the persisted C6 through C9 states.
-4. Execute process-crash tests at C6 through C9.
+3. Extend deterministic recovery to the persisted C7 through C9 states.
+4. Execute process-crash tests at C7 through C9.
 5. Execute reboot recovery on disposable local storage.
 6. Execute fenced cross-node reconstruction on a disposable shared test LUN.
 7. Qualify single-path and total-path loss without automatic repair.

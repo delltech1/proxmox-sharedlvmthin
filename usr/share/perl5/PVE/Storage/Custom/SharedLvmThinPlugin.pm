@@ -1871,12 +1871,23 @@ sub _thick_resume_transition {
         || $intent->{op} ne $expected_intent_op || $intent->{object} ne $anchor
         || $intent->{tx} ne $state->{tx};
     die "recoverable transition request identity mismatch\n"
-        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY)$/ || $state->{op} ne $operation
-        || $state->{snapshot} ne $snap || $state->{head} ne $state->{old};
+        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED)$/
+        || $state->{op} ne $operation || $state->{snapshot} ne $snap
+        || ($state->{phase} =~ /^(?:PREPARED|SOURCE_READY)$/ && $state->{head} ne $state->{old})
+        || ($state->{phase} eq 'COMMITTED' && $state->{head} ne $state->{new});
 
     my ($old, $new, $source) = @{$state}{qw(old new source)};
-    my $old_gen = int($state->{generation});
-    my $new_gen = $old_gen + 1;
+    my ($old_gen) = $old =~ /-(\d{8})$/;
+    my ($new_gen) = $new =~ /-(\d{8})$/;
+    die "recoverable transition generation names are malformed\n"
+        if !defined($old_gen) || !defined($new_gen);
+    ($old_gen, $new_gen) = (int($old_gen), int($new_gen));
+    die "recoverable transition generations are not consecutive\n"
+        if $new_gen != $old_gen + 1;
+    my $expected_anchor_gen = $state->{phase} =~ /^(?:PREPARED|SOURCE_READY)$/
+        ? $old_gen : $new_gen;
+    die "recoverable transition anchor generation mismatch\n"
+        if int($state->{generation}) != $expected_anchor_gen;
     my $key = object_key($namespace, $volname);
     my $expected_new = generation_name($namespace, $volname, $new_gen);
     my $meta = sprintf('sltg-m-%s-%08d', $key, $new_gen);
@@ -1899,7 +1910,7 @@ sub _thick_resume_transition {
         die "prepared snapshot source identity mismatch\n" if $source ne $old;
     }
     my $size = $source_info->{lv_size};
-    my $old_size = $head_info->{lv_size};
+    my $old_size = $lvs->{$vg}->{$old}->{lv_size};
     die "prepared transition size is invalid\n"
         if !defined($size) || $size !~ /^\d+$/ || !$size || $size % 512
         || !defined($old_size) || $old_size !~ /^\d+$/ || !$old_size || $old_size % 512;
@@ -1928,10 +1939,11 @@ sub _thick_resume_transition {
                 $vg, $anchor, $state, phase => 'SOURCE_READY', _device => $device,
             );
         }
-    } elsif ($state->{phase} eq 'SOURCE_READY') {
-        die "SOURCE_READY transition source mapper '$source_map' is missing\n";
+    } elsif ($state->{phase} ne 'PREPARED') {
+        die "$state->{phase} transition source mapper '$source_map' is missing\n";
     }
-    $class->_thick_verify_frontend($scfg, $volname, $old, int($old_size / 512));
+    $class->_thick_verify_frontend($scfg, $volname, $old, int($old_size / 512))
+        if $state->{phase} =~ /^(?:PREPARED|SOURCE_READY)$/;
 
     return {
         state => $state, anchor => $anchor, old => $old, new => $new,
@@ -2169,7 +2181,8 @@ sub _thick_volume_snapshot {
         }, $device);
     }
 
-    $class->_with_vg_lock($storeid, $scfg, sub {
+    if ($tr->{state}->{phase} eq 'SOURCE_READY') {
+        $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_exact_vg_intent($vg, %intent, _device => $device);
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
@@ -2212,19 +2225,44 @@ sub _thick_volume_snapshot {
             );
         }
         $class->_thick_fault_point('C6', $operation, $storeid, $volname);
+        $tr->{state} = $state;
+        return;
+        }, $device);
+    }
+
+    if ($tr->{state}->{phase} eq 'COMMITTED') {
+        $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
+        die "snapshot transition anchor disappeared before clone publication\n" if !$info;
+        my $state = decode_anchor_tags($info->{tags} // '');
+        die "snapshot transition COMMITTED state mismatch\n"
+            if $state->{phase} ne 'COMMITTED' || $state->{tx} ne $intent{tx}
+            || $state->{head} ne $tr->{new} || $state->{old} ne $tr->{old}
+            || $state->{new} ne $tr->{new};
+        $class->_thick_verify_source_mapper(
+            $scfg, $tr->{source_map}, $tr->{source}, int($tr->{size} / 512),
+            $intent{tx},
+        );
         my $sectors = int($tr->{size} / 512);
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'load', $front, '--table',
-                "0 $sectors clone /dev/$vg/$tr->{meta} /dev/$vg/$tr->{new} "
-                    . "/dev/mapper/$tr->{source_map} "
-                    . $tr->{geometry}->{region_sectors} . " "
-                    . "2 no_hydration no_discard_passdown"],
-            errmsg => "loading dm-clone snapshot transition failed",
-        );
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'resume', $front],
-            errmsg => "publishing dm-clone snapshot transition failed",
-        );
+        if ($class->_thick_mapper_is_suspended($front)) {
+            $class->_thick_verify_frontend(
+                $scfg, $volname, $tr->{old}, int($tr->{old_size} / 512),
+            );
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'load', $front, '--table',
+                    "0 $sectors clone /dev/$vg/$tr->{meta} /dev/$vg/$tr->{new} "
+                        . "/dev/mapper/$tr->{source_map} "
+                        . $tr->{geometry}->{region_sectors} . " "
+                        . "2 no_hydration no_discard_passdown"],
+                errmsg => "loading dm-clone snapshot transition failed",
+            );
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'resume', $front],
+                errmsg => "publishing dm-clone snapshot transition failed",
+            );
+        }
         $class->_thick_verify_clone_frontend(
             $scfg, $volname, sectors => $sectors,
             region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
@@ -2247,7 +2285,8 @@ sub _thick_volume_snapshot {
         $tr->{state} = $state;
         $class->_thick_fault_point('C8', $operation, $storeid, $volname);
         return;
-    }, $device);
+        }, $device);
+    }
 
     run_command(
         ['/sbin/dmsetup', 'message', $front, '0', 'enable_hydration'],

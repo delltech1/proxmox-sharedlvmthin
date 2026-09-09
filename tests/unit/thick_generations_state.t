@@ -219,6 +219,24 @@ for my $case (@crash_matrix) {
     is($classification->{safe_for_mutation}, ($point eq 'C0' ? 1 : 0),
         "$point mutation policy is fail-closed until fully healthy");
 }
+my $c6_suspended = classify_recovery(
+    anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
+    intent => $cutover_intent, objects => { %transition_objects },
+    runtime => 'linear-old', runtime_suspended => 1, clone_status => 'none',
+    expected_anchor => $anchor_object,
+);
+is($c6_suspended->{materialization_state}, 'PUBLISH_REQUIRED',
+    'C6 suspended old-generation runtime is an exact resumable publication state');
+is($c6_suspended->{safe_for_mutation}, 0,
+    'C6 publication recovery remains fail-closed');
+my $c6_active = classify_recovery(
+    anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
+    intent => $cutover_intent, objects => { %transition_objects },
+    runtime => 'linear-old', runtime_suspended => 0, clone_status => 'none',
+    expected_anchor => $anchor_object,
+);
+is($c6_active->{data_state}, 'AMBIGUOUS',
+    'an active old-generation frontend after COMMITTED fails closed');
 my $ambiguous_recovery = classify_recovery(
     anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
     intent => $cutover_intent, objects => { %transition_objects },
