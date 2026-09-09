@@ -1823,7 +1823,7 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     my $tx = '1' x 32;
     my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
         sid => $storeid, vol => $volname, phase => 'MATERIALIZED', tx => $tx,
-        old => $head, new => $head, head => $head, generation => 0,
+        old => $head, new => $head, head => $head, generation => 0, region => 8,
     )});
     my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
@@ -1900,7 +1900,7 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     my $tx = '3' x 32;
     my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
         sid => $storeid, vol => $volname, phase => 'MATERIALIZED', tx => $tx,
-        old => $head, new => $head, head => $head, generation => 0,
+        old => $head, new => $head, head => $head, generation => 0, region => 8,
     )});
     my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,

@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    echo "ERROR: root privileges are required" >&2
+    exit 1
+fi
+if [[ $# -ne 3 || ! $1 =~ ^[0-9]+$ || ! $2 =~ ^[0-9]+$ || ! $3 =~ ^[0-9]+$ ]]; then
+    echo "Usage: $0 <virtual-bytes> <region-sectors> <metadata-bytes>" >&2
+    exit 2
+fi
+
+virtual_bytes=$1
+region_sectors=$2
+metadata_bytes=$3
+transaction="sltg-geometry-$$-$(date +%s)"
+workdir="/var/tmp/$transaction"
+mapper="$transaction"
+source_loop=
+destination_loop=
+metadata_loop=
+
+cleanup() {
+    dmsetup remove "$mapper" >/dev/null 2>&1 || true
+    for device in "$metadata_loop" "$destination_loop" "$source_loop"; do
+        [[ -n $device ]] && losetup -d "$device" >/dev/null 2>&1 || true
+    done
+    rm -rf -- "$workdir"
+}
+trap cleanup EXIT INT TERM
+
+mkdir -m 0700 -- "$workdir"
+truncate -s "$virtual_bytes" "$workdir/source.img" "$workdir/destination.img"
+truncate -s "$metadata_bytes" "$workdir/metadata.img"
+source_loop=$(losetup --find --show "$workdir/source.img")
+destination_loop=$(losetup --find --show "$workdir/destination.img")
+metadata_loop=$(losetup --find --show "$workdir/metadata.img")
+dd if=/dev/zero of="$metadata_loop" bs=4096 count=1 conv=fsync status=none
+
+sectors=$((virtual_bytes / 512))
+dmsetup create "$mapper" --readonly --table \
+    "0 $sectors clone $metadata_loop $destination_loop $source_loop $region_sectors 1 no_hydration"
+status=$(dmsetup status "$mapper")
+table=$(dmsetup table "$mapper")
+
+[[ $status != *" Fail"* && $status != *" ro"* ]]
+[[ $status == *" $region_sectors "* ]]
+[[ $table == "0 $sectors clone "* ]]
+
+echo "GEOMETRY_CREATE=PASS"
+echo "VIRTUAL_BYTES=$virtual_bytes"
+echo "REGION_SECTORS=$region_sectors"
+echo "METADATA_BYTES=$metadata_bytes"
+echo "STATUS=$status"
+
+dmsetup remove "$mapper"
+mapper=
+for device in "$metadata_loop" "$destination_loop" "$source_loop"; do
+    losetup -d "$device"
+done
+metadata_loop=
+destination_loop=
+source_loop=
+rm -rf -- "$workdir"
+echo "CLEANUP=PASS"

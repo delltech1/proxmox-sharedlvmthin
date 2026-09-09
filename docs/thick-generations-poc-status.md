@@ -68,23 +68,59 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
 - Anchor tags use a canonical schema and digest.
 - Duplicate, incomplete, unknown, foreign, or tampered state fails closed.
 - Phase transitions are explicit and monotonic.
-- Transaction identity and generation edges are immutable during a transition.
+- A new snapshot transition must replace the previous transaction identifier;
+  transaction identity and generation edges are immutable after PREPARED.
+- Anchor schema v3 persists the selected dm-clone region size so recovery does
+  not depend on the version of the userspace policy that happens to run later.
+- Persistent transition metadata has its own transaction-scoped ownership and
+  integrity tags.
 - At most one potentially blocking probe of each type may exist.
 - Timed-out probes must terminate before a later probe is permitted.
 
 Current automated result:
 
 ```ini
-ANCHOR_TRANSACTION_TESTS=14/14_PASS
+ANCHOR_AND_GEOMETRY_TESTS=27/27_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=66_PASS
-EXISTING_THIN_PERL_REGRESSION=103_PASS
+COMBINED_PERL_REGRESSION=120_PASS
 ```
+
+## Geometry gate
+
+The prototype no longer assigns a fixed 16 MiB clone-metadata LV to every
+virtual disk. It bounds region cardinality, calculates metadata capacity from
+the resulting geometry, rounds the result to a 4 MiB extent boundary, and
+persists the region size in the anchor.
+
+Read-only constructor qualification used sparse disposable loop devices, so
+the advertised virtual sizes were not physically allocated or hydrated. The
+running kernel accepted all tested geometries in read-write metadata mode:
+
+```ini
+32_GIB_4_KIB_REGIONS_24_MIB_METADATA=PASS
+1_TIB_8_KIB_REGIONS_144_MIB_METADATA=PASS
+30_TIB_256_KIB_REGIONS_136_MIB_METADATA=PASS
+TRANSACTION_SCOPED_CLEANUP=PASS
+```
+
+This proves constructor viability, not worst-case hydration occupancy or
+performance. Those remain explicit qualification gates.
+
+## Ported lifecycle surface
+
+Allocation, list/path resolution, activation, deactivation, grow-only resize,
+and exact delete are now present on the isolated branch. Delete refuses active
+frontends and any dependent or ambiguous generation. Resize uses one
+`lvextend`, zeroes and flushes the new range before publication, and changes an
+active frontend through verified inactive-table load followed by explicit
+`suspend --noflush`, `resume`, and live-table verification. Any uncertain
+outcome preserves the OPEN VG intent and is never retried automatically.
 
 ## Open gates
 
-1. Port the recovered backend into the current code base in reviewable blocks.
-2. Add exact tests for allocation, activation, deactivation, resize, and free.
+1. Complete snapshot, snapshot-delete, rollback, and recovery lifecycle code.
+2. Qualify full-hydration metadata occupancy and geometry performance.
 3. Qualify persistent anchor updates and VG intent recovery.
 4. Execute process-crash tests at C0 through C9.
 5. Execute reboot recovery on disposable local storage.

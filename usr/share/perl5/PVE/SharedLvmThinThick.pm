@@ -12,10 +12,11 @@ use Exporter qw(import);
 our @EXPORT_OK = qw(
     anchor_name anchor_tags decode_anchor_tags generation_name generation_tags
     mapper_name object_key validate_generation_tags vg_intent_tags
-    decode_vg_intent_tags validate_anchor_transition
+    decode_vg_intent_tags validate_anchor_transition clone_geometry
+    transition_tags validate_transition_tags
 );
 
-my @ANCHOR_FIELDS = qw(v sid vol phase tx old new head generation);
+my @ANCHOR_FIELDS = qw(v sid vol phase tx old new head generation region);
 my %PHASE = map { $_ => 1 } qw(
     PREPARED COMMITTED HYDRATING HYDRATION_COMPLETE LINEAR_PIVOTED MATERIALIZED
 );
@@ -27,6 +28,7 @@ my %ALLOWED_TRANSITION = (
     HYDRATING => { HYDRATION_COMPLETE => 1 },
     HYDRATION_COMPLETE => { LINEAR_PIVOTED => 1 },
     LINEAR_PIVOTED => { MATERIALIZED => 1 },
+    MATERIALIZED => { PREPARED => 1 },
 );
 
 sub _token {
@@ -59,6 +61,39 @@ sub generation_name {
     return sprintf('sltg-g-%s-%08d', object_key($storeid, $volname), $generation);
 }
 
+sub clone_geometry {
+    my ($bytes) = @_;
+    die "clone size must be a positive sector-aligned integer\n"
+        if !defined($bytes) || $bytes !~ /^\d+$/ || $bytes < 512 || $bytes % 512;
+
+    # Keep the three in-core dm-clone bitmaps bounded while avoiding a large
+    # region for ordinary VM disks.  The chosen value is persisted in the
+    # anchor, so future code changes cannot silently alter recovery geometry.
+    my $max_regions = 134_217_728;
+    my $sectors = int($bytes / 512);
+    my $region = 8;
+    while (int(($sectors + $region - 1) / $region) > $max_regions) {
+        $region *= 2;
+        die "clone size exceeds supported dm-clone geometry\n" if $region > 2_097_152;
+    }
+    my $regions = int(($sectors + $region - 1) / $region);
+
+    # dm-clone stores a persistent bitset using dm-persistent-data.  Reserve
+    # one byte per region plus 16 MiB structural headroom, then round to an
+    # LVM-friendly 4 MiB boundary.  Runtime creation and status gates must
+    # still positively verify the actual metadata device before publication.
+    my $metadata = 16 * 1024 * 1024 + $regions;
+    my $extent = 4 * 1024 * 1024;
+    $metadata = int(($metadata + $extent - 1) / $extent) * $extent;
+    die "calculated dm-clone metadata exceeds the supported 16 GiB limit\n"
+        if $metadata > 16 * 1024 * 1024 * 1024;
+    return {
+        region_sectors => $region,
+        regions => $regions,
+        metadata_bytes => $metadata,
+    };
+}
+
 sub _canonical {
     my ($values) = @_;
     return join('|', map { "$_=$values->{$_}" } @ANCHOR_FIELDS);
@@ -66,8 +101,8 @@ sub _canonical {
 
 sub anchor_tags {
     my (%values) = @_;
-    $values{v} = 2 if !defined($values{v});
-    die "unsupported Thick Generations anchor version\n" if "$values{v}" ne '2';
+    $values{v} = 3 if !defined($values{v});
+    die "unsupported Thick Generations anchor version\n" if "$values{v}" ne '3';
     for my $field (qw(sid vol old new head)) {
         _token("anchor $field", $values{$field});
     }
@@ -79,6 +114,11 @@ sub anchor_tags {
         if !defined($values{generation}) || $values{generation} !~ /^\d+$/
         || $values{generation} > 99_999_999;
     $values{generation} = int($values{generation});
+    die "invalid dm-clone region size in Thick Generations anchor\n"
+        if !defined($values{region}) || $values{region} !~ /^\d+$/
+        || $values{region} < 8 || $values{region} > 2_097_152
+        || ($values{region} & ($values{region} - 1));
+    $values{region} = int($values{region});
     my $digest = substr(sha256_hex(_canonical(\%values)), 0, 32);
     return [
         (map { "slt_tg_$_=$values{$_}" } @ANCHOR_FIELDS),
@@ -133,9 +173,25 @@ sub validate_anchor_transition {
     die "illegal Thick Generations anchor phase transition '$from->$to'\n"
         if !$ALLOWED_TRANSITION{$from} || !$ALLOWED_TRANSITION{$from}->{$to};
 
-    for my $field (qw(v sid vol tx old new)) {
+    for my $field (qw(v sid vol)) {
         die "anchor transition changed immutable field '$field'\n"
             if "$before->{$field}" ne "$after->{$field}";
+    }
+
+    if ($from eq 'MATERIALIZED' && $to eq 'PREPARED') {
+        die "new transition must use a fresh transaction ID\n"
+            if $after->{tx} eq $before->{tx};
+        die "new transition must preserve the authoritative old HEAD\n"
+            if $after->{old} ne $before->{head} || $after->{head} ne $before->{head};
+        die "new transition must name a distinct destination generation\n"
+            if $after->{new} eq $before->{head};
+        die "new transition cannot advance generation before commit\n"
+            if int($after->{generation}) != int($before->{generation});
+    } else {
+        for my $field (qw(tx old new region)) {
+            die "anchor transition changed immutable field '$field'\n"
+                if "$before->{$field}" ne "$after->{$field}";
+        }
     }
 
     if ($from eq 'PREPARED' && $to eq 'COMMITTED') {
@@ -192,6 +248,42 @@ sub validate_generation_tags {
     die "generation ownership tag count mismatch\n" if @observed != @$wanted;
     my %observed = map { $_ => 1 } @observed;
     die "generation ownership proof mismatch\n" if grep { !$observed{$_} } @$wanted;
+    return 1;
+}
+
+sub transition_tags {
+    my (%values) = @_;
+    for my $field (qw(sid vol kind)) {
+        _token("transition $field", $values{$field});
+    }
+    die "invalid transition artifact kind\n" if $values{kind} ne 'metadata';
+    die "invalid transition transaction ID\n"
+        if !defined($values{tx}) || $values{tx} !~ /^$TX$/;
+    die "invalid transition generation\n"
+        if !defined($values{generation}) || $values{generation} !~ /^\d+$/
+        || $values{generation} > 99_999_999;
+    die "invalid transition region size\n"
+        if !defined($values{region}) || $values{region} !~ /^\d+$/
+        || $values{region} < 8 || $values{region} > 2_097_152
+        || ($values{region} & ($values{region} - 1));
+    my @fields = qw(v sid vol tx kind generation region);
+    $values{v} = 1 if !defined($values{v});
+    die "unsupported transition artifact version\n" if "$values{v}" ne '1';
+    my @tags = map { "slt_tgt_$_=$values{$_}" } @fields;
+    my $canonical = join('|', map { "$_=$values{$_}" } @fields);
+    push @tags, 'slt_tgt_sha256=' . substr(sha256_hex($canonical), 0, 32);
+    return \@tags;
+}
+
+sub validate_transition_tags {
+    my ($tags, %expected) = @_;
+    my @observed = ref($tags) eq 'ARRAY' ? @$tags : split(/,/, $tags // '');
+    @observed = map { s/^\s+|\s+$//gr } grep { /^\s*slt_tgt_/ } @observed;
+    my $wanted = transition_tags(%expected);
+    die "transition artifact ownership tag count mismatch\n" if @observed != @$wanted;
+    my %observed = map { $_ => 1 } @observed;
+    die "transition artifact ownership proof mismatch\n"
+        if grep { !$observed{$_} } @$wanted;
     return 1;
 }
 

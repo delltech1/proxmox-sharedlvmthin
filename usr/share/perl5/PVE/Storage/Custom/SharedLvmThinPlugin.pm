@@ -13,7 +13,7 @@ use PVE::Cluster;
 use PVE::Tools qw(run_command);
 use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinThick qw(
-    anchor_name decode_anchor_tags generation_name mapper_name object_key
+    anchor_name clone_geometry decode_anchor_tags generation_name mapper_name object_key
     validate_anchor_transition validate_generation_tags
     vg_intent_tags decode_vg_intent_tags
 );
@@ -667,6 +667,7 @@ sub _thick_alloc_image {
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $generation = 0;
+    my $geometry = clone_geometry(int($size) * 1024);
     my $anchor = anchor_name($namespace, $name);
     my $head = generation_name($namespace, $name, $generation);
     my $tx = $class->_new_transaction_id();
@@ -701,6 +702,7 @@ sub _thick_alloc_image {
         my $anchor_tags = PVE::SharedLvmThinThick::anchor_tags(
             sid => $storeid, vol => $name, phase => 'PREPARED', tx => $tx,
             old => $head, new => $head, head => $head, generation => $generation,
+            region => $geometry->{region_sectors},
         );
         $class->_change_exact_tags($vg, $head, [], $head_tags,
             "tagging thick generation '$vg/$head' failed");
@@ -750,10 +752,12 @@ sub _thick_alloc_image {
         my $old_tags = PVE::SharedLvmThinThick::anchor_tags(
             sid => $storeid, vol => $name, phase => 'PREPARED', tx => $tx,
             old => $head, new => $head, head => $head, generation => $generation,
+            region => $geometry->{region_sectors},
         );
         my $new_tags = PVE::SharedLvmThinThick::anchor_tags(
             sid => $storeid, vol => $name, phase => 'MATERIALIZED', tx => $tx,
             old => $head, new => $head, head => $head, generation => $generation,
+            region => $geometry->{region_sectors},
         );
         $class->_change_exact_tags($vg, $anchor, $old_tags, $new_tags,
             "committing materialized thick generation '$vg/$head' failed");
