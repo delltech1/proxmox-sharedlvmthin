@@ -362,6 +362,7 @@ sub _thick_source_mapper_name {
 
 sub _thick_transition_anchor {
     my ($class, $vg, $anchor, $state, %change) = @_;
+    my $device = delete $change{_device};
     my $old = PVE::SharedLvmThinThick::anchor_tags(%$state);
     my %next = (%$state, %change);
     validate_anchor_transition($state, \%next);
@@ -369,6 +370,7 @@ sub _thick_transition_anchor {
     $class->_change_exact_tags(
         $vg, $anchor, $old, $new,
         "advancing thick-generations anchor '$vg/$anchor' failed",
+        $device,
     );
     return \%next;
 }
@@ -753,10 +755,13 @@ sub _thick_capacity_gate {
 }
 
 sub _change_exact_tags {
-    my ($class, $vg, $lv, $remove, $add, $errmsg) = @_;
+    my ($class, $vg, $lv, $remove, $add, $errmsg, $device) = @_;
     my $read_tags = sub {
+        my @command = ('/sbin/lvs', '--readonly');
+        push @command, ('--devices', $device) if defined($device);
+        push @command, ('--noheadings', '-o', 'lv_tags', "$vg/$lv");
         my $lines = _command_lines(
-            ['/sbin/lvs', '--readonly', '--noheadings', '-o', 'lv_tags', "$vg/$lv"],
+            \@command,
             "reading exact tag state of '$vg/$lv' failed",
         );
         die "tag state of '$vg/$lv' is ambiguous\n" if @$lines > 1;
@@ -783,6 +788,7 @@ sub _change_exact_tags {
     my @remove_delta = grep { !$add{$_} } @$remove;
     my @add_delta = grep { !$remove{$_} } @$add;
     my @command = ('/sbin/lvchange');
+    push @command, ('--devices', $device) if defined($device);
     push @command, map { ('--deltag', $_) } @remove_delta;
     push @command, map { ('--addtag', $_) } @add_delta;
     push @command, "$vg/$lv";
@@ -1871,24 +1877,25 @@ sub _thick_volume_snapshot {
             ['/sbin/lvchange', '-ay', '-K', "$vg/$tr->{new}", "$vg/$tr->{meta}"],
             errmsg => "activating snapshot transition LVs failed",
         );
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
-            errmsg => "suspending thick-generations frontend for snapshot failed",
-        );
-        run_command(
-            ['/sbin/lvchange', '-pr', "$vg/$tr->{old}"],
-            errmsg => "making snapshot generation '$vg/$tr->{old}' read-only failed",
-        );
-        $class->_thick_verify_snapshot_readonly($vg, $tr->{old});
+        # Construct the read-only source view while the old linear frontend is
+        # still active.  No LVM command may run while that frontend is
+        # suspended: udev may inspect the dependency chain and deadlock behind
+        # the suspended device.  The source mapper is not published to the
+        # frontend until the atomic cutover below.
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'create', $tr->{source_map},
                 '--readonly', '--uuid', "SLT-TG3-SOURCE-$intent{tx}", '--table',
                 "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{old} 0"],
             errmsg => "creating immutable snapshot source mapper failed",
         );
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
+            errmsg => "suspending thick-generations frontend for snapshot failed",
+        );
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'COMMITTED',
             head => $tr->{new}, generation => $tr->{new_gen},
+            _device => "/dev/mapper/$scfg->{'slt-expected-wwid'}",
         );
         $class->_change_exact_tags(
             $vg, $tr->{old},
@@ -1901,6 +1908,7 @@ sub _thick_volume_snapshot {
                 generation => $tr->{old_gen}, snapshot => $snap,
             ),
             "committing immutable snapshot generation failed",
+            "/dev/mapper/$scfg->{'slt-expected-wwid'}",
         );
         my $sectors = int($tr->{size} / 512);
         run_command(
@@ -1921,6 +1929,11 @@ sub _thick_volume_snapshot {
             new => $tr->{new}, source_map => $tr->{source_map},
         );
         $class->_thick_verify_clone_status($front, 0);
+        run_command(
+            ['/sbin/lvchange', '-pr', "$vg/$tr->{old}"],
+            errmsg => "making snapshot generation '$vg/$tr->{old}' read-only failed",
+        );
+        $class->_thick_verify_snapshot_readonly($vg, $tr->{old});
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'HYDRATING',
         );

@@ -2138,6 +2138,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     } };
     my @inventories = ($initial, $prepared_inventory, $hydrating_inventory, $after_cleanup);
     my @events;
+    my @scoped_devices;
     my $phase_state = $materialized;
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
@@ -2150,7 +2151,11 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { push @events, 'INTENT_OPEN'; return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub { push @events, 'INTENT_CLEAR'; return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { return 1; };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_change_exact_tags = sub { push @events, 'TAG_CHANGE'; return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_change_exact_tags = sub {
+        push @events, 'TAG_CHANGE';
+        push @scoped_devices, $_[6] if defined($_[6]);
+        return 1;
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_transition_metadata = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { return 1; };
@@ -2163,6 +2168,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_transition_anchor = sub {
         my (undef, undef, undef, $state, %change) = @_;
+        push @scoped_devices, delete($change{_device}) if defined($change{_device});
         my %next = (%$state, %change);
         PVE::SharedLvmThinThick::validate_anchor_transition($state, \%next);
         push @events, "PHASE_$next{phase}";
@@ -2203,10 +2209,19 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'clone cutover and linear pivot each use one explicit noflush suspend');
     is(scalar(grep { /dmsetup .*resume/ } @snapshot_commands), 2,
         'each suspended cutover has exactly one resume');
-    my ($readonly_index) = grep { $snapshot_commands[$_] =~ /lvchange -pr/ } 0 .. $#snapshot_commands;
     my ($source_index) = grep { $snapshot_commands[$_] =~ /dmsetup .*create .*src-/ } 0 .. $#snapshot_commands;
-    ok(defined($readonly_index) && defined($source_index) && $readonly_index < $source_index,
-        'persistent snapshot LV is made read-only before its source mapper is published');
+    my ($cutover_suspend) = grep { $snapshot_commands[$_] =~ /dmsetup .*suspend --noflush/ } 0 .. $#snapshot_commands;
+    my ($cutover_resume) = grep {
+        $_ > $cutover_suspend && $snapshot_commands[$_] =~ /dmsetup .*resume/
+    } 0 .. $#snapshot_commands;
+    my ($readonly_index) = grep { $snapshot_commands[$_] =~ /lvchange -pr/ } 0 .. $#snapshot_commands;
+    ok(defined($source_index) && defined($cutover_suspend) && $source_index < $cutover_suspend,
+        'read-only source mapper is prepared before the atomic cutover');
+    ok(defined($cutover_resume) && defined($readonly_index) && $readonly_index > $cutover_resume,
+        'persistent snapshot LV becomes read-only only after the frontend is resumed');
+    is_deeply(\@scoped_devices,
+        ['/dev/mapper/3600abcd', '/dev/mapper/3600abcd'],
+        'anchor commit and snapshot retag are scoped to the pinned multipath device');
     is(scalar(grep { /lvremove -f testvg\/\Q$meta\E/ } @snapshot_commands), 1,
         'only the exact detached metadata LV is removed');
     is($events[-1], 'INTENT_CLEAR', 'VG intent clears only after MATERIALIZED');

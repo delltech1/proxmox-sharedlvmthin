@@ -120,7 +120,34 @@ Snapshot creation is unit-qualified through the persisted PREPARED, COMMITTED,
 HYDRATING, HYDRATION_COMPLETE, LINEAR_PIVOTED, and MATERIALIZED phases. It
 requires an immutable read-only source, exact signed transition artifacts, one
 bounded event-numbered hydration wait, and a verified destination-only linear
-pivot before clearing the VG intent. It has not yet passed a live PVE gate.
+pivot before clearing the VG intent.
+
+The first live snapshot attempt on a disposable multipath-backed VG exposed a
+real udev ordering defect: an unscoped LVM command issued while the stable
+frontend was suspended waited behind that frontend. The harness restored the
+original linear table, preserved the PREPARED transaction evidence, and
+performed no speculative retry. A focused qualification proved that LVM
+commands scoped with `--devices /dev/mapper/<pinned-WWID>` complete while the
+unrelated frontend is suspended. The snapshot cutover now prepares the
+read-only source mapper before suspension and scopes the two necessary LVM tag
+transactions to the pinned multipath device.
+
+The corrected live retry reached MATERIALIZED. The final frontend was a single
+linear segment with only the new generation as a dependency, the transition
+metadata and source mapper were absent, the old generation was a signed
+read-only snapshot, and a foreground write to the new HEAD left the snapshot
+SHA-256 unchanged.
+
+```ini
+LIVE_MULTIPATH_SNAPSHOT=PASS
+SUSPENDED_LVM_DEVICE_SCOPING=PASS
+FINAL_FRONTEND_LINEAR=PASS
+DESTINATION_ONLY_DEPENDENCY=PASS
+SNAPSHOT_IMMUTABLE=PASS
+HEAD_WRITE_INDEPENDENT=PASS
+TRANSITION_ARTIFACTS_DETACHED=PASS
+```
+
 Delete refuses active
 frontends and any dependent or ambiguous generation. Resize uses one
 `lvextend`, zeroes and flushes the new range before publication, and changes an
@@ -130,8 +157,8 @@ outcome preserves the OPEN VG intent and is never retried automatically.
 
 ## Open gates
 
-1. Live-qualify snapshot creation, then complete snapshot-delete, rollback,
-   and recovery lifecycle code.
+1. Repeat live snapshot creation with data-bearing and active-QEMU workloads,
+   then complete snapshot-delete, rollback, and recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
 3. Qualify persistent anchor updates and VG intent recovery.
 4. Execute process-crash tests at C0 through C9.
