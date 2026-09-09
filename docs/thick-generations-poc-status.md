@@ -650,6 +650,73 @@ RELEVANT_STORAGE_DSTATE=0
 UNRELATED_HOST_DSTATE_DOES_NOT_POISON_STORAGE=PASS
 ```
 
+## Nested-lab COW isolation and 60 MiB/s online move
+
+The direction-dependent cluster stalls seen during earlier online storage
+moves were traced below the plugin. The nested storage target and the PVE
+guests were all backed by VMware snapshot redo layers on one physical SATA
+datastore. The two active target LUNs alone had accumulated approximately
+65 GiB of copy-on-write redo data. This made the test a compound benchmark of
+guest block storage, target-side snapshot COW, and host-side snapshot COW.
+
+The target VM snapshot was consolidated while every storage consumer was
+offline. The operation completed without error, preserved all virtual-disk
+capacities and target mappings, and removed every target-side redo file. The
+cluster then returned with the same multipath identities, two usable paths per
+map, the same PV and VG identities, three-node quorum, both storage modes
+active, and no D-state task. Obsolete pre-update snapshots on the two current
+API nodes were also consolidated; the deliberately retained older-API
+qualification snapshot was not modified.
+
+After consolidation, the previously failing online 32 GiB thin-to-thick move
+was repeated with a 60 MiB/s QEMU mirror limit. The operation first performed
+the mandatory full-volume zero initialization of the new thick generation,
+then copied 32.4 GiB of live disk data in 9 minutes 41 seconds. It completed
+with a zero exit status, published the Thick Generations destination, and
+deleted the thin source only after the mirror finalized successfully.
+
+The resulting frontend was a single linear target with exactly one dependency
+on the new generation. The anchor identified that generation as the
+materialized authoritative HEAD, the old thin LV was absent, the Windows VM
+remained runnable, both multipath maps retained two usable paths, quorum
+remained three of three, and the final D-state count was zero. One peer had an
+approximately one-second Corosync link flap near the end of the copy, but
+there was no token timeout, membership change, loss of quorum, or failed I/O.
+The remaining brief flap is tracked as a nested-host scheduling/network
+qualification signal; it does not invalidate the completed storage
+transaction.
+
+The full-volume initialization is intentionally retained. LVM's normal
+`--zero` behavior clears only the beginning of a conventional linear LV and
+does not guarantee that every previously allocated extent reads as zero. The
+storage allocation API also does not provide a trustworthy distinction
+between a new blank guest disk and a destination that will subsequently be
+fully overwritten. Skipping initialization based on inferred caller intent
+would therefore risk exposing residual VG data.
+
+```ini
+TARGET_VM_SNAPSHOT_CONSOLIDATION=PASS
+TARGET_VM_REDO_FILES_AFTER_CONSOLIDATION=0
+MULTIPATH_IDENTITY_AFTER_CONSOLIDATION=PASS
+PV_VG_IDENTITY_AFTER_CONSOLIDATION=PASS
+CURRENT_API_NODE_SNAPSHOT_CONSOLIDATION=PASS
+OLDER_API_QUALIFICATION_SNAPSHOT=PRESERVED
+ONLINE_THIN_TO_THICK_60_MIB_PER_SECOND=PASS
+ONLINE_MOVE_QEMU_COPY=32.4_GIB
+ONLINE_MOVE_QEMU_ELAPSED=9_MIN_41_SEC
+SOURCE_DELETE_ONLY_AFTER_MIRROR_COMMIT=PASS
+FINAL_FRONTEND_LINEAR=PASS
+FINAL_DEPENDENCY_DESTINATION_ONLY=PASS
+AUTHORITATIVE_HEAD_MATERIALIZED=PASS
+POST_MOVE_PATHS_PER_MAP=2_OF_2
+POST_MOVE_QUORUM=3_OF_3
+POST_MOVE_DSTATE=0
+COROSYNC_TOKEN_TIMEOUT=0
+COROSYNC_MEMBERSHIP_CHANGE=0
+BRIEF_PEER_LINK_FLAP=OBSERVED_NO_SERVICE_IMPACT
+FULL_THICK_ZERO_INITIALIZATION=RETAINED_FOR_DATA_ISOLATION
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
