@@ -14,7 +14,7 @@ sub evaluate_allocation_target {
 
     my $mode = $args{mode};
     die "invalid allocation mode '$mode'\n"
-        if $mode !~ /^(?:fixed|proportional|full)$/;
+        if $mode !~ /^(?:fixed|proportional|elastic|full)$/;
     for my $numeric (qw(fixed_gib requested_kib used_bytes current_pool_bytes)) {
         die "invalid $numeric\n"
             if $args{$numeric} !~ /^\d+$/;
@@ -34,6 +34,15 @@ sub evaluate_allocation_target {
             if $args{percent} !~ /^\d+$/ || $args{percent} < 1 || $args{percent} > 100;
         my $proportional = int(($requested * $args{percent} + 99) / 100);
         my $headroom = $proportional > $fixed ? $proportional : $fixed;
+        $target = $args{used_bytes} + $headroom;
+    } elsif ($mode eq 'elastic') {
+        my $headroom_gib = $args{headroom_gib} // 64;
+        die "invalid headroom_gib\n"
+            if $headroom_gib !~ /^\d+$/ || $headroom_gib < 1;
+        my $headroom = $headroom_gib * $gib;
+        $headroom = $requested if $requested < $headroom;
+        my $bootstrap = $gib;
+        $headroom = $bootstrap if $headroom < $bootstrap;
         $target = $args{used_bytes} + $headroom;
     } else {
         my $headroom = $requested;
@@ -62,7 +71,8 @@ sub evaluate_allocation_target {
         growth_bytes => $growth,
         requested_bytes => $requested,
         burst_guarantee => $mode eq 'full' ? 'FULL_AT_ADMISSION'
-            : $mode eq 'proportional' ? 'BOUNDED' : 'NONE',
+            : ($mode eq 'proportional' || $mode eq 'elastic') ? 'BOUNDED' : 'NONE',
+        headroom_bytes => $mode eq 'elastic' ? $target - $args{used_bytes} : undef,
     };
 }
 

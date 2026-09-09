@@ -84,6 +84,34 @@ subtest 'full mode covers live usage plus the entire new disk' => sub {
     like($@, qr/exceeds configured maximum/, 'configuration conflict is explicit');
 };
 
+subtest 'elastic mode uses absolute headroom independent of virtual size' => sub {
+    my $efi = target(
+        mode => 'elastic', fixed_gib => 16, headroom_gib => 64, requested_kib => 4096,
+        used_bytes => 0, current_pool_bytes => 0,
+    );
+    is($efi->{target_bytes}, 1 * $gib, 'EFI-sized first allocation uses bootstrap, not guest floor');
+
+    my $disk32 = target(
+        mode => 'elastic', fixed_gib => 16, headroom_gib => 64, requested_kib => 32 * 1024 * 1024,
+        used_bytes => 512 * 1024, current_pool_bytes => 1 * $gib,
+    );
+    is($disk32->{target_bytes}, 32 * $gib + 512 * 1024, '32 GiB disk never reserves more than its virtual size');
+
+    my $disk30t = target(
+        mode => 'elastic', fixed_gib => 16, headroom_gib => 64,
+        requested_kib => 30 * 1024 * 1024 * 1024,
+        used_bytes => 10 * $gib, current_pool_bytes => 16 * $gib,
+    );
+    is($disk30t->{target_bytes}, 74 * $gib, '30 TiB disk adds only capped 64 GiB headroom');
+
+    my $later = target(
+        mode => 'elastic', fixed_gib => 16, headroom_gib => 64,
+        requested_kib => 2 * 1024 * 1024 * 1024,
+        used_bytes => 80 * $gib, current_pool_bytes => 96 * $gib,
+    );
+    is($later->{target_bytes}, 144 * $gib, 'ceiling applies to new headroom, not total pool size');
+};
+
 subtest 'inactive-pool fallback can conservatively use current size as used' => sub {
     my $r = target(
         mode => 'proportional', fixed_gib => 4, percent => 50,

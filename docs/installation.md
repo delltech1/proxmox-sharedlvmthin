@@ -136,8 +136,21 @@ to a subset of the cluster. Do not mark a locally attached VG as shared. The
 identity pins are strongly recommended: they make a wrong LUN, PV or VG fail
 closed before mutation.
 
-The compatibility allocation policy is `fixed`. For clone/restore workloads,
-review the capacity policy before production; see
+For new production deployments, configure `elastic` absolute headroom so that
+multi-terabyte virtual disks do not reserve a proportional fraction of their
+logical size:
+
+```bash
+pvesm set <STORAGE_ID> \
+  --slt-initial-pool-mode elastic \
+  --slt-burst-headroom-gib 64 \
+  --slt-vg-reserve-percent 5
+```
+
+The 64 GiB value is a conservative starting point, not a universal throughput
+guarantee. Qualify it against the maximum expected write rate and grow
+latency. Existing `fixed`, `proportional`, and `full` policies remain available
+for compatibility and explicit operational choices. See
 `clone-restore-burst-capacity.md`.
 
 ## 7. Validate before storing a VM

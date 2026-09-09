@@ -106,6 +106,12 @@ def parse_storage_cfg():
                 except Exception:
                     current["initial_pool_max_gib"] = None
 
+            elif s.startswith("slt-burst-headroom-gib "):
+                try:
+                    current["burst_headroom_gib"] = int(s.split(None, 1)[1])
+                except Exception:
+                    current["burst_headroom_gib"] = None
+
             elif s.startswith("slt-expected-min-paths "):
                 try:
                     current["expected_min_paths"] = int(
@@ -720,7 +726,7 @@ def evaluate_allocation_policy(storage):
     percent = storage.get("initial_pool_percent")
     maximum = storage.get("initial_pool_max_gib")
 
-    if mode not in {"fixed", "proportional", "full"}:
+    if mode not in {"fixed", "proportional", "elastic", "full"}:
         return "FAIL", f"invalid allocation headroom mode '{mode}'"
     if fixed is not None and (not isinstance(fixed, int) or fixed < 1):
         return "FAIL", "invalid fixed allocation headroom"
@@ -746,6 +752,14 @@ def evaluate_allocation_policy(storage):
             f"proportional headroom {percent}% with fixed minimum {fixed or 16} GiB"
             f"{suffix}; bounded admission policy; PVE raw full-copy may still scan "
             "the complete virtual disk",
+        )
+    if mode == "elastic":
+        headroom = storage.get("burst_headroom_gib")
+        if not isinstance(headroom, int) or headroom < 1:
+            return "FAIL", "elastic burst headroom must be a positive GiB value"
+        return "PASS", (
+            f"elastic actual-use plus {headroom} GiB absolute burst headroom; "
+            "virtual disk size does not cause proportional physical reservation"
         )
     suffix = (
         f"; allocations requiring more than configured maximum {maximum} GiB fail closed"

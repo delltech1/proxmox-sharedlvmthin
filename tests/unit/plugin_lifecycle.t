@@ -90,7 +90,19 @@ subtest 'thin-pool health gate blocks mutation before repair or mutation command
 };
 
 subtest 'explicit PVE Storage API 14..15 compatibility policy' => sub {
-    is($class->api(), 14, 'plugin declares oldest qualified API');
+    for my $api (14, 15) {
+        no warnings 'redefine';
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_storage_api = sub { return $api; };
+        is($class->api(), $api, "plugin declares exact qualified host API $api");
+    }
+
+    for my $api (13, 16) {
+        no warnings 'redefine';
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_storage_api = sub { return $api; };
+        my $ok = eval { $class->api(); 1 };
+        ok(!$ok, "plugin registration fails closed on API $api");
+        like($@, qr/outside the tested SharedLvmThin range 14\.\.15/, 'registration reports explicit tested range');
+    }
 
     for my $api (14, 15) {
         no warnings 'redefine';

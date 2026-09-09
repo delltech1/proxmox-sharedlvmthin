@@ -1,9 +1,10 @@
 # PVE Storage API compatibility
 
-SharedLvmThin declares plugin API 14 and explicitly qualifies running PVE
-Storage APIs 14 and 15. It does not dynamically mirror an unknown host API.
-Every mutating hook revalidates that the runtime API is inside `14..15` and
-fails closed before LVM mutation otherwise.
+SharedLvmThin advertises the exact running PVE Storage API when it is inside
+the explicitly qualified range 14..15. An API 14 host therefore sees plugin
+API 14 and an API 15 host sees plugin API 15, without a misleading older-API
+warning. It never mirrors an unknown host API: registration and every mutating
+hook fail closed outside `14..15`.
 
 The source audit compared `libpve-storage-perl` 9.1.5 (API 14) with 9.1.10
 (API 15). The only changed hook signature used by SharedLvmThin is:

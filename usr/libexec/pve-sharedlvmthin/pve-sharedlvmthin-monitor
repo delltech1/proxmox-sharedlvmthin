@@ -153,10 +153,10 @@ if ($pool =~ /^sltp-\d+$/) {
                 $reserve_percent //= 0;
                 $reserve_gib //= 0;
 
-                my ($vg_size, $vg_free) = read_fields(
+                my ($vg_size, $vg_free, $extent_size) = read_fields(
                     [
                         '/sbin/vgs', '--readonly', '--noheadings', '--units', 'b',
-                        '--nosuffix', '--separator', '|', '-o', 'vg_size,vg_free', $vg,
+                        '--nosuffix', '--separator', '|', '-o', 'vg_size,vg_free,vg_extent_size', $vg,
                     ],
                     "unable to read reserve state of VG '$vg'",
                 );
@@ -167,15 +167,36 @@ if ($pool =~ /^sltp-\d+$/) {
                     ],
                     "unable to read size of '$vg/$pool'",
                 );
-                my $growth_percent = read_growth_percent();
-                my $decision = PVE::SharedLvmThinSafety::evaluate_autogrow_reserve(
-                    vg_size => $vg_size,
-                    vg_free => $vg_free,
-                    pool_size => $pool_size,
-                    growth_percent => $growth_percent,
-                    reserve_percent => $reserve_percent,
-                    reserve_gib => $reserve_gib,
-                );
+                my $mode = $scfg->{'slt-initial-pool-mode'} // 'fixed';
+                my ($decision, $extend_command, $expected_target);
+                if ($mode eq 'elastic') {
+                    my $gib = 1024 * 1024 * 1024;
+                    my $headroom_gib = $scfg->{'slt-burst-headroom-gib'} // 64;
+                    die "invalid elastic burst headroom for storage '$storeid'\n"
+                        if $headroom_gib !~ /^\d+$/ || $headroom_gib < 1;
+                    my $used = int(($pool_size * $current_data_percent + 99) / 100);
+                    my $raw_target = $used + $headroom_gib * $gib;
+                    $expected_target = int(($raw_target + $gib - 1) / $gib) * $gib;
+                    if ($expected_target <= $pool_size) {
+                        print STDERR "SharedLvmThin: '$vg/$pool' already has configured absolute headroom; no growth\n";
+                        return;
+                    }
+                    $decision = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(
+                        vg_size => $vg_size, vg_free => $vg_free,
+                        growth_bytes => $expected_target - $pool_size,
+                        overhead_bytes => 0, extent_bytes => $extent_size,
+                        reserve_percent => $reserve_percent, reserve_gib => $reserve_gib,
+                    );
+                    $extend_command = ['/sbin/lvextend', '-L', "${expected_target}B", "$vg/$pool"];
+                } else {
+                    my $growth_percent = read_growth_percent();
+                    $decision = PVE::SharedLvmThinSafety::evaluate_autogrow_reserve(
+                        vg_size => $vg_size, vg_free => $vg_free,
+                        pool_size => $pool_size, growth_percent => $growth_percent,
+                        reserve_percent => $reserve_percent, reserve_gib => $reserve_gib,
+                    );
+                    $extend_command = ['/sbin/lvextend', '--use-policies', "$vg/$pool"];
+                }
 
                 if (!$decision->{allowed}) {
                     die "CRITICAL: refusing autogrow of '$vg/$pool': projected free "
@@ -190,7 +211,7 @@ if ($pool =~ /^sltp-\d+$/) {
                 my $extend_error;
                 eval {
                     run_command(
-                        ['/sbin/lvextend', '--use-policies', "$vg/$pool"],
+                        $extend_command,
                         errmsg =>
                             "cluster-locked policy extend of '$vg/$pool' failed",
                     );

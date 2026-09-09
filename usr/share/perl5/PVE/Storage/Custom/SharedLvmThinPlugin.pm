@@ -15,10 +15,13 @@ use PVE::SharedLvmThinSafety;
 use base qw(PVE::Storage::Plugin);
 
 sub api {
-    # API 14 is the oldest explicitly qualified interface.  PVE accepts older
-    # plugin APIs within APIAGE, while this plugin also accepts API 15's
-    # optional volume_resize snapshot argument below.
-    return 14;
+    # Advertise the exact host API only inside the explicitly qualified range.
+    # This avoids a false "older storage API" warning on API 15 without ever
+    # claiming compatibility with an unaudited future API.
+    my $runtime = __PACKAGE__->_runtime_storage_api();
+    die "PVE Storage API $runtime is outside the tested SharedLvmThin range 14..15\n"
+        if $runtime < 14 || $runtime > 15;
+    return $runtime;
 }
 
 use constant MIN_TESTED_PVE_STORAGE_API => 14;
@@ -66,9 +69,9 @@ sub properties {
             default => 16,
         },
         'slt-initial-pool-mode' => {
-            description => 'Allocation headroom policy: fixed, proportional, or full.',
+            description => 'Allocation headroom policy: fixed, proportional, elastic, or full.',
             type => 'string',
-            enum => ['fixed', 'proportional', 'full'],
+            enum => ['fixed', 'proportional', 'elastic', 'full'],
             default => 'fixed',
         },
         'slt-initial-pool-percent' => {
@@ -79,10 +82,14 @@ sub properties {
             default => 50,
         },
         'slt-initial-pool-max' => {
-            description => 'Optional proportional/full allocation target ceiling in GiB. Full mode fails if the ceiling is insufficient.',
+            description => 'Optional proportional/full allocation target ceiling in GiB.',
             type => 'integer',
             minimum => 1,
             maximum => 1048576,
+        },
+        'slt-burst-headroom-gib' => {
+            description => 'Absolute physical write-burst headroom maintained by elastic allocation and autogrow.',
+            type => 'integer', minimum => 1, maximum => 1024, default => 64,
         },
         'slt-expected-vg-uuid' => {
             description => 'Expected backing VG UUID. A mismatch blocks activation and mutations.',
@@ -127,6 +134,7 @@ sub options {
         'slt-initial-pool-mode' => { optional => 1 },
         'slt-initial-pool-percent' => { optional => 1 },
         'slt-initial-pool-max' => { optional => 1 },
+        'slt-burst-headroom-gib' => { optional => 1 },
         'slt-expected-vg-uuid' => { optional => 1 },
         'slt-expected-pv-uuid' => { optional => 1 },
         'slt-expected-wwid' => { optional => 1 },
@@ -578,6 +586,7 @@ sub _allocation_headroom_plan {
     my $fixed = $scfg->{'slt-initial-pool-size'} // 16;
     my $percent = $scfg->{'slt-initial-pool-percent'} // 50;
     my $maximum = $scfg->{'slt-initial-pool-max'};
+    my $headroom = $scfg->{'slt-burst-headroom-gib'} // 64;
 
     # Exact backwards compatibility: fixed mode retains the RC4/early-RC5
     # allocation behavior and does not introduce a new reserve dependency.
@@ -635,6 +644,7 @@ sub _allocation_headroom_plan {
         current_pool_bytes => $current_pool,
     );
     $target_args{percent} = $percent if $mode eq 'proportional';
+    $target_args{headroom_gib} = $headroom if $mode eq 'elastic';
     $target_args{max_gib} = $maximum if defined($maximum);
     my $plan = PVE::SharedLvmThinSafety::evaluate_allocation_target(%target_args);
 

@@ -281,6 +281,12 @@ doctor() {
             /^[^[:space:]]/ {inside=0}
             inside && $1 == "slt-initial-pool-max" {print $2; exit}
         ' "$STORAGECFG")"
+        BURST_HEADROOM="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-burst-headroom-gib" {print $2; exit}
+        ' "$STORAGECFG")"
+        BURST_HEADROOM="${BURST_HEADROOM:-64}"
 
         case "$ALLOCATION_MODE" in
             fixed)
@@ -295,6 +301,14 @@ doctor() {
                 else
                     pass "$SID: allocation headroom=proportional ${ALLOCATION_PERCENT}% minimum ${ALLOCATION_SIZE} GiB${ALLOCATION_MAX:+ max ${ALLOCATION_MAX} GiB}"
                     info "Performance: PVE raw full-copy may still scan the complete virtual disk"
+                fi
+                ;;
+            elastic)
+                if [[ ! "$BURST_HEADROOM" =~ ^[0-9]+$ ]] || [ "$BURST_HEADROOM" -lt 1 ]; then
+                    fail "$SID: invalid elastic burst headroom '$BURST_HEADROOM'"
+                else
+                    pass "$SID: allocation headroom=elastic actual-used + ${BURST_HEADROOM} GiB"
+                    info "Virtual disk size does not cause proportional physical reservation"
                 fi
                 ;;
             full)

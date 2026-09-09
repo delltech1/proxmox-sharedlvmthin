@@ -14,12 +14,17 @@ replication, fencing, quorum, or automatic metadata repair.
 
 ## Release status
 
-`0.9.0~rc5.2` is a release candidate intended exclusively for Proxmox VE 9.
+`0.9.0~rc5.3` is a release candidate intended exclusively for Proxmox VE 9.
 It passed extensive unit, fault-injection and three-node integration
 qualification on the Proxmox VE 9.2.x release line with Storage API 14 and 15,
 but this is not universal certification of every SAN, HBA,
 array, multipath policy, firmware, or failure mode. Validate it on disposable
 storage matching your production design before carrying production data.
+
+For new deployments, the recommended capacity mode is `elastic`: physical
+pool size follows actual allocation plus bounded absolute burst headroom, so a
+multi-terabyte virtual disk does not reserve a proportional fraction of its
+logical size. See [clone/restore burst capacity](docs/clone-restore-burst-capacity.md).
 
 ## Requirements
 
@@ -58,7 +63,7 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install ./pve-sharedlvmthin_0.9.0-rc5.2_all.deb
+apt install ./pve-sharedlvmthin_0.9.0-rc5.3_all.deb
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -72,7 +77,7 @@ unknown or unavailable device.
 ## Upgrade or reinstall
 
 ```bash
-apt install ./pve-sharedlvmthin_0.9.0-rc5.2_all.deb
+apt install ./pve-sharedlvmthin_0.9.0-rc5.3_all.deb
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```

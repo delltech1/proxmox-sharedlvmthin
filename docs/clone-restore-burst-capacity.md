@@ -25,7 +25,32 @@ semantics. Doctor reports the scan behavior as an operational diagnostic.
 
 ## Allocation-headroom policies
 
-The compatibility default remains:
+### Recommended production policy: elastic absolute headroom
+
+RC5.3 adds a virtual-size-independent policy:
+
+```ini
+slt-initial-pool-mode elastic
+slt-burst-headroom-gib 64
+slt-vg-reserve-percent 5
+```
+
+The first allocation targets the smaller of its virtual size and the absolute
+headroom (with a 1 GiB technical bootstrap for EFI/TPM-sized allocations).
+Later allocations and dmeventd events target live physical use plus the same
+absolute headroom, rounded upward to a GiB. A 30 TiB virtual disk therefore
+does not reserve 15 TiB: with 10 GiB physically used and 64 GiB configured
+headroom, the target is 74 GiB. The ceiling applies to headroom, never to the
+total lifetime size of the pool.
+
+Elastic growth remains subject to the cluster storage lock, quorum, exact
+storage identity, ownership, thin-pool health, extent rounding and protected
+VG reserve. It never shrinks a pool and does not claim that any finite
+headroom can absorb an unlimited write rate. New installations use an early
+50% LVM event threshold; administrators with an existing LVM policy retain
+their configuration and Doctor reports it for qualification.
+
+The compatibility mode remains available for existing deployments:
 
 ```ini
 slt-initial-pool-mode fixed

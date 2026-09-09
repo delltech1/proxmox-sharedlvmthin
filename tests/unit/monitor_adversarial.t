@@ -28,6 +28,10 @@ sub run_case {
             'slt-vgname' => 'testvg',
             'slt-vg-reserve-percent' => 5,
             'slt-vg-reserve-gib' => 100,
+            ($case{elastic} ? (
+                'slt-initial-pool-mode' => 'elastic',
+                'slt-burst-headroom-gib' => 64,
+            ) : ()),
         };
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub {
@@ -58,7 +62,8 @@ sub run_case {
             $case{check_needed} // '',
         ) if $line =~ /lv_tags,lv_attr/;
         return ($case{data_percent} // 85) if $line =~ /data_percent/;
-        return (1000 * $gib, ($case{vg_free} // 300) * $gib) if $line =~ /vg_size,vg_free/;
+        return (1000 * $gib, ($case{vg_free} // 300) * $gib, 4 * 1024 * 1024)
+            if $line =~ /vg_size,vg_free/;
         if ($line =~ /lv_size/) {
             $post_reads++;
             die "postcondition unavailable\n"
@@ -101,6 +106,14 @@ subtest 'healthy event performs one cluster-locked growth' => sub {
         join('\n', @{$r->{commands}}), qr/lvchange|setautoactivation/,
         'dmeventd/autogrow never changes the autoactivation policy',
     );
+};
+
+subtest 'elastic event grows to used plus absolute headroom' => sub {
+    my $r = run_case(elastic => 1, pool_size => 100, data_percent => 85);
+    is($r->{rc}, 0, 'elastic event succeeded');
+    is($r->{extend_calls}, 1, 'elastic event issued exactly one grow');
+    like(join('\n', @{$r->{commands}}), qr/lvextend -L 159987531776B testvg\/sltp-900001/,
+        'target is rounded used plus 64 GiB, independent of virtual disk size');
 };
 
 subtest 'thin-pool health failures disable autogrow without repair' => sub {

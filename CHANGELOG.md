@@ -1,6 +1,20 @@
 # Changelog
 
-## 0.9.0~rc5.2 (development)
+## 0.9.0~rc5.3 (development)
+
+- Add elastic allocation: initial and subsequent physical capacity is based
+  on actual use plus an absolute burst headroom, never a percentage of a
+  multi-terabyte virtual disk. Small auxiliary allocations use a 1 GiB
+  bootstrap and the per-allocation headroom defaults to 64 GiB.
+- Preserve VG reserve admission and exact postconditions for every elastic
+  create/grow operation. Existing `fixed`, `proportional`, and `full` modes
+  retain their semantics.
+- Advertise the exact running PVE Storage API within the explicitly tested
+  range 14..15, eliminating the false older-plugin warning on API 15.
+- Fail plugin registration closed on Storage API 13 and 16+ instead of
+  dynamically claiming compatibility with an unknown interface.
+
+## 0.9.0~rc5.2
 
 - Formalized DS-16: restored paths and matching identity are necessary but
   insufficient evidence after a transport/storage recovery event.

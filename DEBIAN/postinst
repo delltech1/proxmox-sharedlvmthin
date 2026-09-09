@@ -42,7 +42,7 @@ else
 
 $LVM_BEGIN
 activation {
-    thin_pool_autoextend_threshold = 80
+    thin_pool_autoextend_threshold = 50
     thin_pool_autoextend_percent = 10
 }
 dmeventd {
