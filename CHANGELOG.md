@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.9.0~rc5.3 (development)
+## 0.9.0~rc5.3.1 (2026-09-09)
+
+- Recognize the qualified 50% elastic early-grow threshold as healthy in
+  Doctor while retaining 80% as the qualified legacy-policy value.
+- Qualified the public package with a live 4 GiB -> 7 GiB elastic grow at
+  approximately 400 MiB/s, exact one-event enforcement, pattern readback,
+  reserve verification, and complete disposable cleanup.
+
+## 0.9.0~rc5.3 (2026-09-09)
 
 - Add elastic allocation: initial and subsequent physical capacity is based
   on actual use plus an absolute burst headroom, never a percentage of a
@@ -109,3 +117,4 @@
 ## 0.9.0~rc3
 
 Known-good POC baseline preserved separately with verified release hashes.
+
