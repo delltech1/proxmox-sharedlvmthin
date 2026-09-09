@@ -2239,6 +2239,32 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
     like($@, qr/not the exact resumable transition/, 'different transaction fails closed');
 };
 
+subtest 'C4 source mapper verification is exact and read-only' => sub {
+    my $cfg = { 'slt-vgname' => 'testvg' };
+    my $mapper = 'sltg-source';
+    my $source = 'sltg-g-source';
+    my $tx = '9' x 32;
+    my @answers = (
+        ["SLT-TG3-SOURCE-$tx|Read-only"],
+        ['0 65536 linear 253:7 0'],
+        ['1 dependencies : (testvg-sltg--g--source)'],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @answers;
+    };
+    ok($class->_thick_verify_source_mapper(
+        $cfg, $mapper, $source, 65536, $tx,
+    ), 'exact read-only source mapper is accepted');
+    is(scalar(@answers), 0, 'source mapper verifier consumed all exact probes');
+
+    @answers = (["SLT-TG3-SOURCE-$tx|Writeable"]);
+    eval { $class->_thick_verify_source_mapper(
+        $cfg, $mapper, $source, 65536, $tx,
+    ) };
+    like($@, qr/is not read-only/, 'writeable source mapper fails closed');
+};
+
 subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
     reset_mocks();
     my $storeid = 'thick-test';
@@ -2325,6 +2351,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_transition_metadata = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_frontend = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub { return (8, 8, 0); };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_for_hydration = sub { push @events, 'HYDRATION_WAIT'; return 1; };

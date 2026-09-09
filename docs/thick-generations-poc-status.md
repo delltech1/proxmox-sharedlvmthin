@@ -128,7 +128,7 @@ Current automated result:
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=79_PASS
-COMBINED_PERL_REGRESSION=173_PASS
+COMBINED_PERL_REGRESSION=174_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 LIVE_PROCESS_CRASH_C0=PASS
@@ -142,6 +142,9 @@ LIVE_C3_EXACT_PRIOR_EVIDENCE_RECOVERY=PASS
 LIVE_C3_FORWARD_RECOVERY=PASS
 LIVE_C3_FORWARD_SNAPSHOT_SHA=PASS
 LIVE_C3_FORWARD_LINEAR_DEPENDENCY=PASS
+LIVE_PROCESS_CRASH_C4=PASS
+LIVE_C4_EXACT_SOURCE_MAPPER_RECOVERY=PASS
+LIVE_C4_FORWARD_LINEAR_DEPENDENCY=PASS
 ```
 
 Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
@@ -160,6 +163,15 @@ existing destination and metadata objects, completed hydration, published a
 destination-only linear frontend, removed the detached metadata object, and
 cleared the intent. The independent read-only snapshot and recovered HEAD both
 matched the pre-crash SHA-256, with no relevant D-state processes.
+
+A live C4 crash left the signed PREPARED transaction with its exact immutable
+source mapper already present. Recovery accepted that mapper only after
+verifying its transaction UUID, read-only mode, linear table, sector count,
+and single source-generation dependency. It reused rather than recreated the
+mapper, completed materialization, removed the source mapper and transition
+metadata, and left a destination-only linear HEAD with the original SHA-256.
+The orphaned pmxcfs lock expired through the normal cfs lock protocol; it was
+not removed manually and recovery retries were bounded and serial.
 
 ## Geometry gate
 
@@ -261,8 +273,8 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Extend deterministic recovery to the persisted C4 through C9 states.
-4. Execute process-crash tests at C4 through C9.
+3. Extend deterministic recovery to the persisted C5 through C9 states.
+4. Execute process-crash tests at C5 through C9.
 5. Execute reboot recovery on disposable local storage.
 6. Execute fenced cross-node reconstruction on a disposable shared test LUN.
 7. Qualify single-path and total-path loss without automatic repair.

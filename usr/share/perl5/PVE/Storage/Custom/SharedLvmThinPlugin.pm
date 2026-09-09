@@ -368,6 +368,42 @@ sub _thick_source_mapper_name {
         . sprintf('-src-%08d', $generation);
 }
 
+sub _thick_verify_source_mapper {
+    my ($class, $scfg, $mapper, $source, $sectors, $tx) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $info = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '--separator', '|',
+            '-o', 'uuid,readonly', $mapper],
+        "reading thick-generations source mapper '$mapper' failed",
+    );
+    die "thick-generations source mapper '$mapper' identity is ambiguous\n"
+        if @$info != 1;
+    my ($uuid, $readonly) = split(/\|/, $info->[0], -1);
+    for ($uuid, $readonly) { s/^\s+|\s+$//g; }
+    die "thick-generations source mapper '$mapper' UUID mismatch\n"
+        if $uuid ne "SLT-TG3-SOURCE-$tx";
+    die "thick-generations source mapper '$mapper' is not read-only\n"
+        if lc($readonly) ne 'read-only';
+    my $table = _command_lines(
+        ['/sbin/dmsetup', 'table', $mapper],
+        "reading thick-generations source mapper '$mapper' table failed",
+    );
+    die "thick-generations source mapper '$mapper' table mismatch\n"
+        if @$table != 1 || $table->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+/;
+    my $deps = _command_lines(
+        ['/sbin/dmsetup', 'deps', '-o', 'devname', $mapper],
+        "reading thick-generations source mapper '$mapper' dependencies failed",
+    );
+    my $vg_dm = $vg;
+    $vg_dm =~ s/-/--/g;
+    my $source_dm = $source;
+    $source_dm =~ s/-/--/g;
+    my $expected = "$vg_dm-$source_dm";
+    die "thick-generations source mapper '$mapper' dependency mismatch\n"
+        if @$deps != 1 || $deps->[0] !~ /^1\s+dependencies\s*:\s*\(\Q$expected\E\)$/;
+    return 1;
+}
+
 # Intentionally inert production hook. Qualification drivers may locally
 # override this method to terminate only their own disposable worker at an
 # exact persisted crash boundary. No configuration or environment variable can
@@ -1805,8 +1841,11 @@ sub _thick_resume_prepared_transition {
     $class->_verify_autoactivation_disabled($vg, $new);
     $class->_verify_autoactivation_disabled($vg, $meta);
     my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $source_gen);
-    die "prepared transition source mapper unexpectedly exists\n"
-        if _block_device_exists("/dev/mapper/$source_map");
+    if (_block_device_exists("/dev/mapper/$source_map")) {
+        $class->_thick_verify_source_mapper(
+            $scfg, $source_map, $source, int($size / 512), $intent->{tx},
+        );
+    }
     $class->_thick_verify_frontend($scfg, $volname, $old, int($old_size / 512));
 
     return {
@@ -2018,11 +2057,17 @@ sub _thick_volume_snapshot {
         # suspended: udev may inspect the dependency chain and deadlock behind
         # the suspended device.  The source mapper is not published to the
         # frontend until the atomic cutover below.
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'create', $tr->{source_map},
-                '--readonly', '--uuid', "SLT-TG3-SOURCE-$intent{tx}", '--table',
-                "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{source} 0"],
-            errmsg => "creating immutable snapshot source mapper failed",
+        if (!_block_device_exists("/dev/mapper/$tr->{source_map}")) {
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'create', $tr->{source_map},
+                    '--readonly', '--uuid', "SLT-TG3-SOURCE-$intent{tx}", '--table',
+                    "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{source} 0"],
+                errmsg => "creating immutable snapshot source mapper failed",
+            );
+        }
+        $class->_thick_verify_source_mapper(
+            $scfg, $tr->{source_map}, $tr->{source}, int($tr->{size} / 512),
+            $intent{tx},
         );
         $class->_thick_fault_point('C4', $operation, $storeid, $volname);
         run_command(
