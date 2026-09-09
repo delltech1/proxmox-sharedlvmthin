@@ -191,11 +191,11 @@ doctor() {
 
     if systemctl is-active --quiet dm-event.service; then
         pass "dm-event.service active"
-    elif lvs --noheadings -o lv_name,segtype 2>/dev/null |
-         awk '$1 ~ /^sltp-[0-9]+$/ && $2 == "thin-pool" { found=1 } END { exit !found }'; then
-        fail "dm-event.service not active while a per-VM thin pool exists"
+    elif lvs --noheadings -o lv_name,segtype,lv_attr 2>/dev/null |
+         awk '$1 ~ /^sltp-[0-9]+$/ && $2 == "thin-pool" && $3 ~ /^....a/ { found=1 } END { exit !found }'; then
+        fail "dm-event.service not active while a local per-VM thin pool is active"
     else
-        warn "dm-event.service inactive; no per-VM thin pool currently requires monitoring"
+        warn "dm-event.service inactive; no local per-VM thin pool currently requires monitoring"
     fi
 
     if grep -Fq \
