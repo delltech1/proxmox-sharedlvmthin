@@ -209,16 +209,22 @@ doctor() {
     THRESHOLD="$(sed -n 's/^[[:space:]]*thin_pool_autoextend_threshold[[:space:]]*=[[:space:]]*//p' "$LVMCONF" | head -1)"
     GROW="$(sed -n 's/^[[:space:]]*thin_pool_autoextend_percent[[:space:]]*=[[:space:]]*//p' "$LVMCONF" | head -1)"
 
-    if [ "$THRESHOLD" = "80" ]; then
-        pass "Thin autoextend threshold = 80%"
-    else
-        warn "Thin autoextend threshold is '${THRESHOLD:-unset}', RC1 tested with 80"
-    fi
+    case "$THRESHOLD" in
+        50)
+            pass "Thin autoextend threshold = 50% (elastic early-grow policy)"
+            ;;
+        80)
+            pass "Thin autoextend threshold = 80% (legacy fixed/proportional policy)"
+            ;;
+        *)
+            warn "Thin autoextend threshold is '${THRESHOLD:-unset}'; qualified values are 50 for elastic and 80 for legacy policies"
+            ;;
+    esac
 
     if [ "$GROW" = "10" ]; then
         pass "Thin autoextend growth = 10%"
     else
-        warn "Thin autoextend growth is '${GROW:-unset}', RC1 tested with 10"
+        warn "Thin autoextend growth is '${GROW:-unset}', qualified legacy fallback is 10"
     fi
 
     section "Configured SharedLvmThin storage"
@@ -1116,3 +1122,4 @@ case "${1:-doctor}" in
         exit 64
         ;;
 esac
+
