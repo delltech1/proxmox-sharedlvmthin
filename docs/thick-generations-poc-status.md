@@ -93,14 +93,23 @@ cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
   mapper, scopes its one-shot `vgs` and `lvs` inventories to that device, reads
   device-mapper table/status with `--noflush`, and never overwrites an existing
   evidence directory. It captures evidence only and performs no reconstruction.
+- A live capture of the materialized rollback object on disposable shared
+  storage classified `HEALTHY` only after proving a linear frontend with one
+  dependency on the new HEAD, a retained signed source snapshot, no superseded
+  HEAD, no transition metadata, no OPEN intent, healthy quorum, and zero
+  D-state tasks. Removing the source from a copied evidence set classified
+  `RECOVERY_REQUIRED`/`AMBIGUOUS`; reusing the evidence directory was refused
+  before any probe ran.
 
 Current automated result:
 
 ```ini
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=69/69_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
-EXISTING_THIN_PYTHON_REGRESSION=72_PASS
+EXISTING_THIN_PYTHON_REGRESSION=74_PASS
 COMBINED_PERL_REGRESSION=168_PASS
+LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
+TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 ```
 
 ## Geometry gate

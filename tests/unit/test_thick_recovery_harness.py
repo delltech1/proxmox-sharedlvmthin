@@ -6,6 +6,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 COLLECTOR = ROOT / "experiments/thick-generations/recovery-evidence.sh"
+CLASSIFIER = ROOT / "experiments/thick-generations/classify-evidence.pl"
 
 
 class ThickRecoveryHarnessTests(unittest.TestCase):
@@ -28,6 +29,7 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"run_guarded lvs ", self.source)), 1)
         self.assertEqual(self.source.count('--devices "$device"'), 2)
         self.assertGreaterEqual(self.source.count("--readonly"), 2)
+        self.assertIn("upper_name=", self.source)
 
     def test_dm_table_and_status_are_noflush(self):
         self.assertIn('dmsetup table --noflush "$mapper"', self.source)
@@ -44,6 +46,24 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
 
     def test_existing_output_is_never_overwritten(self):
         self.assertIn('[ ! -e "$output_dir" ]', self.source)
+
+    def test_classifier_is_read_only_and_uses_authoritative_library(self):
+        source = CLASSIFIER.read_text(encoding="utf-8")
+        self.assertIn("classify_recovery(", source)
+        self.assertIn("decode_anchor_tags", source)
+        self.assertIn("decode_generation_tags", source)
+        self.assertIn("decode_vg_intent_tags", source)
+        self.assertIn("frontend mapper does not contain an exact", source)
+        for command in ("lvcreate", "lvremove", "dmsetup create", "dmsetup load"):
+            self.assertNotIn(command, source)
+
+    def test_classifier_syntax(self):
+        result = subprocess.run(
+            [
+                "perl", f"-I{ROOT / 'usr/share/perl5'}", "-c", str(CLASSIFIER),
+            ], capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

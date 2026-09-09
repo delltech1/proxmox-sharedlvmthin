@@ -57,7 +57,8 @@ run_guarded() {
         >"$output_dir/$name.guard" 2>"$output_dir/$name.guard.stderr"
     rc=$?
     set -e
-    printf '%s_EXIT=%s\n' "$name" "$rc" >>"$output_dir/manifest"
+    upper_name=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
+    printf '%s_EXIT=%s\n' "$upper_name" "$rc" >>"$output_dir/manifest"
     [ "$rc" -eq 0 ] || {
         printf 'EVIDENCE_STATE=BLOCKED\nFAILED_PROBE=%s\n' "$name" >>"$output_dir/manifest"
         exit "$rc"
