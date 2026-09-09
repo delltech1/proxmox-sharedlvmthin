@@ -2174,6 +2174,71 @@ subtest 'thick rollback dispatches to the generation materializer' => sub {
         'rollback passes exact storage, volume, snapshot, and operation identity');
 };
 
+subtest 'C3 resume requires exact persisted request and transaction identity' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $namespace = $cfg->{'slt-expected-vg-uuid'};
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $old = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $new = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 1);
+    my $meta = 'sltg-m-' . PVE::SharedLvmThinThick::object_key($namespace, $volname)
+        . '-00000001';
+    my $tx = '7' x 32;
+    my $size = 32 * 1024 * 1024;
+    my $state = {
+        v => 5, sid => $storeid, vol => $volname, phase => 'PREPARED',
+        tx => $tx, op => 'SNAPSHOT', snapshot => 'snap1', source => $old,
+        old => $old, new => $new, head => $old, generation => 0, region => 8,
+    };
+    my $new_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'head', generation => 1,
+    )});
+    my $inventory = { testvg => {
+        $anchor => { tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$state)}) },
+        $old => { tags => '', lv_size => $size },
+        $new => { tags => $new_tags, lv_size => $size },
+        $meta => { tags => '', lv_size => 20 * 1024 * 1024 },
+    } };
+    my $intent = {
+        v => 1, tx => $tx, state => 'OPEN', op => 'DM_CUTOVER',
+        object => $anchor, before => ('a' x 32),
+    };
+    no warnings 'redefine';
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return $inventory; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, $inventory->{testvg}->{$old}, $anchor);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_transition_metadata = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
+
+    my $tr = $class->_thick_resume_prepared_transition(
+        $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', $intent,
+    );
+    is($tr->{snapshot}, 'snap1', 'resume reconstructs the persisted snapshot request');
+    is($tr->{new}, $new, 'resume reconstructs the exact deterministic destination');
+    is($tr->{meta}, $meta, 'resume reconstructs the exact deterministic metadata object');
+    is($tr->{state}->{tx}, $tx, 'resume retains the existing transaction ID');
+
+    eval { $class->_thick_resume_prepared_transition(
+        $cfg, $storeid, $volname, 'other', 'SNAPSHOT', $intent,
+    ) };
+    like($@, qr/request identity mismatch/, 'different snapshot request fails closed');
+    eval { $class->_thick_resume_prepared_transition(
+        $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', { %$intent, tx => ('8' x 32) },
+    ) };
+    like($@, qr/not the exact resumable transition/, 'different transaction fails closed');
+};
+
 subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
     reset_mocks();
     my $storeid = 'thick-test';
@@ -2243,6 +2308,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code) = @_; return $code->();
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { return undef; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { return $new_tx; };

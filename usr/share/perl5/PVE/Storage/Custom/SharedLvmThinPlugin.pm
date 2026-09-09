@@ -203,7 +203,7 @@ sub _thick_namespace {
     return lc($uuid);
 }
 
-sub _thick_anchor {
+sub _thick_read_anchor {
     my ($class, $storeid, $scfg, $volname, $lvs) = @_;
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
@@ -216,14 +216,22 @@ sub _thick_anchor {
     my $state = decode_anchor_tags($info->{tags} // '');
     die "thick-generations anchor '$vg/$anchor' belongs to another storage or volume\n"
         if $state->{sid} ne $storeid || $state->{vol} ne $volname;
-    die "thick-generations anchor '$vg/$anchor' is not materialized; recovery required\n"
-        if $state->{phase} ne 'MATERIALIZED';
     my $head = $lvs->{$vg}->{$state->{head}};
     die "thick-generations head '$vg/$state->{head}' is missing\n" if !$head;
     validate_generation_tags(
         $head->{tags} // '', sid => $storeid, vol => $volname,
         role => 'head', generation => $state->{generation},
     );
+    return ($state, $head, $anchor);
+}
+
+sub _thick_anchor {
+    my ($class, @args) = @_;
+    my ($state, $head, $anchor) = $class->_thick_read_anchor(@args);
+    my (undef, $scfg) = @args;
+    my $vg = $scfg->{'slt-vgname'};
+    die "thick-generations anchor '$vg/$anchor' is not materialized; recovery required\n"
+        if $state->{phase} ne 'MATERIALIZED';
     return ($state, $head, $anchor);
 }
 
@@ -1735,6 +1743,81 @@ sub deactivate_volume {
     return 1;
 }
 
+sub _thick_resume_prepared_transition {
+    my ($class, $scfg, $storeid, $volname, $snap, $operation, $intent) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    my ($state, $head_info, $anchor) =
+        $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
+    my $expected_intent_op = $operation eq 'ROLLBACK' ? 'DM_PIVOT' : 'DM_CUTOVER';
+
+    die "existing VG intent is not the exact resumable transition\n"
+        if !defined($intent) || $intent->{state} ne 'OPEN'
+        || $intent->{op} ne $expected_intent_op || $intent->{object} ne $anchor
+        || $intent->{tx} ne $state->{tx};
+    die "prepared transition request identity mismatch\n"
+        if $state->{phase} ne 'PREPARED' || $state->{op} ne $operation
+        || $state->{snapshot} ne $snap || $state->{head} ne $state->{old};
+
+    my ($old, $new, $source) = @{$state}{qw(old new source)};
+    my $old_gen = int($state->{generation});
+    my $new_gen = $old_gen + 1;
+    my $key = object_key($namespace, $volname);
+    my $expected_new = generation_name($namespace, $volname, $new_gen);
+    my $meta = sprintf('sltg-m-%s-%08d', $key, $new_gen);
+    die "prepared transition destination name mismatch\n" if $new ne $expected_new;
+    for my $name ($old, $source, $new, $meta) {
+        die "prepared transition object '$vg/$name' is missing\n"
+            if !$lvs->{$vg} || !$lvs->{$vg}->{$name};
+    }
+
+    my ($source_gen, $source_info);
+    if ($operation eq 'ROLLBACK') {
+        my $found;
+        ($found, $source_gen, $source_info) = $class->_thick_find_snapshot(
+            $storeid, $scfg, $volname, $snap, $lvs,
+        );
+        die "prepared rollback source identity mismatch\n" if $found ne $source;
+    } else {
+        $source_gen = $old_gen;
+        $source_info = $lvs->{$vg}->{$source};
+        die "prepared snapshot source identity mismatch\n" if $source ne $old;
+    }
+    my $size = $source_info->{lv_size};
+    my $old_size = $head_info->{lv_size};
+    die "prepared transition size is invalid\n"
+        if !defined($size) || $size !~ /^\d+$/ || !$size || $size % 512
+        || !defined($old_size) || $old_size !~ /^\d+$/ || !$old_size || $old_size % 512;
+    my $geometry = clone_geometry(int($size));
+    die "prepared transition geometry mismatch\n"
+        if int($state->{region}) != $geometry->{region_sectors};
+    validate_generation_tags(
+        $lvs->{$vg}->{$new}->{tags} // '', sid => $storeid,
+        vol => $volname, role => 'head', generation => $new_gen,
+    );
+    $class->_thick_verify_transition_metadata(
+        $storeid, $scfg, $volname, $lvs->{$vg}->{$meta},
+        tx => $intent->{tx}, generation => $new_gen,
+        region => $geometry->{region_sectors},
+        metadata_bytes => $geometry->{metadata_bytes}, name => $meta,
+    );
+    $class->_verify_autoactivation_disabled($vg, $new);
+    $class->_verify_autoactivation_disabled($vg, $meta);
+    my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $source_gen);
+    die "prepared transition source mapper unexpectedly exists\n"
+        if _block_device_exists("/dev/mapper/$source_map");
+    $class->_thick_verify_frontend($scfg, $volname, $old, int($old_size / 512));
+
+    return {
+        state => $state, anchor => $anchor, old => $old, new => $new,
+        source => $source, source_gen => $source_gen,
+        old_gen => $old_gen, new_gen => $new_gen, meta => $meta,
+        source_map => $source_map, size => int($size), old_size => int($old_size),
+        geometry => $geometry, operation => $operation, snapshot => $snap,
+    };
+}
+
 sub _thick_volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap, $operation) = @_;
     $operation //= 'SNAPSHOT';
@@ -1760,7 +1843,14 @@ sub _thick_volume_snapshot {
     }
 
     $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_no_vg_intent($vg);
+        my $existing_intent = $class->_read_vg_intent($vg);
+        if (defined($existing_intent)) {
+            $tr = $class->_thick_resume_prepared_transition(
+                $scfg, $storeid, $volname, $snap, $operation, $existing_intent,
+            );
+            %intent = %$existing_intent;
+            return;
+        }
         my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
         my ($state, $head_info, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);

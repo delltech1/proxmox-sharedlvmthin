@@ -128,7 +128,7 @@ Current automated result:
 ANCHOR_GEOMETRY_AND_C0_C9_TESTS=70/70_PASS
 ONE_LIVE_PROBE_INVARIANT=PASS
 EXISTING_THIN_PYTHON_REGRESSION=79_PASS
-COMBINED_PERL_REGRESSION=172_PASS
+COMBINED_PERL_REGRESSION=173_PASS
 LIVE_READ_ONLY_RECOVERY_CLASSIFICATION=PASS
 TAMPERED_SOURCE_EVIDENCE_FAIL_CLOSED=PASS
 LIVE_PROCESS_CRASH_C0=PASS
@@ -139,6 +139,9 @@ LIVE_C2_EXACT_RECOVERY=PASS
 LIVE_PROCESS_CRASH_C3=PASS
 LIVE_C3_SNAPSHOT_IDENTITY_PERSISTED=PASS
 LIVE_C3_EXACT_PRIOR_EVIDENCE_RECOVERY=PASS
+LIVE_C3_FORWARD_RECOVERY=PASS
+LIVE_C3_FORWARD_SNAPSHOT_SHA=PASS
+LIVE_C3_FORWARD_LINEAR_DEPENDENCY=PASS
 ```
 
 Anchor schema v5 persists the exact snapshot name for SNAPSHOT and ROLLBACK
@@ -148,7 +151,15 @@ remain authoritative. The recovery classifier returned `RECOVERY_REQUIRED`
 with mutations disabled, and the exact prior-evidence recovery restored the
 signed MATERIALIZED predecessor before removing only the inactive destination
 and metadata objects. This closes the lost-request-context defect exposed by
-the earlier v4 C3 test; resumable forward recovery remains an open gate.
+the earlier v4 C3 test.
+
+The same live C3 transaction was then resumed from its signed v5 PREPARED
+anchor and exact OPEN VG intent. A mismatched snapshot request was refused
+without changing the object inventory. The matching request reused the
+existing destination and metadata objects, completed hydration, published a
+destination-only linear frontend, removed the detached metadata object, and
+cleared the intent. The independent read-only snapshot and recovered HEAD both
+matched the pre-crash SHA-256, with no relevant D-state processes.
 
 ## Geometry gate
 
@@ -250,8 +261,7 @@ ROLLBACK_DSTATE=0
 1. Repeat snapshot, delete, and rollback with data-bearing active-QEMU
    workloads, then complete recovery lifecycle code.
 2. Qualify full-hydration metadata occupancy and geometry performance.
-3. Implement deterministic forward recovery from the persisted v5 PREPARED
-   transaction without relying on external request context.
+3. Extend deterministic recovery to the persisted C4 through C9 states.
 4. Execute process-crash tests at C4 through C9.
 5. Execute reboot recovery on disposable local storage.
 6. Execute fenced cross-node reconstruction on a disposable shared test LUN.
