@@ -486,6 +486,33 @@ CLONE_EXACT_CLEANUP=PASS
 SOURCE_UNCHANGED_AFTER_CLONE_DELETE=PASS
 ```
 
+A stopped Windows-system disk move from thin mode to Thick Generations was
+interrupted at approximately 13 percent by a simultaneous reset of two nested
+PVE nodes on the shared lab hypervisor. The surviving node lost quorum and
+correctly prevented further mutations until the cluster recovered. PVE had not
+committed the destination to the VM configuration and had not deleted the thin
+source. The fully allocated but partially copied destination remained an
+unreferenced orphan, as can also occur with other storage backends when the
+generic `qemu-img convert` worker and its cleanup handler disappear with the
+host.
+
+After quorum returned, exact config and inventory evidence proved that the VM
+still referenced only the original thin source. The orphan destination was
+then removed by its exact volume identity; the source and VM configuration
+remained unchanged. This is a fail-safe interruption result, not a successful
+Windows move qualification. Unreferenced-volume diagnosis should be added as a
+read-only operational warning, but cleanup must remain explicit and must never
+infer that an unreferenced volume is disposable.
+
+```ini
+INTERRUPTED_WINDOWS_THIN_TO_THICK=BLOCKED_LAB_INFRA
+SOURCE_PRESERVED=PASS
+DESTINATION_NOT_PUBLISHED=PASS
+NO_SOURCE_DELETE_BEFORE_COPY_COMMIT=PASS
+EXACT_ORPHAN_CLEANUP_AFTER_IDENTITY_PROOF=PASS
+WINDOWS_THIN_TO_THICK=NOT_YET_QUALIFIED
+```
+
 ## Online hydration tuning qualification
 
 The kernel-recommended 4 KiB region size remains unchanged because it bounds
@@ -517,7 +544,11 @@ target. A second snapshot followed by rollback restored an fsynced canary to
 its exact pre-snapshot digest, restarted the guest, and materialized a fresh
 independent linear HEAD in approximately 82 seconds. Deleting the earlier
 independent snapshot while the guest was active removed only its signed
-generation and left the recovered HEAD healthy.
+generation and left the recovered HEAD healthy. Finally, an active-QEMU grow
+from 6 GiB to 7 GiB completed while the guest was writing. The guest observed
+the new block-device size immediately, its existing canary digest remained
+unchanged, and a full read of the newly published 1 GiB tail matched the digest
+of an equally sized all-zero stream.
 
 ```ini
 FOREGROUND_REGION_SIZE_4_KIB=PASS
@@ -529,8 +560,33 @@ ONLINE_SNAPSHOT_ELAPSED_APPROX=80_SECONDS
 CONSERVATIVE_32_32_ROLLBACK=PASS
 ROLLBACK_CANARY_DIGEST=PASS
 ONLINE_SNAPSHOT_DELETE_AFTER_TUNING=PASS
+ACTIVE_QEMU_GROW_WITH_GUEST_WRITE=PASS
+ACTIVE_QEMU_GROW_ZERO_TAIL=PASS
 FINAL_FRONTEND_LINEAR=PASS
 POST_TEST_DSTATE=0
+```
+
+The first bounded steady-state soak completed 300 consecutive 256 MiB
+write/sync/byte-compare cycles. Source and final destination SHA-256 digests
+were identical. A deliberately coarse global-state sampler observed seven
+short D-state samples but had not recorded their process identity, so that
+observation was not misclassified as either a storage PASS or FAIL.
+
+A follow-up 60-cycle run used a corrected collector that captured PID, task,
+wait channel, command line, and the exact frontend table whenever any D-state
+task appeared. It identified only unrelated host ZFS transaction-group and
+RCU waits; QEMU, device-mapper, multipath, LVM, and the test process were not
+blocked. The scoped recovery check remained healthy and the frontend remained
+linear throughout. This confirms why the production health gate must remain
+dependency-scoped instead of rejecting a host merely because its global
+D-state count is temporarily non-zero.
+
+```ini
+STEADY_STATE_300_WRITE_SYNC_COMPARE_CYCLES=PASS
+STEADY_STATE_FINAL_DIGEST=PASS
+SCOPED_DSTATE_COLLECTOR=PASS
+RELEVANT_STORAGE_DSTATE=0
+UNRELATED_HOST_DSTATE_DOES_NOT_POISON_STORAGE=PASS
 ```
 
 ## Open gates
