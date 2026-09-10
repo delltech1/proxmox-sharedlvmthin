@@ -571,7 +571,55 @@ def pve_volume_reference_files(volid):
     return matches
 
 
-def evaluate_thick_anchor_references(sid, anchors):
+def thick_worker_state(transaction, sid=None, volume=None):
+    """Return the observed state of one transaction-scoped worker."""
+    if not transaction or not re.fullmatch(r"[0-9a-f]{32}", transaction):
+        return "UNKNOWN"
+    unit = f"pve-sharedlvmthin-tg-{transaction}"
+    observed = []
+    for suffix in ("service", "timer"):
+        rc, out, _ = run([
+            "systemctl", "show", f"{unit}.{suffix}",
+            "--property=ActiveState", "--value",
+        ])
+        if rc == 0 and out:
+            observed.append(out.strip().lower())
+    if any(state in {"active", "activating", "reloading"} for state in observed):
+        return "RUNNING"
+    if (
+        sid and volume
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sid)
+        and re.fullmatch(r"(?:vm|base)-[0-9]+-disk-[0-9]+", volume)
+    ):
+        for path in glob.glob("/proc/[0-9]*/cmdline"):
+            try:
+                with open(path, "rb") as process_cmdline:
+                    command = process_cmdline.read()
+                argv = [
+                    item.decode("utf-8", "strict")
+                    for item in command.split(b"\0") if item
+                ]
+            except (OSError, UnicodeError):
+                continue
+            worker_args = None
+            if argv and os.path.basename(argv[0]) == "sharedlvmthin-thick-materialize":
+                worker_args = argv[1:]
+            elif (
+                len(argv) >= 2
+                and os.path.basename(argv[0]) == "perl"
+                and os.path.basename(argv[1]) == "sharedlvmthin-thick-materialize"
+            ):
+                worker_args = argv[2:]
+            if worker_args == ["--resume", sid, volume]:
+                return "RUNNING"
+    if "failed" in observed:
+        return "FAILED"
+    if observed:
+        return "ABSENT"
+    return "UNKNOWN"
+
+
+def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
     """Classify anchors without mutating or guessing cleanup eligibility."""
     results = []
     for anchor in anchors or []:
@@ -583,11 +631,47 @@ def evaluate_thick_anchor_references(sid, anchors):
             "volid": volid,
             "reference_count": len(references),
         }
-        if not volume:
+        phase = anchor.get("phase")
+        transaction = anchor.get("transaction")
+        if phase != "MATERIALIZED":
+            observed_worker = (
+                worker_state(transaction, sid, volume)
+                if worker_state is not None else "UNKNOWN"
+            )
+            item["worker_state"] = observed_worker
+            if (
+                phase not in {"PREPARED", "HYDRATING", "HYDRATION_COMPLETE", "LINEAR_PIVOTED"}
+                or not transaction
+                or not re.fullmatch(r"[0-9a-f]{32}", transaction)
+            ):
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    "anchor has an invalid or ambiguous materialization state; "
+                    "new mutations must remain blocked"
+                )
+            elif observed_worker == "RUNNING":
+                item["status"] = "WARN"
+                item["materialization_state"] = "IN_PROGRESS"
+                item["reason"] = (
+                    f"materialization phase {phase} has its exact transaction worker; "
+                    "dependency-changing mutations remain blocked until completion"
+                )
+            else:
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    f"materialization phase {phase} has no active exact transaction "
+                    "worker; preserve evidence and run the explicit thick-resume "
+                    "workflow; no automatic repair attempted"
+                )
+        elif not volume:
             item["status"] = "WARN"
+            item["materialization_state"] = "MATERIALIZED"
             item["reason"] = "anchor volume identity is unavailable; no cleanup attempted"
         elif not references:
             item["status"] = "WARN"
+            item["materialization_state"] = "MATERIALIZED"
             item["reason"] = (
                 "unreferenced Thick Generations volume; it may be an incomplete "
                 "destination after an interrupted import, clone, or move; prove its "
@@ -595,11 +679,13 @@ def evaluate_thick_anchor_references(sid, anchors):
             )
         elif len(references) > 1:
             item["status"] = "WARN"
+            item["materialization_state"] = "MATERIALIZED"
             item["reason"] = (
                 "volume is referenced by multiple PVE configs; ownership is ambiguous"
             )
         else:
             item["status"] = "PASS"
+            item["materialization_state"] = "MATERIALIZED"
             item["reason"] = "volume has exactly one PVE configuration reference"
         results.append(item)
     return results
@@ -675,6 +761,29 @@ def evaluate_thin_full_policy(when_full, no_space_timeout):
         "WARN",
         f"when-full policy is '{policy or 'unknown'}'; exhaustion behavior is "
         "unconfirmed; no setting was changed",
+    )
+
+
+def evaluate_dmeventd(dmeventd_active, storages):
+    """Require dmeventd only when an owned thin pool is active locally."""
+    active_pools = []
+    for storage in storages or []:
+        sid = storage.get("id") or "unknown"
+        for pool in storage.get("pools") or []:
+            attr = str(pool.get("attr") or "")
+            if pool.get("owned") and len(attr) > 4 and attr[4] == "a":
+                active_pools.append(f"{sid}:{pool.get('name') or 'unknown'}")
+
+    if dmeventd_active:
+        return "PASS", "dm-event.service active"
+    if active_pools:
+        return "FAIL", (
+            "dm-event.service inactive while owned thin pools are active: "
+            + ", ".join(sorted(active_pools))
+        )
+    return "WARN", (
+        "dm-event.service inactive; no local owned thin pool currently "
+        "requires monitoring"
     )
 
 
@@ -1160,12 +1269,6 @@ api_status, api_message = evaluate_api_compatibility(api, apiage, papi)
 check("storage_api", api_status, api_message)
 
 
-if doc["lvm"]["dmeventd_active"]:
-    check("dmeventd", "PASS", "dm-event.service active")
-else:
-    check("dmeventd", "FAIL", "dm-event.service inactive")
-
-
 cluster_status, cluster_message = cluster_check_status(doc["cluster"])
 check("cluster_quorum", cluster_status, cluster_message)
 
@@ -1206,13 +1309,13 @@ for storage in parse_storage_cfg():
             else:
                 item["pools"] = pool_inventory
                 item["thick_anchors"] = evaluate_thick_anchor_references(
-                    sid, thick_anchors
+                    sid, thick_anchors, thick_worker_state
                 )
                 for anchor in item["thick_anchors"]:
-                    if anchor.get("status") == "WARN":
+                    if anchor.get("status") in {"WARN", "FAIL"}:
                         check(
                             f"thick_reference:{sid}:{anchor.get('name')}",
-                            "WARN",
+                            anchor.get("status"),
                             f"{sid}: {anchor.get('volid') or anchor.get('name')}: "
                             f"{anchor.get('reason')}; no cleanup attempted",
                         )
@@ -1362,6 +1465,12 @@ for storage in parse_storage_cfg():
         )
 
     doc["storages"].append(item)
+
+
+dmeventd_status, dmeventd_message = evaluate_dmeventd(
+    doc["lvm"]["dmeventd_active"], doc["storages"]
+)
+check("dmeventd", dmeventd_status, dmeventd_message)
 
 
 print(json.dumps(doc, indent=2, sort_keys=False))

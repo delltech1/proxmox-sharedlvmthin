@@ -1,5 +1,8 @@
 import ast
+import io
+import os
 import re
+import types
 import unittest
 from pathlib import Path
 
@@ -262,6 +265,43 @@ class ThinFullPolicyTests(unittest.TestCase):
         self.assertEqual(self.evaluate(None, None)[0], "WARN")
 
 
+class DmeventdRequirementTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.evaluate = staticmethod(load_function("evaluate_dmeventd"))
+
+    def test_active_service_passes(self):
+        status, message = self.evaluate(True, [])
+        self.assertEqual(status, "PASS")
+        self.assertIn("active", message)
+
+    def test_inactive_service_without_active_pool_warns(self):
+        storages = [{
+            "id": "thin-a",
+            "pools": [{"name": "pool-a", "owned": True, "attr": "twi---tz--"}],
+        }]
+        status, message = self.evaluate(False, storages)
+        self.assertEqual(status, "WARN")
+        self.assertIn("no local owned thin pool", message)
+
+    def test_inactive_service_with_active_owned_pool_fails(self):
+        storages = [{
+            "id": "thin-a",
+            "pools": [{"name": "pool-a", "owned": True, "attr": "twi-a-tz--"}],
+        }]
+        status, message = self.evaluate(False, storages)
+        self.assertEqual(status, "FAIL")
+        self.assertIn("thin-a:pool-a", message)
+
+    def test_unowned_active_pool_does_not_create_requirement(self):
+        storages = [{
+            "id": "foreign",
+            "pools": [{"name": "pool-x", "owned": False, "attr": "twi-a-tz--"}],
+        }]
+        status, _ = self.evaluate(False, storages)
+        self.assertEqual(status, "WARN")
+
+
 class PoolBatchCollectionTests(unittest.TestCase):
     def test_autoactivation_is_collected_in_single_lvs_report(self):
         tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
@@ -367,6 +407,7 @@ class ThickAnchorReferenceTests(unittest.TestCase):
             and item.name == "evaluate_thick_anchor_references"
         )
         namespace = {
+            "re": re,
             "pve_volume_reference_files": lambda volid: [
                 f"config-{index}" for index in range(counts.get(volid, 0))
             ],
@@ -400,9 +441,95 @@ class ThickAnchorReferenceTests(unittest.TestCase):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 2})
         result = evaluate("thick", [{
             "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MATERIALIZED",
         }])
         self.assertEqual(result[0]["status"], "WARN")
         self.assertIn("ambiguous", result[0]["reason"])
+
+    def test_active_materialization_is_visible_and_blocks_dependency_changes(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "HYDRATING", "transaction": "a" * 32,
+        }], lambda _transaction, _sid, _volume: "RUNNING")
+        self.assertEqual(result[0]["status"], "WARN")
+        self.assertEqual(result[0]["materialization_state"], "IN_PROGRESS")
+        self.assertIn("remain blocked", result[0]["reason"])
+
+    def test_interrupted_materialization_is_recovery_required(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "HYDRATING", "transaction": "b" * 32,
+        }], lambda _transaction, _sid, _volume: "ABSENT")
+        self.assertEqual(result[0]["status"], "FAIL")
+        self.assertEqual(result[0]["materialization_state"], "RECOVERY_REQUIRED")
+        self.assertIn("thick-resume", result[0]["reason"])
+        self.assertIn("no automatic repair", result[0]["reason"])
+
+    def test_ambiguous_materialization_phase_fails_closed(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MAYBE", "transaction": "c" * 32,
+        }], lambda _transaction, _sid, _volume: "RUNNING")
+        self.assertEqual(result[0]["status"], "FAIL")
+        self.assertEqual(result[0]["materialization_state"], "RECOVERY_REQUIRED")
+
+
+class ThickWorkerStateTests(unittest.TestCase):
+    def load_worker_state(self, cmdlines=None, unit_state="inactive"):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "thick_worker_state"
+        )
+        cmdlines = cmdlines or {}
+        namespace = {
+            "re": re,
+            "os": os,
+            "glob": types.SimpleNamespace(glob=lambda _pattern: list(cmdlines)),
+            "open": lambda path, _mode: io.BytesIO(cmdlines[path]),
+            "run": lambda _command: (0, unit_state, ""),
+        }
+        exec(
+            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            namespace,
+        )
+        return namespace["thick_worker_state"]
+
+    def test_exact_explicit_resume_process_is_running(self):
+        worker = self.load_worker_state({
+            "/proc/42/cmdline": (
+                b"/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize\0"
+                b"--resume\0thick\0vm-100-disk-0\0"
+            ),
+        })
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "RUNNING")
+
+    def test_perl_interpreter_resume_process_is_running(self):
+        worker = self.load_worker_state({
+            "/proc/42/cmdline": (
+                b"/usr/bin/perl\0"
+                b"/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize\0"
+                b"--resume\0thick\0vm-100-disk-0\0"
+            ),
+        })
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "RUNNING")
+
+    def test_near_match_resume_process_is_rejected(self):
+        worker = self.load_worker_state({
+            "/proc/42/cmdline": (
+                b"/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize\0"
+                b"--resume\0thick\0vm-100-disk-00\0"
+            ),
+        })
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "ABSENT")
+
+    def test_active_canonical_transaction_unit_is_running(self):
+        worker = self.load_worker_state(unit_state="active")
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "RUNNING")
 
 
 class PvBindingPolicyTests(unittest.TestCase):

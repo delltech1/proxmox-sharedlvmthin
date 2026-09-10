@@ -157,6 +157,18 @@ class PackageSourceTests(unittest.TestCase):
         )
         self.assertNotIn('--select "pool_lv=$POOL"', doctor)
 
+    def test_doctor_classifies_thick_mode_and_interrupted_anchors(self):
+        doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertIn('inside && $1 == "slt-allocation-mode"', doctor)
+        self.assertIn(
+            "Thick Generations mode uses independent thick LVs; "
+            "thin-pool headroom and autogrow policy do not apply",
+            doctor,
+        )
+        self.assertIn("sharedlvmthin-health-json", doctor)
+        self.assertIn("ANCHOR_STATE ANCHOR_WORKER ANCHOR_REASON", doctor)
+        self.assertIn("new mutations must remain blocked", doctor)
+
     def test_recovery_check_is_read_only_and_fail_closed(self):
         checker = (
             ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check"

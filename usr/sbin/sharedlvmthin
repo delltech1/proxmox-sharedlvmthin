@@ -301,6 +301,13 @@ doctor() {
             continue
         fi
 
+        STORAGE_ALLOCATION_MODE="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-allocation-mode" {print $2; exit}
+        ' "$STORAGECFG")"
+        STORAGE_ALLOCATION_MODE="${STORAGE_ALLOCATION_MODE:-thin}"
+
         ALLOCATION_MODE="$(awk -v sid="$SID" '
             $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
             /^[^[:space:]]/ {inside=0}
@@ -331,7 +338,12 @@ doctor() {
         ' "$STORAGECFG")"
         BURST_HEADROOM="${BURST_HEADROOM:-64}"
 
-        case "$ALLOCATION_MODE" in
+        if [ "$STORAGE_ALLOCATION_MODE" = "thick-generations" ]; then
+            pass "$SID: Thick Generations mode uses independent thick LVs; thin-pool headroom and autogrow policy do not apply"
+        elif [ "$STORAGE_ALLOCATION_MODE" != "thin" ]; then
+            fail "$SID: invalid storage allocation mode '$STORAGE_ALLOCATION_MODE'"
+        else
+          case "$ALLOCATION_MODE" in
             fixed)
                 warn "$SID: allocation headroom=fixed ${ALLOCATION_SIZE} GiB; burst capacity guarantee=NO"
                 info "Impact: fast bulk write, clone, restore, import, or storage copy may outrun asynchronous autogrow"
@@ -361,7 +373,8 @@ doctor() {
             *)
                 fail "$SID: invalid allocation headroom mode '$ALLOCATION_MODE'"
                 ;;
-        esac
+          esac
+        fi
 
         VG_LINE="$(timeout --foreground 15 vgs --readonly --noheadings --units b --nosuffix \
             --separator '|' -o vg_uuid,vg_size,vg_free "$VG" 2>/dev/null | head -1)"
@@ -565,6 +578,57 @@ doctor() {
             fail "$SID: unable to collect the read-only LVM diagnostic inventory"
             continue
         fi
+
+        if [ "$STORAGE_ALLOCATION_MODE" = "thick-generations" ]; then
+            if ! THICK_HEALTH_JSON="$(
+                timeout --foreground 30 \
+                    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json 2>/dev/null
+            )"; then
+                fail "$SID: Thick Generations anchor state is unavailable; new mutations must remain blocked"
+            else
+                # The embedded Python program must not be expanded by this shell.
+                # shellcheck disable=SC2016
+                THICK_ANCHOR_DIAGNOSTICS="$(
+                    python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+sid = sys.argv[1]
+for storage in document.get("storages", []):
+    if storage.get("id") != sid:
+        continue
+    for anchor in storage.get("thick_anchors", []):
+        status = anchor.get("status") or "FAIL"
+        if status == "PASS":
+            continue
+        values = [
+            status,
+            anchor.get("volid") or anchor.get("name") or "unknown",
+            anchor.get("phase") or "UNKNOWN",
+            anchor.get("materialization_state") or "UNKNOWN",
+            anchor.get("worker_state") or "UNKNOWN",
+            (anchor.get("reason") or "anchor state is unavailable").replace("\t", " ").replace("\n", " "),
+        ]
+        print("\t".join(values))
+' "$SID" <<<"$THICK_HEALTH_JSON"
+                )"
+                if [ -n "$THICK_ANCHOR_DIAGNOSTICS" ]; then
+                    while IFS=$'\t' read -r ANCHOR_STATUS ANCHOR_VOLUME ANCHOR_PHASE \
+                        ANCHOR_STATE ANCHOR_WORKER ANCHOR_REASON; do
+                        [ -n "$ANCHOR_STATUS" ] || continue
+                        if [ "$ANCHOR_STATUS" = "FAIL" ]; then
+                            fail "$SID: $ANCHOR_VOLUME $ANCHOR_STATE: phase=$ANCHOR_PHASE worker=$ANCHOR_WORKER; $ANCHOR_REASON"
+                        else
+                            warn "$SID: $ANCHOR_VOLUME $ANCHOR_STATE: phase=$ANCHOR_PHASE worker=$ANCHOR_WORKER; $ANCHOR_REASON"
+                        fi
+                    done <<<"$THICK_ANCHOR_DIAGNOSTICS"
+                else
+                    pass "$SID: every Thick Generations anchor is materialized and reference-consistent"
+                fi
+            fi
+        fi
+
         POOLS="$(
             awk -F'|' '{name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); if (name ~ /^sltp-[0-9]+$/) print name}' <<<"$LVS_REPORT"
         )"

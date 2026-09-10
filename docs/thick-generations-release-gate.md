@@ -23,12 +23,13 @@ Disruptive cluster and transport coverage is tracked separately in the
 | FCoE lab transport | Ordinary I/O and 2-to-1 failover | PASS |
 | FCoE path return | Linux VN2VN/tcm_fc target recovery without target restart | FAIL - transport limitation |
 | Windows workload | Long write-through, flush and hash-verification soak | PASS |
-| Windows interruption | Materialization interruption, explicit resume, pivot and guest data verification | OPEN |
+| Windows interruption | Materialization interruption, explicit resume, pivot and guest data verification | PASS |
 | Cross-node non-interference | Repeated bounded recovery checks on every qualified API node | PASS |
 | Large-capacity arithmetic | 1, 16 and 128 PiB geometry, overflow refusal and exact health counters | PASS |
 | Physical petabyte storage | Representative array qualification | NOT TESTED |
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
 | Web and installer | Dual-mode configuration, authentication, monitoring and live rendering | PASS |
+| Recovery monitoring | Live IN_PROGRESS, RECOVERY_REQUIRED and post-resume MATERIALIZED classification; scoped dmeventd requirement | PASS |
 | Regression | Python, Perl taint-mode, package content and privacy gates | PASS |
 
 `PASS` means the evidence is recorded in

@@ -1803,3 +1803,86 @@ LONG_CROSS_NODE_DSTATE_FAILURES=0
 LONG_CROSS_NODE_ERROR_MARKERS=0
 LONG_CROSS_NODE_HEALTH_MONITOR_REPEAT=PASS
 ```
+
+## Online Windows materialization interruption and recovery
+
+An online snapshot of a running Windows system disk was started while the
+guest issued write-through writes, explicit durable flushes, reopen reads, and
+SHA-256 verification. The exact transaction-scoped materialization worker was
+terminated after persistent dm-clone progress had reached approximately nine
+percent. The guest remained running, the anchor stayed unambiguously in
+`HYDRATING`, the immutable source and writable destination remained present,
+and no materialization worker survived.
+
+The explicit `thick-resume` command derived the transaction entirely from the
+signed anchor, reopened the existing persistent clone state, continued from
+the recorded progress, completed hydration, and pivoted the published frontend
+to a canonical linear mapping. The final dependency graph contained exactly
+the authoritative destination LV. The transition metadata LV, source helper
+mapping, and VG intent were absent. Repeating `thick-resume` against the
+materialized anchor failed with the exact non-resumable reason and made no LVM
+inventory change.
+
+The overlapping Windows workload completed 300 of 300 cycles. Its final file
+digest matched the logged digest after recovery and again after exact snapshot
+deletion. An online NTFS scan reported no file-system problems and no bad
+sectors. The VM remained online throughout the worker interruption, recovery,
+verification, and snapshot deletion.
+
+```ini
+WINDOWS_ONLINE_SNAPSHOT_INTERRUPTION=PASS
+WINDOWS_INTERRUPTED_PHASE=HYDRATING
+WINDOWS_PERSISTENT_PROGRESS_REOPEN=PASS
+WINDOWS_EXPLICIT_THICK_RESUME=PASS
+WINDOWS_CONCURRENT_WRITE_THROUGH_CYCLES=300
+WINDOWS_CONCURRENT_FLUSH_AND_SHA256=PASS
+WINDOWS_LINEAR_PIVOT=PASS
+WINDOWS_DESTINATION_ONLY_DEPENDENCY=PASS
+WINDOWS_TRANSITION_ARTIFACT_CLEANUP=PASS
+WINDOWS_REPEAT_RESUME_NO_MUTATION=PASS
+WINDOWS_NTFS_ONLINE_SCAN=PASS
+WINDOWS_SNAPSHOT_DELETE_AND_FINAL_SHA256=PASS
+WINDOWS_VM_REMAINED_RUNNING=PASS
+```
+
+The interruption also exposed a monitoring gap: the original read-only health
+payload classified anchors only by PVE reference count. It could therefore
+display an interrupted `HYDRATING` anchor as reference-consistent without
+showing that explicit recovery was required. The candidate now reports
+`IN_PROGRESS` only while the exact transaction worker or exact explicit-resume
+process is present. A non-materialized anchor without that exact worker is
+`RECOVERY_REQUIRED`; invalid phases fail closed. The CLI Doctor consumes the
+same classification and no longer applies thin-pool headroom policy to a
+Thick Generations alias.
+
+```ini
+THICK_MONITOR_ACTIVE_WORKER_CLASSIFICATION=PASS
+THICK_MONITOR_EXPLICIT_RESUME_CLASSIFICATION=PASS
+THICK_MONITOR_MISSING_WORKER_RECOVERY_REQUIRED=PASS
+THICK_MONITOR_AMBIGUOUS_PHASE_FAIL_CLOSED=PASS
+THICK_DOCTOR_MODE_SPECIFIC_POLICY=PASS
+```
+
+The classifier was then exercised against a second live disposable online
+snapshot. After the exact worker was terminated, both the JSON endpoint and
+Doctor reported the signed `HYDRATING` transaction as `RECOVERY_REQUIRED` with
+the worker absent. Explicit resume completed the persistent clone, returned
+the anchor to `MATERIALIZED`, and changed the same JSON object to `PASS`. The
+published frontend was a linear table with exactly one destination dependency.
+An idempotency retry was refused, and exact snapshot and VM deletion left no
+matching LVM or PVE inventory object.
+
+The JSON monitor also now applies the same scoped `dmeventd` rule as Doctor.
+An inactive service is a failure only while a locally owned thin pool is
+active. When no owned thin pool requires monitoring, the condition is an
+explicit warning rather than a false storage failure. Unit coverage includes
+active, inactive, and foreign-pool cases; the inactive/no-active-pool branch
+was verified against the live lab inventory.
+
+```ini
+THICK_MONITOR_LIVE_RECOVERY_REQUIRED=PASS
+THICK_MONITOR_LIVE_POST_RESUME_MATERIALIZED=PASS
+THICK_MONITOR_LIVE_LINEAR_DESTINATION_ONLY=PASS
+THICK_MONITOR_LIVE_EXACT_CLEANUP=PASS
+DMEVENTD_REQUIREMENT_SCOPED_TO_ACTIVE_OWNED_THIN_POOL=PASS
+```
