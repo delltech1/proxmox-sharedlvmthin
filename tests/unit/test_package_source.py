@@ -101,6 +101,13 @@ class PackageSourceTests(unittest.TestCase):
             postinst,
         )
 
+    def test_web_configurator_unit_detection_is_pipefail_safe(self):
+        configurator = (
+            ROOT / "usr/sbin/sharedlvmthin-web-configure"
+        ).read_text(encoding="utf-8")
+        self.assertIn('systemctl cat "$SERVICE"', configurator)
+        self.assertNotIn("systemctl list-unit-files |", configurator)
+
     def test_lvm_autogrow_install_is_fail_closed_and_purge_is_scoped(self):
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
         postrm = (ROOT / "DEBIAN/postrm").read_text(encoding="utf-8")

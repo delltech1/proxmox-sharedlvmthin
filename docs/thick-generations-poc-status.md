@@ -1595,7 +1595,7 @@ SAME_VG_LOCK_UNIT_QUALIFICATION=PASS
 SAME_VG_OPEN_INTENT_BLOCKS_THIN_MUTATION=PASS
 SAME_VG_INVENTORY_ISOLATION_UNIT=PASS
 SAME_VG_FOREIGN_PVE_LVM_ALIAS_REJECTED=PASS
-SAME_VG_LIVE_COEXISTENCE=OPEN
+SAME_VG_LIVE_COEXISTENCE=PASS
 ```
 
 The disposable live matrix is encoded in
@@ -1608,7 +1608,7 @@ available.
 
 ```ini
 SAME_VG_LIVE_DRIVER_STATIC_GATE=PASS
-SAME_VG_LIVE_DRIVER_EXECUTION=OPEN
+SAME_VG_LIVE_DRIVER_EXECUTION=PASS
 ```
 
 All direct LVM lifecycle commands for Thick Generations allocation,
@@ -1621,7 +1621,7 @@ mutation into those paths. Live qualification remains open.
 THICK_LIFECYCLE_DEVICE_SCOPE_IMPLEMENTATION=PASS
 THICK_LIFECYCLE_DEVICE_SCOPE_UNIT_GATE=PASS
 THICK_LIFECYCLE_INVENTORY_SCOPE_UNIT_GATE=PASS
-THICK_LIFECYCLE_DEVICE_SCOPE_LIVE=OPEN
+THICK_LIFECYCLE_DEVICE_SCOPE_LIVE=PASS
 ```
 
 PVE evaluates storage capacity per storage ID. A canonical thin/thick pair over
@@ -1657,3 +1657,77 @@ PRE_COEXISTENCE_PROBE_SURVIVORS=0
 PRE_COEXISTENCE_HEALTH_FAILURES=0
 PRE_COEXISTENCE_NON_INTERFERENCE=PASS
 ```
+
+## Live same-VG coexistence result
+
+The disposable same-VG driver completed the full mixed lifecycle through the
+PVE storage API. A thin volume and a Thick Generations volume were allocated
+on separate aliases of the same pinned VG. Inventory isolation, snapshots,
+grow-only resize, rollback, snapshot deletion, exact VM-volume cleanup, and
+canonical lock contention all passed. The final VG free-space value exactly
+matched the stabilized pre-test baseline.
+
+```ini
+SAME_VG_CANONICAL_LOCK_CONTENTION=PASS
+SAME_VG_INVENTORY_ISOLATION_LIVE=PASS
+SAME_VG_THIN_AND_THICK_SNAPSHOT=PASS
+SAME_VG_THIN_AND_THICK_RESIZE=PASS
+SAME_VG_THIN_AND_THICK_ROLLBACK=PASS
+SAME_VG_THIN_AND_THICK_DELETE=PASS
+SAME_VG_FREE_SPACE_DELTA_BYTES=0
+```
+
+The live run also exposed and closed three fail-closed implementation gaps:
+PVE represents a node scope as a hash in the runtime parser; reused extents
+may contain signatures that otherwise cause an interactive `lvcreate` prompt;
+and activation-skip LVs require an explicit creation override before their
+disabled-autoactivation postcondition is verified. All fixes are covered by
+source, lifecycle, taint, and live tests.
+
+An interrupted allocation can persist its exact VG intent before the first LV
+exists. Recovery for this state is now explicit and transaction-scoped. It
+requires the exact signed `OPEN ALLOC` intent and proves that no related LV or
+device-mapper frontend exists before clearing only that intent. Foreign,
+partial, or ambiguous evidence is refused without mutation. The command was
+validated against a deliberately created intent-only crash state on disposable
+multipath storage.
+
+```ini
+EMPTY_ALLOCATION_RECOVERY_UNIT=PASS
+EMPTY_ALLOCATION_RECOVERY_LIVE=PASS
+EMPTY_ALLOCATION_PARTIAL_OBJECT_REFUSAL=PASS
+EMPTY_ALLOCATION_FOREIGN_INTENT_REFUSAL=PASS
+```
+
+## Large-capacity and dual-mode monitoring gates
+
+Clone geometry and capacity diagnostics have simulated 1 PiB, 16 PiB, and
+128 PiB volumes. Region counts, persistent metadata sizing, power-of-two
+alignment, and integer boundaries remain bounded. Geometry beyond the exact
+qualified arithmetic boundary is rejected without integer wrapping. This is
+software arithmetic qualification only; no physical PB storage claim is made.
+
+The read-only web dashboard now identifies Thin and Thick Generations aliases
+separately. Thin pool reservation details remain visible only for thin mode;
+Thick Generations shows signed anchors, lifecycle phase, generation, PVE
+reference count, and diagnostic reason. Every alias reports the truthful VG
+capacity and the dashboard explicitly warns that same-VG alias capacities must
+not be summed. Thick mode no longer inherits thin headroom/autogrow diagnostics.
+
+```ini
+PB_ARITHMETIC_1_16_128_PIB=PASS
+PB_INTEGER_OVERFLOW_REFUSAL=PASS
+PHYSICAL_PB_QUALIFICATION=NOT_TESTED
+WEB_THIN_MODE_RENDERING_UNIT=PASS
+WEB_THICK_GENERATIONS_RENDERING_UNIT=PASS
+WEB_SAME_VG_CAPACITY_WARNING_UNIT=PASS
+WEB_DUAL_MODE_LIVE_BROWSER=PASS
+WEB_CONFIGURATOR_LIVE_SERVICE_START=PASS
+```
+
+The first live configurator run exposed a pipefail-sensitive service-unit
+detection pipeline: configuration was written, but the existing unit could be
+misclassified and left inactive. Unit discovery now uses a direct
+`systemctl cat` probe. A reinstall followed by interactive configuration,
+service enable/start, HTTPS request, PVE authentication, health API retrieval,
+and a headless browser rendering check all passed.

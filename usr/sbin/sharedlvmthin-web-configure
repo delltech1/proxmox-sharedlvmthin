@@ -297,8 +297,7 @@ echo "Dashboard:"
 echo "  https://$ADDRESS:$PORT"
 echo
 
-if systemctl list-unit-files |
-   grep -q "^${SERVICE}"; then
+if systemctl cat "$SERVICE" >/dev/null 2>&1; then
 
     systemctl daemon-reload
     systemctl enable "$SERVICE" >/dev/null
