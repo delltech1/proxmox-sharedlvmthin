@@ -1947,3 +1947,34 @@ QUORUM_LOSS_LVM_INVENTORY_DELTA=0
 QUORUM_RESTORE_NODES=3
 QUORUM_RESTORE_STORAGE_HEALTH=PASS
 ```
+
+## Repeated iSCSI single-path fault with mixed-mode guest I/O
+
+One of the two isolated iSCSI target interfaces was disabled after an
+independent transient auto-restore timer had been armed. Both multipath maps
+changed from two active paths to one active and one failed path for fourteen
+consecutive two-second samples, then returned to two active, running, ready
+paths with their original identities.
+
+A running Linux guest concurrently completed 300 independent cycles on a
+conventional per-VM thin disk and 300 cycles on a Thick Generations linear
+disk. Every cycle wrote four MiB of fresh data with `fsync`, reopened and
+verified the payload by SHA-256, atomically renamed it, and flushed the final
+file. Both terminal workload results were `PASS`.
+
+One instantaneous sample observed a `vgs` process in the kernel AIO teardown
+wait path during failover. It was absent from every later sample and from the
+post-fault process inventory; no guest request failed or stalled. The final
+read-only gates for both storage aliases positively verified two healthy
+paths, pinned identity, quorum, bounded LVM probes, no relevant persistent
+D-state, `STATE=HEALTHY`, and `SAFE_FOR_MUTATION=YES`.
+
+```ini
+ISCSI_SINGLE_PATH_SAMPLES=14
+ISCSI_SINGLE_PATH_THIN_WRITE_FLUSH_SHA_CYCLES=300
+ISCSI_SINGLE_PATH_THICK_WRITE_FLUSH_SHA_CYCLES=300
+ISCSI_SINGLE_PATH_GUEST_ERRORS=0
+ISCSI_SINGLE_PATH_PERSISTENT_DSTATE=0
+ISCSI_SINGLE_PATH_RETURN_2_OF_2=PASS
+ISCSI_SINGLE_PATH_RECOVERY_GATE_BOTH_MODES=PASS
+```
