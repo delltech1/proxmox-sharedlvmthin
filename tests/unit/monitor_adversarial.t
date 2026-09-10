@@ -44,6 +44,10 @@ sub run_case {
         die "identity mismatch\n" if $case{identity_fail};
         return 1;
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration = sub {
+        die "alias mismatch\n" if $case{alias_fail};
+        return 1;
+    };
     local *PVE::Cluster::cfs_lock_storage = sub {
         my ($storeid, $timeout, $code) = @_;
         push @locks, $storeid;
@@ -205,6 +209,11 @@ subtest 'inactive, foreign, and stale events never grow' => sub {
     is($stale->{rc}, 0, 'stale event safely coalesced');
     is($stale->{extend_calls}, 0, 'stale event zero growth');
     like($stale->{stderr}, qr/stale\/coalesced event/, 'stale event reported');
+
+    my $alias_mismatch = run_case(alias_fail => 1);
+    is($alias_mismatch->{rc}, 1, 'unsafe same-VG alias topology refused');
+    is($alias_mismatch->{extend_calls}, 0, 'alias mismatch performed zero growth');
+    like($alias_mismatch->{stderr}, qr/alias mismatch/, 'alias mismatch reported');
 };
 
 subtest 'sequential pool events recalculate reserve under the lock' => sub {

@@ -18,6 +18,7 @@ my $forced_single_node_quorum = \&PVE::Storage::Custom::SharedLvmThinPlugin::_fo
 my $verify_resize_postcondition = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_resize_postcondition;
 my $verify_snapshot_postcondition = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition;
 my $verify_pool_health = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_pool_health;
+my $verify_same_vg_alias_configuration = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration;
 my $disable_and_verify_autoactivation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation;
 my $verify_autoactivation_disabled = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled;
 my $record_disable_autoactivation = sub {
@@ -53,6 +54,7 @@ local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_pool_health = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration = sub { return 1; };
 
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
 my $scfg = {
@@ -1888,6 +1890,66 @@ subtest 'pinned thin mutation refuses an OPEN Thick Generations VG intent' => su
         'OPEN Thick Generations intent blocks the thin mutation');
     is($executed, 0, 'thin mutation callback was never entered');
     is(scalar(@locks), 1, 'decision was made while holding the canonical lock');
+};
+
+subtest 'same-VG alias topology is explicit and fail-closed' => sub {
+    my $base = {
+        type => 'sharedlvmthin', shared => 1, 'slt-vgname' => 'sharedvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-expected-min-paths' => 2,
+        'slt-vg-reserve-percent' => 5,
+        'slt-vg-reserve-gib' => 1,
+    };
+    my $thin = { %$base, 'slt-allocation-mode' => 'thin' };
+    my $thick = { %$base, 'slt-allocation-mode' => 'thick-generations' };
+    my $current = { ids => { 'thin-a' => $thin, 'thick-a' => $thick } };
+    no warnings 'redefine';
+    local *PVE::Storage::config = sub { return $current };
+
+    ok($verify_same_vg_alias_configuration->($class, 'thin-a', $thin),
+        'one pinned thin and one pinned thick alias are accepted');
+
+    my @invalid = (
+        ['duplicate allocation mode',
+            { %$thick, 'slt-allocation-mode' => 'thin' },
+            qr/duplicate 'thin' allocation aliases/],
+        ['identity mismatch',
+            { %$thick, 'slt-expected-wwid' => '3600ffff' },
+            qr/disagree on 'slt-expected-wwid'/],
+        ['reserve mismatch',
+            { %$thick, 'slt-vg-reserve-gib' => 2 },
+            qr/identical protected VG reserve/],
+        ['path policy mismatch',
+            { %$thick, 'slt-expected-min-paths' => 1 },
+            qr/same expected minimum path count/],
+        ['missing identity pin',
+            { %$thick, 'slt-expected-pv-uuid' => undef },
+            qr/must pin 'slt-expected-pv-uuid'/],
+    );
+    for my $case (@invalid) {
+        my ($name, $candidate, $error) = @$case;
+        $current = { ids => { 'thin-a' => $thin, 'thick-a' => $candidate } };
+        eval { $verify_same_vg_alias_configuration->($class, 'thin-a', $thin) };
+        like($@, $error, "$name is rejected before mutation");
+    }
+
+    $current = { ids => {
+        'thin-a' => $thin, 'thick-a' => $thick,
+        'thick-b' => { %$thick },
+    } };
+    eval { $verify_same_vg_alias_configuration->($class, 'thin-a', $thin) };
+    like($@, qr/more than two SharedLvmThin aliases/,
+        'a third same-VG alias is rejected');
+
+    $current = { ids => {
+        'thin-a' => $thin, 'thick-a' => $thick,
+        'native-lvm' => { type => 'lvm', vgname => 'sharedvg' },
+    } };
+    eval { $verify_same_vg_alias_configuration->($class, 'thin-a', $thin) };
+    like($@, qr/non-SharedLvmThin storage 'native-lvm'/,
+        'a native PVE LVM alias over the same VG is rejected');
 };
 
 subtest 'thick tag mutation enforces exact precondition and postcondition' => sub {

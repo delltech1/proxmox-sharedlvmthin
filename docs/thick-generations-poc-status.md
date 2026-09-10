@@ -1582,6 +1582,11 @@ per-VM pools, while the Thick Generations alias exposes only signed anchors and
 HEADs belonging to its own storage ID. A live same-VG matrix will run after the
 current non-interference monitor completes.
 
+The configuration gate accepts no more than those two aliases, requires
+identical identity, reserve, and expected-path settings, and rejects a native
+PVE `lvm` or `lvmthin` definition that references the same VG outside the
+canonical lock domain.
+
 ```ini
 SAME_VG_CANONICAL_LOCK_IMPLEMENTATION=PASS
 SAME_VG_THIN_LIFECYCLE_LOCK_COVERAGE=PASS
@@ -1589,5 +1594,6 @@ SAME_VG_AUTOGROW_LOCK_COVERAGE=PASS
 SAME_VG_LOCK_UNIT_QUALIFICATION=PASS
 SAME_VG_OPEN_INTENT_BLOCKS_THIN_MUTATION=PASS
 SAME_VG_INVENTORY_ISOLATION_UNIT=PASS
+SAME_VG_FOREIGN_PVE_LVM_ALIAS_REJECTED=PASS
 SAME_VG_LIVE_COEXISTENCE=OPEN
 ```

@@ -868,6 +868,74 @@ sub _canonical_vg_lock_id {
     return 'slt-vg-' . substr(sha256_hex(lc($uuid)), 0, 32);
 }
 
+sub _verify_same_vg_alias_configuration {
+    my ($class, $storeid, $scfg) = @_;
+    my $vg = $scfg->{'slt-vgname'} // die "storage '$storeid' has no VG name\n";
+    my $cfg = PVE::Storage::config();
+    my $ids = $cfg->{ids};
+    die "PVE storage configuration inventory is unavailable\n"
+        if ref($ids) ne 'HASH';
+
+    my @foreign_vg_references = sort grep {
+        my $candidate = $ids->{$_};
+        ref($candidate) eq 'HASH'
+            && ($candidate->{type} // '') ne 'sharedlvmthin'
+            && defined($candidate->{vgname})
+            && $candidate->{vgname} eq $vg;
+    } keys %$ids;
+    die "shared VG '$vg' is also referenced by non-SharedLvmThin storage '"
+        . join("', '", @foreign_vg_references)
+        . "'; canonical mutation locking cannot be guaranteed\n"
+        if @foreign_vg_references;
+
+    my @aliases = sort grep {
+        my $candidate = $ids->{$_};
+        ref($candidate) eq 'HASH'
+            && ($candidate->{type} // '') eq 'sharedlvmthin'
+            && ($candidate->{'slt-vgname'} // '') eq $vg;
+    } keys %$ids;
+    return 1 if @aliases <= 1;
+    die "shared VG '$vg' has more than two SharedLvmThin aliases; supported same-VG "
+        . "coexistence is exactly one thin and one thick-generations alias\n"
+        if @aliases != 2;
+
+    my %mode;
+    my %identity;
+    my %reserve;
+    my %minimum_paths;
+    for my $alias (@aliases) {
+        my $candidate = $ids->{$alias};
+        die "same-VG alias '$alias' is not configured as shared storage\n"
+            if !$candidate->{shared};
+        my $allocation = $class->_allocation_mode($candidate);
+        die "shared VG '$vg' has duplicate '$allocation' allocation aliases\n"
+            if $mode{$allocation}++;
+        for my $field (qw(slt-expected-vg-uuid slt-expected-pv-uuid slt-expected-wwid)) {
+            my $value = $candidate->{$field};
+            die "same-VG alias '$alias' must pin '$field'\n"
+                if !defined($value) || $value eq '';
+            $identity{$field}->{lc($value)} = 1;
+        }
+        my $reserve_key = join('|',
+            $candidate->{'slt-vg-reserve-percent'} // '',
+            $candidate->{'slt-vg-reserve-gib'} // '',
+        );
+        $reserve{$reserve_key} = 1;
+        $minimum_paths{$candidate->{'slt-expected-min-paths'} // ''} = 1;
+    }
+    die "shared VG '$vg' requires exactly one thin and one thick-generations alias\n"
+        if !$mode{thin} || !$mode{'thick-generations'};
+    for my $field (sort keys %identity) {
+        die "same-VG aliases disagree on '$field'\n"
+            if keys(%{$identity{$field}}) != 1;
+    }
+    die "same-VG aliases must use identical protected VG reserve settings\n"
+        if keys(%reserve) != 1;
+    die "same-VG aliases must use the same expected minimum path count\n"
+        if keys(%minimum_paths) != 1;
+    return 1;
+}
+
 sub _with_vg_lock {
     my ($class, $storeid, $scfg, $code, $device) = @_;
     my $lockid = $class->_canonical_vg_lock_id($scfg);
@@ -876,6 +944,7 @@ sub _with_vg_lock {
         sub {
             $class->_verify_mutation_quorum($storeid, $scfg);
             $class->_verify_storage_identity($storeid, $scfg, $device);
+            $class->_verify_same_vg_alias_configuration($storeid, $scfg);
             return $code->();
         },
     );
@@ -1589,6 +1658,7 @@ sub activate_storage {
         if !defined($vgs->{$vg});
 
     $class->_verify_storage_identity($storeid, $scfg);
+    $class->_verify_same_vg_alias_configuration($storeid, $scfg);
 
     return 1;
 }

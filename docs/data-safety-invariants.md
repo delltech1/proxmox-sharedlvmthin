@@ -64,3 +64,5 @@ allocation mode. Unpinned legacy storage aliases are not qualified for
 same-VG mixed-mode operation. A pinned thin mutation also proves that no
 global Thick Generations VG intent is open while holding that lock; an
 unresolved intent blocks the thin callback before its first mutation.
+The same VG must not be exposed concurrently through a native PVE `lvm` or
+`lvmthin` storage definition that cannot participate in this lock domain.

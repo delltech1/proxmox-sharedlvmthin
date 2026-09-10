@@ -139,6 +139,9 @@ if ($pool =~ /^sltp-\d+$/) {
                 PVE::Storage::Custom::SharedLvmThinPlugin->_verify_storage_identity(
                     $storeid, $scfg,
                 );
+                PVE::Storage::Custom::SharedLvmThinPlugin->_verify_same_vg_alias_configuration(
+                    $storeid, $scfg,
+                );
 
                 my ($locked_tags, $locked_attr, $locked_health, $locked_check_needed) = read_fields(
                     ['/sbin/lvs', '--noheadings', '--separator', '|', '-o', 'lv_tags,lv_attr,lv_health_status,lv_check_needed', "$vg/$pool"],
