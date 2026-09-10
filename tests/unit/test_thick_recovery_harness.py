@@ -13,6 +13,7 @@ FAULT_DRIVER = ROOT / "experiments/thick-generations/fault-driver.pl"
 PREPARE_RECOVERY = ROOT / "experiments/thick-generations/recover-prepare-incomplete.pl"
 UNRECORDED_RECOVERY = ROOT / "experiments/thick-generations/recover-unrecorded-prepare.pl"
 PRIOR_RECOVERY = ROOT / "experiments/thick-generations/recover-prepared-from-prior-evidence.pl"
+COEXISTENCE = ROOT / "experiments/thick-generations/same-vg-coexistence-qualification.sh"
 
 
 class ThickRecoveryHarnessTests(unittest.TestCase):
@@ -135,6 +136,22 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertLess(anchor_update, cleanup)
         self.assertLess(cleanup, clear)
         self.assertNotIn("wipefs", source)
+
+    def test_same_vg_coexistence_driver_is_disposable_and_fail_closed(self):
+        source = COEXISTENCE.read_text(encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "-n", str(COEXISTENCE)], capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("I_ACCEPT_DESTRUCTIVE_DISPOSABLE_TEST", source)
+        self.assertIn("_verify_same_vg_alias_configuration", source)
+        self.assertIn("SAME_VG_CANONICAL_LOCK_CONTENTION=PASS", source)
+        self.assertIn('--devices "$device"', source)
+        self.assertIn("INVENTORY_ISOLATION=PASS", source)
+        self.assertIn("PVE_SNAPSHOT_RESIZE_ROLLBACK_DELETE=PASS", source)
+        self.assertIn("VG_FREE_BYTES_AFTER_COMPLETE_LIFECYCLE_DELTA=0", source)
+        self.assertNotIn("trap ", source)
+        self.assertNotIn("--force", source)
 
 
 if __name__ == "__main__":

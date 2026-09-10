@@ -1598,6 +1598,19 @@ SAME_VG_FOREIGN_PVE_LVM_ALIAS_REJECTED=PASS
 SAME_VG_LIVE_COEXISTENCE=OPEN
 ```
 
+The disposable live matrix is encoded in
+`experiments/thick-generations/same-vg-coexistence-qualification.sh`. It
+validates the canonical pair before mutation, stabilizes the LVM-owned metadata
+spare before its free-space baseline, exercises both aliases through PVE
+allocation, inventory, snapshot, resize, rollback, deletion, and exact cleanup,
+and refuses automatic cleanup after any unexpected failure so evidence remains
+available.
+
+```ini
+SAME_VG_LIVE_DRIVER_STATIC_GATE=PASS
+SAME_VG_LIVE_DRIVER_EXECUTION=OPEN
+```
+
 All direct LVM lifecycle commands for Thick Generations allocation,
 activation, deactivation, resize, snapshot transition, delete, and recovery
 are now restricted to the pinned multipath mapper with per-command
