@@ -2494,3 +2494,49 @@ POST_REBOOT_STORAGE_IDENTITY=PASS_BOTH_MODES
 POST_REBOOT_RECOVERY_GATES=PASS_BOTH_MODES
 POST_REBOOT_MIXED_GUEST_HASHES=PASS
 ```
+
+## Native Thin snapshot callback host loss and exact recovery
+
+A stopped disposable guest with twelve one GiB Thin disks was snapshot on a
+worker node. A private fault watcher stopped the PVE snapshot process as soon
+as its first live `lvcreate` child appeared, and the worker node was reset. The
+cluster configuration retained `lock: snapshot` and a snapshot section in
+`snapstate: prepare` for all twelve disks, while only nine corresponding
+snapshot LVs existed. All twelve base disks remained present.
+
+This fault exposed a P0 recovery-check gap: the original Thin reference check
+proved only that canonical base disks had PVE references and incorrectly
+returned `HEALTHY`. The checker now constructs the exact set of snapshot pairs
+declared in all cluster VM and container configuration files and compares it
+with the snapshot LV inventory of each owned per-VM pool. It fails closed on a
+missing, excess, malformed or wrong-pool snapshot object and excludes only disk
+entries explicitly marked `snapshot=0`. Configuration-section state is reset at
+every file boundary so duplicate cluster views cannot create cross-file false
+references.
+
+On the preserved fault state the corrected gate reported exactly the three
+missing objects and returned `RECOVERY_REQUIRED`. The first supported delete
+attempt correctly refused the stale PVE snapshot lock without changing data.
+After positively proving that the guest was stopped, the lock was exactly
+`snapshot`, and the target section was exactly `snapstate: prepare`, the manual
+recovery used `qm unlock` followed by `qm delsnapshot --force`. PVE removed the
+nine existing snapshot LVs, reported the three absent objects, removed the
+stale section and lock, and preserved all twelve base disks. The first 64 MiB
+canary of disk zero had the same SHA-256 before and after recovery. No snapshot
+LV for the transaction remained and the corrected gate returned `HEALTHY`.
+
+```ini
+THIN_SNAPSHOT_CALLBACK_LIVE_CHILD_FAULT=PASS
+THIN_SNAPSHOT_PARTIAL_INVENTORY_REPRODUCED=PASS_9_OF_12
+THIN_SNAPSHOT_MISSING_OBJECT_GATE=PASS_3_EXACT
+THIN_SNAPSHOT_FALSE_HEALTHY_DEFECT=FIXED
+THIN_SNAPSHOT_STALE_LOCK_REFUSAL=PASS
+THIN_SNAPSHOT_MANUAL_RECOVERY_PRECONDITIONS=PASS
+THIN_SNAPSHOT_EXACT_PARTIAL_CLEANUP=PASS
+THIN_SNAPSHOT_BASE_DISKS_PRESERVED=PASS_12_OF_12
+THIN_SNAPSHOT_SOURCE_CANARY_SHA256=PASS
+THIN_SNAPSHOT_POST_RECOVERY_GATE=PASS
+POST_FIX_PYTHON_REGRESSION=137/137_PASS
+POST_FIX_PERL_REGRESSION=235/235_PASS
+AUTOMATIC_PARTIAL_SNAPSHOT_CLEANUP=NO
+```

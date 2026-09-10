@@ -142,6 +142,45 @@ def pve_reference_files(sid, vol):
     return references
 
 
+def pve_snapshot_references(sid):
+    """Return exact (base volume, snapshot) pairs declared by PVE configs."""
+    paths = set()
+    for pattern in (
+        "/etc/pve/nodes/*/qemu-server/*.conf",
+        "/etc/pve/nodes/*/lxc/*.conf",
+        "/etc/pve/qemu-server/*.conf",
+        "/etc/pve/lxc/*.conf",
+    ):
+        paths.update(glob.glob(pattern))
+    references = set()
+    section_re = re.compile(r"^\[([A-Za-z0-9][A-Za-z0-9_.-]*)\]\s*$")
+    volume_re = re.compile(
+        rf"(?:^|\s){re.escape(sid)}:(vm-\d+-disk-\d+)(?:,|\s|$)"
+    )
+    for path in sorted(paths):
+        # A section never crosses a PVE configuration-file boundary.
+        section = None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        except OSError as exc:
+            raise RuntimeError(f"cannot read PVE reference file '{path}': {exc}") from exc
+        for line in lines:
+            header = section_re.fullmatch(line.strip())
+            if header:
+                section = header.group(1)
+                continue
+            if line.lstrip().startswith("["):
+                section = None
+                continue
+            if section is None or re.search(r"(?:^|,)snapshot=0(?:,|$)", line):
+                continue
+            match = volume_re.search(line)
+            if match:
+                references.add((match.group(1), section))
+    return references
+
+
 def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None):
     """Fail closed on every Thick Generations anchor owned by this storage."""
     anchors = []
@@ -290,8 +329,9 @@ def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None):
     return (not failures), anchors, failures
 
 
-def thin_reference_health(pool_output, sid, reference_lookup):
-    """Require every owned per-VM thin disk to have an exact PVE reference."""
+def thin_reference_health(pool_output, sid, reference_lookup,
+                          snapshot_reference_lookup=None):
+    """Require exact agreement between owned thin LVs and PVE references."""
     rows = {}
     for line in pool_output.splitlines():
         fields = [x.strip() for x in line.split("|")]
@@ -299,6 +339,9 @@ def thin_reference_health(pool_output, sid, reference_lookup):
             rows[fields[0]] = fields
     failures = []
     pools = []
+    expected_snapshots = (
+        snapshot_reference_lookup(sid) if snapshot_reference_lookup else set()
+    )
     for name, fields in rows.items():
         match = re.fullmatch(r"sltp-(\d+)", name)
         if not match or f"pve-slt-sid-{sid}" not in fields[4].split(","):
@@ -317,6 +360,34 @@ def thin_reference_health(pool_output, sid, reference_lookup):
         for disk in disks:
             if not reference_lookup(sid, disk):
                 failures.append(f"{disk} in {name} has no PVE reference")
+        owned_disks = set(disks)
+        actual_snapshots = set()
+        snapshot_prefix = re.compile(r"^snap_(vm-\d+-disk-\d+)_(.+)$")
+        for candidate, candidate_fields in rows.items():
+            if len(candidate_fields) < 6 or candidate_fields[5] != name:
+                continue
+            if not candidate.startswith("snap_"):
+                continue
+            snapshot_match = snapshot_prefix.fullmatch(candidate)
+            if (not snapshot_match
+                    or snapshot_match.group(1) not in owned_disks
+                    or not re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_.-]*", snapshot_match.group(2)
+                    )):
+                failures.append(f"{candidate} in {name} has a malformed snapshot identity")
+                continue
+            actual_snapshots.add(snapshot_match.groups())
+        expected_for_pool = {
+            pair for pair in expected_snapshots if pair[0] in owned_disks
+        }
+        for disk, snapshot in sorted(expected_for_pool - actual_snapshots):
+            failures.append(
+                f"snap_{disk}_{snapshot} is required by PVE but missing from {name}"
+            )
+        for disk, snapshot in sorted(actual_snapshots - expected_for_pool):
+            failures.append(
+                f"snap_{disk}_{snapshot} in {name} has no matching PVE snapshot reference"
+            )
     return (not failures), pools, failures
 
 
@@ -416,7 +487,8 @@ def main(argv=None):
         details.append("thin reference gate is not applicable")
     else:
         thin_ok, thin_pools, thin_failures = thin_reference_health(
-            evidence.get("POOL", {}).get("out", ""), sid, pve_reference_files
+            evidence.get("POOL", {}).get("out", ""), sid, pve_reference_files,
+            pve_snapshot_references,
         )
         results["THIN_REFERENCES_HEALTHY"] = "PASS" if thin_ok else "FAIL"
         details.append(f"owned_thin_pools={len(thin_pools)}")

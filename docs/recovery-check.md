@@ -9,7 +9,11 @@ sharedlvmthin recovery-check <storage-id>
 
 The selected storage must pin its expected VG UUID, PV UUID, multipath WWID
 and minimum path count. The command checks those values, owned thin-pool flags,
-bounded LVM/PVE probes, quorum and D-state evidence.
+bounded LVM/PVE probes, quorum and D-state evidence. For conventional Thin
+mode it also compares every PVE snapshot-section reference with the exact
+snapshot LV inventory in the corresponding owned per-VM pool. Missing,
+unreferenced, malformed or wrong-pool snapshot objects fail closed. Disk entries
+explicitly marked `snapshot=0` are excluded from the expected inventory.
 
 A healthy result ends with:
 
@@ -41,3 +45,14 @@ one outstanding probe and prevents monitoring from amplifying an incident.
 The command is strictly observational. It does not activate storage, rescan
 SCSI, reload multipath, restart services, clear state, repair metadata or run
 any LVM mutation.
+
+An interrupted native PVE Thin snapshot can leave `lock: snapshot`, a snapshot
+section in `snapstate: prepare`, and only a subset of the expected snapshot
+LVs. Do not clear this state merely because the base disks remain readable.
+First preserve evidence and require `recovery-check` to report the exact
+missing or excess objects. For a stopped disposable guest, the qualified manual
+recovery path is to verify those exact preconditions, use the supported
+`qm unlock <vmid>` command, and then run
+`qm delsnapshot <vmid> <snapshot> --force`. Re-run the read-only gate and verify
+the source data before permitting further mutation. This is an explicit admin
+recovery procedure, not automatic plugin behavior.

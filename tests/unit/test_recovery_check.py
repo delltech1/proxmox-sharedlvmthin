@@ -100,6 +100,77 @@ sharedlvmthin: two
             result = self.checker.settled_dstate_evidence(["testvg"])
         self.assertEqual(result, ("FAIL", sample[1], [], 0))
 
+    def test_pve_snapshot_reference_scan_is_section_scoped_and_deduplicated(self):
+        contents = (
+            "scsi0: test:vm-100-disk-0,size=1G\n"
+            "[snap-one]\n"
+            "scsi0: test:vm-100-disk-0,size=1G\n"
+            "scsi1: test:vm-100-disk-1,snapshot=0,size=1G\n"
+            "[snap.two]\n"
+            "scsi0: other:vm-100-disk-0,size=1G\n"
+        )
+        fake = mock.mock_open(read_data=contents)
+        with mock.patch.object(
+            self.checker.glob, "glob",
+            side_effect=lambda pattern: ["/etc/pve/nodes/n/qemu-server/100.conf"],
+        ), mock.patch("builtins.open", fake):
+            result = self.checker.pve_snapshot_references("test")
+        self.assertEqual(result, {("vm-100-disk-0", "snap-one")})
+
+    def test_pve_snapshot_section_never_leaks_into_the_next_config(self):
+        contents = {
+            "/a.conf": "[old-snapshot]\nscsi0: test:vm-100-disk-0,size=1G\n",
+            "/b.conf": "scsi0: test:vm-200-disk-0,size=1G\n",
+        }
+
+        def fake_open(path, **kwargs):
+            return StringIO(contents[path])
+
+        with mock.patch.object(
+            self.checker.glob, "glob", side_effect=lambda pattern: list(contents)
+        ), mock.patch("builtins.open", side_effect=fake_open):
+            result = self.checker.pve_snapshot_references("test")
+        self.assertEqual(result, {("vm-100-disk-0", "old-snapshot")})
+
+    def test_thin_snapshot_inventory_must_exactly_match_pve(self):
+        complete = (
+            "sltp-100|twi-aotz--|||pve-slt-sid-test|\n"
+            "vm-100-disk-0|Vwi-a-tz--||||sltp-100\n"
+            "snap_vm-100-disk-0_good|Vri---tz--||||sltp-100"
+        )
+        references = lambda sid, vol: ["config"]
+        expected = lambda sid: {("vm-100-disk-0", "good")}
+        healthy, _, failures = self.checker.thin_reference_health(
+            complete, "test", references, expected
+        )
+        self.assertTrue(healthy)
+        self.assertEqual(failures, [])
+
+        missing = complete.rsplit("\n", 1)[0]
+        healthy, _, failures = self.checker.thin_reference_health(
+            missing, "test", references, expected
+        )
+        self.assertFalse(healthy)
+        self.assertIn("required by PVE but missing", failures[0])
+
+        healthy, _, failures = self.checker.thin_reference_health(
+            complete, "test", references, lambda sid: set()
+        )
+        self.assertFalse(healthy)
+        self.assertIn("no matching PVE snapshot reference", failures[0])
+
+    def test_malformed_thin_snapshot_identity_fails_closed(self):
+        output = (
+            "sltp-100|twi-aotz--|||pve-slt-sid-test|\n"
+            "vm-100-disk-0|Vwi-a-tz--||||sltp-100\n"
+            "snap_not-a-canonical-disk_bad|Vri---tz--||||sltp-100"
+        )
+        healthy, _, failures = self.checker.thin_reference_health(
+            output, "test", lambda sid, vol: ["config"], lambda sid: set()
+        )
+        self.assertFalse(healthy)
+        self.assertIn("malformed snapshot identity", failures[0])
+
     def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
                  allocation_mode="thin", lvs_output=None, referenced=True):
         cfg = {
@@ -135,6 +206,7 @@ sharedlvmthin: two
              mock.patch.object(self.checker, "bounded_probe", side_effect=probe), \
              mock.patch.object(self.checker, "settled_dstate_evidence", return_value=(dstate, [], ["x"] if dstate == "UNKNOWN" else [], transient)), \
              mock.patch.object(self.checker, "pve_reference_files", return_value=["ref"] if referenced else []), \
+             mock.patch.object(self.checker, "pve_snapshot_references", return_value=set()), \
              mock.patch.object(self.checker.os.path, "exists", return_value=True), \
              redirect_stdout(StringIO()) as output:
             rc = self.checker.main(["test"])
