@@ -34,6 +34,12 @@ local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub {
     die "unexpected lvm_list_volumes call\n" if !@lvm_results;
     return shift @lvm_results;
 };
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+    my ($class, $vg, $device) = @_;
+    die "test expected an exact mapper device\n"
+        if !defined($device) || $device !~ m{^/dev/mapper/};
+    return PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+};
 local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
     my ($command, %options) = @_;
     push @commands, [@$command];
@@ -2042,8 +2048,8 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     };
     is($class->free_image($storeid, $cfg, $volname, 0), undef, 'exact thick delete completes');
     is_deeply([command_lines()], [
-        "/sbin/lvremove -f testvg/$head",
-        "/sbin/lvremove -f testvg/$anchor",
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
     ], 'only the exact head and anchor are removed');
     is_deeply(\@intent_events, ['OPEN', 'CLEAR'], 'intent brackets the verified delete');
 
@@ -2085,9 +2091,9 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
         'idle verified frontend is dismantled before cancelled-target cleanup');
     is_deeply([command_lines()], [
         "/sbin/dmsetup --verifyudev remove --retry " . PVE::SharedLvmThinThick::mapper_name($namespace, $volname),
-        "/sbin/lvchange -an testvg/$anchor testvg/$head",
-        "/sbin/lvremove -f testvg/$head",
-        "/sbin/lvremove -f testvg/$anchor",
+        "/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/$anchor testvg/$head",
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
     ], 'cancel cleanup removes only the idle frontend and exact owned objects');
     is_deeply(\@intent_events, ['OPEN', 'CLEAR'], 'cancel cleanup remains transaction-bracketed');
 
@@ -2164,7 +2170,7 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     is($class->volume_resize($cfg, $storeid, $volname, $new, 0, undef), undef,
         'offline grow completes');
     my @resize_commands = command_lines();
-    like($resize_commands[0], qr{^/sbin/lvextend -L ${new}B testvg/\Q$head\E$},
+    like($resize_commands[0], qr{^/sbin/lvextend --devices /dev/mapper/3600abcd -L ${new}B testvg/\Q$head\E$},
         'backing head is extended exactly once');
     like(join("\n", @resize_commands), qr{/usr/bin/dd if=/dev/zero},
         'new range is explicitly zero initialized');
@@ -2408,6 +2414,7 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {} };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
         return ($state, {}, 'anchor');
     };

@@ -213,6 +213,40 @@ class PackageSourceTests(unittest.TestCase):
                 f"{name} must serialize with same-VG thin and thick aliases",
             )
 
+    def test_thick_lvm_commands_are_scoped_to_the_pinned_mapper(self):
+        plugin = (
+            ROOT
+            / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        thick_lifecycle = (
+            "_thick_alloc_image",
+            "_thick_activate_volume",
+            "_thick_deactivate_volume",
+            "_thick_free_image",
+            "_thick_volume_resize",
+            "_thick_volume_snapshot",
+            "_thick_volume_snapshot_delete",
+            "_thick_recover_snapshot_delete",
+        )
+        checked = 0
+        for name in thick_lifecycle:
+            match = re.search(
+                rf"sub {name} \{{(?P<body>.*?)(?=\nsub )",
+                plugin,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(match, f"missing Thick Generations lifecycle {name}")
+            for command in re.findall(r"\[(.*?)\]", match.group("body"), re.DOTALL):
+                if not re.search(r"'/sbin/(?:lv|vg)(?:create|remove|extend|change|convert)'", command):
+                    continue
+                checked += 1
+                self.assertIn(
+                    "'--devices', $device",
+                    command,
+                    f"{name} contains a global LVM command: {command.strip()}",
+                )
+        self.assertGreater(checked, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

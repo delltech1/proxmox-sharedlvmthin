@@ -700,23 +700,26 @@ sub _thick_snapshot_name {
 sub _thick_activate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     $class->_verify_mutation_quorum($storeid, $scfg);
-    $class->_verify_storage_identity($storeid, $scfg);
+    $class->_verify_storage_identity($storeid, $scfg, $device);
+    my $lvs = $class->_thick_list_volumes_scoped($scfg->{'slt-vgname'}, $device);
     if (defined($snapname)) {
         my ($snapshot) = $class->_thick_find_snapshot(
-            $storeid, $scfg, $volname, $snapname,
+            $storeid, $scfg, $volname, $snapname, $lvs,
         );
         my $vg = $scfg->{'slt-vgname'};
-        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
-        $class->_verify_autoactivation_disabled($vg, $snapshot);
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
+        $class->_verify_autoactivation_disabled($vg, $snapshot, $device);
         run_command(
-            ['/sbin/lvchange', '-ay', '-K', "$vg/$snapshot"],
+            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$snapshot"],
             errmsg => "activating thick-generations snapshot '$vg/$snapshot' failed",
         );
-        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
         return 1;
     }
-    my ($state, undef, $anchor) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+    my ($state, undef, $anchor) =
+        $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
@@ -733,10 +736,11 @@ sub _thick_activate_volume {
     die "thick-generations volume '$storeid:$volname' is materializing and its exact frontend is missing; recovery required\n"
         if $state->{phase} ne 'MATERIALIZED';
     run_command(
-        ['/sbin/lvchange', '-ay', '-K', "$vg/$state->{head}", "$vg/$anchor"],
+        ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
+            "$vg/$state->{head}", "$vg/$anchor"],
         errmsg => "activating thick-generations state for '$vg/$volname' failed",
     );
-    $class->_verify_autoactivation_disabled($vg, $state->{head});
+    $class->_verify_autoactivation_disabled($vg, $state->{head}, $device);
     my $sectors = _command_lines(
         ['/sbin/blockdev', '--getsz', "/dev/$vg/$state->{head}"],
         "reading thick-generations head size '$vg/$state->{head}' failed",
@@ -756,20 +760,23 @@ sub _thick_activate_volume {
 sub _thick_deactivate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $lvs = $class->_thick_list_volumes_scoped($scfg->{'slt-vgname'}, $device);
     if (defined($snapname)) {
         my ($snapshot) = $class->_thick_find_snapshot(
-            $storeid, $scfg, $volname, $snapname,
+            $storeid, $scfg, $volname, $snapname, $lvs,
         );
         my $vg = $scfg->{'slt-vgname'};
-        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
         run_command(
-            ['/sbin/lvchange', '-an', "$vg/$snapshot"],
+            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
             errmsg => "deactivating thick-generations snapshot '$vg/$snapshot' failed",
         );
         return 1;
     }
-    $class->_verify_storage_identity($storeid, $scfg);
-    my ($state, undef, $anchor) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+    $class->_verify_storage_identity($storeid, $scfg, $device);
+    my ($state, undef, $anchor) =
+        $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
     my $vg = $scfg->{'slt-vgname'};
     my $mapper = mapper_name($class->_thick_namespace($scfg), $volname);
     if (_block_device_exists("/dev/mapper/$mapper")) {
@@ -795,7 +802,8 @@ sub _thick_deactivate_volume {
         );
     }
     run_command(
-        ['/sbin/lvchange', '-an', "$vg/$anchor", "$vg/$state->{head}"],
+        ['/sbin/lvchange', '--devices', $device, '-an',
+            "$vg/$anchor", "$vg/$state->{head}"],
         errmsg => "deactivating thick-generations state for '$vg/$volname' failed",
     );
     return 1;
@@ -1205,12 +1213,14 @@ sub _change_exact_tags {
 }
 
 sub _thick_verify_allocation_state {
-    my ($class, $storeid, $scfg, $volname, $tx, $phase, $generation) = @_;
+    my ($class, $storeid, $scfg, $volname, $tx, $phase, $generation, $device) = @_;
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $anchor = anchor_name($namespace, $volname);
     my $head = generation_name($namespace, $volname, $generation);
-    my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    my $lvs = defined($device)
+        ? $class->_thick_list_volumes_scoped($vg, $device)
+        : PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
     die "thick-generations allocation state is unavailable\n" if !$lvs->{$vg};
     die "thick-generations allocation object is incomplete\n"
         if !$lvs->{$vg}->{$anchor} || !$lvs->{$vg}->{$head};
@@ -1224,8 +1234,8 @@ sub _thick_verify_allocation_state {
         $lvs->{$vg}->{$head}->{tags} // '', sid => $storeid, vol => $volname,
         role => 'head', generation => $generation,
     );
-    $class->_verify_autoactivation_disabled($vg, $head);
-    $class->_verify_autoactivation_disabled($vg, $anchor);
+    $class->_verify_autoactivation_disabled($vg, $head, $device);
+    $class->_verify_autoactivation_disabled($vg, $anchor, $device);
     return ($state, $anchor, $head);
 }
 
@@ -1241,6 +1251,7 @@ sub _thick_alloc_image {
         if !defined($size) || $size !~ /^\d+$/ || $size < 1;
 
     my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my $namespace = $class->_thick_namespace($scfg);
     my $generation = 0;
     my $geometry = clone_geometry(int($size) * 1024);
@@ -1250,25 +1261,25 @@ sub _thick_alloc_image {
     my %intent;
 
     $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_no_vg_intent($vg);
+        $class->_require_no_vg_intent($vg, $device);
         $class->_thick_capacity_gate($storeid, $scfg, $size);
-        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $objects = $lvs->{$vg} // {};
         die "refusing thick-generations allocation: deterministic object already exists\n"
             if $objects->{$anchor} || $objects->{$head} || $objects->{$name};
-        my $before = $class->_vg_state_digest($vg);
+        my $before = $class->_vg_state_digest($vg, $device);
         %intent = (
             tx => $tx, state => 'OPEN', op => 'ALLOC', object => $anchor,
             before => $before,
         );
-        $class->_set_vg_intent($vg, %intent);
+        $class->_set_vg_intent($vg, %intent, _device => $device);
         run_command(
-            ['/sbin/lvcreate', '-L', "${size}K", '-n', $head,
+            ['/sbin/lvcreate', '--devices', $device, '-L', "${size}K", '-n', $head,
                 '--setactivationskip', 'y', $vg],
             errmsg => "creating thick generation '$vg/$head' failed",
         );
         run_command(
-            ['/sbin/lvcreate', '-L', '8M', '-n', $anchor,
+            ['/sbin/lvcreate', '--devices', $device, '-L', '8M', '-n', $anchor,
                 '--setactivationskip', 'y', $vg],
             errmsg => "creating thick generation anchor '$vg/$anchor' failed",
         );
@@ -1282,20 +1293,20 @@ sub _thick_alloc_image {
             region => $geometry->{region_sectors},
         );
         $class->_change_exact_tags($vg, $head, [], $head_tags,
-            "tagging thick generation '$vg/$head' failed");
+            "tagging thick generation '$vg/$head' failed", $device);
         $class->_change_exact_tags($vg, $anchor, [], $anchor_tags,
-            "tagging thick generation anchor '$vg/$anchor' failed");
-        $class->_disable_and_verify_autoactivation($vg, $head);
-        $class->_disable_and_verify_autoactivation($vg, $anchor);
+            "tagging thick generation anchor '$vg/$anchor' failed", $device);
+        $class->_disable_and_verify_autoactivation($vg, $head, $device);
+        $class->_disable_and_verify_autoactivation($vg, $anchor, $device);
         $class->_thick_verify_allocation_state(
-            $storeid, $scfg, $name, $tx, 'PREPARED', $generation,
+            $storeid, $scfg, $name, $tx, 'PREPARED', $generation, $device,
         );
         return;
-    });
+    }, $device);
 
     eval {
         run_command(
-            ['/sbin/lvchange', '-ay', '-K', "$vg/$head"],
+            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$head"],
             errmsg => "activating new thick generation '$vg/$head' for zeroing failed",
         );
         my $zero_bytes = int($size) * 1024;
@@ -1310,7 +1321,7 @@ sub _thick_alloc_image {
             errmsg => "flushing new thick generation '$vg/$head' failed",
         );
         run_command(
-            ['/sbin/lvchange', '-an', "$vg/$head"],
+            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$head"],
             errmsg => "deactivating zeroed thick generation '$vg/$head' failed",
         );
     };
@@ -1322,9 +1333,9 @@ sub _thick_alloc_image {
     }
 
     $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_exact_vg_intent($vg, %intent);
+        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
         $class->_thick_verify_allocation_state(
-            $storeid, $scfg, $name, $tx, 'PREPARED', $generation,
+            $storeid, $scfg, $name, $tx, 'PREPARED', $generation, $device,
         );
         my $old_tags = PVE::SharedLvmThinThick::anchor_tags(
             sid => $storeid, vol => $name, phase => 'PREPARED', tx => $tx,
@@ -1339,13 +1350,13 @@ sub _thick_alloc_image {
             region => $geometry->{region_sectors},
         );
         $class->_change_exact_tags($vg, $anchor, $old_tags, $new_tags,
-            "committing materialized thick generation '$vg/$head' failed");
+            "committing materialized thick generation '$vg/$head' failed", $device);
         $class->_thick_verify_allocation_state(
-            $storeid, $scfg, $name, $tx, 'MATERIALIZED', $generation,
+            $storeid, $scfg, $name, $tx, 'MATERIALIZED', $generation, $device,
         );
-        $class->_clear_vg_intent($vg, %intent);
+        $class->_clear_vg_intent($vg, %intent, _device => $device);
         return;
-    });
+    }, $device);
     return $name;
 }
 
@@ -2886,12 +2897,13 @@ sub _thick_free_image {
     $class->_require_thick_identity_config($storeid, $scfg);
 
     my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
 
     return $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_no_vg_intent($vg);
-        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        $class->_require_no_vg_intent($vg, $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         die "thick-generations storage '$storeid' is unavailable: VG '$vg' is not visible\n"
             if !$lvs->{$vg};
 
@@ -2907,8 +2919,8 @@ sub _thick_free_image {
             $lvs->{$vg}->{$head}->{tags} // '', sid => $storeid, vol => $volname,
             role => 'head', generation => $state->{generation},
         );
-        $class->_verify_autoactivation_disabled($vg, $head);
-        $class->_verify_autoactivation_disabled($vg, $anchor);
+        $class->_verify_autoactivation_disabled($vg, $head, $device);
+        $class->_verify_autoactivation_disabled($vg, $anchor, $device);
 
         # PVE can call free_image() directly after cancelling a storage mirror
         # without first calling deactivate_volume().  The stable frontend is
@@ -2933,7 +2945,7 @@ sub _thick_free_image {
             die "refusing thick-generations delete: frontend '$mapper' removal is unconfirmed\n"
                 if _block_device_exists("/dev/mapper/$mapper");
             run_command(
-                ['/sbin/lvchange', '-an', "$vg/$anchor", "$vg/$head"],
+                ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$anchor", "$vg/$head"],
                 errmsg => "deactivating thick-generations state for '$vg/$volname' before delete failed",
             );
         }
@@ -2941,25 +2953,25 @@ sub _thick_free_image {
         my $tx = $class->_new_transaction_id();
         my %intent = (
             tx => $tx, state => 'OPEN', op => 'REMOVE', object => $anchor,
-            before => $class->_vg_state_digest($vg),
+            before => $class->_vg_state_digest($vg, $device),
         );
-        $class->_set_vg_intent($vg, %intent);
+        $class->_set_vg_intent($vg, %intent, _device => $device);
 
         my $command_error = '';
         eval {
             run_command(
-                ['/sbin/lvremove', '-f', "$vg/$head"],
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$head"],
                 errmsg => "removing thick generation '$vg/$head' failed",
             );
             run_command(
-                ['/sbin/lvremove', '-f', "$vg/$anchor"],
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$anchor"],
                 errmsg => "removing thick generation anchor '$vg/$anchor' failed",
             );
         };
         $command_error = $@ if $@;
 
-        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
-        eval { $class->_verify_storage_identity($storeid, $scfg); };
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
+        eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
         die "PARTIAL DELETE for '$storeid:$volname': storage identity/availability "
             . "could not be revalidated; OPEN REMOVE intent preserved and no retry attempted: $@"
             if $@;
@@ -2976,9 +2988,9 @@ sub _thick_free_image {
             . "proves both owned objects absent; treating operation as completed without retry: "
             . $command_error
             if $command_error;
-        $class->_clear_vg_intent($vg, %intent);
+        $class->_clear_vg_intent($vg, %intent, _device => $device);
         return undef;
-    });
+    }, $device);
 }
 
 sub free_image {
@@ -3131,13 +3143,14 @@ sub _thick_volume_resize {
     $class->_require_thick_identity_config($storeid, $scfg);
 
     my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
     my %resize;
 
     $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_no_vg_intent($vg);
-        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        $class->_require_no_vg_intent($vg, $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my ($state, $head_info, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
         my $head = $state->{head};
@@ -3161,23 +3174,23 @@ sub _thick_volume_resize {
         my $tx = $class->_new_transaction_id();
         my %intent = (
             tx => $tx, state => 'OPEN', op => 'EXTEND', object => $anchor,
-            before => $class->_vg_state_digest($vg),
+            before => $class->_vg_state_digest($vg, $device),
         );
-        $class->_set_vg_intent($vg, %intent);
+        $class->_set_vg_intent($vg, %intent, _device => $device);
 
         my $extend_error = '';
         eval {
             run_command(
-                ['/sbin/lvextend', '-L', "${size}B", "$vg/$head"],
+                ['/sbin/lvextend', '--devices', $device, '-L', "${size}B", "$vg/$head"],
                 errmsg => "extending thick generation '$vg/$head' failed",
             );
         };
         $extend_error = $@ if $@;
-        eval { $class->_verify_storage_identity($storeid, $scfg); };
+        eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
         die "PARTIAL RESIZE for '$storeid:$volname': storage identity/availability "
             . "could not be revalidated; OPEN EXTEND intent preserved: $@"
             if $@;
-        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
         my ($after_state, $after_head) =
             $class->_thick_anchor($storeid, $scfg, $volname, $after);
         die "PARTIAL RESIZE for '$storeid:$volname': authoritative head changed; "
@@ -3200,13 +3213,13 @@ sub _thick_volume_resize {
             frontend => $frontend,
         );
         return;
-    });
+    }, $device);
     return if !%resize;
 
     my $zero_error = '';
     eval {
         run_command(
-            ['/sbin/lvchange', '-ay', '-K', "$vg/$resize{head}"],
+            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$resize{head}"],
             errmsg => "activating extended thick generation '$vg/$resize{head}' failed",
         ) if !$resize{frontend};
         my $length = $resize{new_size} - $resize{old_size};
@@ -3221,7 +3234,7 @@ sub _thick_volume_resize {
             errmsg => "flushing extended thick generation '$vg/$resize{head}' failed",
         );
         run_command(
-            ['/sbin/lvchange', '-an', "$vg/$resize{head}"],
+            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$resize{head}"],
             errmsg => "deactivating extended thick generation '$vg/$resize{head}' failed",
         ) if !$resize{frontend};
     };
@@ -3232,8 +3245,8 @@ sub _thick_volume_resize {
 
     $class->_with_vg_lock($storeid, $scfg, sub {
         my %intent = %{$resize{intent}};
-        $class->_require_exact_vg_intent($vg, %intent);
-        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my ($state, $head_info) = $class->_thick_anchor(
             $storeid, $scfg, $volname, $lvs,
         );
@@ -3242,7 +3255,7 @@ sub _thick_volume_resize {
             if $state->{head} ne $resize{head}
             || !defined($head_info->{lv_size})
             || $head_info->{lv_size} != $resize{new_size};
-        $class->_verify_autoactivation_disabled($vg, $resize{head});
+        $class->_verify_autoactivation_disabled($vg, $resize{head}, $device);
 
         my $frontend_now = _block_device_exists("/dev/mapper/$mapper") ? 1 : 0;
         die "PARTIAL RESIZE for '$storeid:$volname': frontend presence changed; "
@@ -3279,9 +3292,9 @@ sub _thick_volume_resize {
                 $scfg, $volname, $resize{head}, $new_sectors,
             );
         }
-        $class->_clear_vg_intent($vg, %intent);
+        $class->_clear_vg_intent($vg, %intent, _device => $device);
         return;
-    });
+    }, $device);
     return;
 }
 

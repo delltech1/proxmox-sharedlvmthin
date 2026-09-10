@@ -1597,3 +1597,15 @@ SAME_VG_INVENTORY_ISOLATION_UNIT=PASS
 SAME_VG_FOREIGN_PVE_LVM_ALIAS_REJECTED=PASS
 SAME_VG_LIVE_COEXISTENCE=OPEN
 ```
+
+All direct LVM lifecycle commands for Thick Generations allocation,
+activation, deactivation, resize, snapshot transition, delete, and recovery
+are now restricted to the pinned multipath mapper with per-command
+`--devices`. Unit and source gates reject a reintroduction of a global LVM
+mutation into those paths. Live qualification remains open.
+
+```ini
+THICK_LIFECYCLE_DEVICE_SCOPE_IMPLEMENTATION=PASS
+THICK_LIFECYCLE_DEVICE_SCOPE_UNIT_GATE=PASS
+THICK_LIFECYCLE_DEVICE_SCOPE_LIVE=OPEN
+```
