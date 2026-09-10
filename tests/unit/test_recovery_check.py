@@ -1,5 +1,7 @@
 import importlib.machinery
 import importlib.util
+import hashlib
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -98,13 +100,15 @@ sharedlvmthin: two
             result = self.checker.settled_dstate_evidence(["testvg"])
         self.assertEqual(result, ("FAIL", sample[1], [], 0))
 
-    def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0):
+    def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
+                 allocation_mode="thin", lvs_output=None):
         cfg = {
             "slt-vgname": "testvg",
             "slt-expected-vg-uuid": "vg-uuid",
             "slt-expected-pv-uuid": "pv-uuid",
             "slt-expected-wwid": "3600abcd",
             "slt-expected-min-paths": "2",
+            "slt-allocation-mode": allocation_mode,
         }
 
         def probe(command):
@@ -115,7 +119,7 @@ sharedlvmthin: two
             elif command[0].endswith("pvs"):
                 out = f"pv-uuid|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
-                out = "sltp-100|twi-aotz--|||pve-slt-sid-test"
+                out = lvs_output or "sltp-100|twi-aotz--|||pve-slt-sid-test"
             elif command[0].endswith("pvesm"):
                 out = "test sharedlvmthin active 1 1 0 0%"
             elif command[0].endswith("multipath"):
@@ -156,6 +160,69 @@ sharedlvmthin: two
         self.assertEqual(rc, 2)
         self.assertIn("NO_RELEVANT_DSTATE=UNKNOWN", output)
         self.assertIn("STATE=RECOVERY_REQUIRED", output)
+
+    def test_interrupted_thick_anchor_blocks_mutation(self):
+        name, tags = self.anchor(
+            phase="HYDRATING", op="SNAPSHOT", snapshot="snap1",
+            source="old", old="old", new="new", head="new", generation="2",
+        )
+        output = f"{name}|-wi------k|||{tags}"
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("THICK_ANCHORS_HEALTHY=FAIL", text)
+        self.assertIn("phase=HYDRATING", text)
+        self.assertIn("SAFE_FOR_MUTATION=NO", text)
+
+    def test_materialized_thick_anchor_allows_other_positive_evidence(self):
+        name, tags = self.anchor()
+        output = f"{name}|-wi------k|||{tags}"
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("THICK_ANCHORS_HEALTHY=PASS", text)
+        self.assertIn("SAFE_FOR_MUTATION=YES", text)
+
+    @staticmethod
+    def anchor(**updates):
+        values = {
+            "v": "5", "sid": "test", "vol": "vm-100-disk-0",
+            "phase": "MATERIALIZED", "tx": "0123456789abcdef0123456789abcdef",
+            "op": "ALLOC", "snapshot": "none", "source": "head", "old": "head",
+            "new": "head", "head": "head", "generation": "1", "region": "8",
+        }
+        values.update(updates)
+        order = ("v", "sid", "vol", "phase", "tx", "op", "snapshot", "source",
+                 "old", "new", "head", "generation", "region")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        tags = ",".join([*(f"slt_tg_{key}={values[key]}" for key in order),
+                         f"slt_tg_sha256={digest}"])
+        name = "sltg-a-" + hashlib.sha256(
+            ("vg-uuid" + "\0" + values["vol"]).encode()
+        ).hexdigest()[:24]
+        return name, tags
+
+    def test_materialized_anchor_with_tampered_digest_fails_closed(self):
+        name, tags = self.anchor()
+        tags = re.sub(r"slt_tg_sha256=[0-9a-f]+", "slt_tg_sha256=" + "0" * 32, tags)
+        rc, text = self.run_main(
+            allocation_mode="thick-generations",
+            lvs_output=f"{name}|-wi------k|||{tags}",
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("anchor digest mismatch", text)
+
+    def test_materialized_anchor_with_wrong_identity_name_fails_closed(self):
+        _name, tags = self.anchor()
+        rc, text = self.run_main(
+            allocation_mode="thick-generations",
+            lvs_output=f"sltg-a-{'f' * 24}|-wi------k|||{tags}",
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("name does not match", text)
 
 
 if __name__ == "__main__":

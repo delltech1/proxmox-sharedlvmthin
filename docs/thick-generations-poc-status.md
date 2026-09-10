@@ -2070,6 +2070,75 @@ ISCSI_THICK_ONLY_POST_RECOVERY_SNAPSHOT=PASS
 ISCSI_THICK_ONLY_POST_RECOVERY_LINEAR_PIVOT=PASS
 ISCSI_THICK_ONLY_POST_RECOVERY_DELETE=PASS
 ISCSI_THICK_ONLY_TOTAL_PATH_LOSS=PASS_BOUNDED_LAB_POLICY
-ISCSI_HYDRATING_TOTAL_PATH_LOSS=OPEN
+ISCSI_HYDRATING_TOTAL_PATH_LOSS=FAIL_HOST_DM_CLONE
 PVE_PREMATURE_SNAPSHOT_DELETE_LOCK=OBSERVED
+```
+
+## Active dm-clone short total-path-loss failure and explicit recovery
+
+A separate run isolated two actively hydrating Thick Generations disks on a
+node with no active thin-pool target. Both iSCSI target interfaces were disabled
+only after the same independent twenty-second auto-restore timer had been
+armed. The original iSCSI sessions and path devices returned, but the active
+dm-clone transactions did not recover. Two kernel workers remained persistently
+blocked in `dm_bufio_write_dirty_buffers -> dm_bm_flush -> dm_tm_pre_commit ->
+dm_clone_metadata_commit -> commit_metadata -> do_worker`. Bounded `vgs` and
+`dmsetup status` probes also blocked in the dm-clone metadata path.
+
+A normal host reboot could not complete. After evidence was copied off-host and
+the other two cluster nodes were confirmed quorate, only the affected disposable
+node was forcibly rebooted. Persistent anchors then classified both disks as
+`HYDRATING` with their exact transaction identity and no worker. No transition
+was resumed automatically.
+
+The incident exposed a recovery-check defect: the original read-only checker
+accepted healthy paths and identity while ignoring non-materialized Thick
+Generations anchors. The checker now validates every anchor in the pinned VG,
+including its deterministic VG-UUID-derived name, storage ownership, complete
+canonical schema, digest, generation, region geometry, operation semantics and
+materialized HEAD relationship. Any non-materialized, malformed, foreign or
+internally inconsistent anchor produces `THICK_ANCHORS_HEALTHY=FAIL`,
+`STATE=RECOVERY_REQUIRED` and `SAFE_FOR_MUTATION=NO`. The complete Python and
+Perl regression suites passed, and the preserved live incident proved that only
+the two interrupted anchors failed while six canonical materialized anchors
+passed.
+
+Each disk was then resumed explicitly from its original signed transaction.
+Both reconstructed the persistent clone, completed hydration, pivoted to a
+destination-only linear frontend and removed only their exact transition
+metadata LV. The recovery gate then returned healthy. The guest booted, ext4
+journal recovery completed, the secondary filesystem passed a read-only
+`e2fsck`, and new durable writes retained identical SHA-256 values across a
+flush and reopen. Online migration from the API 14 recovery node to an API 15
+node completed, and the existing conventional thin disk was reattached without
+recreation. The recovered snapshot was subsequently deleted; only its two exact
+immutable source generations were removed and both anchors remained canonical.
+
+The original workload manifest cannot be used as a cryptographic post-crash
+oracle. Its shell redirection truncated each checksum file before writing, and
+the forced host reset left the fixed-size files zero-filled. The payloads remain
+readable, but the test therefore records filesystem and lifecycle recovery, not
+a pre-fault payload SHA pass. The private fault workload was corrected to write
+and fsync a temporary manifest, atomically rename it, fsync the directory and
+log the digest independently before future destructive runs.
+
+```ini
+ISCSI_HYDRATING_FAULT_ACTIVE_THIN_POOL=NO
+ISCSI_HYDRATING_TARGET_INTERFACE_OUTAGE_SECONDS=20
+DM_CLONE_PERSISTENT_DSTATE=FAIL_HOST_DM_CLONE
+NORMAL_HOST_REBOOT=BLOCKED
+FORCED_HOST_REBOOT_REQUIRED=YES
+POST_REBOOT_AUTOMATIC_RESUME=NO
+POST_REBOOT_ANCHOR_CLASSIFICATION=RECOVERY_REQUIRED
+RECOVERY_CHECK_NON_MATERIALIZED_ANCHOR_GATE=PASS
+EXPLICIT_EXACT_TRANSACTION_RESUME=PASS
+POST_RESUME_LINEAR_DEPENDENCY=PASS
+POST_RESUME_TRANSITION_METADATA_CLEANUP=PASS
+POST_RESUME_FILESYSTEM_RECOVERY=PASS
+POST_RESUME_NEW_WRITE_SHA256=PASS
+PRE_FAULT_PAYLOAD_SHA256=NOT_PROVEN_TEST_ORACLE_INVALID
+POST_RECOVERY_API14_TO_API15_LIVE_MIGRATION=PASS
+POST_RECOVERY_THIN_REATTACH=PASS
+POST_RECOVERY_SNAPSHOT_DELETE=PASS
+ISCSI_HYDRATING_TOTAL_PATH_LOSS=FAIL_HOST_DM_CLONE
 ```

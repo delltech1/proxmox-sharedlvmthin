@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import hashlib
 
 
 PROBE_TIMEOUT = 10
@@ -117,6 +118,97 @@ def clean(value):
     return str(value or "").strip()
 
 
+def thick_anchor_health(pool_output, sid, namespace):
+    """Fail closed on every Thick Generations anchor owned by this storage."""
+    anchors = []
+    failures = []
+    canonical_fields = (
+        "v", "sid", "vol", "phase", "tx", "op", "snapshot", "source",
+        "old", "new", "head", "generation", "region",
+    )
+    required = {f"slt_tg_{field}" for field in canonical_fields} | {"slt_tg_sha256"}
+    token = re.compile(r"[A-Za-z0-9_.+-]+")
+    for line in pool_output.splitlines():
+        fields = [x.strip() for x in line.split("|")]
+        if len(fields) < 5 or not re.fullmatch(r"sltg-a-[0-9a-f]{24}", fields[0]):
+            continue
+        tags = {}
+        malformed = False
+        for raw in fields[4].split(","):
+            if not raw.startswith("slt_tg_"):
+                continue
+            if "=" not in raw:
+                malformed = True
+                continue
+            key, value = raw.split("=", 1)
+            if key in tags:
+                malformed = True
+            tags[key] = value
+        # A Thick storage alias is the sole owner of sltg-a-* anchors in its
+        # pinned VG. Missing or foreign ownership is therefore ambiguous.
+        anchors.append(fields[0])
+        missing = sorted(required - set(tags))
+        unknown = sorted(set(tags) - required)
+        if malformed or missing or unknown or len(tags) != len(required):
+            failures.append(
+                f"{fields[0]} malformed anchor tags"
+                + (f" missing={','.join(missing)}" if missing else "")
+                + (f" unknown={','.join(unknown)}" if unknown else "")
+            )
+            continue
+        values = {field: tags[f"slt_tg_{field}"] for field in canonical_fields}
+        if any(not token.fullmatch(value) for value in values.values()):
+            failures.append(f"{fields[0]} contains a non-canonical tag value")
+            continue
+        if tags.get("slt_tg_sid") != sid:
+            failures.append(f"{fields[0]} ownership does not match storage")
+            continue
+        expected_name = "sltg-a-" + hashlib.sha256(
+            (namespace.lower() + "\0" + values["vol"]).encode("utf-8")
+        ).hexdigest()[:24]
+        if fields[0] != expected_name:
+            failures.append(f"{fields[0]} name does not match storage and volume identity")
+            continue
+        canonical = "|".join(f"{field}={values[field]}" for field in canonical_fields)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+        if tags["slt_tg_sha256"] != digest:
+            failures.append(f"{fields[0]} anchor digest mismatch")
+            continue
+        if values["v"] != "5" or not re.fullmatch(r"[0-9a-f]{32}", values["tx"]):
+            failures.append(f"{fields[0]} unsupported version or transaction identity")
+            continue
+        if (not values["generation"].isdigit()
+                or int(values["generation"]) > 99_999_999):
+            failures.append(f"{fields[0]} invalid generation")
+            continue
+        if (not values["region"].isdigit()
+                or not 8 <= int(values["region"]) <= 2_097_152
+                or int(values["region"]) & (int(values["region"]) - 1)):
+            failures.append(f"{fields[0]} invalid dm-clone region")
+            continue
+        if values["phase"] != "MATERIALIZED":
+            failures.append(
+                f"{fields[0]} phase={values['phase'] or 'UNKNOWN'}"
+            )
+            continue
+        if values["head"] != values["new"]:
+            failures.append(f"{fields[0]} materialized HEAD is not the new generation")
+            continue
+        if values["op"] == "ALLOC":
+            if (values["snapshot"] != "none"
+                    or len({values[key] for key in ("source", "old", "new", "head")}) != 1):
+                failures.append(f"{fields[0]} invalid materialized allocation state")
+        elif values["op"] in {"SNAPSHOT", "ROLLBACK"}:
+            if (values["snapshot"] == "none" or values["old"] == values["new"]
+                    or values["source"] == values["new"]
+                    or (values["op"] == "SNAPSHOT" and values["source"] != values["old"])
+                    or (values["op"] == "ROLLBACK" and values["source"] == values["old"])):
+                failures.append(f"{fields[0]} invalid materialized {values['op'].lower()} state")
+        else:
+            failures.append(f"{fields[0]} unknown operation")
+    return (not failures), anchors, failures
+
+
 def main(argv=None):
     argv = argv or sys.argv[1:]
     if len(argv) != 1 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", argv[0]):
@@ -134,6 +226,7 @@ def main(argv=None):
     expected_pv = clean(cfg.get("slt-expected-pv-uuid"))
     expected_wwid = clean(cfg.get("slt-expected-wwid")).lower()
     expected_paths = clean(cfg.get("slt-expected-min-paths"))
+    allocation_mode = clean(cfg.get("slt-allocation-mode") or "thin")
     results = {}
     details = []
 
@@ -195,6 +288,17 @@ def main(argv=None):
     if owned_count == 0:
         details.append("no owned thin pool currently exists; pool-health gate is not applicable")
 
+    if allocation_mode == "thick-generations":
+        anchor_ok, anchors, anchor_failures = thick_anchor_health(
+            evidence.get("POOL", {}).get("out", ""), sid, expected_vg
+        )
+        results["THICK_ANCHORS_HEALTHY"] = "PASS" if anchor_ok else "FAIL"
+        details.append(f"thick_anchors={len(anchors)}")
+        details.extend(f"recovery-required: {item}" for item in anchor_failures)
+    else:
+        results["THICK_ANCHORS_HEALTHY"] = "PASS"
+        details.append("Thick Generations anchor gate is not applicable")
+
     pve_out = evidence.get("PVE", {}).get("out", "")
     results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
         rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
@@ -231,7 +335,7 @@ def main(argv=None):
         details.append(f"unscoped_dstate_tasks={len(unknown)}; positive storage attribution unavailable")
 
     ordered = ["PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
-               "POOL_FLAGS_HEALTHY", "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
+               "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
                "PVE_STORAGE_HEALTH", "QUORUM"]
     safe = all(results.get(name) == "PASS" for name in ordered)
     print(f"STORAGE_ID={sid}")
