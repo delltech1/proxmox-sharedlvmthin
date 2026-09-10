@@ -18,8 +18,9 @@ production feature and is not included in a public release.
   emulated high-throughput lab NICs with paravirtualized adapters. The guest
   remained online, quorum was retained, and the destination thin pool did not
   grow speculatively while its usage was unavailable.
-- A reverse thin-to-thick move was deliberately cancelled by the evidence
-  guard after a cluster-network warning. The source remained authoritative.
+- An initial reverse thin-to-thick move was deliberately cancelled by the
+  evidence guard after a cluster-network warning. The source remained
+  authoritative.
 - The cancellation exposed a cleanup gap: PVE can call `free_image()` without
   first deactivating an idle Thick Generations frontend. Cleanup now verifies
   the exact frontend identity and dependency graph, requires an unambiguous
@@ -29,8 +30,10 @@ production feature and is not included in a public release.
   corrected lifecycle path. The original thin source remained attached and
   running, the complete thick allocation was returned to its VG, quorum
   remained healthy, and no D-state process survived.
-- A complete 60 MiB/s reverse move is still an open qualification item. The
-  cancellation result proves safe abort and cleanup, not round-trip success.
+- After the nested datastore fault was isolated and its snapshot redo layers
+  were consolidated, the complete reverse move passed at 60 MiB/s. Later
+  mixed-mode qualification also completed online thin-to-thick and
+  thick-to-thin moves while preserving filesystem identity and data canaries.
 
 ## Restored historical evidence
 
@@ -928,8 +931,9 @@ multipath maps.
 
 This proves the normal asynchronous lifecycle, fail-closed concurrent mutation
 gate, and explicit cross-node recovery after complete source-host loss.
-Concurrent multi-disk and mixed thin/thick transactions are qualified below;
-automatic HA orchestration remains open qualification work.
+Concurrent multi-disk and mixed thin/thick transactions are qualified below.
+Native HA orchestration of the same failure class is qualified separately
+below.
 
 ```ini
 ONLINE_SNAPSHOT_CALLBACK=PASS
@@ -1208,6 +1212,64 @@ POST_HA_DSTATE=0
 POST_HA_QUORUM=3_OF_3
 ```
 
+## Native HA worker-host loss during materialization
+
+The mixed-mode Linux guest was enrolled as a native PVE HA resource and a
+bounded write-and-flush workload was started on its primary thick disk,
+secondary thick disk, and conventional thin disk. One native online snapshot
+then created two independent asynchronous Thick Generations transactions and
+one conventional thin snapshot. Both thick anchors were positively verified in
+the `HYDRATING` phase with distinct transaction identities and live
+transaction-scoped workers before fault injection.
+
+The complete worker node was then powered off without a guest shutdown. The two
+surviving cluster nodes retained quorum and an unrelated Windows guest remained
+running. Native PVE HA observed the node loss, waited for fencing ownership, and
+attempted recovery on surviving nodes. Each premature guest start failed closed
+because the signed non-materialized frontend was absent. No duplicate QEMU
+process was created, no storage object was deleted or repaired, and no identity
+was guessed.
+
+After fencing was acknowledged, both exact materialization transactions were
+reconstructed on a surviving node exclusively from their persistent anchors.
+They resumed independently, completed hydration, pivoted to destination-only
+linear frontends, and removed their exact transition artifacts. Only after both
+frontends were positively verified as materialized was the HA resource allowed
+to start. The guest booted with all three persistent filesystem identities and
+all three pre-fault data canaries intact.
+
+The failed node later rejoined automatically. The cluster returned to
+three-of-three membership, both storage modes were active on every node, and no
+relevant D-state process or materialization worker remained. Native snapshot
+deletion then removed the two exact immutable thick source generations and the
+exact conventional thin snapshot. A final live migration returned the guest to
+the intended node without copying shared storage and preserved all three data
+canaries.
+
+```ini
+HA_ACTIVE_MATERIALIZATION_WORKERS=2
+HA_MIXED_THIN_SNAPSHOT=PASS
+HA_COMPLETE_WORKER_NODE_LOSS=PASS
+HA_SURVIVOR_QUORUM=PASS
+HA_UNRELATED_GUEST_CONTINUITY=PASS
+HA_FENCING_ACKNOWLEDGED=PASS
+HA_PREMATURE_START_FAIL_CLOSED=PASS
+HA_DUPLICATE_QEMU=0
+HA_SPECULATIVE_STORAGE_MUTATIONS=0
+HA_CROSS_NODE_TRANSACTION_RECOVERY=2_OF_2
+HA_FINAL_FRONTENDS_LINEAR=2_OF_2
+HA_GUEST_RESTART_AFTER_RECOVERY=PASS
+HA_POST_RECOVERY_CANARIES=3_OF_3
+HA_FAILED_NODE_REJOIN=PASS
+HA_POST_REJOIN_QUORUM=3_OF_3
+HA_POST_REJOIN_STORAGES_ACTIVE=PASS
+HA_SNAPSHOT_DELETE_EXACT=PASS
+HA_FINAL_LIVE_MIGRATION=PASS
+HA_FINAL_CANARIES=3_OF_3
+HA_FINAL_DSTATE=0
+HA_FINAL_MATERIALIZATION_WORKERS=0
+```
+
 A second mixed-mode online snapshot was created while a bounded guest soak
 continuously overwrote and flushed fixed-size files on all three filesystems.
 Both asynchronous thick workers and the conventional thin snapshot coexisted
@@ -1289,6 +1351,5 @@ PHYSICAL_FC_ARRAY_QUALIFICATION=OPEN
    target that does not reproduce the Linux VN2VN/tcm_fc recovery deadlock.
 3. Complete a long-duration Windows data-integrity soak and interrupted
    Windows-operation recovery tests.
-4. Qualify native HA reaction to complete worker-host loss during active
-   hydration, followed by the already-qualified explicit recovery primitive,
-   and complete repeated mixed-mode transactions under a long soak.
+4. Repeat mixed-mode transactions under a long-duration soak with bounded
+   capacity monitoring and periodic cross-node read-only health probes.
