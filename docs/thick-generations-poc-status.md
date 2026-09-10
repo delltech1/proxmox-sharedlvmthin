@@ -970,7 +970,7 @@ SOURCE_NODE_REJOIN=PASS
 FINAL_QUORUM=3_OF_3
 FINAL_PATHS_PER_MAP=2_OF_2
 ASYNC_HOST_LOSS_RECOVERY=PASS
-ASYNC_MULTI_DISK_QUALIFICATION=OPEN
+ASYNC_MULTI_DISK_QUALIFICATION=PASS_SEE_CONCURRENT_GATE_BELOW
 ```
 
 ## Concurrent multi-disk materialization
@@ -1206,6 +1206,28 @@ HA_RESOURCE_REMOVAL=PASS
 POST_HA_VM_RUNNING=PASS
 POST_HA_DSTATE=0
 POST_HA_QUORUM=3_OF_3
+```
+
+A second mixed-mode online snapshot was created while a bounded guest soak
+continuously overwrote and flushed fixed-size files on all three filesystems.
+Both asynchronous thick workers and the conventional thin snapshot coexisted
+for more than ten minutes. The thin pool's increasing CoW allocation was
+observed explicitly and the workload was stopped before capacity risk could
+replace the intended lifecycle test. Both workers then completed successfully,
+both frontends returned to destination-only linear tables, every stable canary
+matched, and native snapshot deletion removed the two exact thick sources and
+the exact thin snapshot.
+
+```ini
+REPEATED_MIXED_ONLINE_SNAPSHOT=PASS
+REPEATED_MIXED_SNAPSHOT_UNDER_WRITE_SOAK=PASS
+REPEATED_MIXED_CONCURRENT_WORKERS=2
+THIN_COW_CAPACITY_OBSERVED=PASS
+SOAK_STOPPED_BEFORE_CAPACITY_RISK=PASS
+REPEATED_MIXED_MATERIALIZATION=PASS
+REPEATED_MIXED_CANARIES=3_OF_3
+REPEATED_MIXED_SNAPSHOT_DELETE_EXACT=PASS
+REPEATED_MIXED_DSTATE=0
 ```
 
 ## Open gates
