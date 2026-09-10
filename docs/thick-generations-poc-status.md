@@ -2623,3 +2623,27 @@ POST_REBOOT_RECOVERY_GATES=PASS_ALL_NODES
 INTERRUPTED_RUN_COUNTED_AS_PASS=NO
 DUAL_MODE_ENDURANCE_QUALIFICATION=OPEN
 ```
+
+## Post-interruption static safety regression
+
+Development continued without issuing storage mutations against the unstable
+test infrastructure. A production-source audit found no implicit PV/VG
+initialization, metadata repair, forced device-mapper removal, global udev
+settle, multipath-service restart or plugin-defined cluster-watchdog timeout in
+the Thick Generations runtime path. The destructive initialization commands in
+the tree remain confined to explicitly disposable, acknowledgement-gated
+Stage 1 experiments.
+
+The complete Python suite, the duplicate-probe integration harness and syntax
+validation of every shipped or experimental shell entry point were repeated.
+The private endurance harness separately proved that a changed Linux boot ID
+causes a prior run to be classified as incomplete rather than complete.
+
+```ini
+POST_INTERRUPTION_PYTHON_REGRESSION=137/137_PASS
+POST_INTERRUPTION_PROBE_GUARD=PASS
+POST_INTERRUPTION_SHELL_SYNTAX=16/16_PASS
+ENDURANCE_REBOOT_CLASSIFICATION=PASS
+AUTOMATIC_STORAGE_REPAIR_PATHS_FOUND=0
+PLUGIN_CLUSTER_WATCHDOG_ASSUMPTIONS_FOUND=0
+```
