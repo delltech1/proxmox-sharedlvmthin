@@ -3,6 +3,9 @@
 This document records experimental evidence only. Thick Generations is not a
 production feature and is not included in a public release.
 
+The concise requirement-by-requirement view is maintained in the
+[Thick Generations release gate](thick-generations-release-gate.md).
+
 ## Safety boundary
 
 - The public default remains `thin`.
