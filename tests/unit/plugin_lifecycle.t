@@ -2466,7 +2466,15 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
         'slt-expected-wwid' => '3600abcd',
         'slt-vg-reserve-gib' => 5,
     };
-    my $state = { head => $head, generation => 1 };
+    my $state = {
+        v => 5, sid => $storeid, vol => $volname,
+        phase => 'MATERIALIZED', tx => ('6' x 32), op => 'SNAPSHOT',
+        snapshot => 'snap1', source => $snapshot, old => $snapshot,
+        new => $head, head => $head, generation => 1, region => 8,
+    };
+    my $rebased = PVE::SharedLvmThinThick::materialized_rebase_state(
+        $state, ('7' x 32),
+    );
     my @inventory = (
         { testvg => { $snapshot => {}, $head => {}, anchor => {} } },
         { testvg => { $head => {}, anchor => {} } },
@@ -2479,7 +2487,11 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub { return ($state, {}, 'anchor') };
+    my $anchor_reads = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
+        $anchor_reads++;
+        return ($anchor_reads == 1 ? $state : $rebased, {}, 'anchor');
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_find_snapshot = sub { return ($snapshot, 0, {}) };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
@@ -2487,6 +2499,18 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { '8' x 32 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { push @events, 'OPEN'; 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub { push @events, 'CLEAR'; 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_change_exact_tags = sub {
+        my (undef, $seen_vg, $seen_anchor, $before, $after, undef, $device) = @_;
+        is($seen_vg, 'testvg', 'anchor rebase is scoped to the expected VG');
+        is($seen_anchor, 'anchor', 'anchor rebase targets the exact anchor');
+        is_deeply($before, PVE::SharedLvmThinThick::anchor_tags(%$state),
+            'anchor rebase verifies the complete precondition');
+        is_deeply($after, PVE::SharedLvmThinThick::anchor_tags(%$rebased),
+            'anchor rebase writes the canonical postcondition');
+        is($device, '/dev/mapper/3600abcd', 'anchor rebase is device-scoped');
+        push @events, 'REBASE';
+        return 1;
+    };
     local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { shift @inventory };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['0'] };
@@ -2494,19 +2518,38 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     is($class->volume_snapshot_delete($cfg, $storeid, $volname, 'snap1'), undef,
         'exact closed snapshot is deleted');
     is_deeply([command_lines()], [
-        '/sbin/lvchange -an testvg/sltg-g-key-00000000',
-        '/sbin/lvremove -f testvg/sltg-g-key-00000000',
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/sltg-g-key-00000000',
+        '/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/sltg-g-key-00000000',
     ], 'delete deactivates and removes only the signed snapshot generation');
-    is_deeply(\@events, [qw(OPEN CLEAR)], 'intent brackets the verified delete');
+    is_deeply(\@events, [qw(OPEN REBASE CLEAR)],
+        'intent brackets canonical rebase and the verified delete');
 
     reset_mocks();
     @inventory = ({ testvg => { $snapshot => {}, $head => {}, anchor => {} } });
     @events = ();
+    $anchor_reads = 0;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['1'] };
     eval { $class->volume_snapshot_delete($cfg, $storeid, $volname, 'snap1') };
     like($@, qr/refusing to delete open snapshot/, 'open snapshot is refused');
     is_deeply([command_lines()], [], 'open snapshot refusal performs no mutation');
     is_deeply(\@events, [], 'open snapshot refusal creates no intent');
+
+    reset_mocks();
+    @inventory = (
+        { testvg => { $snapshot => {}, $head => {}, anchor => {} } },
+        { testvg => { $snapshot => {}, $head => {}, anchor => {} } },
+    );
+    @events = ();
+    $anchor_reads = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    $command_failure = qr{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/sltg-g-key-00000000};
+    eval { $class->volume_snapshot_delete($cfg, $storeid, $volname, 'snap1') };
+    like($@, qr/PARTIAL SNAPSHOT DELETE.*exact object remains/s,
+        'delete failure after canonical rebase is classified as partial');
+    is_deeply(\@events, [qw(OPEN REBASE)],
+        'partial delete preserves the OPEN intent after the anchor rebase');
+    is(scalar(grep { m{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/sltg-g-key-00000000$} } command_lines()), 1,
+        'partial delete performs exactly one removal attempt');
 };
 
 subtest 'thick rollback refuses an open frontend before mutation' => sub {

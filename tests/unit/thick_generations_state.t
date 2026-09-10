@@ -8,7 +8,7 @@ use Test::More;
 use PVE::SharedLvmThinThick qw(
     anchor_tags decode_anchor_tags generation_tags validate_anchor_transition
     validate_generation_tags vg_intent_tags decode_vg_intent_tags clone_geometry
-    transition_tags validate_transition_tags
+    transition_tags validate_transition_tags materialized_rebase_state
     classify_recovery
 );
 
@@ -68,6 +68,18 @@ my $next_prepared = state(
 );
 ok(validate_anchor_transition($materialized, $next_prepared),
     'materialized object starts a fresh transaction with explicit recovery geometry');
+my $rebased = materialized_rebase_state($materialized, ('c' x 32));
+is($rebased->{phase}, 'MATERIALIZED', 'snapshot deletion rebase remains materialized');
+is($rebased->{tx}, ('c' x 32), 'snapshot deletion rebase uses its fresh intent transaction');
+is($rebased->{op}, 'ALLOC', 'snapshot deletion rebase returns to canonical operation');
+is($rebased->{snapshot}, 'none', 'snapshot deletion rebase removes historical snapshot identity');
+is($rebased->{source}, $rebased->{head}, 'rebased source is the authoritative HEAD');
+is($rebased->{old}, $rebased->{head}, 'rebased old edge is the authoritative HEAD');
+is($rebased->{new}, $rebased->{head}, 'rebased new edge is the authoritative HEAD');
+eval { materialized_rebase_state($materialized, $materialized->{tx}) };
+like($@, qr/fresh transaction ID/, 'snapshot deletion rebase rejects transaction reuse');
+eval { materialized_rebase_state($prepared, ('d' x 32)) };
+like($@, qr/only a MATERIALIZED/, 'snapshot deletion rebase rejects an active transition');
 my $rollback_prepared = state(
     phase => 'PREPARED', tx => ('b' x 32), op => 'ROLLBACK',
     snapshot => 'snap1', source => 'g0', old => 'g1', new => 'g2', head => 'g1',
@@ -219,6 +231,35 @@ for my $case (@crash_matrix) {
     is($classification->{safe_for_mutation}, ($point eq 'C0' ? 1 : 0),
         "$point mutation policy is fail-closed until fully healthy");
 }
+my $remove_snapshot_open = {
+    v => 1, tx => ('c' x 32), state => 'OPEN', op => 'REMOVE_SNAPSHOT',
+    object => 'g0', before => ('d' x 32),
+};
+my $delete_prepared = classify_recovery(
+    anchor => $materialized, intent => $remove_snapshot_open,
+    objects => { head => 1, source => 1, old => 1, new => 1, meta => 0 },
+    runtime => 'linear-head', intent_object_present => 1,
+);
+is($delete_prepared->{transaction_state}, 'SNAPSHOT_DELETE_PREPARED',
+    'snapshot delete before anchor rebase is classified exactly');
+is($delete_prepared->{safe_for_mutation}, 0,
+    'snapshot delete before anchor rebase remains fail-closed');
+my $delete_ready = classify_recovery(
+    anchor => $rebased, intent => $remove_snapshot_open,
+    objects => { head => 1, source => 1, old => 1, new => 1, meta => 0 },
+    runtime => 'linear-head', intent_object_present => 1,
+);
+is($delete_ready->{transaction_state}, 'SNAPSHOT_DELETE_READY',
+    'rebased anchor and retained exact snapshot are retryable evidence');
+my $delete_finalize = classify_recovery(
+    anchor => $rebased, intent => $remove_snapshot_open,
+    objects => { head => 1, source => 1, old => 1, new => 1, meta => 0 },
+    runtime => 'linear-head', intent_object_present => 0,
+);
+is($delete_finalize->{transaction_state}, 'SNAPSHOT_DELETE_FINALIZE',
+    'missing exact snapshot after rebase is an explicit finalize state');
+is($delete_finalize->{safe_for_mutation}, 0,
+    'snapshot delete finalize requires explicit intent cleanup');
 my $c6_suspended = classify_recovery(
     anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
     intent => $cutover_intent, objects => { %transition_objects },

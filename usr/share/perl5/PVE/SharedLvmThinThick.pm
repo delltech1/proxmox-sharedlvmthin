@@ -13,7 +13,7 @@ our @EXPORT_OK = qw(
     anchor_name anchor_tags decode_anchor_tags generation_name generation_tags
     decode_generation_tags mapper_name object_key validate_generation_tags vg_intent_tags
     decode_vg_intent_tags validate_anchor_transition clone_geometry
-    transition_tags validate_transition_tags classify_recovery
+    transition_tags validate_transition_tags classify_recovery materialized_rebase_state
 );
 
 my @ANCHOR_FIELDS = qw(v sid vol phase tx op snapshot source old new head generation region);
@@ -247,6 +247,29 @@ sub validate_anchor_transition {
     return 1;
 }
 
+sub materialized_rebase_state {
+    my ($before, $tx) = @_;
+    die "materialized anchor rebase requires an anchor state\n"
+        if ref($before) ne 'HASH';
+    anchor_tags(%$before);
+    die "only a MATERIALIZED anchor can be rebased\n"
+        if $before->{phase} ne 'MATERIALIZED';
+    die "materialized anchor rebase requires a fresh transaction ID\n"
+        if !defined($tx) || $tx !~ /^$TX$/ || $tx eq $before->{tx};
+
+    my %after = (
+        %$before,
+        tx => $tx,
+        op => 'ALLOC',
+        snapshot => 'none',
+        source => $before->{head},
+        old => $before->{head},
+        new => $before->{head},
+    );
+    anchor_tags(%after);
+    return \%after;
+}
+
 sub generation_tags {
     my (%values) = @_;
     for my $field (qw(sid vol role)) {
@@ -410,6 +433,36 @@ sub classify_recovery {
     if ($anchor->{phase} eq 'MATERIALIZED' && defined($intent)) {
         eval { vg_intent_tags(%$intent); };
         return $blocked->("VG intent is invalid: $@") if $@;
+        if ($intent->{op} eq 'REMOVE_SNAPSHOT') {
+            return $blocked->('snapshot-delete intent object evidence is missing')
+                if !defined($evidence{intent_object_present});
+            my $present = $evidence{intent_object_present} ? 1 : 0;
+            if ($anchor->{tx} eq $intent->{tx}) {
+                return $blocked->('snapshot-delete anchor rebase is not canonical')
+                    if $anchor->{op} ne 'ALLOC' || $anchor->{snapshot} ne 'none'
+                    || $anchor->{source} ne $anchor->{head}
+                    || $anchor->{old} ne $anchor->{head}
+                    || $anchor->{new} ne $anchor->{head};
+                my $object_error = $require_stable_objects->();
+                return $blocked->($object_error) if defined($object_error);
+                return $result->(
+                    'RECOVERY_REQUIRED',
+                    ($present ? 'SNAPSHOT_DELETE_READY' : 'SNAPSHOT_DELETE_FINALIZE'),
+                    'MATERIALIZED',
+                    ($present
+                        ? 'canonical HEAD is stable and the exact signed snapshot awaits deletion'
+                        : 'exact snapshot deletion completed and the OPEN intent awaits clearing'),
+                );
+            }
+            return $blocked->('snapshot-delete transaction changed an unexpected anchor')
+                if $anchor->{op} eq 'ALLOC' || !$present;
+            my $object_error = $require_stable_objects->();
+            return $blocked->($object_error) if defined($object_error);
+            return $result->(
+                'RECOVERY_REQUIRED', 'SNAPSHOT_DELETE_PREPARED', 'MATERIALIZED',
+                'OPEN intent exists and the exact signed snapshot remains before anchor rebase',
+            );
+        }
         return $blocked->('VG intent refers to another anchor')
             if !defined($expected_anchor) || $intent->{object} ne $expected_anchor;
         return $blocked->('materialized object has an unsupported OPEN operation')

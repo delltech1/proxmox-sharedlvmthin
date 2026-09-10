@@ -16,7 +16,7 @@ use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinThick qw(
     anchor_name clone_geometry decode_anchor_tags decode_generation_tags
     generation_name mapper_name object_key
-    validate_anchor_transition validate_generation_tags
+    materialized_rebase_state validate_anchor_transition validate_generation_tags
     vg_intent_tags decode_vg_intent_tags
     transition_tags validate_transition_tags
 );
@@ -3248,9 +3248,10 @@ sub _thick_volume_snapshot_delete {
     $snap = _thick_snapshot_name($snap);
     $class->_require_thick_identity_config($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
 
     return $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_no_vg_intent($vg);
+        $class->_require_no_vg_intent($vg, $device);
         my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
         my ($state, undef, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
@@ -3259,8 +3260,8 @@ sub _thick_volume_snapshot_delete {
         );
         die "refusing to delete authoritative HEAD as a snapshot\n"
             if $snapshot eq $state->{head};
-        $class->_thick_verify_snapshot_readonly($vg, $snapshot);
-        $class->_verify_autoactivation_disabled($vg, $snapshot);
+        $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
+        $class->_verify_autoactivation_disabled($vg, $snapshot, $device);
 
         my $path = "/dev/$vg/$snapshot";
         if (_block_device_exists($path)) {
@@ -3276,24 +3277,32 @@ sub _thick_volume_snapshot_delete {
         my %intent = (
             tx => $class->_new_transaction_id(), state => 'OPEN',
             op => 'REMOVE_SNAPSHOT', object => $snapshot,
-            before => $class->_vg_state_digest($vg),
+            before => $class->_vg_state_digest($vg, $device),
         );
-        $class->_set_vg_intent($vg, %intent);
+        my $rebased = materialized_rebase_state($state, $intent{tx});
+        $class->_set_vg_intent($vg, %intent, _device => $device);
         eval {
+            $class->_change_exact_tags(
+                $vg, $anchor,
+                PVE::SharedLvmThinThick::anchor_tags(%$state),
+                PVE::SharedLvmThinThick::anchor_tags(%$rebased),
+                "rebasing materialized anchor '$vg/$anchor' before snapshot delete failed",
+                $device,
+            );
             if (_block_device_exists($path)) {
                 run_command(
-                    ['/sbin/lvchange', '-an', "$vg/$snapshot"],
+                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
                     errmsg => "deactivating snapshot '$vg/$snapshot' before delete failed",
                 );
             }
             run_command(
-                ['/sbin/lvremove', '-f', "$vg/$snapshot"],
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$snapshot"],
                 errmsg => "removing snapshot '$vg/$snapshot' failed",
             );
         };
         my $error = $@;
 
-        eval { $class->_verify_storage_identity($storeid, $scfg); };
+        eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
         die "PARTIAL SNAPSHOT DELETE for '$storeid:$volname\@$snap': identity is uncertain; "
             . "OPEN intent preserved and no retry attempted: $@" if $@;
         my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
@@ -3310,9 +3319,16 @@ sub _thick_volume_snapshot_delete {
         die "snapshot delete changed authoritative HEAD or generation\n"
             if $after_state->{head} ne $state->{head}
             || int($after_state->{generation}) != int($state->{generation});
-        $class->_clear_vg_intent($vg, %intent);
+        die "snapshot delete did not leave a canonical materialized anchor\n"
+            if $after_state->{tx} ne $intent{tx}
+            || $after_state->{op} ne 'ALLOC'
+            || $after_state->{snapshot} ne 'none'
+            || $after_state->{source} ne $after_state->{head}
+            || $after_state->{old} ne $after_state->{head}
+            || $after_state->{new} ne $after_state->{head};
+        $class->_clear_vg_intent($vg, %intent, _device => $device);
         return;
-    });
+    }, $device);
 }
 
 sub _volume_snapshot_delete_locked {

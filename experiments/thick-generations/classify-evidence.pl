@@ -98,10 +98,15 @@ my $new = $anchor->{new} eq $anchor->{head} ? $head
     : owned_generation($anchor->{new}, 'head');
 
 my $intent;
+my $intent_object_present;
 my $vg_tags = $vgs->[0]->{vg_tags} // '';
 if ($vg_tags =~ /(?:^|,)slt_tg_vgi_/) {
     $intent = eval { decode_vg_intent_tags($vg_tags) };
     fail("VG intent proof is invalid: $@") if $@;
+    if ($intent->{op} eq 'REMOVE_SNAPSHOT') {
+        $intent_object_present = exists($lv{$intent->{object}}) ? 1 : 0;
+        owned_generation($intent->{object}, 'snapshot') if $intent_object_present;
+    }
 }
 
 my $unrecorded_prepare = $intent && $intent->{tx} ne $anchor->{tx};
@@ -198,6 +203,7 @@ my $classification = classify_recovery(
     runtime => $runtime, clone_status => $clone_status,
     clone_source => $clone_source, runtime_suspended => $runtime_suspended,
     expected_anchor => $anchor_lv,
+    intent_object_present => $intent_object_present,
 );
 
 print "STATE=$classification->{state}\n";
