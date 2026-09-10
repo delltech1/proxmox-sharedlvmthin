@@ -1634,3 +1634,26 @@ the plugin deliberately does not fabricate divided capacity values.
 SAME_VG_PER_ALIAS_CAPACITY_TRUTHFUL=PASS
 SAME_VG_CAPACITY_AGGREGATION_WARNING=PASS
 ```
+
+## Pre-coexistence non-interference soak
+
+Before installing the same-VG qualification build, all three cluster nodes
+completed an identical 90-minute read-only health soak against the existing
+thin storage and the dedicated Thick Generations storage. Each node completed
+18 iterations and 36 bounded `recovery-check` executions. Storage identity,
+multipath state, relevant D-state inspection, LVM probes, PVE storage health,
+and quorum remained healthy throughout. No surviving probe, recovery-required
+state, error marker, or mutation was observed.
+
+This result qualifies the baseline only. It does not replace the still-open
+live same-VG coexistence, migration, backup/restore, or fault-injection gates.
+
+```ini
+PRE_COEXISTENCE_SOAK_NODES=3
+PRE_COEXISTENCE_SOAK_DURATION_MINUTES=90
+PRE_COEXISTENCE_SOAK_ITERATIONS_PER_NODE=18
+PRE_COEXISTENCE_RECOVERY_CHECKS_PER_NODE=36
+PRE_COEXISTENCE_PROBE_SURVIVORS=0
+PRE_COEXISTENCE_HEALTH_FAILURES=0
+PRE_COEXISTENCE_NON_INTERFERENCE=PASS
+```
