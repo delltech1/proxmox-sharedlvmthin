@@ -2,6 +2,9 @@
 
 ## Unreleased Thick Generations prototype
 
+- Give local Thick Generations packages a distinct `~tg` Debian pre-release
+  version so experimental runtime bits can never masquerade as the published
+  thin-only RC5.3.1 package.
 - Enforce one argv-only execution boundary for every plugin subprocess under
   Perl taint mode. API, LVM, sysfs, and device-mapper derived arguments reject
   control characters; tainted values cannot become command options; validated

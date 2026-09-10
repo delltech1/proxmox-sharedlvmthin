@@ -29,7 +29,14 @@ class PackageSourceTests(unittest.TestCase):
 
     def test_rc5_version(self):
         control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
-        self.assertRegex(control, r"(?m)^Version: 0\.9\.0~rc5(?:\.\d+)+$")
+        self.assertRegex(
+            control,
+            r"(?m)^Version: 0\.9\.0~rc5(?:\.\d+)+(?:~tg\d+)?$",
+        )
+
+    def test_experimental_thick_build_has_distinct_package_version(self):
+        control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
+        self.assertRegex(control, r"(?m)^Version: .*~tg\d+$")
 
     def test_doctor_accepts_elastic_and_legacy_thresholds(self):
         doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text()
