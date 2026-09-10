@@ -1615,7 +1615,8 @@ All direct LVM lifecycle commands for Thick Generations allocation,
 activation, deactivation, resize, snapshot transition, delete, and recovery
 are now restricted to the pinned multipath mapper with per-command
 `--devices`. Unit and source gates reject a reintroduction of a global LVM
-mutation into those paths. Live qualification remains open.
+mutation into those paths. The same-VG live lifecycle now qualifies this
+scope on the disposable multipath VG.
 
 ```ini
 THICK_LIFECYCLE_DEVICE_SCOPE_IMPLEMENTATION=PASS

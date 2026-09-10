@@ -7,6 +7,26 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    def test_publishable_sources_contain_no_lab_or_personal_identifiers(self):
+        forbidden = (
+            "192.168." + "50.",
+            "10." + "240.",
+            "stan" + "islav",
+            "ba" + "ran",
+            "dell" + "tech",
+            "oke" + ".dev",
+        )
+        excluded_parts = {".git", "dist", "dist-lab", "__pycache__"}
+        for path in ROOT.rglob("*"):
+            if not path.is_file() or excluded_parts.intersection(path.parts):
+                continue
+            try:
+                content = path.read_text(encoding="utf-8").lower()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for marker in forbidden:
+                self.assertNotIn(marker, content, f"private marker in {path}")
+
     def test_rc5_version(self):
         control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
         self.assertRegex(control, r"(?m)^Version: 0\.9\.0~rc5(?:\.\d+)+$")
