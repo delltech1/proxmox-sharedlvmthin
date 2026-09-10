@@ -1074,6 +1074,27 @@ POST_MIXED_QUORUM=3_OF_3
 MIXED_THIN_THICK_QUALIFICATION=PASS
 ```
 
+The same running mixed-mode guest then completed a live migration from a PVE
+Storage API 15 node to an API 14 node and back. Migration used the dedicated
+cluster migration network and moved VM state only; all shared thin and thick
+volumes remained on their pinned multipath devices. A bounded guest workload
+completed writes and `fdatasync` operations on all three filesystems across the
+round trip. The guest remained running, every stable canary retained its exact
+SHA-256, both storages remained active, both multipath maps remained healthy,
+and the relevant D-state count was zero.
+
+```ini
+MIXED_LIVE_MIGRATION_API15_TO_API14=PASS
+MIXED_LIVE_MIGRATION_API14_TO_API15=PASS
+MIXED_MIGRATION_GUEST_WRITE_FLUSH=PASS
+MIXED_MIGRATION_CANARIES=3_OF_3
+MIXED_MIGRATION_STORAGE_COPY=NONE_SHARED
+POST_MIXED_MIGRATION_VM_RUNNING=PASS
+POST_MIXED_MIGRATION_STORAGES_ACTIVE=PASS
+POST_MIXED_MIGRATION_DSTATE=0
+POST_MIXED_MIGRATION_QUORUM=3_OF_3
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
