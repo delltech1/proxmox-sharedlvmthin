@@ -35,9 +35,17 @@ $class->_require_thick_identity_config($storeid, $scfg);
 
 if ($recover_delete) {
     print "SNAPSHOT_DELETE_RECOVERY_START storage=$storeid volume=$volname\n";
-    my $result = $class->_thick_recover_snapshot_delete(
-        $scfg, $storeid, $volname,
-    );
+    my $result = eval {
+        $class->_thick_recover_snapshot_delete($scfg, $storeid, $volname);
+    };
+    if (my $error = $@) {
+        die "snapshot-delete recovery could not acquire the canonical cluster/VG lock; "
+            . "no recovery mutation was started. Do not remove or bypass the lock. "
+            . "After an interrupted lock holder, wait for Proxmox's 120-second "
+            . "stale-lock window and re-run the same recovery command: $error"
+            if $error =~ /cfs-lock .*got lock request timeout/;
+        die $error;
+    }
     print "$result storage=$storeid volume=$volname\n";
     exit 0;
 }

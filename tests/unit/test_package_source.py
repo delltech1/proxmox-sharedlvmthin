@@ -164,6 +164,16 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("_thick_recover_snapshot_delete", worker)
         self.assertIn("SNAPSHOT_DELETE_RECOVERY_START", worker)
 
+    def test_snapshot_delete_recovery_explains_stale_cluster_lock(self):
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        self.assertIn("no recovery mutation was started", worker)
+        self.assertIn("Do not remove or bypass the lock", worker)
+        self.assertIn("Proxmox's 120-second", worker)
+        self.assertIn("stale-lock window and re-run", worker)
+
     def test_snapshot_delete_crash_hooks_are_production_inert(self):
         plugin = (
             ROOT
