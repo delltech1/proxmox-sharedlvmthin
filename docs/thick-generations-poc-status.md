@@ -1278,6 +1278,48 @@ ORIGINAL_POST_RESTORE_CANARIES=3_OF_3
 POST_RESTORE_DSTATE=0
 ```
 
+The restore path was subsequently interrupted by a forced worker-node reboot
+after the first Thick Generations destination had been allocated but before
+the archive stream published a usable guest. Persistent state contained one
+OPEN `ALLOC` intent, its canonical PREPARED anchor, and exactly one signed
+generation-zero HEAD. The read-only recovery gate refused all mutation after
+reboot and did not adopt or delete the partial volume automatically.
+
+The explicit `thick-recover-partial-alloc` operation required the exact
+volume, intent, anchor, HEAD, storage identity, quorum, inactive frontend,
+disabled autoactivation, and absence of every cluster-wide PVE reference. It
+removed only that pair, proved absence, and cleared the intent last. A complete
+retry of the archive then restored all three disks, reached a serial login
+prompt, and left three materialized linear HEADs. Read-only filesystem checks
+completed without structural errors. Both root atomic slots, both
+conventional-thin atomic slots, and the last durable second-Thick slot matched
+their committed SHA-256 values. The alternate second-Thick slot captured while
+a guest write was outstanding did not match its older sidecar; live backup
+does not guarantee an application-consistent view of an unquiesced write.
+Native PVE deletion then removed all six exact destination objects, the anchor
+count returned to its baseline, the recovery gate was healthy, and the
+original guest restarted.
+
+```ini
+HOST_LOSS_DURING_RESTORE=PASS_BOUNDED_LAB
+POST_REBOOT_PARTIAL_STATE=PREPARED_EXACT_PAIR
+POST_REBOOT_MUTATION_GATE=BLOCKED
+AUTOMATIC_PARTIAL_ADOPTION=NO
+AUTOMATIC_PARTIAL_CLEANUP=NO
+EXPLICIT_PARTIAL_ALLOCATION_RECOVERY=PASS
+RESTORE_RETRY=PASS
+RESTORED_GUEST_SERIAL_BOOT=PASS
+RESTORED_FILESYSTEM_STRUCTURE=PASS
+RESTORED_ROOT_ATOMIC_SLOTS=2_OF_2
+RESTORED_THIN_ATOMIC_SLOTS=2_OF_2
+RESTORED_SECOND_THICK_LAST_DURABLE_SLOT=PASS
+OUTSTANDING_GUEST_WRITE_AT_BACKUP=NOT_GUARANTEED
+RESTORE_RETRY_DELETE_EXACT=PASS
+POST_DELETE_ANCHOR_COUNT=BASELINE
+POST_DELETE_RECOVERY_GATE=HEALTHY
+ORIGINAL_GUEST_RESTART=PASS
+```
+
 The mixed-mode guest was then enrolled as a native PVE HA resource while the
 cluster watchdog was armed. HA performed a controlled online relocation from
 an API 15 node to an API 14 node and back. The first relocation intentionally

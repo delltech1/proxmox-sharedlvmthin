@@ -1263,6 +1263,14 @@ case "${1:-doctor}" in
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
             --recover-empty-alloc "$2" "$3"
         ;;
+    thick-recover-partial-alloc)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-partial-alloc "$2" "$3"
+        ;;
     version|--version|-V)
         echo "sharedlvmthin doctor $VERSION"
         ;;
@@ -1274,6 +1282,7 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>"
         echo "  sharedlvmthin version"
         exit 64
         ;;

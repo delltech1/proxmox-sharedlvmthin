@@ -10,14 +10,16 @@ use PVE::Storage::Custom::SharedLvmThinPlugin;
 my $derive = @ARGV == 3 && $ARGV[0] eq '--resume';
 my $recover_delete = @ARGV == 3 && $ARGV[0] eq '--recover-delete';
 my $recover_empty_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-empty-alloc';
+my $recover_partial_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-partial-alloc';
 die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <operation> <transaction>\n"
     . "       sharedlvmthin-thick-materialize --resume <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-delete <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-empty-alloc <storage-id> <volume>\n"
-    if !$derive && !$recover_delete && !$recover_empty_alloc && @ARGV != 5;
+    . "       sharedlvmthin-thick-materialize --recover-partial-alloc <storage-id> <volume>\n"
+    if !$derive && !$recover_delete && !$recover_empty_alloc && !$recover_partial_alloc && @ARGV != 5;
 
 my ($storeid, $volname, $snapshot, $operation, $transaction) =
-    ($derive || $recover_delete || $recover_empty_alloc)
+    ($derive || $recover_delete || $recover_empty_alloc || $recover_partial_alloc)
         ? ($ARGV[1], $ARGV[2], undef, undef, undef)
         : @ARGV;
 die "invalid storage identifier\n"
@@ -38,6 +40,15 @@ $class->_require_thick_identity_config($storeid, $scfg);
 if ($recover_empty_alloc) {
     print "EMPTY_ALLOCATION_RECOVERY_START storage=$storeid volume=$volname\n";
     my $result = $class->_thick_recover_empty_allocation(
+        $scfg, $storeid, $volname,
+    );
+    print "$result storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($recover_partial_alloc) {
+    print "PARTIAL_ALLOCATION_RECOVERY_START storage=$storeid volume=$volname\n";
+    my $result = $class->_thick_recover_partial_allocation(
         $scfg, $storeid, $volname,
     );
     print "$result storage=$storeid volume=$volname\n";

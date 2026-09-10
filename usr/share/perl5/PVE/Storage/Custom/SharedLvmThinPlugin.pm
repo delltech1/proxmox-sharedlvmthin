@@ -1339,6 +1339,126 @@ sub _thick_recover_empty_allocation {
     }, $device);
 }
 
+sub _thick_pve_reference_files {
+    my ($class, $storeid, $volname) = @_;
+    my $volid = "$storeid:$volname";
+    my %files;
+    for my $pattern (
+        '/etc/pve/nodes/*/qemu-server/*.conf', '/etc/pve/nodes/*/lxc/*.conf',
+        '/etc/pve/qemu-server/*.conf', '/etc/pve/lxc/*.conf',
+    ) {
+        $files{$_} = 1 for glob($pattern);
+    }
+    my @references;
+    for my $file (sort keys %files) {
+        next if !-f $file;
+        open(my $fh, '<', $file) or die "reading PVE reference file '$file' failed: $!\n";
+        my $text = do { local $/; <$fh> };
+        close($fh) or die "closing PVE reference file '$file' failed: $!\n";
+        push @references, $file if ($text // '') =~ /\Q$volid\E(?:,|\s|$)/m;
+    }
+    return \@references;
+}
+
+sub _thick_recover_partial_allocation {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my (undef, $name) = $class->parse_volname($volname);
+    die "partial-allocation recovery requires the canonical volume name\n"
+        if $name ne $volname;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $anchor = anchor_name($namespace, $volname);
+    my $head = generation_name($namespace, $volname, 0);
+    my $key = object_key($namespace, $volname);
+    my $mapper = mapper_name($namespace, $volname);
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "VG '$vg' has no recoverable mutation intent\n" if !$intent;
+        die "VG '$vg' intent is not the exact partial ALLOC transaction for '$volname'\n"
+            if $intent->{state} ne 'OPEN' || $intent->{op} ne 'ALLOC'
+            || $intent->{object} ne $anchor;
+
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        die "partial-allocation recovery inventory is unavailable\n" if !$lvs->{$vg};
+        my $objects = $lvs->{$vg};
+        my @related = sort grep {
+            $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
+        } keys %$objects;
+        die "partial-allocation recovery requires exactly the signed anchor and generation-0 HEAD\n"
+            if @related != 2 || $related[0] ne $anchor || $related[1] ne $head;
+        die "partial-allocation recovery refused: transaction frontend '$mapper' exists\n"
+            if _block_device_exists("/dev/mapper/$mapper");
+
+        my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
+        die "partial-allocation anchor does not match the exact OPEN ALLOC transaction\n"
+            if $state->{sid} ne $storeid || $state->{vol} ne $volname
+            || $state->{phase} ne 'PREPARED' || $state->{op} ne 'ALLOC'
+            || $state->{tx} ne $intent->{tx} || $state->{snapshot} ne 'none'
+            || $state->{generation} != 0 || $state->{head} ne $head
+            || $state->{source} ne $head || $state->{old} ne $head
+            || $state->{new} ne $head;
+        validate_generation_tags(
+            $objects->{$head}->{tags} // '', sid => $storeid, vol => $volname,
+            role => 'head', generation => 0,
+        );
+        my $references = $class->_thick_pve_reference_files($storeid, $volname);
+        die "partial-allocation recovery refused: PVE still references '$storeid:$volname' in "
+            . join(', ', @$references) . "\n" if @$references;
+        for my $object ($anchor, $head) {
+            $class->_verify_autoactivation_disabled($vg, $object, $device);
+            my $active = _command_lines(
+                ['/sbin/lvs', '--noheadings', '--devices', $device,
+                    '-o', 'lv_attr', "$vg/$object"],
+                "reading partial-allocation LV state '$vg/$object' failed",
+            );
+            die "partial-allocation recovery refused: '$vg/$object' active state is ambiguous\n"
+                if @$active != 1 || $active->[0] !~ /^....([a-]).*$/;
+            if ($1 eq 'a') {
+                run_command(
+                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$object"],
+                    errmsg => "deactivating partial-allocation object '$vg/$object' failed",
+                );
+                my $after = _command_lines(
+                    ['/sbin/lvs', '--noheadings', '--devices', $device,
+                        '-o', 'lv_attr', "$vg/$object"],
+                    "verifying partial-allocation LV state '$vg/$object' failed",
+                );
+                die "partial-allocation recovery refused: '$vg/$object' did not become inactive\n"
+                    if @$after != 1 || $after->[0] !~ /^....-.*$/;
+            }
+        }
+        my $command_error = '';
+        eval {
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$head"],
+                errmsg => "removing partial thick generation '$vg/$head' failed",
+            );
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$anchor"],
+                errmsg => "removing partial thick anchor '$vg/$anchor' failed",
+            );
+        };
+        $command_error = $@ if $@;
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
+        eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
+        die "PARTIAL ALLOCATION CLEANUP: storage identity could not be revalidated; "
+            . "OPEN ALLOC intent preserved: $@" if $@;
+        my $after_objects = $after->{$vg} // {};
+        die "PARTIAL ALLOCATION CLEANUP: exact objects remain; OPEN ALLOC intent preserved"
+            . ($command_error ? ": $command_error" : "\n")
+            if exists($after_objects->{$head}) || exists($after_objects->{$anchor});
+        die "PARTIAL ALLOCATION CLEANUP: removal reported an error after exact objects disappeared; "
+            . "OPEN ALLOC intent preserved and no command was retried: $command_error"
+            if $command_error;
+        $class->_clear_vg_intent($vg, %$intent, _device => $device);
+        return 'PARTIAL_ALLOCATION_RECOVERED';
+    }, $device);
+}
+
 sub _thick_alloc_image {
     my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
     die "unsupported format '$fmt'\n" if defined($fmt) && $fmt ne 'raw';

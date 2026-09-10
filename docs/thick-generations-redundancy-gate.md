@@ -24,7 +24,7 @@ probes, PVE storage health, quorum and data integrity must all be revalidated.
 | Host lost during rollback | Thin rollback remains ownership-checked | New generation remains transaction-scoped | Old or new authoritative state is positively provable | OPEN |
 | Host lost during storage move | Source retained until mirror commit | Destination anchor/generation remains scoped | Never delete source before committed mirror result | PARTIAL; HOST-LOSS REPEAT OPEN |
 | Host lost during backup | Incomplete archive remains explicitly partial | Steady-state frontend remains ordinary linear | Source ownership unchanged; exact partial cleanup; last durable guest slot survives | PASS BOUNDED LAB; outstanding guest write not guaranteed |
-| Host lost during restore | Partial destination retained for exact diagnosis | Partial anchor/generation retained for exact diagnosis | No adoption by name and no automatic broad cleanup | OPEN |
+| Host lost during restore | Partial destination retained for exact diagnosis | PREPARED anchor/generation pair retained and mutation gate closed | Exact reference-free recovery only; clean retry restores and deletes all destinations | PASS BOUNDED LAB |
 | Reboot after recovered path state | Pool health positively revalidated | Linear or exact resumable transition reconstructed | Same WWID, PV UUID, VG UUID and guest hashes | OPEN BOTH MODES |
 
 ## Execution rules

@@ -112,6 +112,22 @@ one exact removal attempt, verifies the canonical HEAD, and clears only the
 matching intent. If the object is already absent after the verified rebase, it
 performs finalize-only recovery without retrying removal.
 
+An interrupted restore or allocation may leave exactly one generation-zero
+HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
+automatic and never searches by a similar name. After confirming that no PVE
+VM or container configuration references the volume, an operator may run:
+
+```text
+sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>
+```
+
+The command requires the exact canonical volume name, pinned storage identity,
+quorum, the matching OPEN intent, a canonical PREPARED anchor, one signed
+generation-zero HEAD, no frontend, no additional generation, disabled
+autoactivation, and no cluster-wide PVE reference. It deactivates only an
+active exact HEAD, removes the HEAD and anchor once, proves both are absent,
+and clears the intent last. Any mismatch remains `RECOVERY_REQUIRED`.
+
 The mode does not weaken the existing per-VM thin-pool lifecycle. Thin and
 Thick Generations are separate storage definitions with independent allocation
 semantics, while PVE storage move provides the explicit conversion boundary.
