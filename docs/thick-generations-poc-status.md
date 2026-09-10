@@ -2671,6 +2671,13 @@ node and back over the dedicated migration network. Both canaries matched
 before migration, on the destination node and after return. The Thin and Thick
 recovery gates remained healthy on the destination and source.
 
+The same running mixed-mode guest was then migrated from an API 15 node to the
+API 14 node and back. The Thick and Thin canaries again matched on the API 14
+destination and after return, and both storage recovery gates remained
+`HEALTHY` and safe for mutation. This proves the tested cross-version runtime
+path rather than merely proving that the package loads independently on both
+Storage API versions.
+
 PVE correctly refused an earlier attempt while the guest configuration still
 contained unused references to disabled FCoE storage. The references were
 temporarily removed from the disposable VM configuration only after preserving
@@ -2690,6 +2697,7 @@ GLOBAL_DOCTOR_FAILURES=0_ALL_NODES
 CANONICAL_BARE_DISABLE_PARSING=PASS
 ENABLED_UNAVAILABLE_STORAGE_FAIL_CLOSED=YES
 THIN_AND_THICK_ONLINE_MIGRATION_ROUND_TRIP=PASS
+CROSS_API15_API14_ONLINE_MIGRATION_ROUND_TRIP=PASS
 THICK_CANARY_SHA256=PASS_BEFORE_DESTINATION_AFTER_RETURN
 THIN_CANARY_SHA256=PASS_BEFORE_DESTINATION_AFTER_RETURN
 POST_MIGRATION_RECOVERY_GATES=PASS_BOTH_MODES
