@@ -1886,3 +1886,30 @@ THICK_MONITOR_LIVE_LINEAR_DESTINATION_ONLY=PASS
 THICK_MONITOR_LIVE_EXACT_CLEANUP=PASS
 DMEVENTD_REQUIREMENT_SCOPED_TO_ACTIVE_OWNED_THIN_POOL=PASS
 ```
+
+## Single-node reboot and exact rejoin
+
+The API-14 qualification node was rebooted while the API-15 nodes hosted an
+independent running Windows guest and a running mixed-mode Linux guest. During
+the observed two-node membership interval the surviving nodes retained native
+quorum and both guests remained running. The rebooted node rejoined with a new
+uptime; membership, total votes, and storage visibility returned to three of
+three without a manual vote override.
+
+Read-only recovery checks on the rejoined node positively verified the pinned
+WWID, PV UUID, VG UUID, two healthy paths, bounded LVM probes, PVE storage
+health, quorum, and absence of relevant persistent D-state for both storage
+modes. A Thick Generations snapshot created through the rejoined node reached
+`MATERIALIZED` and was deleted exactly. A separate disposable one-GiB thin
+allocation on that node was created and destroyed; its per-VM pool and payload
+were absent afterward and the shared VG free-byte count returned exactly to
+the pre-operation value.
+
+```ini
+SINGLE_NODE_REBOOT_SURVIVOR_QUORUM=PASS
+SINGLE_NODE_REBOOT_RUNNING_GUESTS_UNINTERRUPTED=PASS
+SINGLE_NODE_REJOIN_API14_STORAGE_IDENTITY=PASS
+SINGLE_NODE_REJOIN_THICK_SNAPSHOT_DELETE=PASS
+SINGLE_NODE_REJOIN_THIN_ALLOC_DELETE=PASS
+SINGLE_NODE_REJOIN_THIN_VG_FREE_DELTA=0
+```

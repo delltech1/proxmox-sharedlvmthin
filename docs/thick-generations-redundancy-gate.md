@@ -8,7 +8,7 @@ probes, PVE storage health, quorum and data integrity must all be revalidated.
 
 | Fault domain | Thin mode | Thick Generations | Required postcondition | State |
 | --- | --- | --- | --- | --- |
-| One cluster node stopped and rejoined | Existing guest and lifecycle operations | Linear HEAD and lifecycle operations | Survivor quorum, no duplicate owner, exact rejoin identity | OPEN |
+| One cluster node stopped and rejoined | Existing guest and lifecycle operations | Linear HEAD and lifecycle operations | Survivor quorum, no duplicate owner, exact rejoin identity | PASS |
 | Worker node lost during snapshot hydration | Conventional snapshot metadata remains owned | Persistent anchor permits exact cross-node resume | Fencing before restart, no speculative cleanup, exact data canaries | THICK PASS; THIN REPEAT OPEN |
 | Quorum reduced from three nodes to two | Mutation follows native PVE quorum | Mutation follows native PVE quorum | No plugin-specific watchdog assumption | PASS |
 | Quorum unavailable | Every new mutation fails closed | Every new mutation and resume fails closed | No LV, tag, mapper or config delta | OPEN |
