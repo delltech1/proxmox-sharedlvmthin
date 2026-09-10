@@ -1777,3 +1777,29 @@ WINDOWS_PER_CYCLE_SHA256=PASS
 WINDOWS_SOAK_PROCESS_RESULT=0
 WINDOWS_LONG_DATA_INTEGRITY_SOAK=PASS
 ```
+
+## Repeated cross-node non-interference soak
+
+All three mixed-version cluster nodes completed the final read-only health
+soak against a dedicated Thick Generations alias, a same-VG thin alias, and an
+independent thin alias. Each node performed 18 iterations and 54 bounded
+recovery checks. All 162 checks positively verified storage identity,
+multipath state, relevant D-state absence, bounded LVM probes, PVE storage
+health, and quorum. Every result was `HEALTHY` and safe for mutation; no error
+or recovery-required marker was emitted.
+
+The Windows write-through workload overlapped most of this observation period.
+No storage lifecycle mutation was injected until all three node-local monitors
+had reached their terminal PASS result.
+
+```ini
+LONG_CROSS_NODE_SOAK_NODES=3
+LONG_CROSS_NODE_STORAGE_ALIASES_PER_NODE=3
+LONG_CROSS_NODE_ITERATIONS_PER_NODE=18
+LONG_CROSS_NODE_RECOVERY_CHECKS_TOTAL=162
+LONG_CROSS_NODE_HEALTHY_RESULTS=162
+LONG_CROSS_NODE_SAFE_FOR_MUTATION_RESULTS=162
+LONG_CROSS_NODE_DSTATE_FAILURES=0
+LONG_CROSS_NODE_ERROR_MARKERS=0
+LONG_CROSS_NODE_HEALTH_MONITOR_REPEAT=PASS
+```

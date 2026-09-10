@@ -24,7 +24,7 @@ Disruptive cluster and transport coverage is tracked separately in the
 | FCoE path return | Linux VN2VN/tcm_fc target recovery without target restart | FAIL - transport limitation |
 | Windows workload | Long write-through, flush and hash-verification soak | PASS |
 | Windows interruption | Materialization interruption, explicit resume, pivot and guest data verification | OPEN |
-| Cross-node non-interference | Repeated bounded recovery checks on every qualified API node | RUNNING |
+| Cross-node non-interference | Repeated bounded recovery checks on every qualified API node | PASS |
 | Large-capacity arithmetic | 1, 16 and 128 PiB geometry, overflow refusal and exact health counters | PASS |
 | Physical petabyte storage | Representative array qualification | NOT TESTED |
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
