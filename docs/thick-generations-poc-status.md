@@ -1491,3 +1491,66 @@ LONG_MIXED_CANARIES=3_OF_3
 LONG_CROSS_NODE_HEALTH_MONITOR=INVALIDATED_BY_CONCURRENT_RESIZE
 LONG_CROSS_NODE_HEALTH_MONITOR_REPEAT=OPEN
 ```
+
+## Physical reservation accounting qualification
+
+The standard PVE storage gauge reports physical extents allocated from the
+shared VG. This is intentionally not replaced with thin-pool `Data%`: reserved
+slack inside one per-VM pool is not available for allocation to another VM.
+The health JSON, Doctor, and dashboard now expose the physical reservation,
+approximate payload, and reserved slack separately. An inactive pool continues
+to expose its reservation while payload and slack remain explicitly unknown.
+
+A legacy 68-GiB pool containing only one EFI LV, one TPM-state LV, and their
+snapshots reproduced the apparently unexplained 88.50% storage usage. Moving
+the two exact auxiliary volumes to Thick Generations and deleting their exact
+snapshots removed the now-empty legacy pool and returned its extents to the VG.
+PVE usage fell to 3.40%. The Windows guest then booted with TPM ready, its
+partition healthy, and its pre-move write-through canary unchanged.
+
+Fresh API-15 and API-14 disposable matrices each exercised a one-GiB elastic
+pool with a normal disk plus EFI and TPM LVs, then the auxiliary-only state,
+and finally exact cleanup. Reported reservation and payload arithmetic matched
+LVM, and VG free bytes before and after the complete lifecycle were identical.
+
+```ini
+PVE_GAUGE_PHYSICAL_VG_ACCOUNTING=PASS
+LEGACY_AUX_ONLY_RESERVATION_REPRODUCED=PASS
+LEGACY_POOL_EXACT_RECLAIM=PASS
+WINDOWS_CANARY_AFTER_AUX_MOVE=PASS
+WINDOWS_TPM_AFTER_AUX_MOVE=PASS
+API15_RESERVATION_MATRIX=PASS
+API14_RESERVATION_MATRIX=PASS
+INACTIVE_POOL_RESERVATION_VISIBLE=PASS
+VG_FREE_BYTES_AFTER_COMPLETE_LIFECYCLE_DELTA=0
+```
+
+## Snapshot-delete crash recovery lock behavior
+
+The D0 and D1 process-termination tests also exposed an important Proxmox lock
+property. `PVE::Cluster::cfs_lock` is represented by a directory under the
+cluster filesystem. A deliberate `_exit(137)` bypasses normal cleanup, so a
+subsequent recovery request fails closed until Proxmox processes the stale-lock
+unlock request within its 120-second locked-command timeout. Recovery must
+never delete or bypass this lock speculatively. The operator retries only after
+the bounded lock window and after persistent transaction state is revalidated.
+
+D1 and D2 recovery removed only the signed snapshot object, cleared the exact
+VG intent, and preserved the canonical HEAD. At D3 the snapshot was already
+absent; recovery did not repeat `lvremove` and only verified and finalized the
+transaction. D4 proved the post-commit boundary with both the object and intent
+already absent. The SHA-256 of the authoritative HEAD was identical before and
+after the complete D0-D4 matrix.
+
+```ini
+SNAPSHOT_DELETE_D0_PRE_INTENT=PASS
+SNAPSHOT_DELETE_D1_OPEN_INTENT=PASS
+SNAPSHOT_DELETE_D1_EXACT_RECOVERY=PASS
+SNAPSHOT_DELETE_D2_REBASED_RECOVERY=PASS
+SNAPSHOT_DELETE_D3_NO_REDELETE_FINALIZE=PASS
+SNAPSHOT_DELETE_D4_POST_COMMIT=PASS
+SNAPSHOT_DELETE_HEAD_SHA_AFTER_D0_D4=PASS
+PVE_CFS_STALE_LOCK_FAIL_CLOSED=PASS
+PVE_CFS_STALE_LOCK_WINDOW=120_SECONDS
+SNAPSHOT_DELETE_D0_D4_MULTIPATH=PASS
+```

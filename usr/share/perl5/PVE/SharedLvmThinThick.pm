@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 package PVE::SharedLvmThinThick;

@@ -132,14 +132,14 @@ other sensitive infrastructure identifiers in a public report.
 
 ## License and support
 
-Copyright (C) 2026 Stanislav Baran.
+Copyright (C) 2026 BASTRIX Project Contributors.
 
 Licensed under GPL-3.0-only. Commercial redistribution is permitted by the
 license, but distributors must comply with all GPLv3 obligations, including
 preserving applicable notices and providing Corresponding Source when
 required. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
-BASTRIX is a registered European Union word trade mark owned by Stanislav Baran
+BASTRIX is a registered European Union word trade mark
 (EUIPO No. `019343330`), covering Nice classes 9 and 42. The official EUIPO
 record controls its current status and exact scope. The GPL license applies to
 the code but does not grant rights to present a third-party build, fork,

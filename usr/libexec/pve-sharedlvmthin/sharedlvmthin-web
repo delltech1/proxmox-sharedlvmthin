@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 import configparser, copy, datetime, html, json, os, secrets, ssl, subprocess, threading, time

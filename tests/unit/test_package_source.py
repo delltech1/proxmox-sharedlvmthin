@@ -22,6 +22,15 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('$3 ~ /^....a/', doctor)
         self.assertIn("no local per-VM thin pool currently requires monitoring", doctor)
 
+    def test_doctor_never_hides_inactive_pool_reservation(self):
+        doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertIn("physical reservation=${POOL_GIB} GiB", doctor)
+        self.assertIn("this reservation is unavailable to other VM pools", doctor)
+        self.assertIn(
+            "payload and reserved slack are unavailable while the pool is inactive",
+            doctor,
+        )
+
     def test_package_does_not_contain_private_keys(self):
         forbidden = []
         for path in ROOT.rglob("*"):
