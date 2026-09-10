@@ -4,6 +4,9 @@ Thick Generations remains experimental until every required software and live
 integration gate below has positive evidence. A documented hardware boundary
 is not converted into a success claim.
 
+Disruptive cluster and transport coverage is tracked separately in the
+[Thin and Thick Generations redundancy gate](thick-generations-redundancy-gate.md).
+
 | Area | Required evidence | Current state |
 | --- | --- | --- |
 | Persistent model | Signed anchor, immutable generations, exact identity and deterministic state classification | PASS |
