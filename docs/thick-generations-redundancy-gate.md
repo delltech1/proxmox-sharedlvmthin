@@ -15,8 +15,8 @@ probes, PVE storage health, quorum and data integrity must all be revalidated.
 | QDevice unavailable with all three nodes online | Native quorum remains authoritative | Native quorum remains authoritative | Operations neither invent nor override votes | OPEN |
 | One iSCSI path lost and returned | Active guest I/O and snapshot lifecycle | Linear and hydrating guest I/O | 2-to-1-to-2, bounded I/O, identity and hashes preserved | PASS BOTH MODES |
 | All iSCSI paths lost and returned | Disposable active thin pool and guest I/O | Linear HEAD and active hydration | Bounded policy outcome; recovery gate remains closed on surviving D-state or non-materialized anchors | THIN FAIL_HOST_DM_THIN; THICK LINEAR PASS; HYDRATING FAIL_HOST_DM_CLONE; EXPLICIT POST-REBOOT RESUME PASS, PRE-FAULT SHA NOT PROVEN |
-| One FCoE path lost and returned | Disposable thin data | Linear Thick Generations data | Same identity and bounded I/O after 2-to-1-to-2 | OPEN BOTH MODES |
-| All FCoE paths lost and returned | Disposable thin data | Linear and hydrating Thick Generations data | No unsupported recovery claim; capture target and initiator state | OPEN BOTH MODES |
+| One FCoE path lost and returned | Disposable thin data | Linear Thick Generations data | Same identity and bounded I/O after 2-to-1-to-2 | FAIL TARGET TCM_FC PATH RETURN |
+| All FCoE paths lost and returned | Disposable thin data | Linear and hydrating Thick Generations data | No unsupported recovery claim; capture target and initiator state | NOT RUN: BASELINE TARGET ALREADY FAILS CLOSED |
 | Snapshot callback process terminated | Exact PVE-to-LV snapshot inventory and explicit partial cleanup | C0-C9 persistent classification | One authoritative generation; exact recovery only | PASS BOTH MODES, BOUNDED LAB |
 | Snapshot-delete process terminated | Exact snapshot ownership | D0-D4 delete transaction | Idempotent exact delete; HEAD unchanged | PASS |
 | Host lost after clone publication | Not applicable to dm-clone | Published frontend reconstructed on survivor | Resume persisted progress and pivot to one linear dependency | PASS |

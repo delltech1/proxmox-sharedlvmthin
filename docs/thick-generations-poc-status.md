@@ -1562,10 +1562,11 @@ PHYSICAL_FC_ARRAY_QUALIFICATION=OPEN
 
 1. Qualify physical FC path loss and active-guest application outcomes on a
    target that does not reproduce the Linux VN2VN/tcm_fc recovery deadlock.
-2. Complete a long-duration Windows data-integrity soak and interrupted
-   Windows-operation recovery tests.
-3. Repeat mixed-mode transactions under a long-duration soak with bounded
-   capacity monitoring and periodic cross-node read-only health probes.
+2. Complete the cluster-topology matrix for a two-node cluster with QDevice and
+   the explicitly warned two-node/no-QDevice mode.
+
+The long Windows integrity, interrupted Windows materialization and final
+cross-node mixed-mode health soaks are complete and recorded below.
 
 ## Perl taint-mode integration
 
