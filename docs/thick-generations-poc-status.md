@@ -2142,3 +2142,47 @@ POST_RECOVERY_THIN_REATTACH=PASS
 POST_RECOVERY_SNAPSHOT_DELETE=PASS
 ISCSI_HYDRATING_TOTAL_PATH_LOSS=FAIL_HOST_DM_CLONE
 ```
+
+## Host loss during a mixed Thin and Thick backup
+
+A running guest with two Thick Generations disks and one conventional thin disk
+was placed under a continuous three-filesystem write, fsync and SHA-256 workload.
+Each filesystem used two alternating payload slots with an independently fsynced
+and atomically renamed manifest, so a host crash could invalidate at most the
+slot whose write was outstanding while preserving the preceding durable slot.
+
+A throttled PVE snapshot-mode backup was confirmed active after QMP publication
+and after it had begun reading all three disks. The hosting node was then
+forcibly rebooted while both backup and guest writes were active. The other two
+nodes retained quorum. On return, the VM remained stopped with no stale lock;
+both storage recovery checks positively verified identity, paths, pool and
+anchor health, bounded probes, quorum and no relevant D-state.
+
+The interrupted backup was not advertised as a completed archive. PVE left one
+transaction-identifiable temporary directory and one incomplete `.vma.dat`
+file. After their exact names and prior-boot journal were captured, only those
+two partial objects were removed. No volume or snapshot cleanup was performed.
+
+The guest restarted normally. Journal replay completed, and offline read-only
+checks after replay found both secondary ext4 filesystems structurally clean.
+Both rotating root slots, both thin slots and the previous Thick secondary slot
+matched their durable manifests. The alternate Thick slot that was being
+overwritten at the instant of host loss did not match its older manifest, which
+is the expected outstanding-write boundary. The preceding durable slot remained
+valid, proving the two-slot oracle worked as designed; this test does not claim
+completion of an outstanding guest write.
+
+```ini
+HOST_LOSS_DURING_BACKUP=PASS_BOUNDED_LAB
+BACKUP_INCLUDED_THICK_DISKS=2
+BACKUP_INCLUDED_THIN_DISKS=1
+SURVIVOR_QUORUM=PASS
+PARTIAL_BACKUP_ADVERTISED_COMPLETE=NO
+PARTIAL_BACKUP_EXACT_CLEANUP=PASS
+POST_REBOOT_VM_LOCK=ABSENT
+POST_REBOOT_THIN_RECOVERY_GATE=PASS
+POST_REBOOT_THICK_RECOVERY_GATE=PASS
+POST_REBOOT_SECONDARY_FILESYSTEMS=PASS
+LAST_DURABLE_SLOT_ALL_FILESYSTEMS=PASS
+OUTSTANDING_GUEST_WRITE_COMPLETION=NOT_GUARANTEED
+```
