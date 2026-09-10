@@ -20,7 +20,7 @@ probes, PVE storage health, quorum and data integrity must all be revalidated.
 | Snapshot callback process terminated | Exact thin ownership evidence | C0-C9 persistent classification | One authoritative generation; exact recovery only | PASS |
 | Snapshot-delete process terminated | Exact snapshot ownership | D0-D4 delete transaction | Idempotent exact delete; HEAD unchanged | PASS |
 | Host lost after clone publication | Not applicable to dm-clone | Published frontend reconstructed on survivor | Resume persisted progress and pivot to one linear dependency | PASS |
-| Host lost during explicit recovery | Thin recovery remains read-only/manual | Repeated resume is state-derived and idempotent | No metadata reinitialization or duplicate mapper | OPEN |
+| Host lost during explicit recovery | Thin recovery remains read-only/manual | Same signed transaction resumes after a second worker-host loss | No metadata reinitialization, no duplicate mapper, final SHA and exact cleanup | PASS BOUNDED LAB |
 | Host lost during rollback | Thin rollback remains ownership-checked | HYDRATING rollback reconstructed from signed snapshot and transaction | New HEAD matches snapshot; superseded HEAD removed; explicit PVE lock cleanup only after proof | PASS BOUNDED LAB |
 | Host lost during storage move | Source retained until mirror commit | Destination anchor/generation remains scoped | Never delete source before committed mirror result | PARTIAL; HOST-LOSS REPEAT OPEN |
 | Host lost during backup | Incomplete archive remains explicitly partial | Steady-state frontend remains ordinary linear | Source ownership unchanged; exact partial cleanup; last durable guest slot survives | PASS BOUNDED LAB; outstanding guest write not guaranteed |

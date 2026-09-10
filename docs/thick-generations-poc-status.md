@@ -1362,6 +1362,40 @@ POST_CLEANUP_ANCHOR_COUNT=BASELINE
 POST_CLEANUP_RECOVERY_GATE=HEALTHY
 ```
 
+A second disposable transition qualified loss of the worker host during an
+explicit recovery itself. A 4 GiB disk with a deterministic 64 MiB pattern
+entered `SNAPSHOT/HYDRATING` and the worker host was forcibly rebooted after
+206144 of 1048576 regions. The first `thick-resume` reconstructed the exact
+transaction and advanced persistent hydration to 449424 regions before the
+host was forcibly rebooted again.
+
+After both reboots, transient mappings were absent, the signed anchor retained
+the same transaction ID and generation topology, and the read-only recovery
+gate remained `RECOVERY_REQUIRED`. A second explicit resume reconstructed the
+same transaction again, completed hydration and the linear pivot, and removed
+only the exact metadata LV. The destination-only linear frontend matched the
+original 64 MiB SHA-256. Native snapshot and VM cleanup then removed the
+snapshot, HEAD, and anchor and returned the health gate and inventory to their
+baseline.
+
+```ini
+HOST_LOSS_DURING_EXPLICIT_RECOVERY=PASS_BOUNDED_LAB
+WORKER_HOST_LOSSES_IN_ONE_TRANSACTION=2
+TRANSACTION_ID_STABLE_ACROSS_REBOOTS=PASS
+FIRST_FAULT_PROGRESS=206144_OF_1048576
+SECOND_FAULT_PROGRESS=449424_OF_1048576
+POST_FAULT_TRANSIENT_RUNTIME=ABSENT
+POST_FAULT_RECOVERY_GATE=RECOVERY_REQUIRED
+METADATA_REINITIALIZED=NO
+DUPLICATE_FRONTEND_CREATED=NO
+FINAL_FRONTEND_TARGET=LINEAR
+FINAL_DATA_SHA=PASS
+TRANSITION_METADATA_REMOVED=PASS
+DISPOSABLE_CLEANUP=PASS
+POST_CLEANUP_ANCHOR_COUNT=BASELINE
+POST_CLEANUP_RECOVERY_GATE=HEALTHY
+```
+
 The mixed-mode guest was then enrolled as a native PVE HA resource while the
 cluster watchdog was armed. HA performed a controlled online relocation from
 an API 15 node to an API 14 node and back. The first relocation intentionally
