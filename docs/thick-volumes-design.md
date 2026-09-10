@@ -4,6 +4,14 @@ The public RC5 line remains thin-only. Thick Generations is developed on a
 separate experimental branch and must pass its complete release gate before it
 is merged or published.
 
+Two storage entries may eventually expose `thin` and `thick-generations`
+choices over one shared VG, but this is safe only when both entries pin the
+same VG UUID, PV UUID, and multipath WWID. All metadata-changing operations,
+including thin-pool autogrow, then serialize on a canonical lock derived from
+the VG UUID rather than on either storage ID. Legacy unpinned aliases retain
+their historical per-storage lock and are not qualified for same-VG mixed
+mode.
+
 The mode uses fully allocated LVs and independent immutable generations. Its
 steady-state guest path is deliberately ordinary:
 

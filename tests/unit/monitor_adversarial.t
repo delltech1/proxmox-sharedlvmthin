@@ -13,6 +13,7 @@ sub run_case {
     my (%case) = @_;
     my @commands;
     my @reads;
+    my @locks;
     my $stderr = '';
     my $post_reads = 0;
     my $gib = 1024 * 1024 * 1024;
@@ -28,6 +29,7 @@ sub run_case {
             'slt-vgname' => 'testvg',
             'slt-vg-reserve-percent' => 5,
             'slt-vg-reserve-gib' => 100,
+            ($case{pinned} ? ('slt-expected-vg-uuid' => 'same-vg-uuid') : ()),
             ($case{elastic} ? (
                 'slt-initial-pool-mode' => 'elastic',
                 'slt-burst-headroom-gib' => 64,
@@ -44,6 +46,7 @@ sub run_case {
     };
     local *PVE::Cluster::cfs_lock_storage = sub {
         my ($storeid, $timeout, $code) = @_;
+        push @locks, $storeid;
         die "storage lock unavailable\n" if $case{lock_fail};
         return $code->();
     };
@@ -92,6 +95,7 @@ sub run_case {
         extend_calls => scalar(grep { /\/sbin\/lvextend/ } @commands),
         commands => \@commands,
         reads => \@reads,
+        locks => \@locks,
     };
 }
 
@@ -106,6 +110,16 @@ subtest 'healthy event performs one cluster-locked growth' => sub {
         join('\n', @{$r->{commands}}), qr/lvchange|setautoactivation/,
         'dmeventd/autogrow never changes the autoactivation policy',
     );
+};
+
+subtest 'pinned thin autogrow uses the canonical VG mutation lock' => sub {
+    my $r = run_case(pinned => 1);
+    is($r->{rc}, 0, 'pinned event succeeded');
+    is(scalar(@{$r->{locks}}), 1, 'exactly one cluster lock was acquired');
+    like($r->{locks}->[0], qr/^slt-vg-[0-9a-f]{32}$/,
+        'autogrow shares the canonical VG lock with Thick Generations');
+    unlike($r->{locks}->[0], qr/sharedthin-test/,
+        'canonical lock is independent of the storage alias');
 };
 
 subtest 'elastic event grows to used plus absolute headroom' => sub {

@@ -1819,6 +1819,44 @@ subtest 'allocation mode defaults to thin and thick mode requires explicit safet
     like($@, qr/requires a protected VG reserve/, 'thick mode cannot consume the last VG extents');
 };
 
+subtest 'thin and thick aliases over one pinned VG share one canonical mutation lock' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
+
+    my $thin = {
+        shared => 1,
+        'slt-vgname' => 'sharedvg',
+        'slt-allocation-mode' => 'thin',
+        'slt-expected-vg-uuid' => 'same-vg-uuid',
+    };
+    my $thick = {
+        %$thin,
+        'slt-allocation-mode' => 'thick-generations',
+    };
+
+    is($class->_with_mutation_lock('thin-alias', $thin, sub { return 'thin'; }),
+        'thin', 'thin alias executes under the mutation lock');
+    is($class->_with_mutation_lock('thick-alias', $thick, sub { return 'thick'; }),
+        'thick', 'thick alias executes under the mutation lock');
+    is($locks[0]->[0], $locks[1]->[0],
+        'same pinned VG UUID produces the same lock for both allocation modes');
+    like($locks[0]->[0], qr/^slt-vg-[0-9a-f]{32}$/,
+        'shared lock identity is canonical and does not contain a storage alias');
+
+    $class->_with_mutation_lock('other-alias', {
+        %$thin, 'slt-expected-vg-uuid' => 'other-vg-uuid',
+    }, sub { return 1; });
+    isnt($locks[2]->[0], $locks[0]->[0],
+        'different pinned VG UUID cannot collide with the shared lock');
+
+    $class->_with_mutation_lock('legacy-alias', {
+        shared => 1, 'slt-vgname' => 'legacyvg',
+    }, sub { return 1; });
+    is($locks[3]->[0], 'legacy-alias',
+        'legacy unpinned storage retains its historic per-storage lock');
+};
+
 subtest 'thick tag mutation enforces exact precondition and postcondition' => sub {
     reset_mocks();
     my @reads = (['old-a,old-b'], ['new-a,new-b']);

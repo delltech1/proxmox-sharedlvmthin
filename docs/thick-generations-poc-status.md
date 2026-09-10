@@ -515,7 +515,8 @@ Recovery classifies the three possible interrupted states as
 object and transaction from persistent state, never accepts caller-supplied
 identity, and never retries removal when the exact object is already absent.
 Its unit qualification covers pre-rebase continuation and post-delete
-finalization; disposable multipath integration remains required.
+finalization. The complete D0-D4 disposable multipath matrix is recorded in
+the snapshot-delete crash recovery section below.
 
 The production hook remains inert and has no configuration or environment
 switch. The separate disposable qualification driver can terminate only its
@@ -526,7 +527,7 @@ boundary observable without adding an operational fault-injection interface.
 ```ini
 SNAPSHOT_DELETE_CRASH_CLASSIFICATION=PASS
 SNAPSHOT_DELETE_RECOVERY_UNIT=PASS
-SNAPSHOT_DELETE_RECOVERY_MULTIPATH=OPEN
+SNAPSHOT_DELETE_RECOVERY_MULTIPATH=PASS
 ```
 
 Rollback uses the same persistent dm-clone materialization engine with an
@@ -1553,4 +1554,29 @@ SNAPSHOT_DELETE_HEAD_SHA_AFTER_D0_D4=PASS
 PVE_CFS_STALE_LOCK_FAIL_CLOSED=PASS
 PVE_CFS_STALE_LOCK_WINDOW=120_SECONDS
 SNAPSHOT_DELETE_D0_D4_MULTIPATH=PASS
+```
+
+## Same-VG thin and Thick Generations lock domain
+
+The earlier mixed-mode qualification used separate VGs. Coexistence over one
+shared LUN/VG adds a stricter concurrency requirement: storage aliases cannot
+lock by storage ID because a thin lifecycle operation or dmeventd autogrow
+could otherwise change the same VG metadata while a Thick Generations
+transaction is open.
+
+Pinned thin and Thick Generations configurations now derive one canonical
+cluster lock from the expected VG UUID. Thin allocation, free, resize,
+snapshot, snapshot delete, rollback, and thin-pool autogrow all use that lock.
+The autogrow callback re-reads the storage configuration after acquisition and
+refuses mutation if its canonical lock identity changed while waiting. Unit
+tests prove that two different storage IDs with the same VG UUID collide on
+the same lock and that different VG UUIDs cannot collide. A live same-VG
+matrix will run after the current non-interference monitor completes.
+
+```ini
+SAME_VG_CANONICAL_LOCK_IMPLEMENTATION=PASS
+SAME_VG_THIN_LIFECYCLE_LOCK_COVERAGE=PASS
+SAME_VG_AUTOGROW_LOCK_COVERAGE=PASS
+SAME_VG_LOCK_UNIT_QUALIFICATION=PASS
+SAME_VG_LIVE_COEXISTENCE=OPEN
 ```

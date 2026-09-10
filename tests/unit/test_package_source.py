@@ -187,6 +187,32 @@ class PackageSourceTests(unittest.TestCase):
             )
         self.assertIn("sub _thick_fault_point {\n    return;\n}", plugin)
 
+    def test_all_thin_metadata_mutations_enter_the_canonical_lock_helper(self):
+        plugin = (
+            ROOT
+            / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        public_mutations = (
+            "alloc_image",
+            "free_image",
+            "volume_resize",
+            "volume_snapshot",
+            "volume_snapshot_delete",
+            "volume_snapshot_rollback",
+        )
+        for name in public_mutations:
+            match = re.search(
+                rf"sub {name} \{{(?P<body>.*?)(?=\nsub )",
+                plugin,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(match, f"missing public mutation {name}")
+            self.assertIn(
+                "_with_mutation_lock",
+                match.group("body"),
+                f"{name} must serialize with same-VG thin and thick aliases",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

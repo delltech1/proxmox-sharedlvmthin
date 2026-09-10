@@ -881,6 +881,27 @@ sub _with_vg_lock {
     );
 }
 
+sub _with_mutation_lock {
+    my ($class, $storeid, $scfg, $code) = @_;
+    my $uuid = $scfg->{'slt-expected-vg-uuid'};
+
+    # Pinned storage aliases that share one VG must serialize on one canonical
+    # lock, regardless of whether the selected allocation mode is thin or
+    # Thick Generations. Legacy unpinned configurations retain their historic
+    # per-storage lock and are not qualified for same-VG mixed-mode use.
+    return $class->_with_vg_lock($storeid, $scfg, $code)
+        if defined($uuid) && $uuid ne '';
+
+    return $class->cluster_lock_storage(
+        $storeid, $scfg->{shared}, undef,
+        sub {
+            $class->_verify_mutation_quorum($storeid, $scfg);
+            $class->_verify_storage_identity($storeid, $scfg);
+            return $code->();
+        },
+    );
+}
+
 sub _vg_state_digest {
     my ($class, $vg, $device) = @_;
     my @command = ('/sbin/vgs', '--readonly');
@@ -1844,6 +1865,16 @@ sub alloc_image {
     my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
     return $class->_thick_alloc_image($storeid, $scfg, $vmid, $fmt, $name, $size)
         if $class->_allocation_mode($scfg) eq 'thick-generations';
+
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_alloc_image_locked(
+            $storeid, $scfg, $vmid, $fmt, $name, $size,
+        );
+    });
+}
+
+sub _alloc_image_locked {
+    my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
 
     die "unsupported format '$fmt'\n"
         if defined($fmt) && $fmt ne 'raw';
@@ -2879,6 +2910,16 @@ sub free_image {
     return $class->_thick_free_image($storeid, $scfg, $volname, $isBase)
         if $class->_allocation_mode($scfg) eq 'thick-generations';
 
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_free_image_locked(
+            $storeid, $scfg, $volname, $isBase,
+        );
+    });
+}
+
+sub _free_image_locked {
+    my ($class, $storeid, $scfg, $volname, $isBase) = @_;
+
     $class->_verify_mutation_quorum($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
 
@@ -3174,16 +3215,11 @@ sub volume_resize {
         $scfg, $storeid, $volname, $size, $running, $snapname,
     ) if $class->_allocation_mode($scfg) eq 'thick-generations';
 
-    return $class->cluster_lock_storage(
-        $storeid,
-        $scfg->{shared},
-        undef,
-        sub {
-            return $class->_volume_resize_locked(
-                $scfg, $storeid, $volname, $size, $running, $snapname,
-            );
-        },
-    );
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_volume_resize_locked(
+            $scfg, $storeid, $volname, $size, $running, $snapname,
+        );
+    });
 }
 
 sub _volume_resize_locked {
@@ -3225,16 +3261,11 @@ sub volume_snapshot {
     return $class->_thick_volume_snapshot($scfg, $storeid, $volname, $snap)
         if $class->_allocation_mode($scfg) eq 'thick-generations';
 
-    return $class->cluster_lock_storage(
-        $storeid,
-        $scfg->{shared},
-        undef,
-        sub {
-            return $class->_volume_snapshot_locked(
-                $scfg, $storeid, $volname, $snap,
-            );
-        },
-    );
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_volume_snapshot_locked(
+            $scfg, $storeid, $volname, $snap,
+        );
+    });
 }
 
 sub _volume_snapshot_locked {
@@ -3263,16 +3294,11 @@ sub volume_snapshot_delete {
     return $class->_thick_volume_snapshot_delete($scfg, $storeid, $volname, $snap)
         if $class->_allocation_mode($scfg) eq 'thick-generations';
 
-    return $class->cluster_lock_storage(
-        $storeid,
-        $scfg->{shared},
-        undef,
-        sub {
-            return $class->_volume_snapshot_delete_locked(
-                $scfg, $storeid, $volname, $snap,
-            );
-        },
-    );
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_volume_snapshot_delete_locked(
+            $scfg, $storeid, $volname, $snap,
+        );
+    });
 }
 
 sub _thick_volume_snapshot_delete {
@@ -3517,16 +3543,11 @@ sub volume_snapshot_rollback {
         $scfg, $storeid, $volname, $snap, 'ROLLBACK',
     ) if $class->_allocation_mode($scfg) eq 'thick-generations';
 
-    return $class->cluster_lock_storage(
-        $storeid,
-        $scfg->{shared},
-        undef,
-        sub {
-            return $class->_volume_snapshot_rollback_locked(
-                $scfg, $storeid, $volname, $snap,
-            );
-        },
-    );
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_volume_snapshot_rollback_locked(
+            $scfg, $storeid, $volname, $snap,
+        );
+    });
 }
 
 sub _volume_snapshot_rollback_locked {

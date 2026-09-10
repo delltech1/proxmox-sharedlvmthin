@@ -55,3 +55,10 @@ adding a global D-state gate to ordinary plugin mutations.
 
 The checker never performs activation, SCSI rescan, multipath/dmeventd/PVE
 restart, dm-thin reset, cleanup, initialization or metadata repair.
+
+## DS-17 — Canonical same-VG mutation lock
+
+Every metadata mutation against the same pinned VG UUID uses the same
+canonical cluster lock, independent of storage ID or thin/Thick Generations
+allocation mode. Unpinned legacy storage aliases are not qualified for
+same-VG mixed-mode operation.
