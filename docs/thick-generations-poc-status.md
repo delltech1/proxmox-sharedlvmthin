@@ -2419,3 +2419,19 @@ WINDOWS_POST_LIFECYCLE_RECOVERY_GATE=PASS
 POST_WINDOWS_PYTHON_REGRESSION=133/133_PASS
 POST_WINDOWS_PERL_REGRESSION=235/235_PASS
 ```
+
+The same running Windows guest then exercised an online grow from 36 GiB to
+40 GiB. The plugin extended the exact current HEAD, zero-initialized and
+flushed the new range, atomically reloaded the frontend to the larger linear
+table and left the recovery gate healthy. Windows detected the added capacity
+after an explicit storage rescan without a guest reboot. NTFS was extended to
+its reported maximum and the oracle SHA-256 remained unchanged before and
+after the filesystem grow.
+
+```ini
+WINDOWS_ONLINE_THICK_GROW=PASS
+WINDOWS_ONLINE_CAPACITY_RESCAN=PASS
+WINDOWS_ONLINE_NTFS_GROW=PASS
+WINDOWS_POST_GROW_ORACLE_SHA256=PASS
+WINDOWS_POST_GROW_RECOVERY_GATE=PASS
+```
