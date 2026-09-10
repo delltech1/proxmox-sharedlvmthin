@@ -1230,10 +1230,63 @@ REPEATED_MIXED_SNAPSHOT_DELETE_EXACT=PASS
 REPEATED_MIXED_DSTATE=0
 ```
 
+## Isolated FCoE transport qualification
+
+The disposable FCoE LUN was discovered through two independent VN2VN paths on
+all three nodes. Its exact SCSI identity, capacity, multipath identity, and
+read samples matched everywhere. A flushed one-MiB write was readable with the
+same digest from every node, and ordinary one-MiB-block sequential I/O remained
+bounded with no D-state tasks.
+
+The lab target nevertheless exposed two transport-specific limitations that
+are below the plugin. Single requests up to eight MiB completed normally, while
+single 16-MiB and 64-MiB writes through the Linux `tcm_fc` target repeatedly
+incurred approximately 30 seconds of latency. Both raw FC paths became fast
+again when their advertised request limit was constrained to eight MiB, but a
+large request submitted through device-mapper could still fan out into the
+problematic target pattern. Normal VM-sized one-MiB requests did not reproduce
+that latency.
+
+An isolated active-path 2-to-1 event then failed over correctly and a bounded
+one-MiB-block write completed at 179 MiB/s on the surviving path. The return to
+2 paths did not recover correctly. FC ports reported Online while the SCSI
+paths remained failed, and the target accumulated uninterruptible workers in
+`target_wait_for_cmds`, `ft_prlo`, `fc_rport_logoff`,
+`fcoe_ctlr_vn_timeout`, and `fc_rport_recv_flogi_req`. An explicit initiator
+relogin could not recover the target; a target power cycle was required. The
+unrelated iSCSI LUNs then returned with their original identities and two paths,
+both PVE storages became active, all three mixed-mode guest canaries matched,
+and D-state returned to zero.
+
+This result qualifies ordinary isolated FCoE I/O but fails Linux VN2VN/tcm_fc
+path-return recovery in the current lab kernel. It does not qualify a physical
+FC array and does not change the Thick Generations or SharedLvmThin lifecycle
+result.
+
+```ini
+FCOE_THREE_NODE_IDENTITY=PASS
+FCOE_PATHS_PER_NODE=2
+FCOE_CROSS_NODE_READ_DIGEST=PASS
+FCOE_ORDINARY_IO=PASS
+FCOE_SINGLE_REQUEST_1M=PASS
+FCOE_SINGLE_REQUEST_8M=PASS
+FCOE_SINGLE_REQUEST_16M=TARGET_LIMIT_REPRODUCED
+FCOE_ACTIVE_PATH_2_TO_1=PASS
+FCOE_SURVIVING_PATH_IO=PASS
+FCOE_PATH_RETURN_1_TO_2=FAIL_TARGET_DSTATE
+FCOE_INITIATOR_RELOGIN_RECOVERY=FAIL
+FCOE_TARGET_REBOOT_REQUIRED=YES
+ISCSI_IDENTITY_AFTER_TARGET_REBOOT=PASS
+MIXED_GUEST_CANARIES_AFTER_TARGET_REBOOT=3_OF_3
+PLUGIN_INVOLVEMENT=NONE
+PHYSICAL_FC_ARRAY_QUALIFICATION=OPEN
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
-2. Qualify physical FC/FCoE path loss and active-guest application outcomes.
+2. Qualify physical FC path loss and active-guest application outcomes on a
+   target that does not reproduce the Linux VN2VN/tcm_fc recovery deadlock.
 3. Complete a long-duration Windows data-integrity soak and interrupted
    Windows-operation recovery tests.
 4. Qualify native HA reaction to complete worker-host loss during active
