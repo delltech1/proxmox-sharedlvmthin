@@ -25,7 +25,7 @@ probes, PVE storage health, quorum and data integrity must all be revalidated.
 | Host lost during storage move | Source retained until mirror commit | Destination anchor/generation remains scoped | Never delete source before committed mirror result | PASS BOUNDED LAB |
 | Host lost during backup | Incomplete archive remains explicitly partial | Steady-state frontend remains ordinary linear | Source ownership unchanged; exact partial cleanup; last durable guest slot survives | PASS BOUNDED LAB; outstanding guest write not guaranteed |
 | Host lost during restore | Partial destination retained for exact diagnosis | PREPARED anchor/generation pair retained and mutation gate closed | Exact reference-free recovery only; clean retry restores and deletes all destinations | PASS BOUNDED LAB |
-| Reboot after recovered path state | Pool health positively revalidated | Linear or exact resumable transition reconstructed | Same WWID, PV UUID, VG UUID and guest hashes | OPEN BOTH MODES |
+| Reboot after recovered path state | Pool health positively revalidated | Linear or exact resumable transition reconstructed | Same WWID, PV UUID, VG UUID and guest hashes | PASS BOTH MODES |
 
 ## Execution rules
 

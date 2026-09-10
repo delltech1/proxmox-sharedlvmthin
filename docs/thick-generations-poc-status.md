@@ -2468,3 +2468,29 @@ STORAGE_MOVE_RETRY_SHA256=PASS
 STORAGE_MOVE_FINAL_CLEANUP=PASS
 STORAGE_MOVE_FINAL_RECOVERY_GATES=PASS
 ```
+
+## Node reboot after complete single-path recovery
+
+On an otherwise idle cluster node, one iSCSI network path was taken down. Both
+the conventional Thin and Thick Generations LUNs remained available through
+their surviving paths, while their configured two-path recovery gates correctly
+returned `RECOVERY_REQUIRED` and blocked new mutations. After the link returned,
+all four SCSI paths became `active ready running`; both recovery gates returned
+healthy and the exact WWID, PV UUID and VG UUID pairs matched their pinned
+identities.
+
+That node was then reset. It rejoined the three-node quorum and automatically
+rediscovered both LUNs with two active paths each. Both storage recovery gates
+again returned `HEALTHY` with `SAFE_FOR_MUTATION=YES`. A running mixed-mode
+Linux guest on another node retained identical 64 MiB canary hashes on its two
+Thick disks and one Thin disk across the complete path flap and peer reboot.
+
+```ini
+ISCSI_SINGLE_PATH_MUTATION_GATE=PASS_BOTH_MODES
+ISCSI_PATH_RETURN_2_OF_2=PASS_BOTH_MODES
+POST_PATH_RECOVERY_NODE_REBOOT=PASS
+POST_REBOOT_CLUSTER_QUORUM=PASS
+POST_REBOOT_STORAGE_IDENTITY=PASS_BOTH_MODES
+POST_REBOOT_RECOVERY_GATES=PASS_BOTH_MODES
+POST_REBOOT_MIXED_GUEST_HASHES=PASS
+```
