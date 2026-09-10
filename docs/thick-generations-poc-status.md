@@ -1178,11 +1178,42 @@ ORIGINAL_POST_RESTORE_CANARIES=3_OF_3
 POST_RESTORE_DSTATE=0
 ```
 
+The mixed-mode guest was then enrolled as a native PVE HA resource while the
+cluster watchdog was armed. HA performed a controlled online relocation from
+an API 15 node to an API 14 node and back. The first relocation intentionally
+overlapped the bounded guest write soak. PVE correctly reported that the guest
+dirty-memory rate exceeded the configured 20 MiB/s migration limit and raised
+its convergence downtime in bounded steps. Stopping only the workload allowed
+the same live migration task to converge; no retry or storage recovery action
+was required. The return relocation completed normally.
+
+The guest remained running after both HA relocations and all three canaries
+matched. The HA resource was then removed cleanly, leaving no managed-resource
+entry. This also confirms the plugin does not contain or infer a watchdog or
+Corosync timeout: fencing, retry, and migration timing remain native PVE policy
+and therefore follow site-specific cluster configuration.
+
+```ini
+PVE_HA_RESOURCE_ENROLLMENT=PASS
+PVE_HA_WATCHDOG_ARMED=PASS
+HA_RELOCATION_API15_TO_API14=PASS
+HA_RELOCATION_API14_TO_API15=PASS
+DIRTY_RATE_ABOVE_MIGRATION_LIMIT=DETECTED_BY_PVE
+MIGRATION_CONVERGENCE_AFTER_WORKLOAD_STOP=PASS
+PLUGIN_WATCHDOG_TIMEOUT_ASSUMPTION=NONE
+HA_RELOCATION_CANARIES=3_OF_3
+HA_RESOURCE_REMOVAL=PASS
+POST_HA_VM_RUNNING=PASS
+POST_HA_DSTATE=0
+POST_HA_QUORUM=3_OF_3
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
 2. Qualify physical FC/FCoE path loss and active-guest application outcomes.
 3. Complete a long-duration Windows data-integrity soak and interrupted
    Windows-operation recovery tests.
-4. Qualify HA orchestration of the already-qualified explicit recovery
-   primitive and repeated mixed-mode transactions under a long soak.
+4. Qualify native HA reaction to complete worker-host loss during active
+   hydration, followed by the already-qualified explicit recovery primitive,
+   and complete repeated mixed-mode transactions under a long soak.
