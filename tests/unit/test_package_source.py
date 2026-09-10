@@ -139,6 +139,7 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("anchor-scoped materialization does not match transaction", worker)
         self.assertIn("a different VG intent targets this materialization anchor", worker)
         self.assertNotIn("lvremove", worker)
+        self.assertNotIn("pvcreate", worker)
 
     def test_snapshot_delete_recovery_is_an_explicit_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
@@ -153,7 +154,19 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('--recover-delete "$2" "$3"', cli)
         self.assertIn("_thick_recover_snapshot_delete", worker)
         self.assertIn("SNAPSHOT_DELETE_RECOVERY_START", worker)
-        self.assertNotIn("pvcreate", worker)
+
+    def test_snapshot_delete_crash_hooks_are_production_inert(self):
+        plugin = (
+            ROOT
+            / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        for point in range(5):
+            self.assertEqual(
+                plugin.count(f"_thick_fault_point('D{point}'"),
+                1,
+                f"D{point} must identify exactly one snapshot-delete boundary",
+            )
+        self.assertIn("sub _thick_fault_point {\n    return;\n}", plugin)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 COLLECTOR = ROOT / "experiments/thick-generations/recovery-evidence.sh"
 CLASSIFIER = ROOT / "experiments/thick-generations/classify-evidence.pl"
+DELETE_FAULT_DRIVER = ROOT / "experiments/thick-generations/snapshot-delete-fault-driver.pl"
 PLUGIN = ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 FAULT_DRIVER = ROOT / "experiments/thick-generations/fault-driver.pl"
 PREPARE_RECOVERY = ROOT / "experiments/thick-generations/recover-prepare-incomplete.pl"
@@ -61,6 +62,15 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertIn("frontend mapper does not contain an exact", source)
         for command in ("lvcreate", "lvremove", "dmsetup create", "dmsetup load"):
             self.assertNotIn(command, source)
+
+    def test_snapshot_delete_fault_driver_is_disposable_and_explicit(self):
+        source = DELETE_FAULT_DRIVER.read_text(encoding="utf-8")
+        self.assertIn("DISPOSABLE-SNAPSHOT-WILL-BE-LEFT-INCOMPLETE", source)
+        self.assertIn("_thick_volume_snapshot_delete", source)
+        self.assertIn("POSIX::_exit(137)", source)
+        self.assertNotIn("unlink", source)
+        self.assertNotIn("rm -", source)
+        self.assertIn("/^D[0-4]$/", source)
 
     def test_classifier_syntax(self):
         result = subprocess.run(

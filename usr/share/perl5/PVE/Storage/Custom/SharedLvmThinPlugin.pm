@@ -3280,7 +3280,9 @@ sub _thick_volume_snapshot_delete {
             before => $class->_vg_state_digest($vg, $device),
         );
         my $rebased = materialized_rebase_state($state, $intent{tx});
+        $class->_thick_fault_point('D0', 'REMOVE_SNAPSHOT', $storeid, $volname);
         $class->_set_vg_intent($vg, %intent, _device => $device);
+        $class->_thick_fault_point('D1', 'REMOVE_SNAPSHOT', $storeid, $volname);
         eval {
             $class->_change_exact_tags(
                 $vg, $anchor,
@@ -3289,6 +3291,7 @@ sub _thick_volume_snapshot_delete {
                 "rebasing materialized anchor '$vg/$anchor' before snapshot delete failed",
                 $device,
             );
+            $class->_thick_fault_point('D2', 'REMOVE_SNAPSHOT', $storeid, $volname);
             if (_block_device_exists($path)) {
                 run_command(
                     ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
@@ -3299,6 +3302,7 @@ sub _thick_volume_snapshot_delete {
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$snapshot"],
                 errmsg => "removing snapshot '$vg/$snapshot' failed",
             );
+            $class->_thick_fault_point('D3', 'REMOVE_SNAPSHOT', $storeid, $volname);
         };
         my $error = $@;
 
@@ -3327,6 +3331,7 @@ sub _thick_volume_snapshot_delete {
             || $after_state->{old} ne $after_state->{head}
             || $after_state->{new} ne $after_state->{head};
         $class->_clear_vg_intent($vg, %intent, _device => $device);
+        $class->_thick_fault_point('D4', 'REMOVE_SNAPSHOT', $storeid, $volname);
         return;
     }, $device);
 }

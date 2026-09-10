@@ -517,6 +517,12 @@ identity, and never retries removal when the exact object is already absent.
 Its unit qualification covers pre-rebase continuation and post-delete
 finalization; disposable multipath integration remains required.
 
+The production hook remains inert and has no configuration or environment
+switch. The separate disposable qualification driver can terminate only its
+own process at D0 before intent, D1 after intent, D2 after canonical rebase,
+D3 after exact removal, or D4 after intent clear. This makes each persistent
+boundary observable without adding an operational fault-injection interface.
+
 ```ini
 SNAPSHOT_DELETE_CRASH_CLASSIFICATION=PASS
 SNAPSHOT_DELETE_RECOVERY_UNIT=PASS
