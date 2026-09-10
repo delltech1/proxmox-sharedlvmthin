@@ -14,6 +14,7 @@ PREPARE_RECOVERY = ROOT / "experiments/thick-generations/recover-prepare-incompl
 UNRECORDED_RECOVERY = ROOT / "experiments/thick-generations/recover-unrecorded-prepare.pl"
 PRIOR_RECOVERY = ROOT / "experiments/thick-generations/recover-prepared-from-prior-evidence.pl"
 COEXISTENCE = ROOT / "experiments/thick-generations/same-vg-coexistence-qualification.sh"
+LONG_SOAK = ROOT / "experiments/thick-generations/long-soak-health-monitor.sh"
 
 
 class ThickRecoveryHarnessTests(unittest.TestCase):
@@ -152,6 +153,30 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertIn("VG_FREE_BYTES_AFTER_COMPLETE_LIFECYCLE_DELTA=0", source)
         self.assertNotIn("trap ", source)
         self.assertNotIn("--force", source)
+
+    def test_long_soak_rechecks_only_a_sole_unscoped_dstate_unknown(self):
+        source = LONG_SOAK.read_text(encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "-n", str(LONG_SOAK)], capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("UNSCOPED_DSTATE_RECHECKS=1", source)
+        self.assertEqual(source.count('sleep 2'), 1)
+        self.assertEqual(source.count('TRANSIENT_UNSCOPED_DSTATE_RECHECK=PASS'), 1)
+        self.assertIn("[[ $(grep -Ec '=UNKNOWN$'", source)
+        self.assertIn("[[ $(grep -Ec '=FAIL$'", source)
+        self.assertIn("grep -qx 'NO_RELEVANT_DSTATE=UNKNOWN'", source)
+        for gate in (
+            "PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
+            "POOL_FLAGS_HEALTHY", "BOUNDED_LVM_PROBES", "PVE_STORAGE_HEALTH",
+            "QUORUM",
+        ):
+            self.assertIn(gate, source)
+        for command in (
+            "lvcreate", "lvremove", "lvchange", "lvextend", "lvreduce",
+            "pvcreate", "vgcreate", "wipefs", "dmsetup create", "dmsetup load",
+        ):
+            self.assertNotIn(command, source)
 
 
 if __name__ == "__main__":
