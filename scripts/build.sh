@@ -40,5 +40,5 @@ find "$STAGE" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 
 dpkg-deb --root-owner-group --build "$STAGE" "$OUT/$PACKAGE"
 sh "$ROOT/scripts/check-release.sh" "$OUT/$PACKAGE"
-sha256sum "$OUT/$PACKAGE" >"$OUT/SHA256SUMS"
+(cd "$OUT" && sha256sum "$PACKAGE" >SHA256SUMS)
 printf '%s\n' "$OUT/$PACKAGE"

@@ -13,6 +13,9 @@
   reserved slack independently. The dashboard and Doctor explicitly explain
   that pool slack remains unavailable to other VM pools and is included in
   standard PVE VG utilization.
+- Generate `SHA256SUMS` with a portable package basename rather than a local
+  absolute build path. Two independent builds of the same source are required
+  to be bit-identical before the local artifact is accepted.
 
 ## 0.9.0~rc5.3.1 (2026-09-09)
 

@@ -67,6 +67,11 @@ class PackageSourceTests(unittest.TestCase):
                 forbidden.append(path)
         self.assertEqual(forbidden, [])
 
+    def test_build_writes_portable_checksum_manifest(self):
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        self.assertIn('(cd "$OUT" && sha256sum "$PACKAGE" >SHA256SUMS)', build)
+        self.assertNotIn('sha256sum "$OUT/$PACKAGE" >"$OUT/SHA256SUMS"', build)
+
     def test_product_facing_sources_do_not_contain_slovak_or_czech_markers(self):
         product = [
             ROOT / "usr/share/pve-sharedlvmthin/web/index.html",
