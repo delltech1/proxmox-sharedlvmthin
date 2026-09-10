@@ -1567,6 +1567,12 @@ transaction is open.
 Pinned thin and Thick Generations configurations now derive one canonical
 cluster lock from the expected VG UUID. Thin allocation, free, resize,
 snapshot, snapshot delete, rollback, and thin-pool autogrow all use that lock.
+Before entering any pinned thin mutation, the plugin also proves under the
+canonical lock that the VG carries no OPEN Thick Generations intent. This
+closes the inter-phase window where a thick transaction has persisted its
+intent but temporarily released the lock for bounded data work. An
+anchor-scoped asynchronous hydration with no global intent remains compatible
+with independent thin operations.
 The autogrow callback re-reads the storage configuration after acquisition and
 refuses mutation if its canonical lock identity changed while waiting. Unit
 tests prove that two different storage IDs with the same VG UUID collide on
@@ -1581,6 +1587,7 @@ SAME_VG_CANONICAL_LOCK_IMPLEMENTATION=PASS
 SAME_VG_THIN_LIFECYCLE_LOCK_COVERAGE=PASS
 SAME_VG_AUTOGROW_LOCK_COVERAGE=PASS
 SAME_VG_LOCK_UNIT_QUALIFICATION=PASS
+SAME_VG_OPEN_INTENT_BLOCKS_THIN_MUTATION=PASS
 SAME_VG_INVENTORY_ISOLATION_UNIT=PASS
 SAME_VG_LIVE_COEXISTENCE=OPEN
 ```

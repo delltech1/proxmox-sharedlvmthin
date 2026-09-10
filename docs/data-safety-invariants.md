@@ -61,4 +61,6 @@ restart, dm-thin reset, cleanup, initialization or metadata repair.
 Every metadata mutation against the same pinned VG UUID uses the same
 canonical cluster lock, independent of storage ID or thin/Thick Generations
 allocation mode. Unpinned legacy storage aliases are not qualified for
-same-VG mixed-mode operation.
+same-VG mixed-mode operation. A pinned thin mutation also proves that no
+global Thick Generations VG intent is open while holding that lock; an
+unresolved intent blocks the thin callback before its first mutation.

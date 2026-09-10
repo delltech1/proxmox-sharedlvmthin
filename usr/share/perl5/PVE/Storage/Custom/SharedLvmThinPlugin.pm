@@ -889,8 +889,15 @@ sub _with_mutation_lock {
     # lock, regardless of whether the selected allocation mode is thin or
     # Thick Generations. Legacy unpinned configurations retain their historic
     # per-storage lock and are not qualified for same-VG mixed-mode use.
-    return $class->_with_vg_lock($storeid, $scfg, $code)
-        if defined($uuid) && $uuid ne '';
+    if (defined($uuid) && $uuid ne '') {
+        my $device = defined($scfg->{'slt-expected-wwid'})
+            ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+            : undef;
+        return $class->_with_vg_lock($storeid, $scfg, sub {
+            $class->_require_no_vg_intent($scfg->{'slt-vgname'}, $device);
+            return $code->();
+        }, $device);
+    }
 
     return $class->cluster_lock_storage(
         $storeid, $scfg->{shared}, undef,

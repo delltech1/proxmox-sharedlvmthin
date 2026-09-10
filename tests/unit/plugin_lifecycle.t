@@ -1823,6 +1823,11 @@ subtest 'thin and thick aliases over one pinned VG share one canonical mutation 
     reset_mocks();
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
+    my $intent_checks = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub {
+        $intent_checks++;
+        return 1;
+    };
 
     my $thin = {
         shared => 1,
@@ -1841,6 +1846,8 @@ subtest 'thin and thick aliases over one pinned VG share one canonical mutation 
         'thick', 'thick alias executes under the mutation lock');
     is($locks[0]->[0], $locks[1]->[0],
         'same pinned VG UUID produces the same lock for both allocation modes');
+    is($intent_checks, 2,
+        'each pinned alias checks for an OPEN VG intent inside the canonical lock');
     like($locks[0]->[0], qr/^slt-vg-[0-9a-f]{32}$/,
         'shared lock identity is canonical and does not contain a storage alias');
 
@@ -1855,6 +1862,32 @@ subtest 'thin and thick aliases over one pinned VG share one canonical mutation 
     }, sub { return 1; });
     is($locks[3]->[0], 'legacy-alias',
         'legacy unpinned storage retains its historic per-storage lock');
+};
+
+subtest 'pinned thin mutation refuses an OPEN Thick Generations VG intent' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub {
+        die "VG has unresolved mutation intent\n";
+    };
+    my $executed = 0;
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'sharedvg',
+        'slt-allocation-mode' => 'thin',
+        'slt-expected-vg-uuid' => 'same-vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    eval {
+        $class->_with_mutation_lock('thin-alias', $cfg, sub {
+            $executed++;
+            return 1;
+        });
+    };
+    like($@, qr/unresolved mutation intent/,
+        'OPEN Thick Generations intent blocks the thin mutation');
+    is($executed, 0, 'thin mutation callback was never entered');
+    is(scalar(@locks), 1, 'decision was made while holding the canonical lock');
 };
 
 subtest 'thick tag mutation enforces exact precondition and postcondition' => sub {
