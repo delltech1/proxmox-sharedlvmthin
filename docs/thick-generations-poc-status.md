@@ -2847,3 +2847,42 @@ UPGRADE_CHECK_CONCURRENT_QEMU_PID_UNCHANGED=PASS
 UPGRADE_CHECK_POST_WORKLOAD_RECOVERY_GATES=PASS_BOTH_MODES
 UNRELATED_DISABLED_UNUSED_REFERENCE_MUTATION=NO
 ```
+
+## Three-node QDevice-unavailable qualification
+
+A temporary external QDevice was configured through the native PVE cluster
+tool on the healthy three-node laboratory cluster. PVE required its explicit
+dangerous-operation override because an external QDevice is not a recommended
+steady-state topology for an odd node count. With QNetd connected, the cluster
+reported five expected and five available votes.
+
+QNetd was then stopped while all three PVE nodes remained online. The cluster
+retained exactly the three native node votes, quorum remained positive at
+three, and the QDevice client reported `Connect failed`. The plugin neither
+invented a vote nor applied a private watchdog rule. Bounded recovery checks
+for the Thick Generations alias and the same-VG conventional Thin alias both
+reported healthy identity, healthy paths, positive native quorum and
+`SAFE_FOR_MUTATION=YES`.
+
+One 4 MiB Thick Generations volume and one 4 MiB conventional Thin volume were
+allocated and removed while QNetd was unavailable. Exact inventory checks
+proved that both transaction-scoped test volumes and the temporary per-VM Thin
+pool were absent afterward. QNetd was restarted, all five votes returned, and
+the temporary QDevice configuration was removed through the native PVE tool.
+The final baseline was the original three-node, three-vote quorate cluster;
+both storage recovery checks remained healthy and no D-state process existed.
+
+```ini
+THREE_NODE_QDEVICE_CONNECTED_VOTES=5
+THREE_NODE_QDEVICE_UNAVAILABLE_NATIVE_VOTES=3
+THREE_NODE_QDEVICE_UNAVAILABLE_QUORUM=PASS
+QDEVICE_PRIVATE_QUORUM_OVERRIDE=NO
+QDEVICE_UNAVAILABLE_THICK_RECOVERY_GATE=PASS
+QDEVICE_UNAVAILABLE_THIN_RECOVERY_GATE=PASS
+QDEVICE_UNAVAILABLE_THICK_ALLOCATE_DELETE=PASS
+QDEVICE_UNAVAILABLE_THIN_ALLOCATE_DELETE=PASS
+QDEVICE_UNAVAILABLE_EXACT_CLEANUP=PASS_BOTH_MODES
+QDEVICE_REMOVED_AFTER_TEST=PASS
+FINAL_CLUSTER_NATIVE_VOTES=3
+FINAL_DSTATE=0
+```

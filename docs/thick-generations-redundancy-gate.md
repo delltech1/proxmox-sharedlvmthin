@@ -12,7 +12,7 @@ probes, PVE storage health, quorum and data integrity must all be revalidated.
 | Worker node lost during snapshot hydration | Partial native snapshot inventory is detected and recovered explicitly | Persistent anchor permits exact cross-node resume | Fencing before restart, no speculative cleanup, exact data canaries | PASS BOTH MODES, BOUNDED LAB |
 | Quorum reduced from three nodes to two | Mutation follows native PVE quorum | Mutation follows native PVE quorum | No plugin-specific watchdog assumption | PASS |
 | Quorum unavailable | Every new mutation fails closed | Every new mutation and resume fails closed | No LV, tag, mapper or config delta | PASS |
-| QDevice unavailable with all three nodes online | Native quorum remains authoritative | Native quorum remains authoritative | Operations neither invent nor override votes | OPEN |
+| QDevice unavailable with all three nodes online | Native quorum remains authoritative | Native quorum remains authoritative | Operations neither invent nor override votes | PASS BOTH MODES, BOUNDED LAB |
 | One iSCSI path lost and returned | Active guest I/O and snapshot lifecycle | Linear and hydrating guest I/O | 2-to-1-to-2, bounded I/O, identity and hashes preserved | PASS BOTH MODES |
 | All iSCSI paths lost and returned | Disposable active thin pool and guest I/O | Linear HEAD and active hydration | Bounded policy outcome; recovery gate remains closed on surviving D-state or non-materialized anchors | THIN FAIL_HOST_DM_THIN; THICK LINEAR PASS; HYDRATING FAIL_HOST_DM_CLONE; EXPLICIT POST-REBOOT RESUME PASS, PRE-FAULT SHA NOT PROVEN |
 | One FCoE path lost and returned | Disposable thin data | Linear Thick Generations data | Same identity and bounded I/O after 2-to-1-to-2 | FAIL TARGET TCM_FC PATH RETURN |
