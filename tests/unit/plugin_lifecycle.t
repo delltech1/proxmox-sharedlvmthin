@@ -2040,6 +2040,72 @@ subtest 'thick allocation rejects every deterministic name collision' => sub {
     is(scalar(@commands), 0, 'collision gate performs no mutation');
 };
 
+subtest 'empty thick allocation recovery clears only an exact object-free intent' => sub {
+    my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $namespace = 'vg-uuid';
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $generation = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $intent = {
+        tx => ('9' x 32), state => 'OPEN', op => 'ALLOC',
+        object => $anchor, before => ('8' x 32),
+    };
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => $namespace,
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $inventory = { testvg => {} };
+    my $frontend_exists = 0;
+    my @cleared;
+
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code, $device) = @_;
+        is($device, '/dev/mapper/3600abcd', 'recovery lock is device-scoped');
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { $intent };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { $inventory };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { $frontend_exists };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        my (undef, $vg, %seen) = @_;
+        push @cleared, [$vg, \%seen];
+        return 1;
+    };
+
+    is($class->_thick_recover_empty_allocation($cfg, $storeid, $volname),
+        'EMPTY_ALLOCATION_INTENT_RECOVERED',
+        'exact object-free allocation intent is recovered');
+    is(scalar(@cleared), 1, 'exact intent is cleared once');
+    is($cleared[0]->[0], 'testvg', 'intent clear is scoped to the exact VG');
+    is($cleared[0]->[1]->{tx}, $intent->{tx}, 'intent clear carries exact transaction identity');
+    is($cleared[0]->[1]->{_device}, '/dev/mapper/3600abcd',
+        'intent clear is scoped to the pinned mapper');
+
+    @cleared = ();
+    $inventory = { testvg => { $generation => { lv_attr => '-wi-------' } } };
+    eval { $class->_thick_recover_empty_allocation($cfg, $storeid, $volname) };
+    like($@, qr/transaction-related LV state exists/, 'any deterministic LV blocks empty recovery');
+    is_deeply(\@cleared, [], 'LV evidence rejection performs no mutation');
+
+    $inventory = { testvg => {} };
+    $frontend_exists = 1;
+    eval { $class->_thick_recover_empty_allocation($cfg, $storeid, $volname) };
+    like($@, qr/transaction frontend .* exists/, 'runtime frontend blocks empty recovery');
+    is_deeply(\@cleared, [], 'frontend rejection performs no mutation');
+
+    $frontend_exists = 0;
+    $intent = { %$intent, object => 'sltg-a-deadbeefdeadbeefdeadbeef' };
+    eval { $class->_thick_recover_empty_allocation($cfg, $storeid, $volname) };
+    like($@, qr/not the exact empty ALLOC transaction/, 'foreign intent is rejected');
+    is_deeply(\@cleared, [], 'foreign intent rejection performs no mutation');
+};
+
 subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' => sub {
     reset_mocks();
     my $storeid = 'thick-test';

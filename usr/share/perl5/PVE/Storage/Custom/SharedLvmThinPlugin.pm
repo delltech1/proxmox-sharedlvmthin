@@ -1297,6 +1297,44 @@ sub _thick_require_fresh_object_names {
     return 1;
 }
 
+sub _thick_recover_empty_allocation {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my (undef, $name) = $class->parse_volname($volname);
+    die "empty-allocation recovery requires the canonical volume name\n"
+        if $name ne $volname;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $anchor = anchor_name($namespace, $volname);
+    my $key = object_key($namespace, $volname);
+    my $mapper = mapper_name($namespace, $volname);
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "VG '$vg' has no recoverable mutation intent\n" if !$intent;
+        die "VG '$vg' intent is not the exact empty ALLOC transaction for '$volname'\n"
+            if $intent->{state} ne 'OPEN' || $intent->{op} ne 'ALLOC'
+            || $intent->{object} ne $anchor;
+
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        die "empty-allocation recovery inventory is unavailable\n" if !$lvs->{$vg};
+        my $objects = $lvs->{$vg};
+        my @related = sort grep {
+            $_ eq $volname || $_ eq $anchor
+            || /^sltg-(?:g|m)-\Q$key\E-/
+        } keys %$objects;
+        die "empty-allocation recovery refused: transaction-related LV state exists ("
+            . join(', ', @related) . ")\n" if @related;
+        die "empty-allocation recovery refused: transaction frontend '$mapper' exists\n"
+            if _block_device_exists("/dev/mapper/$mapper");
+
+        $class->_clear_vg_intent($vg, %$intent, _device => $device);
+        return 'EMPTY_ALLOCATION_INTENT_RECOVERED';
+    }, $device);
+}
+
 sub _thick_alloc_image {
     my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
     die "unsupported format '$fmt'\n" if defined($fmt) && $fmt ne 'raw';
