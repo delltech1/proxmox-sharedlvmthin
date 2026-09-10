@@ -93,6 +93,14 @@ ambiguous and is refused. Successful resumption continues persistent dm-clone
 progress, completes the linear pivot, and clears only the exact transition
 metadata and any matching intent.
 
+The same command also resumes a persisted `ROLLBACK` transition. The operation
+type is derived exclusively from the signed anchor; callers cannot select or
+change it. Recovery requires the rollback snapshot generation, superseded HEAD,
+new HEAD, metadata LV, transaction ID, geometry, and `DM_PIVOT` intent to match
+exactly. A stale PVE `lock: rollback` is not modified by the storage plugin. It
+may be cleared with native PVE tooling only after materialization, storage
+health, and restored data authority have been positively verified.
+
 Snapshot deletion uses a separate crash-classifiable transaction. It first
 records an exact `REMOVE_SNAPSHOT` intent, rebases the materialized anchor to
 the canonical HEAD-only state, and only then removes the signed immutable

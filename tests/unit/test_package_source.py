@@ -193,6 +193,8 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("has no resumable materialization transition", worker)
         self.assertIn("anchor-scoped materialization does not match transaction", worker)
         self.assertIn("a different VG intent targets this materialization anchor", worker)
+        self.assertIn("$operation ne 'SNAPSHOT' && $operation ne 'ROLLBACK'", worker)
+        self.assertIn("$operation eq 'ROLLBACK' ? 'DM_PIVOT' : 'DM_CUTOVER'", worker)
         self.assertNotIn("lvremove", worker)
         self.assertNotIn("pvcreate", worker)
 

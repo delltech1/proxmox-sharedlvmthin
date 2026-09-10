@@ -1320,6 +1320,48 @@ POST_DELETE_RECOVERY_GATE=HEALTHY
 ORIGINAL_GUEST_RESTART=PASS
 ```
 
+A separate disposable 8 GiB Thick Generations disk qualified host loss during
+rollback. Generation zero was materialized as snapshot `rollback-base` with a
+deterministic 64 MiB pattern. Its successor HEAD was overwritten with a
+different pattern before rollback. The worker node was forcibly rebooted while
+the persisted anchor reported `ROLLBACK/HYDRATING` and dm-clone had hydrated
+only part of the destination.
+
+After reboot, quorum and storage identity were healthy, transient mappings and
+the worker were absent, and the recovery gate returned `RECOVERY_REQUIRED`.
+The first explicit resume attempt exposed and then drove a correction to the
+worker dispatcher: resume had accepted only `SNAPSHOT`, although the core
+state machine already supported `ROLLBACK`. The corrected dispatcher accepts
+`ROLLBACK` only when it is derived from the signed anchor, expects the matching
+`DM_PIVOT` intent, and does not allow a caller-supplied rollback operation.
+
+The same persisted transaction resumed from its dm-clone metadata, completed
+hydration, pivoted to a destination-only linear HEAD, removed the superseded
+HEAD and transition metadata, and returned the recovery gate to healthy. The
+new HEAD's 64 MiB SHA-256 matched the immutable snapshot pattern and differed
+from the discarded successor pattern. A stale native PVE rollback lock was
+cleared only after those proofs. Snapshot deletion and VM deletion then removed
+the exact remaining snapshot, HEAD, and anchor, returning the anchor inventory
+to its baseline.
+
+```ini
+HOST_LOSS_DURING_ROLLBACK=PASS_BOUNDED_LAB
+FAULT_PHASE=ROLLBACK_HYDRATING
+POST_REBOOT_TRANSIENT_RUNTIME=ABSENT
+POST_REBOOT_RECOVERY_GATE=RECOVERY_REQUIRED
+RESUME_OPERATION_SOURCE=SIGNED_ANCHOR_ONLY
+RESUME_TRANSACTION_REUSED=YES
+ROLLBACK_DM_CLONE_PROGRESS_RESUMED=PASS
+ROLLBACK_LINEAR_PIVOT=PASS
+SUPERSEDED_HEAD_REMOVED=PASS
+ROLLBACK_HEAD_SHA_MATCHES_SNAPSHOT=PASS
+ROLLBACK_HEAD_SHA_MATCHES_DISCARDED_SUCCESSOR=NO
+STALE_PVE_LOCK_CLEARED_AFTER_DATA_PROOF=YES
+ROLLBACK_DISPOSABLE_CLEANUP=PASS
+POST_CLEANUP_ANCHOR_COUNT=BASELINE
+POST_CLEANUP_RECOVERY_GATE=HEALTHY
+```
+
 The mixed-mode guest was then enrolled as a native PVE HA resource while the
 cluster watchdog was armed. HA performed a controlled online relocation from
 an API 15 node to an API 14 node and back. The first relocation intentionally

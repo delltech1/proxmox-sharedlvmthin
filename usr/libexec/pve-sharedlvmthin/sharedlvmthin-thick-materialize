@@ -87,24 +87,28 @@ if ($derive) {
 die "invalid snapshot name\n"
     if !defined($snapshot) || $snapshot !~ /^[A-Za-z0-9_.+-]+$/;
 die "invalid materialization operation\n"
-    if !defined($operation) || $operation ne 'SNAPSHOT';
+    if !defined($operation)
+    || ($derive
+        ? ($operation ne 'SNAPSHOT' && $operation ne 'ROLLBACK')
+        : $operation ne 'SNAPSHOT');
 die "invalid transaction UUID\n"
     if !defined($transaction) || $transaction !~ /^[0-9a-f]{32}$/;
 
 my $vg = $scfg->{'slt-vgname'};
 my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
 my $intent = $class->_read_vg_intent($vg, $device);
+my $expected_intent_op = $operation eq 'ROLLBACK' ? 'DM_PIVOT' : 'DM_CUTOVER';
 my $exact_vg_intent = defined($intent)
     && ($intent->{tx} // '') eq $transaction
     && ($intent->{state} // '') eq 'OPEN'
-    && ($intent->{op} // '') eq 'DM_CUTOVER';
+    && ($intent->{op} // '') eq $expected_intent_op;
 if (!$exact_vg_intent) {
     my ($state, undef, $anchor) = $class->_thick_read_anchor($storeid, $scfg, $volname);
     die "a different VG intent targets this materialization anchor\n"
         if defined($intent) && ($intent->{object} // '') eq $anchor;
     die "anchor-scoped materialization does not match transaction '$transaction'\n"
         if ($state->{tx} // '') ne $transaction
-        || ($state->{op} // '') ne 'SNAPSHOT'
+        || ($state->{op} // '') ne $operation
         || ($state->{snapshot} // '') ne $snapshot
         || ($state->{phase} // '') !~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
 }
