@@ -2732,3 +2732,50 @@ POST_DELETE_RECOVERY_GATES=PASS_BOTH_MODES
 MIXED_MODE_VM_DESTROY=PASS
 TRANSACTION_SCOPED_LVM_CLEANUP=PASS
 ```
+
+## Mixed-mode backup, restore and live rolling upgrade
+
+A stopped disposable VM containing one one-GiB Thick Generations disk and one
+one-GiB conventional Thin disk was backed up with `vzdump` in snapshot mode.
+The VMA archive was sparse and retained distinct flushed 16 MiB canaries on
+both disks. After deleting the source VM, `qmrestore` recreated both disks
+under a new VM identifier and preserved their intended storage modes. Both
+restored canaries matched their source SHA-256 values. The source and restored
+VMs, exact LVM objects, archive and log were then removed, and both recovery
+gates remained healthy.
+
+A separate running Linux VM with a Thick root disk, an auxiliary Thick disk
+and a conventional Thin disk exercised package replacement while QEMU remained
+active. The guest completed 600 consecutive cycles; every cycle flushed a root
+file and a 4 KiB record on each auxiliary device. The installed package was
+first replaced by the earlier `0.9.0~rc5.4~tg1` build and then upgraded to the
+exact `0.9.0~rc5.4~tg4` candidate. The original QEMU process identifier existed
+unchanged after both package operations. The final root, Thick and Thin records
+all contained cycle 600, and both storage recovery gates remained healthy.
+
+Package installation refreshes active PVE management consumers so they load
+the new Perl module. It does not restart QEMU, deactivate storage, reload
+multipath or replace active device-mapper tables. Consequently a compatible
+rolling upgrade can preserve guest I/O, although the management API can be
+briefly unavailable. This result does not authorize arbitrary downgrade across
+an incompatible on-disk anchor schema. Future upgrades must preserve schema
+read compatibility or provide an explicit pre-upgrade gate and migration.
+
+```ini
+MIXED_MODE_VZDUMP=PASS
+MIXED_MODE_QMRESTORE_NEW_VMID=PASS
+THICK_RESTORE_CANARY_SHA256=PASS
+THIN_RESTORE_CANARY_SHA256=PASS
+BACKUP_RESTORE_EXACT_CLEANUP=PASS
+LIVE_PACKAGE_SOURCE_VERSION=0.9.0~rc5.4~tg1
+LIVE_PACKAGE_TARGET_VERSION=0.9.0~rc5.4~tg4
+QEMU_PID_UNCHANGED_ACROSS_PACKAGE_REPLACEMENT=PASS
+GUEST_ROOT_FSYNC_CYCLES=600_PASS
+GUEST_THICK_FSYNC_CYCLES=600_PASS
+GUEST_THIN_FSYNC_CYCLES=600_PASS
+POST_UPGRADE_RECOVERY_GATES=PASS_BOTH_MODES
+STORAGE_DEACTIVATION_DURING_UPGRADE=NO
+QEMU_RESTART_DURING_UPGRADE=NO
+MANAGEMENT_SERVICE_REFRESH_DURING_UPGRADE=YES
+ARBITRARY_INCOMPATIBLE_SCHEMA_DOWNGRADE_SUPPORTED=NO
+```

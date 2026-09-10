@@ -232,6 +232,34 @@ never overwritten. Purge removes only the marked package fragment and private
 Python cache/state. PVE Storage APIs 14 and 15 are explicitly supported; other
 runtime API versions refuse mutation until separately qualified.
 
+## Rolling package upgrade
+
+A package upgrade replaces the plugin and diagnostic files and refreshes only
+active PVE management consumers. It does not restart QEMU, deactivate an LVM
+volume, reload a device-mapper table, restart multipath or modify the SAN. A
+qualified compatible upgrade can therefore preserve running guest I/O, while
+the PVE API and web interface can be briefly unavailable during service
+refresh.
+
+Upgrade one node at a time:
+
+1. Verify cluster quorum and require `SAFE_FOR_MUTATION=YES` for every enabled
+   SharedLvmThin storage on the node.
+2. Require every Thick Generations anchor to be `MATERIALIZED`. Do not upgrade
+   a node that owns a hydration, rollback, snapshot deletion or recovery
+   transaction.
+3. Verify the package checksum and confirm that the target release explicitly
+   supports the installed anchor schema and PVE Storage API.
+4. Install the package on one node. Do not restart QEMU, LVM, multipath or the
+   SAN merely because the plugin package changed.
+5. Verify the installed version, PVE services, Doctor, recovery checks, running
+   VM state and guest I/O before continuing to the next node.
+
+Never assume that an arbitrary downgrade is safe. A release that removes
+support for an existing configuration property or persistent Thick Generations
+anchor schema requires an explicit downgrade procedure. If compatibility
+cannot be positively proven, stop mutations and keep the current package.
+
 ## RC5 to RC4 rollback
 
 RC4 does not know the RC5-only identity and reserve properties. Before installing
