@@ -17,13 +17,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build and test dependencies
-        run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl
+        run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
 
       - name: Run qualification tests
         run: |
           python3 -m unittest discover -s tests/unit -v
           prove -Itests/unit/lib -v tests/unit/*.t
           bash -n usr/sbin/* DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
+          shellcheck -x scripts/*.sh experiments/thick-generations/*.sh usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure
           python3 -m py_compile \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-web \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json \
