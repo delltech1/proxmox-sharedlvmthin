@@ -809,6 +809,58 @@ HYDRATION_TUNING_PRODUCTION_QUALIFICATION=OPEN
 NESTED_LAB_COROSYNC_STALL=OBSERVED
 ```
 
+## Conservative 8/8 hydration cycle
+
+A separate 7 GiB Linux canary was moved offline to a current-API node and the
+storage was configured with an eight-region hydration threshold and an
+eight-region contiguous-copy batch. The stopped-guest snapshot completed in
+3 minutes 6 seconds. At full hydration the clone reported 62 of 5120 metadata
+blocks in use, approximately 1.2 percent of the allocated metadata LV. The
+temporary metadata LV was then removed and the frontend pivoted to a single
+linear dependency on generation five.
+
+Complete device reads proved that immutable generation four and the new HEAD
+were initially bit-identical. The Linux guest was started, wrote and flushed a
+new filesystem canary, and shut down cleanly. A second complete read proved
+that generation five now differed from generation four, establishing a real
+rollback oracle.
+
+Rollback materialized generation six from generation four in 4 minutes
+6 seconds. Its complete-device SHA-256 exactly matched generation four and
+differed from the discarded generation-five HEAD. The guest started from the
+restored generation, the post-snapshot filesystem canary was absent, and an
+online snapshot delete removed only generation four. The final frontend
+remained a one-dependency linear target, the guest remained reachable, quorum
+was three of three, and no relevant D-state task remained.
+
+Neither the snapshot nor rollback interval contained a Corosync event. One
+brief peer-link event occurred before rollback began and is therefore not
+attributed to hydration. This clean bounded cycle makes 8/8 the current
+conservative lab candidate, but one 7 GiB cycle is insufficient evidence for
+a universal production default. Full-size, foreground-I/O, and repeated soak
+qualification remain required.
+
+```ini
+HYDRATION_8_8_SNAPSHOT=PASS
+HYDRATION_8_8_SNAPSHOT_ELAPSED=3_MIN_6_SEC
+HYDRATION_8_8_METADATA_BLOCKS_USED=62_OF_5120
+HYDRATION_8_8_PRE_WRITE_FULL_DIGEST_MATCH=PASS
+POST_SNAPSHOT_GUEST_WRITE_AND_FLUSH=PASS
+POST_WRITE_HEAD_DIGEST_DIFFERS=PASS
+HYDRATION_8_8_ROLLBACK=PASS
+HYDRATION_8_8_ROLLBACK_ELAPSED=4_MIN_6_SEC
+ROLLBACK_FULL_DEVICE_DIGEST=PASS_EXACT_SOURCE_MATCH
+ROLLBACK_FILESYSTEM_CANARY=PASS
+ONLINE_SNAPSHOT_DELETE_AFTER_ROLLBACK=PASS
+FINAL_FRONTEND_LINEAR=PASS
+FINAL_DEPENDENCY_DESTINATION_ONLY=PASS
+POST_CYCLE_QUORUM=3_OF_3
+POST_CYCLE_DSTATE=0
+COROSYNC_EVENTS_DURING_SNAPSHOT=0
+COROSYNC_EVENTS_DURING_ROLLBACK=0
+HYDRATION_8_8_PRODUCTION_QUALIFICATION=OPEN
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
