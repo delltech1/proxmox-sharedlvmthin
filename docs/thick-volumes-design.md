@@ -4,13 +4,21 @@ The public RC5 line remains thin-only. Thick Generations is developed on a
 separate experimental branch and must pass its complete release gate before it
 is merged or published.
 
-Two storage entries may eventually expose `thin` and `thick-generations`
-choices over one shared VG, but this is safe only when both entries pin the
-same VG UUID, PV UUID, and multipath WWID. All metadata-changing operations,
-including thin-pool autogrow, then serialize on a canonical lock derived from
-the VG UUID rather than on either storage ID. Legacy unpinned aliases retain
-their historical per-storage lock and are not qualified for same-VG mixed
-mode.
+Exactly two SharedLvmThin storage entries may expose `thin` and
+`thick-generations` choices over one shared VG. The pair is accepted only when
+both entries are shared, use the same PVE node scope, pin the same VG UUID, PV
+UUID, and multipath WWID, and configure identical reserve and expected-path
+policies. A third SharedLvmThin alias, duplicate allocation mode, or native PVE
+`lvm`/`lvmthin` definition for the VG is rejected. All metadata-changing
+operations, including thin-pool autogrow, then serialize on a canonical lock
+derived from the VG UUID rather than on either storage ID. Legacy unpinned
+aliases retain their historical per-storage lock and are not qualified for
+same-VG mixed mode.
+
+Both aliases report the same physical VG capacity because neither owns a
+partition of it. These per-alias figures are accurate but are not independent
+and must not be summed. Doctor reports the relationship rather than inventing
+divided capacity values.
 
 The mode uses fully allocated LVs and independent immutable generations. Its
 steady-state guest path is deliberately ordinary:
