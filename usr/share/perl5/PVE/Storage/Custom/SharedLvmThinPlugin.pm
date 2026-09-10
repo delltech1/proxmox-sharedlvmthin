@@ -948,6 +948,48 @@ sub _clear_vg_intent {
     return 1;
 }
 
+sub _thick_require_transition_intent {
+    my ($class, $storeid, $scfg, $volname, $intent) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    if (!$intent->{_anchor_scoped}) {
+        my %exact = %$intent;
+        delete $exact{_anchor_scoped};
+        return $class->_require_exact_vg_intent(
+            $vg, %exact, _device => $device,
+        );
+    }
+
+    my ($state, undef, $anchor) =
+        $class->_thick_read_anchor($storeid, $scfg, $volname);
+    die "anchor-scoped transition intent does not match persistent state\n"
+        if $anchor ne ($intent->{object} // '')
+        || ($state->{tx} // '') ne ($intent->{tx} // '')
+        || ($state->{op} // '') ne 'SNAPSHOT'
+        || ($intent->{op} // '') ne 'DM_CUTOVER'
+        || ($state->{phase} // '') !~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+    return 1;
+}
+
+sub _thick_scope_transition_intent_to_anchor {
+    my ($class, $storeid, $scfg, $volname, $intent) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    $class->_require_exact_vg_intent($vg, %$intent, _device => $device);
+    my ($state, undef, $anchor) =
+        $class->_thick_read_anchor($storeid, $scfg, $volname);
+    die "published transition is not safe for anchor-scoped materialization\n"
+        if $anchor ne ($intent->{object} // '')
+        || ($state->{tx} // '') ne ($intent->{tx} // '')
+        || ($state->{op} // '') ne 'SNAPSHOT'
+        || ($state->{phase} // '') ne 'HYDRATING';
+    $class->_clear_vg_intent($vg, %$intent, _device => $device);
+    die "VG intent remained after anchor-scoped handoff\n"
+        if defined($class->_read_vg_intent($vg, $device));
+    $intent->{_anchor_scoped} = 1;
+    return 1;
+}
+
 sub _new_transaction_id {
     open(my $fh, '<', '/proc/sys/kernel/random/uuid')
         or die "cannot obtain kernel transaction UUID: $!\n";
@@ -2219,12 +2261,30 @@ sub _thick_volume_snapshot {
     $class->_with_vg_lock($storeid, $scfg, sub {
         my $existing_intent = $class->_read_vg_intent($vg, $device);
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
-        if (defined($existing_intent)) {
+        my $this_anchor = anchor_name($namespace, $volname);
+        if (defined($existing_intent)
+            && (!$materialize_now || ($existing_intent->{object} // '') eq $this_anchor)) {
             $tr = $class->_thick_resume_transition(
                 $scfg, $storeid, $volname, $snap, $operation, $existing_intent, $lvs,
             );
             %intent = %$existing_intent;
             return;
+        }
+        if ($materialize_now) {
+            my ($persisted, undef, $persisted_anchor) =
+                $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
+            if (($persisted->{phase} // '') =~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/) {
+                %intent = (
+                    tx => $persisted->{tx}, state => 'OPEN', op => 'DM_CUTOVER',
+                    object => $persisted_anchor, before => ('0' x 32),
+                    _anchor_scoped => 1,
+                );
+                $tr = $class->_thick_resume_transition(
+                    $scfg, $storeid, $volname, $snap, $operation, \%intent, $lvs,
+                );
+                return;
+            }
+            die "materialization worker found no exact resumable transition\n";
         }
         my ($state, $head_info, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
@@ -2349,7 +2409,9 @@ sub _thick_volume_snapshot {
             . "OPEN intent and all objects preserved; no retry or cleanup: $@" if $@;
 
         $class->_with_vg_lock($storeid, $scfg, sub {
-            $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+            $class->_thick_require_transition_intent(
+                $storeid, $scfg, $volname, \%intent,
+            );
             my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
             my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
             die "snapshot transition anchor disappeared\n" if !$info;
@@ -2424,7 +2486,9 @@ sub _thick_volume_snapshot {
 
     if ($tr->{state}->{phase} eq 'SOURCE_READY') {
         $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        $class->_thick_require_transition_intent(
+            $storeid, $scfg, $volname, \%intent,
+        );
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
         die "snapshot transition anchor disappeared before cutover\n" if !$info;
@@ -2473,7 +2537,9 @@ sub _thick_volume_snapshot {
 
     if ($tr->{state}->{phase} eq 'COMMITTED') {
         $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        $class->_thick_require_transition_intent(
+            $storeid, $scfg, $volname, \%intent,
+        );
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
         die "snapshot transition anchor disappeared before clone publication\n" if !$info;
@@ -2536,6 +2602,12 @@ sub _thick_volume_snapshot {
         );
         if ($async_snapshot) {
             my $timeout = $scfg->{'slt-tg-hydration-timeout'} // 3600;
+            $class->_with_vg_lock($storeid, $scfg, sub {
+                $class->_thick_scope_transition_intent_to_anchor(
+                    $storeid, $scfg, $volname, \%intent,
+                );
+                return;
+            }, $device);
             my $scheduled = eval {
                 $class->_thick_schedule_materialization(
                     $storeid, $volname, $snap, $operation, $intent{tx}, $timeout,
@@ -2546,8 +2618,10 @@ sub _thick_volume_snapshot {
                 # COMMITTED data and an exact persistent clone mapping are
                 # already authoritative.  Returning now lets PVE resume QEMU;
                 # the transaction-scoped worker performs bounded hydration,
-                # the linear pivot, and exact cleanup.  The OPEN VG intent
-                # blocks every dependency-changing mutation in the meantime.
+                # the linear pivot, and exact cleanup. The signed non-
+                # MATERIALIZED anchor blocks another mutation of this volume,
+                # while independent volumes in the same VG can participate in
+                # the same PVE multi-disk snapshot operation.
                 return;
             }
             warn "asynchronous Thick Generations materialization could not be scheduled; "
@@ -2558,7 +2632,9 @@ sub _thick_volume_snapshot {
         );
 
         $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        $class->_thick_require_transition_intent(
+            $storeid, $scfg, $volname, \%intent,
+        );
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $state = decode_anchor_tags($lvs->{$vg}->{$tr->{anchor}}->{tags} // '');
         die "snapshot transition changed before hydration completion\n"
@@ -2581,7 +2657,9 @@ sub _thick_volume_snapshot {
 
     if ($tr->{state}->{phase} eq 'HYDRATION_COMPLETE') {
         $class->_with_vg_lock($storeid, $scfg, sub {
-        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        $class->_thick_require_transition_intent(
+            $storeid, $scfg, $volname, \%intent,
+        );
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $state = decode_anchor_tags($lvs->{$vg}->{$tr->{anchor}}->{tags} // '');
         die "snapshot transition changed before linear pivot\n"
@@ -2656,7 +2734,8 @@ sub _thick_volume_snapshot {
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'MATERIALIZED', _device => $device,
         );
-        $class->_clear_vg_intent($vg, %intent, _device => $device);
+        $class->_clear_vg_intent($vg, %intent, _device => $device)
+            if !$intent{_anchor_scoped};
         return;
     }, $device);
     }

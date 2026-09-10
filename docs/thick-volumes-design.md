@@ -31,7 +31,14 @@ During asynchronous materialization:
 
 - the published clone frontend remains the authoritative guest path;
 - the immutable source and writable destination identities are fixed;
-- the OPEN VG intent blocks another dependency-changing operation;
+- the VG-wide intent remains authoritative through clone publication and its
+  positive verification;
+- the callback then hands ownership to the signed non-MATERIALIZED anchor and
+  removes the VG-wide intent under the same cluster/VG lock;
+- that anchor blocks every dependency-changing mutation of the same volume,
+  while an independent volume in the VG may open its own exact transaction;
+- a worker may coexist with an unrelated short-lived VG intent only when its
+  own anchor still proves the exact transaction identity and phase;
 - read-only inventory continues to report the current HEAD;
 - a guest stop must not dismantle worker-owned dependencies;
 - any ambiguous identity, table, status, or intent fails closed;
@@ -42,7 +49,7 @@ diagnostic qualification. It intentionally keeps the PVE snapshot callback
 open until hydration completes and is not the normal online mode.
 
 If the worker host is lost, transient device-mapper tables disappear but the
-anchor, generations, clone metadata, and VG intent remain authoritative. A VM
+anchor, generations, and clone metadata remain authoritative. A VM
 start on another node must fail closed until an operator runs:
 
 ```text
@@ -50,11 +57,12 @@ sharedlvmthin thick-resume <storage-id> <volume>
 ```
 
 The command accepts no caller-supplied snapshot or transaction identity. It
-derives those fields from the signed persistent state, requires the exact OPEN
-intent, and reconstructs runtime tables only when all transition mappers are
-absent. A partial runtime is ambiguous and is refused. Successful resumption
-continues persistent dm-clone progress, completes the linear pivot, and clears
-only the exact transition metadata and intent.
+derives those fields from the signed persistent state, requires either its
+exact VG intent or the exact anchor-scoped handoff, and reconstructs runtime
+tables only when all transition mappers are absent. A partial runtime is
+ambiguous and is refused. Successful resumption continues persistent dm-clone
+progress, completes the linear pivot, and clears only the exact transition
+metadata and any matching intent.
 
 The mode does not weaken the existing per-VM thin-pool lifecycle. Thin and
 Thick Generations are separate storage definitions with independent allocation

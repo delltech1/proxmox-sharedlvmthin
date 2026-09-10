@@ -871,11 +871,13 @@ therefore converted a background copy into several minutes of guest downtime.
 The prototype now publishes the committed clone transition first and schedules
 a transaction-scoped, bounded systemd worker. The callback returns only after
 the persistent anchor, immutable snapshot generation, writable HEAD, exact
-clone table, VG intent, and worker identity have all been positively verified.
-The OPEN VG intent blocks every dependency-changing mutation until the worker
-has completed hydration, the destination-only linear pivot, and exact cleanup.
-If worker scheduling fails, the callback completes materialization
-synchronously instead of acknowledging an unsupervised transition.
+clone table, intent handoff, and worker identity have all been positively
+verified. The VG-wide intent protects preparation and publication; it is then
+replaced under the same lock by the signed non-MATERIALIZED anchor. That anchor
+blocks dependency-changing mutations of the same volume while allowing an
+independent disk in the VG to start its own transaction. If worker scheduling
+fails, the callback completes materialization synchronously instead of
+acknowledging an unsupervised transition.
 
 A live 7 GiB Linux qualification used the conservative 8/8 hydration profile
 while a foreground workload repeatedly replaced and fdatasync'ed a 128 MiB
@@ -908,12 +910,12 @@ source-host runtime helper mapping. This exposed a real cross-node recovery
 defect without changing persistent data.
 
 The corrected `sharedlvmthin thick-resume <storage-id> <volume>` command derives
-the request exclusively from the verified anchor and matching OPEN VG intent.
-When every transient mapper is absent, it activates only the signed source,
-destination, and metadata objects, reconstructs the exact read-only source and
-persistent clone tables, verifies their UUIDs, tables, dependencies, and clone
-status, and resumes hydration. A partial runtime still fails closed rather than
-being overwritten.
+the request exclusively from the verified anchor and requires either its exact
+VG intent or the exact anchor-scoped handoff. When every transient mapper is
+absent, it activates only the signed source, destination, and metadata objects,
+reconstructs the exact read-only source and persistent clone tables, verifies
+their UUIDs, tables, dependencies, and clone status, and resumes hydration. A
+partial runtime still fails closed rather than being overwritten.
 
 The real cross-node resume continued from the persisted dm-clone progress,
 completed in 134 seconds, pivoted to a destination-only linear frontend, and
@@ -926,8 +928,8 @@ multipath maps.
 
 This proves the normal asynchronous lifecycle, fail-closed concurrent mutation
 gate, and explicit cross-node recovery after complete source-host loss.
-Repeated multi-disk snapshots and automatic HA orchestration remain open
-qualification work.
+Concurrent multi-disk and mixed thin/thick transactions are qualified below;
+automatic HA orchestration remains open qualification work.
 
 ```ini
 ONLINE_SNAPSHOT_CALLBACK=PASS
@@ -971,11 +973,112 @@ ASYNC_HOST_LOSS_RECOVERY=PASS
 ASYNC_MULTI_DISK_QUALIFICATION=OPEN
 ```
 
+## Concurrent multi-disk materialization
+
+The first two-disk online snapshot exposed a safety-versus-composability defect:
+disk zero correctly published its asynchronous transition, but its original
+VG-wide intent caused disk one's callback to fail closed. PVE created no
+snapshot entry. Disk zero completed materialization safely and its otherwise
+orphaned immutable generation was removed through the exact storage snapshot
+delete primitive. No data or runtime artifact was lost.
+
+The corrected handoff retains the VG-wide intent through preparation, atomic
+clone publication, and positive verification. Immediately before scheduling
+the asynchronous worker, it converts that intent to the signed non-MATERIALIZED
+anchor state and removes the global tag under the same cluster/VG lock. A
+mutation of that volume remains blocked by its anchor, while a different volume
+in the same VG can open its own transaction. Workers accept an unrelated
+short-lived VG intent only when their own anchor still proves the exact
+transaction. A partially present runtime remains non-reconstructable.
+
+A running Linux VM with independent 7 GiB and 1 GiB Thick Generations disks
+then completed a native PVE two-disk snapshot in 10.488 seconds. Both callbacks
+created distinct transaction UUIDs, both workers ran concurrently, the VG had
+no unresolved global intent after handoff, and PVE recorded one coherent VM
+snapshot. During hydration the guest completed 38 paired write-and-fdatasync
+cycles across two ext4 filesystems and both pre-existing SHA-256 canaries
+remained exact.
+
+The 1 GiB disk materialized first and the 7 GiB disk followed; both workers
+exited successfully and both frontends became one-dependency linear targets.
+A stopped-guest PVE rollback then materialized both disks in 224 seconds.
+After restart, independently synchronized post-snapshot markers were absent
+from both filesystems, both stable canary hashes matched, and systemd reported
+a running system. Native PVE snapshot deletion removed exactly both immutable
+source generations. The VM remained running with no relevant D-state task and
+three-of-three quorum.
+
+```ini
+INITIAL_MULTI_DISK_ATTEMPT=FAIL_CLOSED_VG_INTENT_SCOPE
+INITIAL_MULTI_DISK_PVE_SNAPSHOT_ENTRY=ABSENT
+INITIAL_PARTIAL_DISK_CLEANUP=PASS_EXACT
+ANCHOR_SCOPED_ASYNC_INTENT=PASS
+MULTI_DISK_ONLINE_SNAPSHOT=PASS
+MULTI_DISK_CALLBACK_ELAPSED_MS=10488
+MULTI_DISK_TRANSACTION_UUIDS=DISTINCT
+CONCURRENT_MATERIALIZATION_WORKERS=2
+VG_INTENT_AFTER_HANDOFF=NONE
+PAIRED_GUEST_WRITE_FLUSH_CYCLES=38
+PRIMARY_CANARY_DURING_HYDRATION=PASS
+SECONDARY_CANARY_DURING_HYDRATION=PASS
+PRIMARY_FINAL_FRONTEND_LINEAR=PASS
+SECONDARY_FINAL_FRONTEND_LINEAR=PASS
+MULTI_DISK_ROLLBACK=PASS
+MULTI_DISK_ROLLBACK_ELAPSED_S=224
+PRIMARY_POST_SNAPSHOT_MARKER_ABSENT=PASS
+SECONDARY_POST_SNAPSHOT_MARKER_ABSENT=PASS
+PRIMARY_POST_ROLLBACK_CANARY=PASS
+SECONDARY_POST_ROLLBACK_CANARY=PASS
+MULTI_DISK_SNAPSHOT_DELETE_EXACT=PASS
+POST_MULTI_DISK_VM_RUNNING=PASS
+POST_MULTI_DISK_DSTATE=0
+POST_MULTI_DISK_QUORUM=3_OF_3
+ASYNC_MULTI_DISK_QUALIFICATION=PASS
+```
+
+## Mixed thin and Thick Generations transaction
+
+A running Linux guest was qualified with two independent Thick Generations
+disks and one conventional per-VM thin volume. One native PVE snapshot created
+two concurrent asynchronous clone transitions and one LVM-thin snapshot. Both
+materialization workers completed successfully, both thick frontends returned
+to destination-only linear tables, and the thin pool remained healthy. Stable
+SHA-256 canaries on all three filesystems remained exact during the online
+transition.
+
+After materialization, synchronized marker files were written to every
+filesystem and the guest was stopped. One native PVE rollback restored all
+three disks. After restart, all post-snapshot markers were absent and all three
+pre-snapshot canaries matched. Filesystems were identified by persistent label
+and UUID because Linux block-device enumeration order changed after restart;
+the test did not rely on `/dev/sdX` identity. Native PVE snapshot deletion then
+removed both exact immutable thick sources and the exact thin snapshot. The
+guest remained running, the cluster remained quorate, and the relevant D-state
+count was zero.
+
+```ini
+MIXED_THIN_THICK_ONLINE_SNAPSHOT=PASS
+MIXED_THICK_MATERIALIZATION_WORKERS=2
+MIXED_PRIMARY_THICK_CANARY=PASS
+MIXED_SECONDARY_THICK_CANARY=PASS
+MIXED_THIN_CANARY=PASS
+MIXED_THIN_POOL_HEALTH=PASS
+MIXED_ROLLBACK=PASS
+MIXED_POST_SNAPSHOT_MARKERS_ABSENT=3_OF_3
+MIXED_POST_ROLLBACK_CANARIES=3_OF_3
+MIXED_DEVICE_IDENTITY=LABEL_AND_UUID
+MIXED_SNAPSHOT_DELETE_EXACT=PASS
+POST_MIXED_VM_RUNNING=PASS
+POST_MIXED_DSTATE=0
+POST_MIXED_QUORUM=3_OF_3
+MIXED_THIN_THICK_QUALIFICATION=PASS
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
 2. Qualify physical FC/FCoE path loss and active-guest application outcomes.
 3. Complete a long-duration Windows data-integrity soak and interrupted
    Windows-operation recovery tests.
-4. Qualify repeated multi-disk asynchronous snapshot transactions and HA
-   orchestration of the already-qualified explicit recovery primitive.
+4. Qualify HA orchestration of the already-qualified explicit recovery
+   primitive and repeated mixed-mode transactions under a long soak.

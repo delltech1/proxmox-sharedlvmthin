@@ -51,12 +51,20 @@ die "invalid transaction UUID\n"
 my $vg = $scfg->{'slt-vgname'};
 my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
 my $intent = $class->_read_vg_intent($vg, $device);
-die "transaction '$transaction' no longer has an OPEN VG intent\n"
-    if !defined($intent);
-die "OPEN VG intent does not match materialization transaction '$transaction'\n"
-    if ($intent->{tx} // '') ne $transaction
-    || ($intent->{state} // '') ne 'OPEN'
-    || ($intent->{op} // '') ne 'DM_CUTOVER';
+my $exact_vg_intent = defined($intent)
+    && ($intent->{tx} // '') eq $transaction
+    && ($intent->{state} // '') eq 'OPEN'
+    && ($intent->{op} // '') eq 'DM_CUTOVER';
+if (!$exact_vg_intent) {
+    my ($state, undef, $anchor) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+    die "a different VG intent targets this materialization anchor\n"
+        if defined($intent) && ($intent->{object} // '') eq $anchor;
+    die "anchor-scoped materialization does not match transaction '$transaction'\n"
+        if ($state->{tx} // '') ne $transaction
+        || ($state->{op} // '') ne 'SNAPSHOT'
+        || ($state->{snapshot} // '') ne $snapshot
+        || ($state->{phase} // '') !~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+}
 
 print "MATERIALIZATION_START transaction=$transaction storage=$storeid volume=$volname\n";
 $class->_thick_volume_snapshot(

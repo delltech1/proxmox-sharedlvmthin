@@ -136,7 +136,8 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('--resume "$2" "$3"', cli)
         self.assertIn("_thick_read_anchor", worker)
         self.assertIn("has no resumable materialization transition", worker)
-        self.assertIn("OPEN VG intent does not match materialization transaction", worker)
+        self.assertIn("anchor-scoped materialization does not match transaction", worker)
+        self.assertIn("a different VG intent targets this materialization anchor", worker)
         self.assertNotIn("lvremove", worker)
         self.assertNotIn("pvcreate", worker)
 

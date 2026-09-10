@@ -2218,7 +2218,7 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
         size => 4096, old_size => 4096, geometry => { region_sectors => 8 },
         operation => 'SNAPSHOT', snapshot => 'snap1',
     };
-    my (@scheduled, $waited);
+    my (@scheduled, $waited, $scoped);
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
@@ -2232,6 +2232,12 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_schedule_materialization = sub {
         @scheduled = @_[1 .. 6]; return 'worker';
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_scope_transition_intent_to_anchor = sub {
+        my $intent = $_[4];
+        $intent->{_anchor_scoped} = 1;
+        $scoped++;
+        return 1;
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_for_hydration = sub {
         $waited++; return 1;
     };
@@ -2242,6 +2248,7 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
         'thick-test', 'vm-900001-disk-0', 'snap1', 'SNAPSHOT', $tx, 600,
     ], 'asynchronous worker receives the exact committed request');
     ok(!$waited, 'PVE snapshot callback does not wait for background hydration');
+    is($scoped, 1, 'published online transition is handed off to its signed anchor');
     is_deeply([command_lines()], [
         '/sbin/dmsetup message sltg-' .
             PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
@@ -2345,6 +2352,36 @@ subtest 'host-loss recovery reconstructs only the exact persisted clone runtime'
     ) };
     like($@, qr/runtime is partial; refusing reconstruction/,
         'a partial runtime is never guessed or overwritten');
+};
+
+subtest 'anchor-scoped hydration permits an unrelated VG transaction only' => sub {
+    my $cfg = {
+        'slt-vgname' => 'testvg', 'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $volname = 'vm-900001-disk-0';
+    my $anchor = PVE::SharedLvmThinThick::anchor_name('vg-uuid', $volname);
+    my $intent = {
+        tx => ('1' x 32), state => 'OPEN', op => 'DM_CUTOVER',
+        object => $anchor, before => ('2' x 32), _anchor_scoped => 1,
+    };
+    my $state = {
+        tx => $intent->{tx}, op => 'SNAPSHOT', phase => 'HYDRATING',
+    };
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, {}, $anchor);
+    };
+    ok($class->_thick_require_transition_intent(
+        'thick-test', $cfg, $volname, $intent,
+    ), 'signed anchor state remains sufficient while another volume owns the VG intent');
+
+    $state = { %$state, tx => ('3' x 32) };
+    eval { $class->_thick_require_transition_intent(
+        'thick-test', $cfg, $volname, $intent,
+    ) };
+    like($@, qr/does not match persistent state/,
+        'anchor-scoped transaction mismatch fails closed');
 };
 
 subtest 'content listing keeps a valid materializing HEAD visible' => sub {
