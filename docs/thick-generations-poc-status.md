@@ -894,9 +894,39 @@ its exact SHA-256. Snapshot deletion removed only the snapshot generation.
 The final state contained one destination-only linear HEAD, no relevant
 D-state task, active storage, and three-of-three cluster quorum.
 
-This proves the normal asynchronous lifecycle and its fail-closed concurrent
-mutation gate. Host-loss recovery while the asynchronous worker is active,
-explicit operator resumption, and repeated multi-disk snapshots remain open
+The active-worker host-loss gate then powered off the complete source PVE node
+while the clone was 427523 of 1835008 regions hydrated, approximately 23.3
+percent, and the guest had completed 35 additional write/flush cycles. The two
+surviving nodes remained quorate. On a different node, the persistent anchor
+still identified the exact HYDRATING phase, transaction UUID, immutable source,
+destination, and metadata LV, while no transient mapper existed.
+
+An attempted VM start before recovery failed closed with an explicit missing
+materialization-frontend error and created no D-state task. The first recovery
+implementation also failed closed because it incorrectly required the
+source-host runtime helper mapping. This exposed a real cross-node recovery
+defect without changing persistent data.
+
+The corrected `sharedlvmthin thick-resume <storage-id> <volume>` command derives
+the request exclusively from the verified anchor and matching OPEN VG intent.
+When every transient mapper is absent, it activates only the signed source,
+destination, and metadata objects, reconstructs the exact read-only source and
+persistent clone tables, verifies their UUIDs, tables, dependencies, and clone
+status, and resumes hydration. A partial runtime still fails closed rather than
+being overwritten.
+
+The real cross-node resume continued from the persisted dm-clone progress,
+completed in 134 seconds, pivoted to a destination-only linear frontend, and
+removed the metadata LV and VG intent. The guest then started on the surviving
+node, systemd reported a running system, the stable 64 MiB canary retained its
+exact SHA-256, and the interrupted 128 MiB workload file remained present.
+Snapshot deletion removed only the immutable source generation. The original
+node subsequently rejoined, restoring three-of-three quorum and both 2-of-2
+multipath maps.
+
+This proves the normal asynchronous lifecycle, fail-closed concurrent mutation
+gate, and explicit cross-node recovery after complete source-host loss.
+Repeated multi-disk snapshots and automatic HA orchestration remain open
 qualification work.
 
 ```ini
@@ -920,7 +950,24 @@ POST_ROLLBACK_GUEST_CANARY=PASS
 SNAPSHOT_DELETE_EXACT=PASS
 POST_CYCLE_QUORUM=3_OF_3
 POST_CYCLE_DSTATE=0
-ASYNC_HOST_LOSS_RECOVERY=OPEN
+ASYNC_HOST_LOSS_AT_HYDRATED_REGIONS=427523_OF_1835008
+SURVIVOR_QUORUM=2_OF_2
+PRE_RECOVERY_VM_START_FAIL_CLOSED=PASS
+PRE_RECOVERY_DSTATE=0
+PARTIAL_RUNTIME_RECONSTRUCTION=REFUSED
+EXACT_CROSS_NODE_RUNTIME_RECONSTRUCTION=PASS
+RESUME_CONTINUED_PERSISTED_PROGRESS=PASS
+EXPLICIT_CROSS_NODE_RESUME_ELAPSED_S=134
+POST_HOST_LOSS_FRONTEND_LINEAR=PASS
+POST_HOST_LOSS_DEPENDENCY_DESTINATION_ONLY=PASS
+POST_HOST_LOSS_GUEST_BOOT=PASS
+POST_HOST_LOSS_GUEST_SYSTEM_STATE=RUNNING
+POST_HOST_LOSS_STABLE_CANARY=PASS
+POST_HOST_LOSS_SNAPSHOT_DELETE_EXACT=PASS
+SOURCE_NODE_REJOIN=PASS
+FINAL_QUORUM=3_OF_3
+FINAL_PATHS_PER_MAP=2_OF_2
+ASYNC_HOST_LOSS_RECOVERY=PASS
 ASYNC_MULTI_DISK_QUALIFICATION=OPEN
 ```
 
@@ -930,5 +977,5 @@ ASYNC_MULTI_DISK_QUALIFICATION=OPEN
 2. Qualify physical FC/FCoE path loss and active-guest application outcomes.
 3. Complete a long-duration Windows data-integrity soak and interrupted
    Windows-operation recovery tests.
-4. Qualify active-worker host loss, explicit operator resumption, and repeated
-   multi-disk asynchronous snapshot transactions.
+4. Qualify repeated multi-disk asynchronous snapshot transactions and HA
+   orchestration of the already-qualified explicit recovery primitive.

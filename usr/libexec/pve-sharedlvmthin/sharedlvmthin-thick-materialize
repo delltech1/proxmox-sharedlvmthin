@@ -7,20 +7,17 @@ use warnings;
 use PVE::Storage;
 use PVE::Storage::Custom::SharedLvmThinPlugin;
 
+my $derive = @ARGV == 3 && $ARGV[0] eq '--resume';
 die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <operation> <transaction>\n"
-    if @ARGV != 5;
+    . "       sharedlvmthin-thick-materialize --resume <storage-id> <volume>\n"
+    if !$derive && @ARGV != 5;
 
-my ($storeid, $volname, $snapshot, $operation, $transaction) = @ARGV;
+my ($storeid, $volname, $snapshot, $operation, $transaction) =
+    $derive ? ($ARGV[1], $ARGV[2], undef, undef, undef) : @ARGV;
 die "invalid storage identifier\n"
     if !defined($storeid) || $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 die "invalid Thick Generations volume name\n"
     if !defined($volname) || $volname !~ /^(?:vm|base)-\d+-disk-\d+$/;
-die "invalid snapshot name\n"
-    if !defined($snapshot) || $snapshot !~ /^[A-Za-z0-9_.+-]+$/;
-die "invalid materialization operation\n"
-    if !defined($operation) || $operation ne 'SNAPSHOT';
-die "invalid transaction UUID\n"
-    if !defined($transaction) || $transaction !~ /^[0-9a-f]{32}$/;
 
 my $cfg = PVE::Storage::config();
 my $scfg = PVE::Storage::storage_config($cfg, $storeid);
@@ -31,6 +28,25 @@ my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
 die "storage '$storeid' is not configured for Thick Generations\n"
     if $class->_allocation_mode($scfg) ne 'thick-generations';
 $class->_require_thick_identity_config($storeid, $scfg);
+
+if ($derive) {
+    my ($state) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+    my $phase = $state->{phase} // '';
+    die "volume '$storeid:$volname' has no resumable materialization transition\n"
+        if $phase ne 'HYDRATING'
+        && $phase ne 'HYDRATION_COMPLETE'
+        && $phase ne 'LINEAR_PIVOTED';
+    $snapshot = $state->{snapshot};
+    $operation = $state->{op};
+    $transaction = $state->{tx};
+}
+
+die "invalid snapshot name\n"
+    if !defined($snapshot) || $snapshot !~ /^[A-Za-z0-9_.+-]+$/;
+die "invalid materialization operation\n"
+    if !defined($operation) || $operation ne 'SNAPSHOT';
+die "invalid transaction UUID\n"
+    if !defined($transaction) || $transaction !~ /^[0-9a-f]{32}$/;
 
 my $vg = $scfg->{'slt-vgname'};
 my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";

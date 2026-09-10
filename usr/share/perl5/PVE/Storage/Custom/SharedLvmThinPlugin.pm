@@ -2059,7 +2059,9 @@ sub _thick_resume_transition {
             );
         }
     } elsif ($state->{phase} ne 'PREPARED') {
-        die "$state->{phase} transition source mapper '$source_map' is missing\n";
+        my $front = mapper_name($namespace, $volname);
+        die "$state->{phase} transition runtime is partial; source mapper '$source_map' is missing\n"
+            if _block_device_exists("/dev/mapper/$front");
     }
     $class->_thick_verify_frontend($scfg, $volname, $old, int($old_size / 512))
         if $state->{phase} =~ /^(?:PREPARED|SOURCE_READY)$/;
@@ -2071,6 +2073,85 @@ sub _thick_resume_transition {
         source_map => $source_map, size => int($size), old_size => int($old_size),
         geometry => $geometry, operation => $operation, snapshot => $snap,
     };
+}
+
+sub _thick_reconstruct_missing_transition_runtime {
+    my ($class, $scfg, $volname, $tr, $intent) = @_;
+    my $phase = $tr->{state}->{phase} // '';
+    return 1 if $phase eq 'PREPARED';
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $namespace = $class->_thick_namespace($scfg);
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $front = mapper_name($namespace, $volname);
+    my $source_map = $tr->{source_map};
+    my $front_exists = _block_device_exists("/dev/mapper/$front");
+    my $source_exists = _block_device_exists("/dev/mapper/$source_map");
+    return 1 if $front_exists && $source_exists;
+    die "$phase transition runtime is partial; refusing reconstruction\n"
+        if $front_exists || $source_exists;
+
+    # A host reboot removes all transient device-mapper tables while the LVM
+    # anchor, immutable generations, clone metadata, and OPEN VG intent remain
+    # persistent. Reconstruct only the exact dependency graph described by
+    # those already-verified objects. No global scan or cleanup is performed.
+    run_command(
+        ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
+            "$vg/$tr->{source}", "$vg/$tr->{new}", "$vg/$tr->{meta}"],
+        errmsg => "activating exact persisted transition objects failed",
+    );
+    run_command(
+        ['/sbin/dmsetup', '--verifyudev', 'create', $source_map,
+            '--readonly', '--uuid', "SLT-TG3-SOURCE-$intent->{tx}", '--table',
+            "0 " . int($tr->{size} / 512) . " linear /dev/$vg/$tr->{source} 0"],
+        errmsg => "reconstructing immutable transition source failed",
+    );
+    $class->_thick_verify_source_mapper(
+        $scfg, $source_map, $tr->{source}, int($tr->{size} / 512), $intent->{tx},
+    );
+
+    my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+    if ($phase eq 'SOURCE_READY') {
+        run_command(
+            ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
+                "$vg/$tr->{old}", "$vg/$tr->{anchor}"],
+            errmsg => "activating exact pre-cutover state failed",
+        );
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
+                '--table', "0 " . int($tr->{old_size} / 512)
+                    . " linear /dev/$vg/$tr->{old} 0"],
+            errmsg => "reconstructing pre-cutover frontend failed",
+        );
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $tr->{old}, int($tr->{old_size} / 512),
+        );
+        return 1;
+    }
+
+    die "$phase transition is not safe for runtime reconstruction\n"
+        if $phase ne 'COMMITTED'
+        && $phase ne 'HYDRATING'
+        && $phase ne 'HYDRATION_COMPLETE';
+    my ($threshold, $batch) = $class->_thick_hydration_tuning($scfg);
+    my $sectors = int($tr->{size} / 512);
+    run_command(
+        ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
+            '--table', "0 $sectors clone /dev/$vg/$tr->{meta} /dev/$vg/$tr->{new} "
+                . "/dev/mapper/$source_map " . $tr->{geometry}->{region_sectors}
+                . " 2 no_hydration no_discard_passdown "
+                . "4 hydration_threshold $threshold hydration_batch_size $batch"],
+        errmsg => "reconstructing persisted dm-clone frontend failed",
+    );
+    $class->_thick_verify_clone_frontend(
+        $scfg, $volname, sectors => $sectors,
+        region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
+        new => $tr->{new}, source_map => $source_map,
+    );
+    $class->_thick_verify_clone_status(
+        $front, $phase eq 'HYDRATION_COMPLETE' ? 1 : 0,
+    );
+    return 1;
 }
 
 sub _thick_verify_published_transition_frontend {
@@ -2243,6 +2324,10 @@ sub _thick_volume_snapshot {
         $class->_thick_fault_point('C3', $operation, $storeid, $volname);
         return;
     }, $device);
+
+    $class->_thick_reconstruct_missing_transition_runtime(
+        $scfg, $volname, $tr, \%intent,
+    );
 
     if ($tr->{state}->{phase} eq 'PREPARED') {
         eval {

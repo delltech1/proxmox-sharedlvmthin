@@ -45,6 +45,14 @@ class PackageSourceTests(unittest.TestCase):
                 hits.append(path)
         self.assertEqual(hits, [])
 
+    def test_installed_executable_sources_use_unix_line_endings(self):
+        paths = list((ROOT / "usr/sbin").glob("*"))
+        paths += list((ROOT / "usr/libexec/pve-sharedlvmthin").glob("*"))
+        paths += list((ROOT / "DEBIAN").glob("*"))
+        paths = [path for path in paths if path.is_file()]
+        offenders = [str(path.relative_to(ROOT)) for path in paths if b"\r\n" in path.read_bytes()]
+        self.assertEqual(offenders, [])
+
     def test_postinst_does_not_claim_operational_after_failed_health_check(self):
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
         self.assertNotIn("fully installed and operational", postinst)
@@ -117,6 +125,20 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("--readonly suppresses that runtime query", checker)
         for command in ("pvcreate", "vgcreate", "lvcreate", "lvremove", "wipefs", "thin_repair"):
             self.assertNotIn(f'["/sbin/{command}"', checker)
+
+    def test_thick_resume_derives_exact_persisted_transaction(self):
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        self.assertIn("thick-resume <storage-id> <volume>", cli)
+        self.assertIn('--resume "$2" "$3"', cli)
+        self.assertIn("_thick_read_anchor", worker)
+        self.assertIn("has no resumable materialization transition", worker)
+        self.assertIn("OPEN VG intent does not match materialization transaction", worker)
+        self.assertNotIn("lvremove", worker)
+        self.assertNotIn("pvcreate", worker)
 
 
 if __name__ == "__main__":

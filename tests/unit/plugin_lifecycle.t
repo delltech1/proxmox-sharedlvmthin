@@ -2293,6 +2293,60 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
         'open published frontend remains protected');
 };
 
+subtest 'host-loss recovery reconstructs only the exact persisted clone runtime' => sub {
+    reset_mocks();
+    my $tx = 'f' x 32;
+    my $cfg = {
+        'slt-vgname' => 'testvg', 'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-tg-hydration-threshold' => 8,
+        'slt-tg-hydration-batch-size' => 8,
+    };
+    my $tr = {
+        state => { phase => 'HYDRATING' }, anchor => 'anchor',
+        old => 'old', new => 'new', source => 'old', meta => 'meta',
+        source_map => 'source-map', size => 4096, old_size => 4096,
+        geometry => { region_sectors => 8 },
+    };
+    my ($source_verified, $clone_verified, $status_expected);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub {
+        $source_verified++; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_frontend = sub {
+        $clone_verified++; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub {
+        $status_expected = $_[2]; return 1;
+    };
+
+    ok($class->_thick_reconstruct_missing_transition_runtime(
+        $cfg, 'vm-900001-disk-0', $tr, { tx => $tx },
+    ), 'a fully absent transient runtime is reconstructed from persistent identity');
+    is($source_verified, 1, 'the reconstructed read-only source is verified');
+    is($clone_verified, 1, 'the reconstructed clone frontend is verified');
+    is($status_expected, 0, 'HYDRATING reconstruction requires incomplete clone status');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -ay -K testvg/old testvg/new testvg/meta',
+        "/sbin/dmsetup --verifyudev create source-map --readonly --uuid SLT-TG3-SOURCE-$tx --table 0 8 linear /dev/testvg/old 0",
+        '/sbin/dmsetup --verifyudev create sltg-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
+            ' --uuid SLT-TG2-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
+            ' --table 0 8 clone /dev/testvg/meta /dev/testvg/new /dev/mapper/source-map 8 2 no_hydration no_discard_passdown 4 hydration_threshold 8 hydration_batch_size 8',
+    ], 'reconstruction activates and maps only the signed transition dependencies');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
+        return $_[0] =~ /source-map$/ ? 1 : 0;
+    };
+    eval { $class->_thick_reconstruct_missing_transition_runtime(
+        $cfg, 'vm-900001-disk-0', $tr, { tx => $tx },
+    ) };
+    like($@, qr/runtime is partial; refusing reconstruction/,
+        'a partial runtime is never guessed or overwritten');
+};
+
 subtest 'content listing keeps a valid materializing HEAD visible' => sub {
     my $storeid = 'thick-test';
     my $volname = 'vm-900001-disk-0';

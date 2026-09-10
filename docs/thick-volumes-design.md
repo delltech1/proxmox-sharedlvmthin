@@ -41,6 +41,21 @@ The optional `slt-tg-online-materialization synchronous` setting exists for
 diagnostic qualification. It intentionally keeps the PVE snapshot callback
 open until hydration completes and is not the normal online mode.
 
+If the worker host is lost, transient device-mapper tables disappear but the
+anchor, generations, clone metadata, and VG intent remain authoritative. A VM
+start on another node must fail closed until an operator runs:
+
+```text
+sharedlvmthin thick-resume <storage-id> <volume>
+```
+
+The command accepts no caller-supplied snapshot or transaction identity. It
+derives those fields from the signed persistent state, requires the exact OPEN
+intent, and reconstructs runtime tables only when all transition mappers are
+absent. A partial runtime is ambiguous and is refused. Successful resumption
+continues persistent dm-clone progress, completes the linear pivot, and clears
+only the exact transition metadata and intent.
+
 The mode does not weaken the existing per-VM thin-pool lifecycle. Thin and
 Thick Generations are separate storage definitions with independent allocation
 semantics, while PVE storage move provides the explicit conversion boundary.
