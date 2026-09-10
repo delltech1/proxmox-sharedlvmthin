@@ -291,6 +291,15 @@ class HealthCacheTests(unittest.TestCase):
         self.assertIn("shared VG aliases report the same physical capacity", html)
         self.assertIn("must not be summed", html)
 
+    def test_dashboard_has_gib_tib_and_pib_capacity_units(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('1125899906842624,"PiB"', html)
+        self.assertIn('1099511627776,"TiB"', html)
+        self.assertIn('1073741824,"GiB"', html)
+        self.assertNotIn("const gib=", html)
+
 
 if __name__ == "__main__":
     unittest.main()
