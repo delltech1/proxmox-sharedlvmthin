@@ -2703,3 +2703,32 @@ THIN_CANARY_SHA256=PASS_BEFORE_DESTINATION_AFTER_RETURN
 POST_MIGRATION_RECOVERY_GATES=PASS_BOTH_MODES
 DISABLED_FCOE_REFERENCES_RESTORED=PASS
 ```
+
+## Current-package mixed-mode snapshot rollback and cleanup
+
+A fresh stopped disposable VM was allocated with one one-GiB Thick Generations
+disk and one one-GiB conventional Thin disk using the exact experimental
+package installed on the cluster. Identical base canaries were flushed to both
+devices before a single PVE snapshot covered both storage modes. The active
+heads were then overwritten with a distinct canary.
+
+PVE rollback created a new independent Thick generation and used the guarded
+Thin replacement flow. After rollback, the first 16 MiB of both devices exactly
+matched the original base SHA-256 rather than the post-snapshot mutation. The
+snapshot was deleted through PVE, both recovery gates returned `HEALTHY` and
+safe for mutation, and VM destruction removed the exact Thick generation,
+anchor, Thin volume and per-VM Thin pool. No object containing the disposable
+VM identifier remained in either VG.
+
+```ini
+MIXED_MODE_DISPOSABLE_VM_CREATE=PASS
+MIXED_MODE_SNAPSHOT_CREATE=PASS
+THICK_AND_THIN_POST_SNAPSHOT_MUTATION=PASS
+MIXED_MODE_ROLLBACK=PASS
+THICK_ROLLBACK_CANARY_SHA256=PASS
+THIN_ROLLBACK_CANARY_SHA256=PASS
+MIXED_MODE_SNAPSHOT_DELETE=PASS
+POST_DELETE_RECOVERY_GATES=PASS_BOTH_MODES
+MIXED_MODE_VM_DESTROY=PASS
+TRANSACTION_SCOPED_LVM_CLEANUP=PASS
+```
