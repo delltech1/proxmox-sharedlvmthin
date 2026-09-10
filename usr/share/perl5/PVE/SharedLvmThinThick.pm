@@ -36,14 +36,14 @@ sub _token {
     my ($label, $value) = @_;
     die "$label is missing\n" if !defined($value) || $value eq '';
     die "$label contains characters unsafe for an LVM tag\n"
-        if $value !~ /^$TOKEN$/;
-    return $value;
+        if $value !~ /^($TOKEN)$/;
+    return $1;
 }
 
 sub object_key {
     my ($storeid, $volname) = @_;
-    _token('storage ID', $storeid);
-    _token('volume name', $volname);
+    $storeid = _token('storage ID', $storeid);
+    $volname = _token('volume name', $volname);
     return substr(sha256_hex(lc($storeid) . "\0" . $volname), 0, 24);
 }
 
@@ -576,15 +576,20 @@ sub classify_recovery {
 sub vg_intent_tags {
     my (%values) = @_;
     $values{v} = 1 if !defined($values{v});
-    die "unsupported VG intent version\n" if "$values{v}" ne '1';
+    die "unsupported VG intent version\n" if "$values{v}" !~ /^(1)$/;
+    $values{v} = $1;
     die "invalid VG intent transaction ID\n"
-        if !defined($values{tx}) || $values{tx} !~ /^$TX$/;
-    die "invalid VG intent state\n" if ($values{state} // '') ne 'OPEN';
+        if !defined($values{tx}) || $values{tx} !~ /^($TX)$/;
+    $values{tx} = $1;
+    die "invalid VG intent state\n" if ($values{state} // '') !~ /^(OPEN)$/;
+    $values{state} = $1;
     die "invalid VG intent operation\n"
-        if ($values{op} // '') !~ /^(?:ALLOC|EXTEND|REMOVE|REMOVE_SNAPSHOT|DM_CUTOVER|DM_PIVOT)$/;
-    _token('VG intent object', $values{object});
+        if ($values{op} // '') !~ /^(ALLOC|EXTEND|REMOVE|REMOVE_SNAPSHOT|DM_CUTOVER|DM_PIVOT)$/;
+    $values{op} = $1;
+    $values{object} = _token('VG intent object', $values{object});
     die "invalid VG intent before digest\n"
-        if ($values{before} // '') !~ /^[0-9a-f]{16,64}$/;
+        if ($values{before} // '') !~ /^([0-9a-f]{16,64})$/;
+    $values{before} = $1;
     my @fields = qw(v tx state op object before);
     my $canonical = join('|', map { "$_=$values{$_}" } @fields);
     my @tags = map { "slt_tg_vgi_$_=$values{$_}" } @fields;

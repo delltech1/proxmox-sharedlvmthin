@@ -8,10 +8,11 @@ use warnings;
 
 use Digest::SHA qw(sha256_hex);
 use JSON::PP qw(decode_json);
+use Scalar::Util qw(tainted);
 use PVE::Storage::Plugin;
 use PVE::Storage::LVMPlugin;
 use PVE::Cluster;
-use PVE::Tools qw(run_command);
+use PVE::Tools ();
 use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinThick qw(
     anchor_name clone_geometry decode_anchor_tags decode_generation_tags
@@ -35,6 +36,35 @@ sub api {
 
 use constant MIN_TESTED_PVE_STORAGE_API => 14;
 use constant MAX_TESTED_PVE_STORAGE_API => 15;
+
+# PVE workers run with Perl taint checks.  Every external command crosses this
+# single argv-only boundary.  Values derived from the API, LVM, sysfs or DM are
+# accepted only as scalar arguments without control characters.  A tainted
+# value may never become an option; operation switches must be code constants.
+# PVE::Tools::run_command receives an argv array, never a shell command.
+sub _validated_exec_argv {
+    my ($command) = @_;
+    die "external command must be an argv array\n" if ref($command) ne 'ARRAY' || !@$command;
+    my @safe;
+    for my $index (0 .. $#$command) {
+        my $arg = $command->[$index];
+        die "external command argument $index is not a scalar\n"
+            if !defined($arg) || ref($arg);
+        die "tainted external command argument $index may not be an option\n"
+            if $index > 0 && tainted($arg) && $arg =~ /^-/;
+        die "external command argument $index contains a control character\n"
+            if $arg !~ /^([^\x00-\x1f\x7f]*)$/;
+        push @safe, $1;
+    }
+    die "external command executable must be an absolute path\n"
+        if $safe[0] !~ m{^/[A-Za-z0-9_./+-]+$};
+    return \@safe;
+}
+
+sub run_command {
+    my ($command, @options) = @_;
+    return PVE::Tools::run_command(_validated_exec_argv($command), @options);
+}
 
 sub _runtime_storage_api {
     require PVE::Storage;
@@ -865,7 +895,8 @@ sub _vg_state_digest {
     my $state = $lines->[0];
     $state =~ s/\s+//g;
     die "VG '$vg' before-state is malformed\n"
-        if $state !~ /^[A-Za-z0-9-]+\|\d+\|\d+\|\d+(?:\.\d+)?$/;
+        if $state !~ /^([A-Za-z0-9-]+\|\d+\|\d+\|\d+(?:\.\d+)?)$/;
+    $state = $1;
     return substr(sha256_hex($state), 0, 32);
 }
 
@@ -997,8 +1028,8 @@ sub _new_transaction_id {
     close($fh);
     $tx =~ s/[^0-9A-Fa-f]//g;
     $tx = lc($tx);
-    die "kernel returned an invalid transaction UUID\n" if $tx !~ /^[0-9a-f]{32}$/;
-    return $tx;
+    die "kernel returned an invalid transaction UUID\n" if $tx !~ /^([0-9a-f]{32})$/;
+    return $1;
 }
 
 sub _thick_capacity_gate {
@@ -2977,7 +3008,8 @@ sub free_image {
 sub _thick_volume_resize {
     my ($class, $scfg, $storeid, $volname, $size, $running, $snapname) = @_;
     die "resizing thick-generations snapshots is not supported\n" if defined($snapname);
-    die "invalid resize size\n" if !defined($size) || $size !~ /^\d+$/ || $size < 1;
+    die "invalid resize size\n" if !defined($size) || $size !~ /^(\d+)$/ || $size < 1;
+    $size = 0 + $1;
     $class->_require_thick_identity_config($storeid, $scfg);
 
     my $vg = $scfg->{'slt-vgname'};

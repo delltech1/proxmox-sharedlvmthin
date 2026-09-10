@@ -477,14 +477,26 @@ def pools(vg, sid):
             except Exception:
                 return None
 
+        size_bytes = int(float(fields[1]))
+        data_percent = fnum(fields[5])
+        payload_used_bytes = (
+            int(size_bytes * data_percent / 100.0)
+            if data_percent is not None else None
+        )
+        reserved_slack_bytes = (
+            max(0, size_bytes - payload_used_bytes)
+            if payload_used_bytes is not None else None
+        )
         result.append({
             "name": name,
-            "size_bytes": int(float(fields[1])),
+            "size_bytes": size_bytes,
             "attr": fields[2],
             "tags": tags,
             "owned": expected_tag in fields[3].split(","),
             "monitor": fields[4] or None,
-            "data_percent": fnum(fields[5]),
+            "data_percent": data_percent,
+            "payload_used_bytes": payload_used_bytes,
+            "reserved_slack_bytes": reserved_slack_bytes,
             "metadata_percent": fnum(fields[6]),
             "health_status": fields[7] or None,
             "check_needed": fields[8] or None,

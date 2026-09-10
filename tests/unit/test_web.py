@@ -266,6 +266,15 @@ class HealthCacheTests(unittest.TestCase):
                 snapshot["cache"]["last_error"], "scale backend unavailable"
             )
 
+    def test_dashboard_explains_non_fungible_pool_reservation(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Pool reservation is physical VG space", html)
+        self.assertIn("Reserved slack", html)
+        self.assertIn("payload_used_bytes", html)
+        self.assertIn("reserved_slack_bytes", html)
+
 
 if __name__ == "__main__":
     unittest.main()

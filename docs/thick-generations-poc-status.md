@@ -1444,3 +1444,50 @@ PHYSICAL_FC_ARRAY_QUALIFICATION=OPEN
    Windows-operation recovery tests.
 3. Repeat mixed-mode transactions under a long-duration soak with bounded
    capacity monitoring and periodic cross-node read-only health probes.
+
+## Perl taint-mode integration
+
+A live PVE resize request exposed a missing untaint boundary while recording
+the pre-mutation `OPEN EXTEND` VG intent. Perl rejected the command before
+`vgchange`; the VG retained no intent and the thick volume retained its exact
+original size. The command boundary was then centralized and hardened before
+the operation was retried.
+
+The corrected build completed the same live 32 GiB to 36 GiB grow. The new
+range was zeroed before publication, the stable frontend was reloaded to
+exactly 75,497,472 sectors, QEMU retained the same mapper path, the existing
+32 GiB snapshot was unchanged, and the transaction intent was cleared. A
+separate two-GiB native PVE snapshot on the API-14 node exercised allocation,
+tag transitions, worker scheduling, hydration, linear pivot, and finalization
+under the same taint-enforcing build.
+
+```ini
+TAINT_REJECTION_BEFORE_FIRST_MUTATION=PASS
+TAINT_REGRESSION_EXECUTED_WITH_PERL_T=PASS
+TAINT_ARGV_BOUNDARY=PASS
+TAINT_OPTION_INJECTION_REJECTED=PASS
+TAINT_CONTROL_INJECTION_REJECTED=PASS
+THICK_LIVE_RESIZE_32_TO_36_GIB=PASS
+THICK_RESIZE_FRONTEND_SECTORS=75497472
+THICK_RESIZE_EXISTING_SNAPSHOT_UNCHANGED=PASS
+THICK_RESIZE_INTENT_CLEARED=PASS
+API14_SNAPSHOT_TAINT_INTEGRATION=PASS
+```
+
+The 90-minute mixed Linux workload completed 525 overwrite, flush, and hash
+verification cycles across two Thick Generations disks and one conventional
+thin disk. All three stable canaries retained their baseline hashes. The
+cross-node monitor run is deliberately not counted as a clean qualification:
+an administrator-requested live resize overlapped iteration 13, and its direct
+zero-initialization process was correctly observed in storage-scoped D-state.
+The workload result is valid; the non-interference health-monitor gate must be
+repeated without concurrent administration.
+
+```ini
+LONG_MIXED_GUEST_RUNTIME=90_MINUTES
+LONG_MIXED_GUEST_CYCLES=525
+LONG_MIXED_GUEST_RESULT=PASS
+LONG_MIXED_CANARIES=3_OF_3
+LONG_CROSS_NODE_HEALTH_MONITOR=INVALIDATED_BY_CONCURRENT_RESIZE
+LONG_CROSS_NODE_HEALTH_MONITOR_REPEAT=OPEN
+```

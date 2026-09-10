@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased Thick Generations prototype
+
+- Enforce one argv-only execution boundary for every plugin subprocess under
+  Perl taint mode. API, LVM, sysfs, and device-mapper derived arguments reject
+  control characters; tainted values cannot become command options; validated
+  values are untainted only after exact grammar checks.
+- Add an executable `perl -T` regression covering object identity, VG intent
+  tags, VG state digests, kernel transaction identifiers, command arguments,
+  option injection, and control-character injection.
+- Report each per-VM thin pool's physical reservation, approximate payload, and
+  reserved slack independently. The dashboard and Doctor explicitly explain
+  that pool slack remains unavailable to other VM pools and is included in
+  standard PVE VG utilization.
+
 ## 0.9.0~rc5.3.1 (2026-09-09)
 
 - Recognize the qualified 50% elastic early-grow threshold as healthy in

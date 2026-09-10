@@ -555,6 +555,26 @@ doctor() {
             AUTOACTIVATION="$(echo "$LINE" | cut -d'|' -f14 | xargs)"
             WHEN_FULL="$(echo "$LINE" | cut -d'|' -f16 | xargs)"
 
+            if [[ "$POOL_SIZE" =~ ^[0-9]+$ ]] && [[ "$DATA_PERCENT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                read -r PAYLOAD_BYTES SLACK_BYTES POOL_GIB PAYLOAD_GIB SLACK_GIB <<<"$(
+                    awk -v size="$POOL_SIZE" -v pct="$DATA_PERCENT" 'BEGIN {
+                        payload = size * pct / 100;
+                        slack = size - payload;
+                        if (slack < 0) slack = 0;
+                        printf "%.0f %.0f %.2f %.2f %.2f", payload, slack,
+                            size / 1073741824, payload / 1073741824, slack / 1073741824
+                    }'
+                )"
+                info "$SID: $POOL physical reservation=${POOL_GIB} GiB; approximate payload=${PAYLOAD_GIB} GiB; reserved slack=${SLACK_GIB} GiB"
+                info "Capacity semantics: reserved slack remains inside this per-VM pool and is unavailable to other VM pools"
+                if awk -v size="$POOL_SIZE" -v slack="$SLACK_BYTES" 'BEGIN {exit !(size >= 1073741824 && slack * 4 >= size * 3)}'; then
+                    warn "$SID: $POOL holds at least 75% reserved slack; standard PVE VG usage includes this real allocation"
+                    info "Reclaim requires an explicit offline migration/recreation workflow; Doctor made no change"
+                fi
+            else
+                warn "$SID: $POOL reservation breakdown is unavailable"
+            fi
+
             if [[ "${ATTR:0:1}" != "t" ]]; then
                 fail "$SID: $VG/$POOL exists but is not a thin pool"
                 continue

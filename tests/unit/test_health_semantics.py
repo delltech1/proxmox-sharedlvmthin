@@ -274,6 +274,8 @@ class PoolBatchCollectionTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["autoactivation"], "0")
         self.assertEqual(result[0]["when_full"], "queue")
+        self.assertEqual(result[0]["payload_used_bytes"], 10737418)
+        self.assertEqual(result[0]["reserved_slack_bytes"], 1063004406)
         self.assertEqual(thick_anchors, [])
 
     def test_lvs_failure_is_not_reported_as_an_empty_inventory(self):
