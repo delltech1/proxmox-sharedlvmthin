@@ -1978,3 +1978,47 @@ ISCSI_SINGLE_PATH_PERSISTENT_DSTATE=0
 ISCSI_SINGLE_PATH_RETURN_2_OF_2=PASS
 ISCSI_SINGLE_PATH_RECOVERY_GATE_BOTH_MODES=PASS
 ```
+
+## Active dm-thin short total-path-loss failure
+
+Both isolated iSCSI target interfaces were disabled only after an independent
+twenty-second auto-restore timer had been armed. The test node hosted a running
+guest with one conventional per-VM thin disk and two Thick Generations linear
+disks. All underlying SCSI path devices later returned to `running`, and both
+iSCSI sessions were visible with their original portals and target identity.
+
+The host storage stack did not recover. A kernel worker remained permanently
+blocked in `dm_pool_issue_prefetches`; its captured stack was
+`dm_pool_issue_prefetches -> do_worker -> process_one_work -> worker_thread`.
+The state persisted across repeated passive samples after every SCSI device
+had returned. `multipathd` diagnostics and the bounded recovery check timed
+out. Consequently restored path count was correctly not accepted as storage
+health.
+
+A normal `systemctl reboot` could not complete while the dm-thin worker was
+blocked. With the other two nodes quorate and the incident evidence already
+copied off-host, a forced reboot of only the affected disposable node was
+required. After reboot both aliases positively verified the same WWID, PV
+UUID, VG UUID, two paths, quorum, bounded probes, and zero relevant D-state.
+The test VM was started manually. Its thin and Thick Generations ext4 volumes
+mounted normally, and their final cycle-400 SHA-256 digests exactly matched
+the durable workload logs; no ext4 or block-I/O error was reported after boot.
+
+This is a host-side dm-thin recovery failure, not a successful total-path-loss
+qualification. It proves the recovery gate must remain closed on persistent
+storage-scoped D-state even after identity and paths return. Because the same
+host also owned an active thin pool, this run does not independently qualify
+a Thick-only total-loss outcome; that isolated case remains open.
+
+```ini
+ISCSI_TOTAL_PATH_LOSS_WINDOW_SECONDS=20
+ISCSI_PATH_DEVICES_RETURNED_RUNNING=PASS
+ISCSI_SESSIONS_RETURNED=PASS
+DM_THIN_PERSISTENT_DSTATE=FAIL_HOST_DM_THIN
+NORMAL_HOST_REBOOT=BLOCKED
+FORCED_HOST_REBOOT_REQUIRED=YES
+POST_REBOOT_STORAGE_IDENTITY=PASS
+POST_REBOOT_THIN_DATA_SHA256=PASS
+POST_REBOOT_THICK_DATA_SHA256=PASS
+THICK_ONLY_TOTAL_PATH_LOSS_QUALIFICATION=OPEN
+```
