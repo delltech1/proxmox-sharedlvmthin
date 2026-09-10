@@ -2581,3 +2581,45 @@ AUTOMATIC_TARGET_REPAIR=NO
 HISTORICAL_NARROW_KERNEL_PATCH_APPLIED=NO
 FCOE_PRODUCTION_QUALIFICATION=FAIL_TARGET_TCM_FC
 ```
+
+## Dual-mode endurance run interrupted below the plugin
+
+A four-hour small-Linux workload was started with one conventional Thin disk
+and one materialized Thick Generations disk. Both workers repeatedly wrote a
+64 MiB random payload, issued an explicit filesystem flush, and verified the
+payload through a direct read. The accompanying host monitors continuously ran
+the bounded storage recovery gate on every cluster node.
+
+The run produced more than 2,700 successful write/flush/direct-read
+verifications without a checksum mismatch or storage-gate failure. It ended
+after approximately 35 minutes when the local ESXi datastore backing the
+nested cluster and storage-target virtual machines temporarily disappeared.
+The hypervisor log recorded SATA command aborts, a controller reset, VMFS
+heartbeat timeouts, aborted virtual-disk I/O and multi-second device latency.
+All nested cluster nodes rebooted within the same short interval while the
+physical hypervisor remained online.
+
+After restart, every node revalidated the original shared-storage identity,
+two healthy paths, quorum and zero relevant storage-scoped D-state. Both tested
+storage aliases returned `HEALTHY` and `SAFE_FOR_MUTATION=YES`. This is useful
+infrastructure evidence, but it is not an endurance PASS and it is not
+classified as a plugin failure. A complete uninterrupted run remains required
+on stable backing storage.
+
+The private workload harness now records a run identifier and Linux boot ID,
+preserves an incomplete-run marker, refuses to overwrite unclassified evidence
+and requires every host-side health gate to remain positive. A rebooted or
+terminated run therefore cannot be reported as complete.
+
+```ini
+DUAL_MODE_ENDURANCE_TARGET_DURATION=4_HOURS
+DUAL_MODE_ENDURANCE_ELAPSED_APPROXIMATELY=35_MINUTES
+DUAL_MODE_VERIFICATIONS_BEFORE_INTERRUPTION=MORE_THAN_2700
+DUAL_MODE_CHECKSUM_FAILURES=0
+PLUGIN_HEALTH_GATE_FAILURES_BEFORE_INTERRUPTION=0
+INTERRUPTION_CLASSIFICATION=FAIL_TEST_INFRA_ESXI_DATASTORE
+POST_REBOOT_STORAGE_IDENTITY=PASS_ALL_NODES
+POST_REBOOT_RECOVERY_GATES=PASS_ALL_NODES
+INTERRUPTED_RUN_COUNTED_AS_PASS=NO
+DUAL_MODE_ENDURANCE_QUALIFICATION=OPEN
+```
