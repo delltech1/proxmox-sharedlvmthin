@@ -2063,6 +2063,33 @@ subtest 'thick allocation rejects every deterministic name collision' => sub {
     is(scalar(@commands), 0, 'collision gate performs no mutation');
 };
 
+subtest 'same-VG conversion selects a fresh guest name without weakening collision gates' => sub {
+    my $namespace = 'vg-uuid';
+    my $vmid = 900001;
+    my $requested = 'vm-900001-disk-0';
+    my $candidate_one = 'vm-900001-disk-1';
+    my $objects = {
+        $requested => { pool_lv => 'sltp-900001' },
+        PVE::SharedLvmThinThick::anchor_name($namespace, $candidate_one) => {
+            tags => 'foreign',
+        },
+    };
+    is(
+        $class->_thick_select_fresh_guest_name(
+            $namespace, $vmid, $requested, $objects,
+        ),
+        'vm-900001-disk-2',
+        'raw source collision and an occupied deterministic namespace are skipped',
+    );
+    eval {
+        $class->_thick_select_fresh_guest_name(
+            $namespace, $vmid, 'vm-OTHER-disk-0', $objects,
+        );
+    };
+    like($@, qr/canonical guest disk name/, 'noncanonical requested names fail closed');
+    is(scalar(@commands), 0, 'fresh-name selection is read-only');
+};
+
 subtest 'empty thick allocation recovery clears only an exact object-free intent' => sub {
     my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
     my $storeid = 'thick-test';
@@ -2204,6 +2231,86 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     like($@, qr/PVE still references/, 'any exact PVE reference blocks partial cleanup');
     is(scalar(@commands), 0, 'reference refusal performs no mutation');
     is_deeply(\@cleared, [], 'reference refusal preserves the OPEN intent');
+};
+
+subtest 'orphan tree recovery enumerates only signed snapshots and rechecks each mutation' => sub {
+    reset_mocks();
+    my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $namespace = 'vg-uuid';
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => $namespace,
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 2);
+    my $snap0 = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $snap1 = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 1);
+    my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
+        sid => $storeid, vol => $volname, phase => 'MATERIALIZED', tx => ('1' x 32),
+        op => 'ALLOC', snapshot => 'none', source => $head,
+        old => $head, new => $head, head => $head, generation => 2, region => 8,
+    )});
+    my $inventory = { testvg => {
+        $anchor => { tags => $anchor_tags, lv_size => 4096 },
+        $head => { tags => join(',', @{PVE::SharedLvmThinThick::generation_tags(
+            sid => $storeid, vol => $volname, role => 'head', generation => 2,
+        )}), lv_size => 4096 },
+        $snap0 => { tags => join(',', @{PVE::SharedLvmThinThick::generation_tags(
+            sid => $storeid, vol => $volname, role => 'snapshot', generation => 0,
+            snapshot => 'first',
+        )}), lv_size => 4096 },
+        $snap1 => { tags => join(',', @{PVE::SharedLvmThinThick::generation_tags(
+            sid => $storeid, vol => $volname, role => 'snapshot', generation => 1,
+            snapshot => 'second',
+        )}), lv_size => 4096 },
+    } };
+    my @deleted;
+    my @freed;
+
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code, $device) = @_;
+        is($device, '/dev/mapper/3600abcd', 'orphan inventory lock is device-scoped');
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { $inventory };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub { [] };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_volume_snapshot_delete = sub {
+        my (undef, undef, $sid, $vol, $snap, $orphan) = @_;
+        push @deleted, [$sid, $vol, $snap, $orphan];
+        return;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_free_image = sub {
+        my (undef, $sid, undef, $vol, $base, $orphan_alloc, $orphan_tree) = @_;
+        push @freed, [$sid, $vol, $base, $orphan_alloc, $orphan_tree];
+        return 'TREE_REMOVED';
+    };
+
+    is($class->_thick_recover_orphan_tree($cfg, $storeid, $volname),
+        'TREE_REMOVED', 'orphan tree delegates to exact recoverable operations');
+    is_deeply(\@deleted, [
+        [$storeid, $volname, 'first', 1],
+        [$storeid, $volname, 'second', 1],
+    ], 'only signed snapshot names are deleted in generation order');
+    is_deeply(\@freed, [[$storeid, $volname, 0, 0, 1]],
+        'HEAD and anchor use the exact orphan-allocation removal gate');
+
+    @deleted = ();
+    @freed = ();
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub {
+        ['/etc/pve/qemu-server/900001.conf'];
+    };
+    eval { $class->_thick_recover_orphan_tree($cfg, $storeid, $volname) };
+    like($@, qr/PVE still references/, 'a PVE reference blocks orphan-tree recovery');
+    is_deeply(\@deleted, [], 'reference refusal deletes no snapshot');
+    is_deeply(\@freed, [], 'reference refusal deletes no HEAD or anchor');
 };
 
 subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' => sub {
@@ -2639,7 +2746,7 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
         'an exact published clone frontend remains available for VM start');
     ok($class->deactivate_volume('thick-test', $cfg, 'vm-900001-disk-0', undef, undef),
         'zero-open frontend can be released by the guest without dismantling the transition');
-    is($verified, 2, 'both lifecycle paths positively verify the published transition');
+    is($verified, 3, 'both lifecycle paths and the post-close state verify the published transition');
     is_deeply([command_lines()], [],
         'guest stop does not remove a worker-owned mapper or deactivate its dependencies');
 
@@ -2649,6 +2756,15 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
     ) };
     like($@, qr/refusing to deactivate open thick-generations frontend/,
         'open published frontend remains protected');
+
+    my @opens = (1, 1, 0);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub {
+        return shift(@opens);
+    };
+    ok($class->deactivate_volume(
+        'thick-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ), 'a transient qmeventd close race is absorbed by the bounded wait');
+    is(scalar(@opens), 0, 'close state was observed rather than assumed');
 };
 
 subtest 'host-loss recovery reconstructs only the exact persisted clone runtime' => sub {

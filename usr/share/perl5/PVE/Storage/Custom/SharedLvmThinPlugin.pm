@@ -796,9 +796,25 @@ sub _thick_deactivate_volume {
                 $storeid, $scfg, $volname, $state,
             );
         }
-        my $opens = $class->_thick_frontend_open_count($mapper);
-        die "refusing to deactivate open thick-generations frontend '$mapper'\n"
+        my $opens;
+        for my $attempt (0 .. 20) {
+            $opens = $class->_thick_frontend_open_count($mapper);
+            last if $opens == 0;
+            last if $attempt == 20;
+            select(undef, undef, undef, 0.1);
+        }
+        die "refusing to deactivate open thick-generations frontend '$mapper' after bounded close wait\n"
             if $opens != 0;
+        # A close can race qmeventd cleanup. Revalidate the exact table after
+        # the bounded wait so a name reuse or table change cannot be mistaken
+        # for the frontend verified before waiting.
+        if ($state->{phase} eq 'MATERIALIZED') {
+            $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        } else {
+            $class->_thick_verify_published_transition_frontend(
+                $storeid, $scfg, $volname, $state,
+            );
+        }
         # A materialization worker owns the published transition mapping and
         # its dependencies.  A guest stop may close the frontend while that
         # worker is still hydrating or finalizing.  Leaving the exact verified
@@ -1301,6 +1317,24 @@ sub _thick_require_fresh_object_names {
     return 1;
 }
 
+sub _thick_select_fresh_guest_name {
+    my ($class, $namespace, $vmid, $requested, $objects) = @_;
+    die "thick-generations name selection requires an exact VG inventory\n"
+        if ref($objects) ne 'HASH';
+    die "thick-generations name selection requires a canonical guest disk name\n"
+        if !defined($requested) || $requested !~ /^vm-\Q$vmid\E-disk-\d+$/;
+
+    for my $index (0 .. 9999) {
+        my $candidate = "vm-$vmid-disk-$index";
+        my $anchor = anchor_name($namespace, $candidate);
+        my $head = generation_name($namespace, $candidate, 0);
+        next if exists($objects->{$candidate});
+        next if exists($objects->{$anchor}) || exists($objects->{$head});
+        return $candidate;
+    }
+    die "no collision-free Thick Generations guest disk name is available for VM $vmid\n";
+}
+
 sub _thick_recover_empty_allocation {
     my ($class, $scfg, $storeid, $volname) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
@@ -1475,8 +1509,7 @@ sub _thick_alloc_image {
     my $namespace = $class->_thick_namespace($scfg);
     my $generation = 0;
     my $geometry = clone_geometry(int($size) * 1024);
-    my $anchor = anchor_name($namespace, $name);
-    my $head = generation_name($namespace, $name, $generation);
+    my ($anchor, $head);
     my $tx = $class->_new_transaction_id();
     my %intent;
 
@@ -1485,6 +1518,13 @@ sub _thick_alloc_image {
         $class->_thick_capacity_gate($storeid, $scfg, $size);
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $objects = $lvs->{$vg} // {};
+        if ($is_guest && exists($objects->{$name})) {
+            $name = $class->_thick_select_fresh_guest_name(
+                $namespace, $vmid, $name, $objects,
+            );
+        }
+        $anchor = anchor_name($namespace, $name);
+        $head = generation_name($namespace, $name, $generation);
         $class->_thick_require_fresh_object_names(
             $vg, $objects, $name, $anchor, $head,
         );
@@ -3120,7 +3160,8 @@ sub _thick_volume_snapshot {
 }
 
 sub _thick_free_image {
-    my ($class, $storeid, $scfg, $volname, $isBase) = @_;
+    my ($class, $storeid, $scfg, $volname, $isBase, $require_orphan_alloc,
+        $require_orphan_tree) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
 
     my $vg = $scfg->{'slt-vgname'};
@@ -3136,6 +3177,16 @@ sub _thick_free_image {
 
         my ($state, undef, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        if ($require_orphan_alloc || $require_orphan_tree) {
+            die "orphan recovery requires a canonical materialized ALLOC state\n"
+                if $state->{phase} ne 'MATERIALIZED' || $state->{op} ne 'ALLOC'
+                || $state->{snapshot} ne 'none';
+            die "orphan-allocation recovery requires generation zero\n"
+                if $require_orphan_alloc && $state->{generation} != 0;
+            my $references = $class->_thick_pve_reference_files($storeid, $volname);
+            die "orphan recovery refused: PVE still references '$storeid:$volname' in "
+                . join(', ', @$references) . "\n" if @$references;
+        }
         my $head = $state->{head};
         my $key = object_key($namespace, $volname);
         my @generations = sort grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %{$lvs->{$vg}};
@@ -3619,7 +3670,7 @@ sub volume_snapshot_delete {
 }
 
 sub _thick_volume_snapshot_delete {
-    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    my ($class, $scfg, $storeid, $volname, $snap, $require_orphan) = @_;
     $snap = _thick_snapshot_name($snap);
     $class->_require_thick_identity_config($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
@@ -3630,6 +3681,11 @@ sub _thick_volume_snapshot_delete {
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my ($state, undef, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        if ($require_orphan) {
+            my $references = $class->_thick_pve_reference_files($storeid, $volname);
+            die "orphan-tree recovery refused: PVE still references '$storeid:$volname' in "
+                . join(', ', @$references) . "\n" if @$references;
+        }
         my ($snapshot, $generation) = $class->_thick_find_snapshot(
             $storeid, $scfg, $volname, $snap, $lvs,
         );
@@ -3709,6 +3765,51 @@ sub _thick_volume_snapshot_delete {
         $class->_thick_fault_point('D4', 'REMOVE_SNAPSHOT', $storeid, $volname);
         return;
     }, $device);
+}
+
+sub _thick_recover_orphan_tree {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my @snapshots;
+
+    # Inventory under the canonical VG lock, but run each existing exact
+    # snapshot-delete transaction separately. This keeps every destructive
+    # step independently recoverable after host loss.
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($vg, $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my ($state) = $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        my $references = $class->_thick_pve_reference_files($storeid, $volname);
+        die "orphan-tree recovery refused: PVE still references '$storeid:$volname' in "
+            . join(', ', @$references) . "\n" if @$references;
+
+        my $namespace = $class->_thick_namespace($scfg);
+        my $key = object_key($namespace, $volname);
+        my $objects = $lvs->{$vg} // {};
+        die "orphan-tree recovery found transition metadata\n"
+            if grep { /^sltg-m-\Q$key\E-/ } keys %$objects;
+
+        for my $name (sort grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %$objects) {
+            next if $name eq $state->{head};
+            my $owned = decode_generation_tags($objects->{$name}->{tags} // '');
+            die "orphan-tree recovery found a generation with ambiguous ownership\n"
+                if $owned->{sid} ne $storeid || $owned->{vol} ne $volname
+                || $owned->{role} ne 'snapshot'
+                || generation_name($namespace, $volname, $owned->{generation}) ne $name;
+            _thick_snapshot_name($owned->{snapshot});
+            push @snapshots, $owned->{snapshot};
+        }
+        return;
+    }, $device);
+
+    for my $snapshot (@snapshots) {
+        $class->_thick_volume_snapshot_delete(
+            $scfg, $storeid, $volname, $snapshot, 1,
+        );
+    }
+    return $class->_thick_free_image($storeid, $scfg, $volname, 0, 0, 1);
 }
 
 sub _thick_recover_snapshot_delete {

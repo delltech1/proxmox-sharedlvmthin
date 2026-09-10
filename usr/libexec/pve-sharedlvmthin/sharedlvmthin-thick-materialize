@@ -11,15 +11,21 @@ my $derive = @ARGV == 3 && $ARGV[0] eq '--resume';
 my $recover_delete = @ARGV == 3 && $ARGV[0] eq '--recover-delete';
 my $recover_empty_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-empty-alloc';
 my $recover_partial_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-partial-alloc';
+my $recover_orphan_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-orphan-alloc';
+my $recover_orphan_tree = @ARGV == 3 && $ARGV[0] eq '--recover-orphan-tree';
 die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <operation> <transaction>\n"
     . "       sharedlvmthin-thick-materialize --resume <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-delete <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-empty-alloc <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-partial-alloc <storage-id> <volume>\n"
-    if !$derive && !$recover_delete && !$recover_empty_alloc && !$recover_partial_alloc && @ARGV != 5;
+    . "       sharedlvmthin-thick-materialize --recover-orphan-alloc <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-orphan-tree <storage-id> <volume>\n"
+    if !$derive && !$recover_delete && !$recover_empty_alloc && !$recover_partial_alloc
+    && !$recover_orphan_alloc && !$recover_orphan_tree && @ARGV != 5;
 
 my ($storeid, $volname, $snapshot, $operation, $transaction) =
-    ($derive || $recover_delete || $recover_empty_alloc || $recover_partial_alloc)
+    ($derive || $recover_delete || $recover_empty_alloc || $recover_partial_alloc
+        || $recover_orphan_alloc || $recover_orphan_tree)
         ? ($ARGV[1], $ARGV[2], undef, undef, undef)
         : @ARGV;
 die "invalid storage identifier\n"
@@ -52,6 +58,20 @@ if ($recover_partial_alloc) {
         $scfg, $storeid, $volname,
     );
     print "$result storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($recover_orphan_alloc) {
+    print "ORPHAN_ALLOCATION_RECOVERY_START storage=$storeid volume=$volname\n";
+    $class->_thick_free_image($storeid, $scfg, $volname, 0, 1);
+    print "ORPHAN_ALLOCATION_RECOVERED storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($recover_orphan_tree) {
+    print "ORPHAN_TREE_RECOVERY_START storage=$storeid volume=$volname\n";
+    $class->_thick_recover_orphan_tree($scfg, $storeid, $volname);
+    print "ORPHAN_TREE_RECOVERED storage=$storeid volume=$volname\n";
     exit 0;
 }
 

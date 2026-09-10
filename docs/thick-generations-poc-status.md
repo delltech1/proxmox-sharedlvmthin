@@ -2304,3 +2304,47 @@ POST_REBOOT_SECONDARY_FILESYSTEMS=PASS
 LAST_DURABLE_SLOT_ALL_FILESYSTEMS=PASS
 OUTSTANDING_GUEST_WRITE_COMPLETION=NOT_GUARANTEED
 ```
+
+## Interrupted and completed same-VG Thin/Thick storage moves
+
+A stopped disposable VM was allocated on the conventional per-VM thin alias
+in the same shared VG as the Thick Generations alias. Because the thin source
+already owned the requested raw guest name, the Thick allocator selected the
+first candidate for which the raw name, deterministic anchor and generation
+zero HEAD were all absent. It did not weaken any auxiliary-name collision
+gate.
+
+The first move was interrupted by a host reset during the PVE full-copy phase.
+The VM configuration still referenced the intact thin source, while the
+unpublished Thick destination was fully materialized but unreferenced. The
+recovery checker now classifies such an anchor as `RECOVERY_REQUIRED` instead
+of treating materialization alone as health. An explicit orphan-allocation
+recovery removed only that exact signed generation and anchor after proving
+zero PVE references.
+
+A subsequent uninterrupted Thin-to-Thick move completed, changed the PVE
+configuration to the collision-free Thick volume and removed the thin source.
+The first 64 MiB SHA-256 matched the source exactly. The reverse Thick-to-Thin
+move then completed into the newly available original guest name, removed the
+exact Thick HEAD and anchor, and retained the same SHA-256. Final deletion of
+the disposable VM removed its per-VM thin pool and disk. Both same-VG aliases
+ended `HEALTHY` with `SAFE_FOR_MUTATION=YES` and no test objects.
+
+During a separate start/stop verification, PVE cleanup reached the plugin
+before QEMU's final mapper close and the strict zero-open check initially left
+the stable frontend active. Deactivation now absorbs only this bounded close
+race, revalidates the exact mapper table after observing zero opens, and still
+refuses a persistently open mapper. A repeated start/stop left no frontend.
+
+```ini
+SAME_VG_INTERRUPTED_THIN_TO_THICK_SOURCE_AUTHORITY=PASS
+SAME_VG_UNREFERENCED_DESTINATION_GATE=PASS
+SAME_VG_EXACT_ORPHAN_CLEANUP=PASS
+SAME_VG_THIN_TO_THICK=PASS
+SAME_VG_THICK_TO_THIN=PASS
+SAME_VG_ROUNDTRIP_SHA256=PASS
+SAME_VG_SOURCE_CLEANUP=PASS
+SAME_VG_FINAL_RECOVERY_GATES=PASS
+QMEVENTD_CLOSE_RACE_BOUNDED=PASS
+PERSISTENTLY_OPEN_FRONTEND_FORCE_REMOVE=NO
+```

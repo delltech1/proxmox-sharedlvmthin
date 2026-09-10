@@ -244,6 +244,21 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("_thick_recover_partial_allocation", worker)
         self.assertIn("PARTIAL_ALLOCATION_RECOVERY_START", worker)
 
+    def test_orphan_allocation_recovery_is_an_explicit_command(self):
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        self.assertIn("thick-recover-orphan-alloc <storage-id> <volume>", cli)
+        self.assertIn("thick-recover-orphan-tree <storage-id> <volume>", cli)
+        self.assertIn('--recover-orphan-alloc "$2" "$3"', cli)
+        self.assertIn('--recover-orphan-tree "$2" "$3"', cli)
+        self.assertIn("ORPHAN_ALLOCATION_RECOVERY_START", worker)
+        self.assertIn("ORPHAN_TREE_RECOVERY_START", worker)
+        self.assertIn("_thick_free_image($storeid, $scfg, $volname, 0, 1)", worker)
+        self.assertIn("_thick_recover_orphan_tree($scfg, $storeid, $volname)", worker)
+
     def test_snapshot_delete_crash_hooks_remain_production_inert(self):
         plugin = (
             ROOT

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import hashlib
+import glob
 
 
 PROBE_TIMEOUT = 10
@@ -118,7 +119,30 @@ def clean(value):
     return str(value or "").strip()
 
 
-def thick_anchor_health(pool_output, sid, namespace):
+def pve_reference_files(sid, vol):
+    """Return exact cluster configuration references without mutating state."""
+    needle = f"{sid}:{vol}"
+    paths = set()
+    for pattern in (
+        "/etc/pve/nodes/*/qemu-server/*.conf",
+        "/etc/pve/nodes/*/lxc/*.conf",
+        "/etc/pve/qemu-server/*.conf",
+        "/etc/pve/lxc/*.conf",
+    ):
+        paths.update(glob.glob(pattern))
+    references = []
+    pattern = re.compile(re.escape(needle) + r"(?:,|\s|$)", re.MULTILINE)
+    for path in sorted(paths):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                if pattern.search(handle.read()):
+                    references.append(path)
+        except OSError as exc:
+            raise RuntimeError(f"cannot read PVE reference file '{path}': {exc}") from exc
+    return references
+
+
+def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None):
     """Fail closed on every Thick Generations anchor owned by this storage."""
     anchors = []
     failures = []
@@ -258,6 +282,11 @@ def thick_anchor_health(pool_output, sid, namespace):
         key = fields[0][len("sltg-a-"):]
         if any(name.startswith(f"sltg-m-{key}-") for name in rows):
             failures.append(f"{fields[0]} materialized state retains transition metadata")
+            continue
+        if reference_lookup is not None and not reference_lookup(sid, values["vol"]):
+            failures.append(
+                f"{fields[0]} materialized volume {sid}:{values['vol']} has no PVE reference"
+            )
     return (not failures), anchors, failures
 
 
@@ -342,7 +371,8 @@ def main(argv=None):
 
     if allocation_mode == "thick-generations":
         anchor_ok, anchors, anchor_failures = thick_anchor_health(
-            evidence.get("POOL", {}).get("out", ""), sid, expected_vg
+            evidence.get("POOL", {}).get("out", ""), sid, expected_vg,
+            pve_reference_files,
         )
         results["THICK_ANCHORS_HEALTHY"] = "PASS" if anchor_ok else "FAIL"
         details.append(f"thick_anchors={len(anchors)}")

@@ -136,6 +136,24 @@ autoactivation, and no cluster-wide PVE reference. It deactivates only an
 active exact HEAD, removes the HEAD and anchor once, proves both are absent,
 and clears the intent last. Any mismatch remains `RECOVERY_REQUIRED`.
 
+A completed but unreferenced materialized destination is also never removed
+automatically. A generation-zero allocation with no snapshots can be removed
+with `thick-recover-orphan-alloc`. A materialized orphan that owns signed
+snapshots requires the stronger tree operation:
+
+```text
+sharedlvmthin thick-recover-orphan-tree <storage-id> <volume>
+```
+
+The tree operation first proves pinned identity, quorum, a canonical
+materialized anchor, absence of transition metadata and absence of every PVE
+VM or container reference. It enumerates only generations whose signed tags
+bind them to the exact storage and volume. Each snapshot is then removed by an
+independent crash-recoverable `REMOVE_SNAPSHOT` transaction which repeats the
+reference check under the canonical VG lock. Only after every snapshot is
+absent may the exact HEAD and anchor be removed. A crash can therefore be
+resumed without broad name matching or speculative cleanup.
+
 The mode does not weaken the existing per-VM thin-pool lifecycle. Thin and
 Thick Generations are separate storage definitions with independent allocation
 semantics, while PVE storage move provides the explicit conversion boundary.

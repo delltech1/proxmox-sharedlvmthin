@@ -101,7 +101,7 @@ sharedlvmthin: two
         self.assertEqual(result, ("FAIL", sample[1], [], 0))
 
     def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
-                 allocation_mode="thin", lvs_output=None):
+                 allocation_mode="thin", lvs_output=None, referenced=True):
         cfg = {
             "slt-vgname": "testvg",
             "slt-expected-vg-uuid": "vg-uuid",
@@ -131,6 +131,7 @@ sharedlvmthin: two
         with mock.patch.object(self.checker, "storage_config", return_value=cfg), \
              mock.patch.object(self.checker, "bounded_probe", side_effect=probe), \
              mock.patch.object(self.checker, "settled_dstate_evidence", return_value=(dstate, [], ["x"] if dstate == "UNKNOWN" else [], transient)), \
+             mock.patch.object(self.checker, "pve_reference_files", return_value=["ref"] if referenced else []), \
              mock.patch.object(self.checker.os.path, "exists", return_value=True), \
              redirect_stdout(StringIO()) as output:
             rc = self.checker.main(["test"])
@@ -184,6 +185,18 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("THICK_ANCHORS_HEALTHY=PASS", text)
         self.assertIn("SAFE_FOR_MUTATION=YES", text)
+
+    def test_unreferenced_materialized_thick_anchor_fails_closed(self):
+        name, tags = self.anchor()
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output,
+            referenced=False,
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("THICK_ANCHORS_HEALTHY=FAIL", text)
+        self.assertIn("has no PVE reference", text)
+        self.assertIn("SAFE_FOR_MUTATION=NO", text)
 
     @staticmethod
     def anchor(**updates):
