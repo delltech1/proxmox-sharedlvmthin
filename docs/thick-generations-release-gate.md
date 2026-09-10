@@ -22,7 +22,7 @@ Disruptive cluster and transport coverage is tracked separately in the
 | iSCSI multipath | 2-to-1-to-2 and bounded 2-to-0-to-2 recovery with identity and data verification | PASS |
 | FCoE lab transport | Ordinary I/O and 2-to-1 failover | PASS |
 | FCoE path return | Linux VN2VN/tcm_fc target recovery without target restart | FAIL - transport limitation |
-| Windows workload | Long write-through, flush and hash-verification soak | RUNNING |
+| Windows workload | Long write-through, flush and hash-verification soak | PASS |
 | Windows interruption | Materialization interruption, explicit resume, pivot and guest data verification | OPEN |
 | Cross-node non-interference | Repeated bounded recovery checks on every qualified API node | RUNNING |
 | Large-capacity arithmetic | 1, 16 and 128 PiB geometry, overflow refusal and exact health counters | PASS |

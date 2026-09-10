@@ -1758,3 +1758,22 @@ misclassified and left inactive. Unit discovery now uses a direct
 `systemctl cat` probe. A reinstall followed by interactive configuration,
 service enable/start, HTTPS request, PVE authentication, health API retrieval,
 and a headless browser rendering check all passed.
+
+## Long Windows write-through integrity soak
+
+A Windows guest completed 900 consecutive bounded data cycles on a Thick
+Generations disk. Every cycle created fresh payload data, opened the file with
+write-through semantics, issued an explicit durable flush, reopened the file,
+and verified its SHA-256 digest. The scheduled workload returned success and
+no cycle reported a write, flush, reopen, or digest failure.
+
+This result qualifies sustained steady-state guest I/O. It does not replace
+the separate interrupted-materialization and host-loss recovery gates.
+
+```ini
+WINDOWS_WRITE_THROUGH_CYCLES=900
+WINDOWS_EXPLICIT_FLUSH=PASS
+WINDOWS_PER_CYCLE_SHA256=PASS
+WINDOWS_SOAK_PROCESS_RESULT=0
+WINDOWS_LONG_DATA_INTEGRITY_SOAK=PASS
+```
