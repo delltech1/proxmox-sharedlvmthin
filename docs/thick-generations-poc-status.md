@@ -86,6 +86,75 @@ The test removed the source and clone-metadata LVs after the verified linear
 pivot. The destination remained readable and bit-identical. Transaction-scoped
 cleanup left no VG, PV, mapper, loop device, work directory, or D-state process.
 
+## Adaptive clone-geometry construction matrix
+
+The production geometry function was exercised against sparse loop-backed
+source and destination devices at 32 GiB, 1 TiB, and 30 TiB. Each metadata
+device was sized by the same userspace policy used by the plugin. The harness
+positively parsed the kernel status fields and required the reported region
+size, metadata block count, and total region count to match the requested
+geometry exactly.
+
+The first run exposed a transient udev open during immediate mapper removal.
+The qualification harness now uses device-mapper's bounded `--retry` removal
+instead of treating the first busy response as final. The complete matrix then
+created and removed every mapping without a mapper, loop device, or working
+directory left behind.
+
+```ini
+GEOMETRY_32_GIB_REGION_SECTORS=8
+GEOMETRY_32_GIB_METADATA_MIB=28
+GEOMETRY_32_GIB_INITIAL_BLOCKS_USED=265_OF_7168
+GEOMETRY_1_TIB_REGION_SECTORS=16
+GEOMETRY_1_TIB_METADATA_MIB=144
+GEOMETRY_1_TIB_INITIAL_BLOCKS_USED=4145_OF_36864
+GEOMETRY_30_TIB_REGION_SECTORS=512
+GEOMETRY_30_TIB_METADATA_MIB=136
+GEOMETRY_30_TIB_INITIAL_BLOCKS_USED=3886_OF_34816
+GEOMETRY_STATUS_MODE=RW
+GEOMETRY_STATUS_FAIL=0
+GEOMETRY_UDEV_BUSY_RETRY=PASS
+GEOMETRY_MATRIX_CLEANUP=PASS
+```
+
+The same harness family then held an isolated 8 GiB clone at its fully hydrated
+state before any linear pivot. The source loop device was kernel read-only, the
+status was sampled once per second, and every sample remained writable and free
+of the `Fail` state. Hydration completed in 140 seconds, the source and
+destination compared byte-for-byte, and the final status reported every one of
+2,097,152 regions hydrated with no region still in flight.
+
+The 20 MiB metadata device used 70 of its 5,120 4 KiB blocks at the measured
+high-water mark and at completion. This is substantially below the conservative
+allocation policy while retaining structural headroom. The qualification
+removed its exact mapper, three loop devices, image files, and working
+directory after the comparison.
+
+The production mixed-mode snapshot test independently materialized 1.25 GiB
+and 7 GiB thick disks while the guest continuously wrote and flushed matching
+payloads to both thick filesystems and one conventional thin filesystem. The
+two production workers completed in approximately 32 and 187 seconds, each
+peaked at approximately 120 MiB of resident memory, and both returned to a
+single destination-only linear dependency. Stable canaries on all three disks
+remained exact.
+
+```ini
+FULL_HYDRATION_8_GIB=PASS
+FULL_HYDRATION_SOURCE_READ_ONLY=PASS
+FULL_HYDRATION_REGIONS=2097152_OF_2097152
+FULL_HYDRATION_IN_FLIGHT_AT_END=0
+FULL_HYDRATION_METADATA_MODE=RW
+FULL_HYDRATION_METADATA_HIGH_WATER=70_OF_5120
+FULL_HYDRATION_ELAPSED_SECONDS=140
+FULL_HYDRATION_BYTE_COMPARE=PASS
+FULL_HYDRATION_CLEANUP=PASS
+PRODUCTION_MIXED_HYDRATION_1_25_GIB_SECONDS=32
+PRODUCTION_MIXED_HYDRATION_7_GIB_SECONDS=187
+PRODUCTION_WORKER_MEMORY_PEAK_MIB=120
+PRODUCTION_FINAL_FRONTENDS_LINEAR=2_OF_2
+PRODUCTION_STABLE_CANARIES=3_OF_3
+```
+
 ## State and probe gates
 
 - Anchor tags use a canonical schema and digest.
@@ -1346,10 +1415,9 @@ PHYSICAL_FC_ARRAY_QUALIFICATION=OPEN
 
 ## Open gates
 
-1. Qualify full-hydration metadata occupancy and geometry performance.
-2. Qualify physical FC path loss and active-guest application outcomes on a
+1. Qualify physical FC path loss and active-guest application outcomes on a
    target that does not reproduce the Linux VN2VN/tcm_fc recovery deadlock.
-3. Complete a long-duration Windows data-integrity soak and interrupted
+2. Complete a long-duration Windows data-integrity soak and interrupted
    Windows-operation recovery tests.
-4. Repeat mixed-mode transactions under a long-duration soak with bounded
+3. Repeat mixed-mode transactions under a long-duration soak with bounded
    capacity monitoring and periodic cross-node read-only health probes.

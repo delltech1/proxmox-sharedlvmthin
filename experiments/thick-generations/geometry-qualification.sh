@@ -21,7 +21,7 @@ destination_loop=
 metadata_loop=
 
 cleanup() {
-    dmsetup remove "$mapper" >/dev/null 2>&1 || true
+    [[ -n $mapper ]] && dmsetup remove --retry "$mapper" >/dev/null 2>&1 || true
     for device in "$metadata_loop" "$destination_loop" "$source_loop"; do
         [[ -n $device ]] && losetup -d "$device" >/dev/null 2>&1 || true
     done
@@ -42,18 +42,33 @@ dmsetup create "$mapper" --readonly --table \
     "0 $sectors clone $metadata_loop $destination_loop $source_loop $region_sectors 1 no_hydration"
 status=$(dmsetup status "$mapper")
 table=$(dmsetup table "$mapper")
+read -r _ _ target metadata_block_sectors metadata_usage \
+    reported_region hydration_usage hydrating_regions _rest <<<"$status"
+metadata_used=${metadata_usage%/*}
+metadata_total=${metadata_usage#*/}
+hydrated_regions=${hydration_usage%/*}
+total_regions=${hydration_usage#*/}
 
 [[ $status != *" Fail"* && $status != *" ro"* ]]
 [[ $status == *" $region_sectors "* ]]
 [[ $table == "0 $sectors clone "* ]]
+[[ $target == clone ]]
+[[ $reported_region == "$region_sectors" ]]
+[[ $((metadata_total * metadata_block_sectors * 512)) -eq $metadata_bytes ]]
+[[ $metadata_used -gt 0 && $metadata_used -lt $metadata_total ]]
+[[ $hydrated_regions -eq 0 && $total_regions -gt 0 && $hydrating_regions -eq 0 ]]
 
 echo "GEOMETRY_CREATE=PASS"
 echo "VIRTUAL_BYTES=$virtual_bytes"
 echo "REGION_SECTORS=$region_sectors"
 echo "METADATA_BYTES=$metadata_bytes"
+echo "METADATA_BLOCK_SECTORS=$metadata_block_sectors"
+echo "METADATA_BLOCKS_USED=$metadata_used"
+echo "METADATA_BLOCKS_TOTAL=$metadata_total"
+echo "TOTAL_REGIONS=$total_regions"
 echo "STATUS=$status"
 
-dmsetup remove "$mapper"
+dmsetup remove --retry "$mapper"
 mapper=
 for device in "$metadata_loop" "$destination_loop" "$source_loop"; do
     losetup -d "$device"
