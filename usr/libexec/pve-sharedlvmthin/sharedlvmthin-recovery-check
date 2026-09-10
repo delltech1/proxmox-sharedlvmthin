@@ -290,6 +290,36 @@ def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None):
     return (not failures), anchors, failures
 
 
+def thin_reference_health(pool_output, sid, reference_lookup):
+    """Require every owned per-VM thin disk to have an exact PVE reference."""
+    rows = {}
+    for line in pool_output.splitlines():
+        fields = [x.strip() for x in line.split("|")]
+        if len(fields) >= 6 and fields[0]:
+            rows[fields[0]] = fields
+    failures = []
+    pools = []
+    for name, fields in rows.items():
+        match = re.fullmatch(r"sltp-(\d+)", name)
+        if not match or f"pve-slt-sid-{sid}" not in fields[4].split(","):
+            continue
+        pools.append(name)
+        vmid = match.group(1)
+        disks = sorted(
+            candidate for candidate, candidate_fields in rows.items()
+            if len(candidate_fields) >= 6
+            and candidate_fields[5] == name
+            and re.fullmatch(rf"vm-{re.escape(vmid)}-disk-\d+", candidate)
+        )
+        if not disks:
+            failures.append(f"{name} has no canonical guest disk")
+            continue
+        for disk in disks:
+            if not reference_lookup(sid, disk):
+                failures.append(f"{disk} in {name} has no PVE reference")
+    return (not failures), pools, failures
+
+
 def main(argv=None):
     argv = argv or sys.argv[1:]
     if len(argv) != 1 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", argv[0]):
@@ -319,7 +349,7 @@ def main(argv=None):
         ("PV", ["/sbin/pvs", "--readonly", "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
-        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags", vg]),
+        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv", vg]),
         ("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]),
     ]
     evidence = {}
@@ -381,6 +411,17 @@ def main(argv=None):
         results["THICK_ANCHORS_HEALTHY"] = "PASS"
         details.append("Thick Generations anchor gate is not applicable")
 
+    if allocation_mode == "thick-generations":
+        results["THIN_REFERENCES_HEALTHY"] = "PASS"
+        details.append("thin reference gate is not applicable")
+    else:
+        thin_ok, thin_pools, thin_failures = thin_reference_health(
+            evidence.get("POOL", {}).get("out", ""), sid, pve_reference_files
+        )
+        results["THIN_REFERENCES_HEALTHY"] = "PASS" if thin_ok else "FAIL"
+        details.append(f"owned_thin_pools={len(thin_pools)}")
+        details.extend(f"recovery-required: {item}" for item in thin_failures)
+
     pve_out = evidence.get("PVE", {}).get("out", "")
     results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
         rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
@@ -417,7 +458,8 @@ def main(argv=None):
         details.append(f"unscoped_dstate_tasks={len(unknown)}; positive storage attribution unavailable")
 
     ordered = ["PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
-               "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
+               "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "THIN_REFERENCES_HEALTHY",
+               "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
                "PVE_STORAGE_HEALTH", "QUORUM"]
     safe = all(results.get(name) == "PASS" for name in ordered)
     print(f"STORAGE_ID={sid}")

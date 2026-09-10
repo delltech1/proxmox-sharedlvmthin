@@ -2313,6 +2313,44 @@ subtest 'orphan tree recovery enumerates only signed snapshots and rechecks each
     is_deeply(\@freed, [], 'reference refusal deletes no HEAD or anchor');
 };
 
+subtest 'thin orphan recovery is explicit, reference-gated, and uses exact normal deletion' => sub {
+    reset_mocks();
+    my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thin',
+    };
+    my @freed;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_mutation_lock = sub {
+        my (undef, $sid, undef, $code) = @_;
+        is($sid, 'thin-test', 'thin orphan recovery uses the normal mutation lock');
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub { [] };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_free_image_locked = sub {
+        my (undef, $sid, undef, $vol, $base) = @_;
+        push @freed, [$sid, $vol, $base];
+        return 'THIN_REMOVED';
+    };
+
+    is($class->_thin_recover_orphan($cfg, 'thin-test', 'vm-900001-disk-0'),
+        'THIN_REMOVED', 'unreferenced canonical disk uses exact normal deletion');
+    is_deeply(\@freed, [['thin-test', 'vm-900001-disk-0', 0]],
+        'only the requested disk reaches the owned deletion primitive');
+
+    @freed = ();
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub {
+        ['/etc/pve/qemu-server/900001.conf'];
+    };
+    eval { $class->_thin_recover_orphan($cfg, 'thin-test', 'vm-900001-disk-0') };
+    like($@, qr/PVE still references/, 'any exact PVE reference blocks thin cleanup');
+    is_deeply(\@freed, [], 'reference refusal performs no deletion');
+
+    eval { $class->_thin_recover_orphan($cfg, 'thin-test', 'vm-900001-state-test') };
+    like($@, qr/canonical guest disk/, 'auxiliary volumes cannot enter orphan recovery');
+};
+
 subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' => sub {
     reset_mocks();
     my $storeid = 'thick-test';

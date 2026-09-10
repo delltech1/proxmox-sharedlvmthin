@@ -119,7 +119,10 @@ sharedlvmthin: two
             elif command[0].endswith("pvs"):
                 out = f"pv-uuid|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
-                out = lvs_output or "sltp-100|twi-aotz--|||pve-slt-sid-test"
+                out = lvs_output or (
+                    "sltp-100|twi-aotz--|||pve-slt-sid-test|\n"
+                    "vm-100-disk-0|Vwi-a-tz--||||sltp-100"
+                )
             elif command[0].endswith("pvesm"):
                 out = "test sharedlvmthin active 1 1 0 0%"
             elif command[0].endswith("multipath"):
@@ -147,6 +150,13 @@ sharedlvmthin: two
         rc, output = self.run_main(actual_wwid="3600ffff")
         self.assertEqual(rc, 2)
         self.assertIn("WWID_MATCH=FAIL", output)
+        self.assertIn("SAFE_FOR_MUTATION=NO", output)
+
+    def test_unreferenced_owned_thin_disk_fails_closed(self):
+        rc, output = self.run_main(referenced=False)
+        self.assertEqual(rc, 2)
+        self.assertIn("THIN_REFERENCES_HEALTHY=FAIL", output)
+        self.assertIn("vm-100-disk-0 in sltp-100 has no PVE reference", output)
         self.assertIn("SAFE_FOR_MUTATION=NO", output)
 
     def test_confirmed_transient_dstate_is_visible_but_allows_healthy_result(self):

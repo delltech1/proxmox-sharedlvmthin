@@ -3284,6 +3284,22 @@ sub free_image {
     });
 }
 
+sub _thin_recover_orphan {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    die "thin orphan recovery is unavailable for Thick Generations storage\n"
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
+    my ($vtype, undef, undef) = $class->parse_volname($volname);
+    die "thin orphan recovery requires a canonical guest disk volume\n"
+        if $vtype ne 'images' || $volname !~ /^vm-\d+-disk-\d+$/;
+
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        my $references = $class->_thick_pve_reference_files($storeid, $volname);
+        die "thin orphan recovery refused: PVE still references '$storeid:$volname' in "
+            . join(', ', @$references) . "\n" if @$references;
+        return $class->_free_image_locked($storeid, $scfg, $volname, 0);
+    });
+}
+
 sub _free_image_locked {
     my ($class, $storeid, $scfg, $volname, $isBase) = @_;
 

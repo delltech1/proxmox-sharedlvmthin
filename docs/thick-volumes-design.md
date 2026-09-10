@@ -154,6 +154,22 @@ reference check under the canonical VG lock. Only after every snapshot is
 absent may the exact HEAD and anchor be removed. A crash can therefore be
 resumed without broad name matching or speculative cleanup.
 
+The same fail-closed rule applies in the opposite conversion direction. An
+interrupted Thick-to-Thin full copy can leave a conventional per-VM thin disk
+and pool that are not referenced by PVE while the Thick source remains
+authoritative. The thin recovery gate reports this as `RECOVERY_REQUIRED`.
+After independently proving which source remains authoritative, an operator
+may remove only the exact unreferenced conventional thin disk with:
+
+```text
+sharedlvmthin thin-recover-orphan <storage-id> <volume>
+```
+
+The command accepts only a canonical guest disk, repeats the exact cluster-wide
+PVE reference check under the normal mutation lock, and delegates to the
+existing owned-volume deletion path. Snapshot and per-VM-pool cleanup retain
+their normal ownership and last-member checks. No orphan cleanup is automatic.
+
 The mode does not weaken the existing per-VM thin-pool lifecycle. Thin and
 Thick Generations are separate storage definitions with independent allocation
 semantics, while PVE storage move provides the explicit conversion boundary.

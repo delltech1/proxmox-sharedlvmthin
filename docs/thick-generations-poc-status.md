@@ -2348,3 +2348,38 @@ SAME_VG_FINAL_RECOVERY_GATES=PASS
 QMEVENTD_CLOSE_RACE_BOUNDED=PASS
 PERSISTENTLY_OPEN_FRONTEND_FORCE_REMOVE=NO
 ```
+
+## Interrupted Thick-to-Thin same-VG move
+
+A second disposable run exercised the opposite conversion direction. The
+source was a canonical materialized Thick generation. Its first MiB was
+explicitly zeroed to prevent accidental guest boot code, and a random 64 MiB
+payload beginning at offset one MiB was recorded by SHA-256. A forced host
+reset occurred after PVE had allocated the conventional per-VM thin target and
+while the full-copy operation was still responsible for publication.
+
+After reboot, the PVE configuration still referenced the Thick source. Its
+zero boot region and payload SHA-256 both matched the pre-fault values. The
+unreferenced thin target and its owned per-VM pool remained present. This
+exposed a recovery-check gap: healthy thin-pool flags alone did not prove that
+the pool's guest disks were referenced by PVE.
+
+The thin recovery gate now inventories owned pools and their canonical guest
+disks, performs exact cluster-wide PVE reference checks, and fails closed on an
+unreferenced disk. The explicit `thin-recover-orphan` command then removed only
+the unreferenced disk and, through existing ownership rules, its empty owned
+pool. Both storage aliases returned healthy. A normal Thick-to-Thin retry
+completed, retained both SHA-256 values, removed the exact Thick source, and
+the final VM deletion left no disposable object.
+
+```ini
+SAME_VG_INTERRUPTED_THICK_TO_THIN_SOURCE_AUTHORITY=PASS
+SAME_VG_INTERRUPTED_THICK_TO_THIN_SOURCE_SHA256=PASS
+SAME_VG_THIN_ORPHAN_DETECTION=PASS
+SAME_VG_THIN_ORPHAN_EXPLICIT_CLEANUP=PASS
+SAME_VG_THICK_TO_THIN_RETRY=PASS
+SAME_VG_THICK_TO_THIN_RETRY_SHA256=PASS
+SAME_VG_REVERSE_MOVE_FINAL_CLEANUP=PASS
+SAME_VG_REVERSE_MOVE_FINAL_RECOVERY_GATES=PASS
+AUTOMATIC_THIN_ORPHAN_CLEANUP=NO
+```
