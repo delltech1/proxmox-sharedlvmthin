@@ -14,7 +14,7 @@ probes, PVE storage health, quorum and data integrity must all be revalidated.
 | Quorum unavailable | Every new mutation fails closed | Every new mutation and resume fails closed | No LV, tag, mapper or config delta | PASS |
 | QDevice unavailable with all three nodes online | Native quorum remains authoritative | Native quorum remains authoritative | Operations neither invent nor override votes | OPEN |
 | One iSCSI path lost and returned | Active guest I/O and snapshot lifecycle | Linear and hydrating guest I/O | 2-to-1-to-2, bounded I/O, identity and hashes preserved | PASS BOTH MODES |
-| All iSCSI paths lost and returned | Disposable active thin pool and guest I/O | Linear HEAD and active hydration | Bounded policy outcome; recovery gate remains closed on surviving D-state | THIN FAIL_HOST_DM_THIN; THICK-ONLY REPEAT OPEN |
+| All iSCSI paths lost and returned | Disposable active thin pool and guest I/O | Linear HEAD and active hydration | Bounded policy outcome; recovery gate remains closed on surviving D-state | THIN FAIL_HOST_DM_THIN; THICK LINEAR PASS; HYDRATING OPEN |
 | One FCoE path lost and returned | Disposable thin data | Linear Thick Generations data | Same identity and bounded I/O after 2-to-1-to-2 | OPEN BOTH MODES |
 | All FCoE paths lost and returned | Disposable thin data | Linear and hydrating Thick Generations data | No unsupported recovery claim; capture target and initiator state | OPEN BOTH MODES |
 | Snapshot callback process terminated | Exact thin ownership evidence | C0-C9 persistent classification | One authoritative generation; exact recovery only | PASS |

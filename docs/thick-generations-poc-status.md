@@ -2022,3 +2022,54 @@ POST_REBOOT_THIN_DATA_SHA256=PASS
 POST_REBOOT_THICK_DATA_SHA256=PASS
 THICK_ONLY_TOTAL_PATH_LOSS_QUALIFICATION=OPEN
 ```
+
+## Isolated Thick-only short total-path-loss qualification
+
+A separate run moved the Linux workload guest to a node on which its
+conventional thin disk was detached and its per-VM thin pool remained inactive.
+Only two canonical Thick Generations linear frontends were active. The guest
+wrote fresh random 4 MiB files to two independent ext4 filesystems, issued
+fsync and directory sync, renamed each file, and verified SHA-256 on every
+cycle.
+
+Both isolated iSCSI target interfaces were disabled after an independent
+twenty-second auto-restore timer was armed. The guest completed cycle 369 as
+the fault was applied, paused while all paths were unavailable, resumed at
+cycle 370 after the map became usable, and completed all 400 cycles. Both final
+files matched their durable SHA-256 records. The initiator required longer than
+the interface-down interval to reinstate every SCSI path; all four path devices
+eventually reported `active ready running` and both maps returned to two healthy
+paths.
+
+No persistent D-state appeared. The bounded recovery gate positively verified
+the original WWID, PV UUID, VG UUID, two healthy paths, bounded LVM and PVE
+probes, quorum, and `SAFE_FOR_MUTATION=YES`. A subsequent two-disk Thick
+snapshot completed, both transitions materialized and pivoted back to canonical
+linear mappings, and the snapshot was removed. The VM was then returned to its
+original node and its detached thin disk was reattached without recreation;
+both storage modes passed their recovery gates.
+
+An intentionally premature snapshot-delete request, issued while one exact
+materialization worker was still running, was correctly refused but left the
+standard PVE `snapshot-delete` VM lock in place. After the worker disappeared
+and the anchor positively proved `MATERIALIZED`, an explicit `qm unlock` and
+retry completed. Automatic lock clearing is deliberately not implemented;
+this integration behavior remains tracked for runbook and user-interface
+handling.
+
+```ini
+ISCSI_THICK_ONLY_FAULT_ACTIVE_THIN_POOL=NO
+ISCSI_THICK_ONLY_TARGET_INTERFACE_OUTAGE_SECONDS=20
+ISCSI_THICK_ONLY_GUEST_IO_PAUSED_AND_RESUMED=PASS
+ISCSI_THICK_ONLY_ROOT_SHA256=PASS
+ISCSI_THICK_ONLY_SECOND_DISK_SHA256=PASS
+ISCSI_THICK_ONLY_PERSISTENT_DSTATE=0
+ISCSI_THICK_ONLY_RETURN_2_OF_2=PASS
+ISCSI_THICK_ONLY_RECOVERY_GATE=PASS
+ISCSI_THICK_ONLY_POST_RECOVERY_SNAPSHOT=PASS
+ISCSI_THICK_ONLY_POST_RECOVERY_LINEAR_PIVOT=PASS
+ISCSI_THICK_ONLY_POST_RECOVERY_DELETE=PASS
+ISCSI_THICK_ONLY_TOTAL_PATH_LOSS=PASS_BOUNDED_LAB_POLICY
+ISCSI_HYDRATING_TOTAL_PATH_LOSS=OPEN
+PVE_PREMATURE_SNAPSHOT_DELETE_LOCK=OBSERVED
+```
