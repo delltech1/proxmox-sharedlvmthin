@@ -77,7 +77,28 @@ sharedlvmthin: two
         self.assertEqual(len(relevant), 1)
         self.assertEqual(unknown, [])
 
-    def run_main(self, *, actual_wwid="3600abcd", dstate="PASS"):
+    def test_transient_dstate_requires_and_passes_bounded_recheck(self):
+        samples = [
+            ("FAIL", ["pid=42 evidence=lvs testvg"], []),
+            ("PASS", [], []),
+        ]
+        with mock.patch.object(
+            self.checker, "dstate_evidence", side_effect=samples
+        ) as evidence, mock.patch.object(self.checker.time, "sleep") as sleep:
+            result = self.checker.settled_dstate_evidence(["testvg"])
+        self.assertEqual(result, ("PASS", [], [], 1))
+        self.assertEqual(evidence.call_count, 2)
+        sleep.assert_called_once_with(self.checker.DSTATE_CONFIRM_SECONDS)
+
+    def test_persistent_dstate_remains_fail_closed(self):
+        sample = ("FAIL", ["pid=42 evidence=lvs testvg"], [])
+        with mock.patch.object(
+            self.checker, "dstate_evidence", side_effect=[sample, sample]
+        ), mock.patch.object(self.checker.time, "sleep"):
+            result = self.checker.settled_dstate_evidence(["testvg"])
+        self.assertEqual(result, ("FAIL", sample[1], [], 0))
+
+    def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0):
         cfg = {
             "slt-vgname": "testvg",
             "slt-expected-vg-uuid": "vg-uuid",
@@ -105,7 +126,7 @@ sharedlvmthin: two
 
         with mock.patch.object(self.checker, "storage_config", return_value=cfg), \
              mock.patch.object(self.checker, "bounded_probe", side_effect=probe), \
-             mock.patch.object(self.checker, "dstate_evidence", return_value=(dstate, [], ["x"] if dstate == "UNKNOWN" else [])), \
+             mock.patch.object(self.checker, "settled_dstate_evidence", return_value=(dstate, [], ["x"] if dstate == "UNKNOWN" else [], transient)), \
              mock.patch.object(self.checker.os.path, "exists", return_value=True), \
              redirect_stdout(StringIO()) as output:
             rc = self.checker.main(["test"])
@@ -122,6 +143,13 @@ sharedlvmthin: two
         self.assertEqual(rc, 2)
         self.assertIn("WWID_MATCH=FAIL", output)
         self.assertIn("SAFE_FOR_MUTATION=NO", output)
+
+    def test_confirmed_transient_dstate_is_visible_but_allows_healthy_result(self):
+        rc, output = self.run_main(transient=1)
+        self.assertEqual(rc, 0)
+        self.assertIn("NO_RELEVANT_DSTATE=PASS", output)
+        self.assertIn("transient_dstate_tasks=1", output)
+        self.assertIn("SAFE_FOR_MUTATION=YES", output)
 
     def test_ambiguous_dstate_fails_recovery_check_closed(self):
         rc, output = self.run_main(dstate="UNKNOWN")

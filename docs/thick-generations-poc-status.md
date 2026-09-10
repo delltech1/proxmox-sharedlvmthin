@@ -1493,6 +1493,25 @@ LONG_CROSS_NODE_HEALTH_MONITOR=INVALIDATED_BY_CONCURRENT_RESIZE
 LONG_CROSS_NODE_HEALTH_MONITOR_REPEAT=OPEN
 ```
 
+The recovery checker subsequently encountered a short storage-scoped
+`pvs --readonly` wait in the kernel AIO teardown path. A single instantaneous
+D-state sample could not distinguish this normal transient wait from a stuck
+storage transaction. Recovery qualification now requires a bounded persistence
+confirmation: a detected task must disappear during the two-second interval
+and the fresh scan must positively return `PASS`; otherwise the original
+`FAIL` or `UNKNOWN` classification remains fail-closed. A live 30-iteration
+candidate soak completed 90 checks across three storage definitions, reported
+one transient observation, and ended with no failed or ambiguous result.
+
+```ini
+RECOVERY_DSTATE_PERSISTENCE_CONFIRMATION=PASS
+RECOVERY_CANDIDATE_ITERATIONS=30
+RECOVERY_CANDIDATE_STORAGE_CHECKS=90
+TRANSIENT_STORAGE_SCOPED_DSTATE_RECHECKED=1
+PERSISTENT_DSTATE_FAILURES=0
+AMBIGUOUS_DSTATE_RESULTS=0
+```
+
 ## Physical reservation accounting qualification
 
 The standard PVE storage gauge reports physical extents allocated from the

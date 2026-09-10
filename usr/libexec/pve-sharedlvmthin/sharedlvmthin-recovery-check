@@ -9,9 +9,11 @@ import re
 import signal
 import subprocess
 import sys
+import time
 
 
 PROBE_TIMEOUT = 10
+DSTATE_CONFIRM_SECONDS = 2
 FORBIDDEN = {
     "pvcreate", "vgcreate", "lvcreate", "lvremove", "vgremove", "pvremove",
     "wipefs", "thin_repair", "vgcfgrestore", "lvchange", "multipathd",
@@ -98,6 +100,17 @@ def dstate_evidence(tokens):
     if unknown:
         return "UNKNOWN", [], unknown
     return "PASS", [], []
+
+
+def settled_dstate_evidence(tokens):
+    """Require a second bounded observation before calling D-state persistent."""
+    status, relevant, unknown = dstate_evidence(tokens)
+    if status == "PASS":
+        return status, relevant, unknown, 0
+    transient_candidates = len(relevant) + len(unknown)
+    time.sleep(DSTATE_CONFIRM_SECONDS)
+    status, relevant, unknown = dstate_evidence(tokens)
+    return status, relevant, unknown, transient_candidates if status == "PASS" else 0
 
 
 def clean(value):
@@ -205,9 +218,15 @@ def main(argv=None):
     else:
         results["QUORUM"] = "PASS"
 
-    dstatus, relevant, unknown = dstate_evidence([vg, expected_wwid, actual_dev])
+    dstatus, relevant, unknown, transient = settled_dstate_evidence(
+        [vg, expected_wwid, actual_dev]
+    )
     results["NO_RELEVANT_DSTATE"] = dstatus
     details.extend(relevant)
+    if transient:
+        details.append(
+            f"transient_dstate_tasks={transient}; bounded persistence recheck passed"
+        )
     if unknown:
         details.append(f"unscoped_dstate_tasks={len(unknown)}; positive storage attribution unavailable")
 

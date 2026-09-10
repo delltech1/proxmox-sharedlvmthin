@@ -19,8 +19,8 @@ SAFE_FOR_MUTATION=YES
 ```
 
 Any mismatch, failed probe, timeout, unhealthy pool, unavailable quorum,
-insufficient path count, relevant D-state task, or unscoped/ambiguous D-state
-evidence ends with:
+insufficient path count, persistent relevant D-state task, or persistent
+unscoped/ambiguous D-state evidence ends with:
 
 ```ini
 STATE=RECOVERY_REQUIRED
@@ -28,9 +28,11 @@ SAFE_FOR_MUTATION=NO
 ```
 
 The D-state check searches process command line, wait channel and kernel stack
-for the exact VG, mapper path or WWID. If a D-state task exists but cannot be
-positively attributed, the result is `UNKNOWN`; it is not silently treated as
-healthy and it is not installed as a global mutation gate.
+for the exact VG, mapper path or WWID. A detected task must disappear during a
+bounded two-second confirmation interval before the result can become `PASS`;
+the transient observation is still reported. A task that survives confirmation
+remains `FAIL` when storage-scoped or `UNKNOWN` when it cannot be positively
+attributed. This is not installed as a global mutation gate.
 
 Probes are sequential and bounded. After the first timed-out or kernel-blocked
 LVM/PVE probe, no further LVM/PVE probe is started. This limits the checker to
