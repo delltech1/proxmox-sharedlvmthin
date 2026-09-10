@@ -1268,6 +1268,13 @@ case "${1:-doctor}" in
         fi
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$2"
         ;;
+    upgrade-check)
+        if [ -n "${2:-}" ]; then
+            echo "Usage: sharedlvmthin upgrade-check" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
+        ;;
     thick-resume)
         if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
             echo "Usage: sharedlvmthin thick-resume <storage-id> <volume>" >&2
@@ -1332,6 +1339,7 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin doctor"
         echo "  sharedlvmthin doctor --deep"
         echo "  sharedlvmthin recovery-check <storage-id>"
+        echo "  sharedlvmthin upgrade-check"
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>"

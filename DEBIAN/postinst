@@ -24,6 +24,7 @@ python3 -m py_compile "$WEB"
 
 chmod 0755 "$MONITOR" "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
 
@@ -106,7 +107,7 @@ else
     if [ -t 0 ] && [ -t 1 ]; then
         echo
         printf "Configure Web Dashboard now? [Y/n]: "
-        read ANSWER
+        read -r ANSWER
         ANSWER="${ANSWER:-Y}"
 
         case "$ANSWER" in

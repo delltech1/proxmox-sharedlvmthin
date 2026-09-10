@@ -2799,3 +2799,34 @@ QEMU_RESTART_DURING_UPGRADE=NO
 MANAGEMENT_SERVICE_REFRESH_DURING_UPGRADE=YES
 ARBITRARY_INCOMPATIBLE_SCHEMA_DOWNGRADE_SUPPORTED=NO
 ```
+
+The next experimental candidate adds a read-only `sharedlvmthin upgrade-check`
+preflight. It inventories the canonical PVE storage configuration and runs the
+bounded recovery gate for every enabled SharedLvmThin alias. It requires one
+unambiguous healthy, mutation-safe result for each alias and fails closed on a
+timeout, duplicate ID, unsupported enabled allocation mode or recovery state.
+Disabled aliases are visible but deliberately not probed.
+
+The hardened reproducible `0.9.0~rc5.4~tg6` package was installed one node at a
+time on two Storage API 15 nodes and one Storage API 14 node. On every node the
+preflight checked the enabled conventional Thin, Thick Generations and
+same-VG Thin coexistence aliases, skipped both explicitly disabled lab
+transport aliases, and returned `UPGRADE_SAFE=YES`. Package installation and
+the existing global operational health gate passed on all three nodes.
+
+```ini
+UPGRADE_CHECK_READ_ONLY=YES
+UPGRADE_CHECK_ENABLED_STORAGES_PER_NODE=3
+UPGRADE_CHECK_DISABLED_STORAGES_SKIPPED_PER_NODE=2
+UPGRADE_CHECK_API15_NODE_1=PASS
+UPGRADE_CHECK_API15_NODE_2=PASS
+UPGRADE_CHECK_API14_NODE=PASS
+UPGRADE_CHECK_FAIL_CLOSED_UNIT_CASES=PASS
+TG5_SAME_VERSION_REINSTALL_ALL_NODES=PASS
+TG6_SIGNAL_AND_TEMPFILE_HARDENING=PASS
+TG6_ROLLING_INSTALL_ALL_NODES=PASS
+TG6_PYTHON_REGRESSION=149_PASS
+TG6_PERL_REGRESSION=235_PASS
+TG6_REPRODUCIBLE_DEB=PASS
+TG6_DEB_SHA256=ca21702ef95b220b2bf496849d151da46cb0b1835cff92e5c90b41efb2b34c83
+```

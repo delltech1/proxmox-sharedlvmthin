@@ -140,6 +140,18 @@ class PackageSourceTests(unittest.TestCase):
             postinst,
         )
 
+    def test_upgrade_check_is_packaged_and_exposed_by_cli(self):
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        checker = ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check"
+
+        self.assertTrue(checker.is_file())
+        self.assertIn("sharedlvmthin-upgrade-check", build)
+        self.assertIn("sharedlvmthin-upgrade-check", postinst)
+        self.assertIn("upgrade-check)", cli)
+        self.assertIn("sharedlvmthin upgrade-check", cli)
+
     def test_web_configurator_unit_detection_is_pipefail_safe(self):
         configurator = (
             ROOT / "usr/sbin/sharedlvmthin-web-configure"

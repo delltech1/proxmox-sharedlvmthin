@@ -243,11 +243,17 @@ refresh.
 
 Upgrade one node at a time:
 
-1. Verify cluster quorum and require `SAFE_FOR_MUTATION=YES` for every enabled
-   SharedLvmThin storage on the node.
+1. Run `sharedlvmthin upgrade-check`. It inventories every enabled
+   SharedLvmThin storage, runs its bounded read-only recovery gate and requires
+   one exact `STATE=HEALTHY`, `SAFE_FOR_MUTATION=YES` and
+   `THICK_ANCHORS_HEALTHY=PASS` result. Explicitly disabled storage is reported
+   and skipped; a duplicate storage ID, timeout, unavailable probe or ambiguous
+   output fails closed. Continue only when the final line is
+   `UPGRADE_SAFE=YES`.
 2. Require every Thick Generations anchor to be `MATERIALIZED`. Do not upgrade
    a node that owns a hydration, rollback, snapshot deletion or recovery
-   transaction.
+   transaction. This condition is enforced by the upgrade check through the
+   Thick anchor recovery gate.
 3. Verify the package checksum and confirm that the target release explicitly
    supports the installed anchor schema and PVE Storage API.
 4. Install the package on one node. Do not restart QEMU, LVM, multipath or the
@@ -259,6 +265,12 @@ Never assume that an arbitrary downgrade is safe. A release that removes
 support for an existing configuration property or persistent Thick Generations
 anchor schema requires an explicit downgrade procedure. If compatibility
 cannot be positively proven, stop mutations and keep the current package.
+
+`upgrade-check` is advisory and read-only: it never installs a package,
+deactivates storage, changes an anchor or repairs a failed gate. It is not run
+automatically by `dpkg`, because blocking package replacement can also prevent
+installation of a recovery or security fix. The administrator remains in
+control of the maintenance transaction.
 
 ## RC5 to RC4 rollback
 

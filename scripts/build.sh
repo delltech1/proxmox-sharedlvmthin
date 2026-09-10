@@ -31,6 +31,7 @@ chmod 0755 \
     "$STAGE/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web" \
     "$STAGE/usr/sbin/sharedlvmthin" \
