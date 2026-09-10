@@ -2350,6 +2350,26 @@ QMEVENTD_CLOSE_RACE_BOUNDED=PASS
 PERSISTENTLY_OPEN_FRONTEND_FORCE_REMOVE=NO
 ```
 
+The complete conversion was repeated with the `0.9.0~rc5.4~tg4` candidate
+after its package-upgrade qualification. A one-GiB disposable Thick disk was
+moved to the coexisting conventional Thin alias, activated through a real VM
+start and suspended for a direct block-device measurement. It was then moved
+back to the Thick Generations alias, activated and measured again. The Thick
+source, active Thin destination and returned Thick destination all produced
+the same SHA-256. Both recovery gates positively reported `HEALTHY` and
+`SAFE_FOR_MUTATION=YES` before final deletion. Exact cleanup removed the VM,
+the per-VM thin pool, thin disk, Thick generation and anchor.
+
+```ini
+TG4_REPEAT_THICK_TO_THIN=PASS
+TG4_REPEAT_THIN_DEVICE_DIRECT_SHA256=PASS
+TG4_REPEAT_THIN_TO_THICK=PASS
+TG4_REPEAT_RETURNED_THICK_DIRECT_SHA256=PASS
+TG4_REPEAT_CROSS_MODE_SHA256=1447de7062795327abea422eeecdd4240967cf004ab2dbc53eba403eef96df39
+TG4_REPEAT_BOTH_RECOVERY_GATES=PASS
+TG4_REPEAT_EXACT_CLEANUP=PASS
+```
+
 ## Interrupted Thick-to-Thin same-VG move
 
 A second disposable run exercised the opposite conversion direction. The
