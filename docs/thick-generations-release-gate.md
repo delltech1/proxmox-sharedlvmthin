@@ -33,9 +33,11 @@ Disruptive cluster and transport coverage is tracked separately in the
 | Regression | Python, Perl taint-mode, package content and privacy gates | PASS |
 
 `PASS` means the evidence is recorded in
-[`thick-generations-poc-status.md`](thick-generations-poc-status.md). `RUNNING`
-and `OPEN` are release blockers. A physical PB or FC claim remains outside the
-qualified support envelope until representative hardware is available. The
+[`thick-generations-poc-status.md`](thick-generations-poc-status.md). A current
+`RUNNING` or `OPEN` entry in this table is a release blocker; historical
+intermediate states remain unchanged in the chronological evidence log. A
+physical PB or FC claim remains outside the qualified support envelope until
+representative hardware is available. The
 known Linux VN2VN/tcm_fc path-return failure is below the plugin and must remain
 prominent in release documentation; it must never be described as recovered by
 Thick Generations.
