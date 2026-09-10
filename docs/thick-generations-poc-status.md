@@ -1095,6 +1095,59 @@ POST_MIXED_MIGRATION_DSTATE=0
 POST_MIXED_MIGRATION_QUORUM=3_OF_3
 ```
 
+While the mixed-mode guest remained online, one Thick Generations data disk
+and one conventional thin data disk were each extended by 256 MiB through the
+native PVE resize operation. The thick LV and its stable frontend both exposed
+the new exact sector count while retaining a single destination-only linear
+dependency. The thin volume exposed its larger virtual size without changing
+the per-VM pool boundary. Both ext4 filesystems expanded online by persistent
+filesystem label, retained their pre-resize canaries, and completed new
+write-and-fdatasync probes in the added address range. Both storages remained
+active and the relevant D-state count was zero.
+
+```ini
+MIXED_ONLINE_THICK_RESIZE=PASS
+MIXED_ONLINE_THIN_RESIZE=PASS
+THICK_POST_RESIZE_LINEAR=PASS
+THICK_POST_RESIZE_DEPENDENCIES=DESTINATION_ONLY
+MIXED_ONLINE_FILESYSTEM_GROW=2_OF_2
+MIXED_PRE_RESIZE_CANARIES=2_OF_2
+MIXED_POST_RESIZE_WRITE_FLUSH=2_OF_2
+POST_MIXED_RESIZE_STORAGES_ACTIVE=PASS
+POST_MIXED_RESIZE_DSTATE=0
+```
+
+The resized conventional thin data disk then completed an online PVE storage
+move to Thick Generations and an online move back to the thin storage. Each
+direction used QEMU drive mirror with a bounded bandwidth limit and deleted the
+source only after the mirror job reported successful completion. The first
+move produced an ordinary destination-only linear generation; the return move
+removed its exact generation and anchor after creating a new owned per-VM thin
+pool. Filesystem label, filesystem UUID, every pre-move canary, and a new
+post-round-trip write-and-fdatasync probe all matched.
+
+The return full-copy also demonstrated an important allocation property: raw
+PVE drive mirror copies the complete virtual address space, including zeroed
+ranges. A sparse guest filesystem can therefore become a fully allocated thin
+LV during Thick Generations-to-thin conversion. Elastic pool growth kept the
+operation healthy, but conversion planning must reserve for this worst case;
+the plugin must not claim that sparseness is preserved by a raw storage move.
+
+```ini
+ONLINE_STORAGE_MOVE_THIN_TO_THICK=PASS
+ONLINE_STORAGE_MOVE_THICK_TO_THIN=PASS
+MOVE_SOURCE_DELETE_AFTER_MIRROR_SUCCESS=PASS
+MOVE_FILESYSTEM_UUID_STABLE=PASS
+MOVE_CANARIES_STABLE=PASS
+MOVE_POST_ROUNDTRIP_WRITE_FLUSH=PASS
+THICK_TO_THIN_SPARSE_PRESERVATION=NOT_GUARANTEED
+THICK_TO_THIN_WORST_CASE_RESERVATION=FULL_VIRTUAL_SIZE
+THIN_POOL_ELASTIC_GROW_DURING_IMPORT=PASS
+POST_MOVE_DOCTOR_FAILS=0
+POST_MOVE_DSTATE=0
+POST_MOVE_VM_RUNNING=PASS
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.

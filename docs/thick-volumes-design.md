@@ -67,3 +67,7 @@ metadata and any matching intent.
 The mode does not weaken the existing per-VM thin-pool lifecycle. Thin and
 Thick Generations are separate storage definitions with independent allocation
 semantics, while PVE storage move provides the explicit conversion boundary.
+A raw full-copy does not guarantee sparse-range preservation: converting a
+fully allocated thick generation to thin may allocate the complete virtual
+size in the destination thin LV. Capacity preflight and elastic growth must
+therefore treat full virtual size as the safe worst case for that direction.
