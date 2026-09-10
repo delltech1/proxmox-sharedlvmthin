@@ -97,6 +97,7 @@ def parse_storage_cfg():
             current = {
                 "id": parts[1] if len(parts) > 1 else "unknown",
                 "vg": None,
+                "disabled": False,
                 "allocation_mode": "thin",
                 "initial_pool_size_gib": None,
                 "initial_pool_mode": "fixed",
@@ -118,6 +119,12 @@ def parse_storage_cfg():
 
             if s.startswith("slt-vgname "):
                 current["vg"] = s.split(None, 1)[1]
+
+            elif s.startswith("disable "):
+                current["disabled"] = (
+                    s.split(None, 1)[1].strip().lower()
+                    in {"1", "yes", "on", "true"}
+                )
 
             elif s.startswith("slt-allocation-mode "):
                 current["allocation_mode"] = s.split(None, 1)[1]
@@ -1287,6 +1294,14 @@ for storage in parse_storage_cfg():
         "metadata_spares": [],
         "transport": None,
     }
+
+    if storage.get("disabled"):
+        check(
+            f"storage_enabled:{sid}", "PASS",
+            f"{sid}: storage is explicitly disabled; operational probes skipped",
+        )
+        doc["storages"].append(item)
+        continue
 
     allocation_status, allocation_message = evaluate_allocation_policy(storage)
     check(

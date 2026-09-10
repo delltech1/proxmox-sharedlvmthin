@@ -244,6 +244,21 @@ doctor() {
     for SID in $STOREIDS; do
         info "Checking storage '$SID'"
 
+        STORAGE_DISABLED="$(
+            awk -v sid="$SID" '
+                $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+                /^[^[:space:]]/ {inside=0}
+                inside && $1 == "disable" {print $2; exit}
+            ' "$STORAGECFG"
+        )"
+        case "${STORAGE_DISABLED,,}" in
+            1|yes|on|true)
+                pass "$SID: storage is explicitly disabled; operational probes skipped"
+                info "Disabled storage remains visible in configuration but does not affect host readiness"
+                continue
+                ;;
+        esac
+
         VG="$(
             awk -v sid="$SID" '
                 $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}

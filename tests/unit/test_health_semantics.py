@@ -4,6 +4,7 @@ import os
 import re
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -28,6 +29,43 @@ def load_function(name):
     namespace = {"re": __import__("re")}
     exec(compile(module, str(HEALTH), "exec"), namespace)
     return namespace[name]
+
+
+class StorageConfigurationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.parse = staticmethod(load_function("parse_storage_cfg"))
+
+    def parse_text(self, text):
+        with mock.patch("builtins.open", mock.mock_open(read_data=text)):
+            return self.parse()
+
+    def test_explicitly_disabled_storage_is_recorded(self):
+        storages = self.parse_text(
+            "sharedlvmthin: offline\n"
+            "\tslt-vgname vg_offline\n"
+            "\tdisable 1\n"
+        )
+        self.assertEqual(len(storages), 1)
+        self.assertTrue(storages[0]["disabled"])
+
+    def test_enabled_storage_remains_enabled_by_default(self):
+        storages = self.parse_text(
+            "sharedlvmthin: online\n"
+            "\tslt-vgname vg_online\n"
+        )
+        self.assertEqual(len(storages), 1)
+        self.assertFalse(storages[0]["disabled"])
+
+    def test_false_disable_values_do_not_skip_storage(self):
+        for value in ("0", "no", "off", "false"):
+            with self.subTest(value=value):
+                storages = self.parse_text(
+                    "sharedlvmthin: online\n"
+                    "\tslt-vgname vg_online\n"
+                    f"\tdisable {value}\n"
+                )
+                self.assertFalse(storages[0]["disabled"])
 
 
 class ClusterHealthSemanticsTests(unittest.TestCase):
