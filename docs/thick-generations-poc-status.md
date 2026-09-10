@@ -1148,6 +1148,36 @@ POST_MOVE_DSTATE=0
 POST_MOVE_VM_RUNNING=PASS
 ```
 
+A native snapshot-mode `vzdump` backup of the running mixed-mode guest then
+completed successfully. The archive represented 9.5 GiB of virtual disk data,
+reported 28 percent zero data, and compressed to 6.13 GiB. It was restored to
+a new disposable guest with all three disks targeted at Thick Generations.
+Restore allocated three independent anchor/generation pairs, preserved sparse
+archive ranges, and completed without a partial allocation.
+
+The restored guest booted after applying its original lab network identity
+while the source guest was stopped to prevent an address conflict. Both data
+filesystems retained their exact labels and UUIDs, and all five selected
+pre-backup canaries matched. The disposable guest was then shut down and
+destroyed through native PVE lifecycle operations. All three exact generations
+and all three exact anchors were removed, no matching artifact remained, and
+the original guest restarted with its three primary canaries intact.
+
+```ini
+MIXED_RUNNING_VZDUMP_SNAPSHOT_MODE=PASS
+MIXED_VZDUMP_SPARSE_ARCHIVE=PASS
+MIXED_RESTORE_TO_THICK_GENERATIONS=PASS
+RESTORED_THICK_DISKS=3
+RESTORED_FILESYSTEM_IDENTITIES=PASS
+RESTORED_DATA_CANARIES=5_OF_5
+RESTORED_GUEST_BOOT=PASS
+RESTORE_DISPOSABLE_DELETE_EXACT=PASS
+RESTORE_ARTIFACTS_REMAINING=0
+ORIGINAL_GUEST_RESTART=PASS
+ORIGINAL_POST_RESTORE_CANARIES=3_OF_3
+POST_RESTORE_DSTATE=0
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
