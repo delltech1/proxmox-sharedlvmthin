@@ -987,6 +987,9 @@ sub _verify_same_vg_alias_configuration {
 sub _with_vg_lock {
     my ($class, $storeid, $scfg, $code, $device) = @_;
     my $lockid = $class->_canonical_vg_lock_id($scfg);
+    # Fail immediately when quorum is already absent. The same gate is repeated
+    # under the lock because quorum may disappear while the caller waits.
+    $class->_verify_mutation_quorum($storeid, $scfg);
     return $class->cluster_lock_storage(
         $lockid, $scfg->{shared}, undef,
         sub {
@@ -1016,6 +1019,7 @@ sub _with_mutation_lock {
         }, $device);
     }
 
+    $class->_verify_mutation_quorum($storeid, $scfg);
     return $class->cluster_lock_storage(
         $storeid, $scfg->{shared}, undef,
         sub {

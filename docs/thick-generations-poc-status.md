@@ -1913,3 +1913,37 @@ SINGLE_NODE_REJOIN_THICK_SNAPSHOT_DELETE=PASS
 SINGLE_NODE_REJOIN_THIN_ALLOC_DELETE=PASS
 SINGLE_NODE_REJOIN_THIN_VG_FREE_DELTA=0
 ```
+
+## Complete quorum loss
+
+Corosync was stopped on two nodes with independent transient auto-restore
+timers armed before fault injection. The remaining node reported one vote,
+`Quorate: No`, and an activity-blocked quorum. Direct allocation requests were
+issued once against the thin and Thick Generations aliases while this exact
+state was captured.
+
+The outer native PVE storage lock refused both requests with `no quorum`. Each
+request used the host's bounded cluster-lock wait and returned failure after
+approximately ten seconds. Neither request reached a plugin LVM command. Exact
+LVM JSON inventories before the requests, during quorum loss, and after quorum
+restoration were byte-identical; no test volume, pool, anchor, generation,
+mapper, tag, or PVE configuration object appeared.
+
+The plugin additionally performs a read-only native quorum preflight before
+its own mutation-lock entry and repeats the same check under the acquired lock.
+This gives direct hook callers an immediate refusal while preserving the
+mutation-boundary race check. PVE may still perform its own outer lock attempt
+before invoking a storage plugin; the plugin does not override or guess that
+native timeout. After both Corosync services returned, the cluster recovered
+to three votes and both storage modes again reported `HEALTHY` and
+`SAFE_FOR_MUTATION=YES`.
+
+```ini
+QUORUM_LOSS_NODES=1
+QUORUM_LOSS_QUORATE=NO
+QUORUM_LOSS_THIN_MUTATION=REFUSED
+QUORUM_LOSS_THICK_MUTATION=REFUSED
+QUORUM_LOSS_LVM_INVENTORY_DELTA=0
+QUORUM_RESTORE_NODES=3
+QUORUM_RESTORE_STORAGE_HEALTH=PASS
+```

@@ -439,8 +439,11 @@ subtest 'lock rejection blocks direct mutating hooks before LVM' => sub {
 subtest 'quorum loss at mutation boundary fails inside the held lock' => sub {
     reset_mocks();
     no warnings 'redefine';
+    my $quorum_checks = 0;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub {
-        die "quorum disappeared at mutation boundary\n";
+        $quorum_checks++;
+        die "quorum disappeared at mutation boundary\n" if $quorum_checks == 2;
+        return 1;
     };
     my $ok = eval {
         $class->volume_resize(
@@ -452,7 +455,27 @@ subtest 'quorum loss at mutation boundary fails inside the held lock' => sub {
     ok(!$ok, 'boundary quorum loss rejected');
     like($@, qr/quorum disappeared/, 'boundary failure is explicit');
     is(scalar(@locks), 1, 'storage lock was acquired before boundary revalidation');
+    is($quorum_checks, 2, 'quorum checked before and inside the held lock');
     is(scalar(@commands), 0, 'no mutation after quorum loss');
+};
+
+subtest 'known quorum loss fails before waiting for a storage lock' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub {
+        die "cluster not ready - no quorum\n";
+    };
+    my $ok = eval {
+        $class->volume_resize(
+            { %$scfg, shared => 1 }, 'sharedthin-test',
+            'vm-900001-disk-0', 2048, 0, undef,
+        );
+        1;
+    };
+    ok(!$ok, 'pre-lock quorum loss rejected');
+    like($@, qr/no quorum/, 'native quorum error is immediate and explicit');
+    is(scalar(@locks), 0, 'no storage lock wait attempted without quorum');
+    is(scalar(@commands), 0, 'no command executed without quorum');
 };
 
 subtest 'ownership ambiguity at mutation boundary fails closed' => sub {
