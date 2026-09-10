@@ -2000,6 +2000,34 @@ subtest 'thick tag mutation enforces exact precondition and postcondition' => su
     is(scalar(@commands), 1, 'uncertain outcome is never retried');
 };
 
+subtest 'thick allocation rejects every deterministic name collision' => sub {
+    reset_mocks();
+    for my $case (
+        ['vm-900001-disk-0', 'PVE volume'],
+        ['sltg-a-object', 'anchor'],
+        ['sltg-g-object-00000000', 'generation'],
+    ) {
+        my ($collision, $kind) = @$case;
+        my $objects = { $collision => { tags => 'untrusted' } };
+        my $ok = eval {
+            $class->_thick_require_fresh_object_names(
+                'testvg', $objects, 'vm-900001-disk-0',
+                'sltg-a-object', 'sltg-g-object-00000000',
+            );
+            1;
+        };
+        ok(!$ok, "$kind collision is rejected");
+        like($@, qr/\Q$kind\E name collision/, "$kind collision is explicit");
+        like($@, qr/never adopted or overwritten/, 'foreign identity remains untouched');
+    }
+
+    ok($class->_thick_require_fresh_object_names(
+        'testvg', {}, 'vm-900001-disk-0',
+        'sltg-a-object', 'sltg-g-object-00000000',
+    ), 'fresh deterministic namespace is accepted');
+    is(scalar(@commands), 0, 'collision gate performs no mutation');
+};
+
 subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' => sub {
     reset_mocks();
     my $storeid = 'thick-test';

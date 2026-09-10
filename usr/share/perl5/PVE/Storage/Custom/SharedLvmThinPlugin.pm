@@ -1255,6 +1255,24 @@ sub _thick_verify_allocation_state {
     return ($state, $anchor, $head);
 }
 
+sub _thick_require_fresh_object_names {
+    my ($class, $vg, $objects, $volname, $anchor, $head) = @_;
+    die "thick-generations name-collision check requires an exact VG inventory\n"
+        if ref($objects) ne 'HASH';
+
+    for my $candidate (
+        [$volname, 'PVE volume'],
+        [$anchor, 'anchor'],
+        [$head, 'generation'],
+    ) {
+        my ($name, $kind) = @$candidate;
+        next if !exists($objects->{$name});
+        die "refusing thick-generations allocation: $kind name collision at "
+            . "'$vg/$name'; an existing LV is never adopted or overwritten\n";
+    }
+    return 1;
+}
+
 sub _thick_alloc_image {
     my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
     die "unsupported format '$fmt'\n" if defined($fmt) && $fmt ne 'raw';
@@ -1281,8 +1299,9 @@ sub _thick_alloc_image {
         $class->_thick_capacity_gate($storeid, $scfg, $size);
         my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my $objects = $lvs->{$vg} // {};
-        die "refusing thick-generations allocation: deterministic object already exists\n"
-            if $objects->{$anchor} || $objects->{$head} || $objects->{$name};
+        $class->_thick_require_fresh_object_names(
+            $vg, $objects, $name, $anchor, $head,
+        );
         my $before = $class->_vg_state_digest($vg, $device);
         %intent = (
             tx => $tx, state => 'OPEN', op => 'ALLOC', object => $anchor,
