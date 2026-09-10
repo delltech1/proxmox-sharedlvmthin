@@ -49,6 +49,15 @@ class StorageConfigurationTests(unittest.TestCase):
         self.assertEqual(len(storages), 1)
         self.assertTrue(storages[0]["disabled"])
 
+    def test_canonical_pve_bare_disable_is_recorded(self):
+        storages = self.parse_text(
+            "sharedlvmthin: offline\n"
+            "\tdisable\n"
+            "\tslt-vgname vg_offline\n"
+        )
+        self.assertEqual(len(storages), 1)
+        self.assertTrue(storages[0]["disabled"])
+
     def test_enabled_storage_remains_enabled_by_default(self):
         storages = self.parse_text(
             "sharedlvmthin: online\n"

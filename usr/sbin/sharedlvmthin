@@ -39,6 +39,25 @@ info() {
     printf "${blue}[INFO]${reset} %s\n" "$*"
 }
 
+storage_is_disabled() {
+    local sid=$1
+    local value
+    value="$(
+        awk -v sid="$sid" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "disable" {
+                print (NF == 1 ? "1" : $2)
+                exit
+            }
+        ' "$STORAGECFG" 2>/dev/null
+    )"
+    case "${value,,}" in
+        1|yes|on|true) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 section() {
     echo
     echo "=== $* ==="
@@ -244,20 +263,11 @@ doctor() {
     for SID in $STOREIDS; do
         info "Checking storage '$SID'"
 
-        STORAGE_DISABLED="$(
-            awk -v sid="$SID" '
-                $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
-                /^[^[:space:]]/ {inside=0}
-                inside && $1 == "disable" {print $2; exit}
-            ' "$STORAGECFG"
-        )"
-        case "${STORAGE_DISABLED,,}" in
-            1|yes|on|true)
-                pass "$SID: storage is explicitly disabled; operational probes skipped"
-                info "Disabled storage remains visible in configuration but does not affect host readiness"
-                continue
-                ;;
-        esac
+        if storage_is_disabled "$SID"; then
+            pass "$SID: storage is explicitly disabled; operational probes skipped"
+            info "Disabled storage remains visible in configuration but does not affect host readiness"
+            continue
+        fi
 
         VG="$(
             awk -v sid="$SID" '
@@ -853,6 +863,10 @@ for storage in document.get("storages", []):
     PVE_STATUS="$(timeout --foreground 20 pvesm status 2>/dev/null || true)"
 
     for SID in $STOREIDS; do
+        if storage_is_disabled "$SID"; then
+            pass "$SID: PVE storage intentionally disabled"
+            continue
+        fi
         STATE="$(awk -v sid="$SID" '$1 == sid {print $3}' <<<"$PVE_STATUS")"
 
         if [ "$STATE" = "active" ]; then

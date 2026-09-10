@@ -5,7 +5,9 @@
 - Treat only an explicitly disabled SharedLvmThin storage as non-operational:
   Doctor and dashboard inventory retain the entry but skip device, VG, pool,
   path, and anchor probes. Enabled but unavailable storage continues to fail
-  closed and prevents an operational-ready result.
+  closed and prevents an operational-ready result. Both the canonical PVE
+  bare `disable` flag and explicit boolean forms are parsed consistently in
+  detailed storage checks and the final PVE status gate.
 - Give local Thick Generations packages a distinct `~tg` Debian pre-release
   version so experimental runtime bits can never masquerade as the published
   thin-only RC5.3.1 package.
