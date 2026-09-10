@@ -128,8 +128,12 @@ def thick_anchor_health(pool_output, sid, namespace):
     )
     required = {f"slt_tg_{field}" for field in canonical_fields} | {"slt_tg_sha256"}
     token = re.compile(r"[A-Za-z0-9_.+-]+")
+    rows = {}
     for line in pool_output.splitlines():
         fields = [x.strip() for x in line.split("|")]
+        if len(fields) >= 5 and fields[0]:
+            rows[fields[0]] = fields
+    for fields in rows.values():
         if len(fields) < 5 or not re.fullmatch(r"sltg-a-[0-9a-f]{24}", fields[0]):
             continue
         tags = {}
@@ -206,6 +210,54 @@ def thick_anchor_health(pool_output, sid, namespace):
                 failures.append(f"{fields[0]} invalid materialized {values['op'].lower()} state")
         else:
             failures.append(f"{fields[0]} unknown operation")
+            continue
+        head = rows.get(values["head"])
+        if not head:
+            failures.append(f"{fields[0]} authoritative HEAD LV is missing")
+            continue
+        generation = {}
+        malformed_generation = False
+        for raw in head[4].split(","):
+            if not raw.startswith("slt_tgo_"):
+                continue
+            if "=" not in raw:
+                malformed_generation = True
+                continue
+            key, value = raw.split("=", 1)
+            if key in generation:
+                malformed_generation = True
+            generation[key] = value
+        generation_required = {
+            "slt_tgo_v", "slt_tgo_sid", "slt_tgo_vol", "slt_tgo_role",
+            "slt_tgo_generation", "slt_tgo_sha256",
+        }
+        if (malformed_generation or set(generation) != generation_required
+                or any(not token.fullmatch(value) for value in generation.values())):
+            failures.append(f"{fields[0]} authoritative HEAD ownership is malformed")
+            continue
+        generation_values = {
+            "v": generation["slt_tgo_v"], "sid": generation["slt_tgo_sid"],
+            "vol": generation["slt_tgo_vol"], "role": generation["slt_tgo_role"],
+            "generation": generation["slt_tgo_generation"],
+        }
+        generation_canonical = "|".join(
+            f"{key}={generation_values[key]}"
+            for key in ("v", "sid", "vol", "role", "generation")
+        )
+        generation_digest = hashlib.sha256(
+            generation_canonical.encode("utf-8")
+        ).hexdigest()[:32]
+        if (generation_values["v"] != "1"
+                or generation_values["sid"] != sid
+                or generation_values["vol"] != values["vol"]
+                or generation_values["role"] != "head"
+                or generation_values["generation"] != values["generation"]
+                or generation["slt_tgo_sha256"] != generation_digest):
+            failures.append(f"{fields[0]} authoritative HEAD ownership does not match")
+            continue
+        key = fields[0][len("sltg-a-"):]
+        if any(name.startswith(f"sltg-m-{key}-") for name in rows):
+            failures.append(f"{fields[0]} materialized state retains transition metadata")
     return (not failures), anchors, failures
 
 

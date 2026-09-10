@@ -177,7 +177,7 @@ sharedlvmthin: two
 
     def test_materialized_thick_anchor_allows_other_positive_evidence(self):
         name, tags = self.anchor()
-        output = f"{name}|-wi------k|||{tags}"
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
         rc, text = self.run_main(
             allocation_mode="thick-generations", lvs_output=output
         )
@@ -223,6 +223,41 @@ sharedlvmthin: two
         )
         self.assertEqual(rc, 2)
         self.assertIn("name does not match", text)
+
+    def test_materialized_anchor_with_missing_head_fails_closed(self):
+        name, tags = self.anchor()
+        rc, text = self.run_main(
+            allocation_mode="thick-generations",
+            lvs_output=f"{name}|-wi------k|||{tags}",
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("authoritative HEAD LV is missing", text)
+
+    def test_materialized_anchor_with_retained_metadata_fails_closed(self):
+        name, tags = self.anchor()
+        key = name.removeprefix("sltg-a-")
+        output = "\n".join([
+            f"{name}|-wi------k|||{tags}", self.head_line(),
+            f"sltg-m-{key}-00000001|-wi------k|||slt_tgt_v=1",
+        ])
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output,
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("retains transition metadata", text)
+
+    @staticmethod
+    def head_line():
+        values = {
+            "v": "1", "sid": "test", "vol": "vm-100-disk-0",
+            "role": "head", "generation": "1",
+        }
+        order = ("v", "sid", "vol", "role", "generation")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        tags = ",".join([*(f"slt_tgo_{key}={values[key]}" for key in order),
+                         f"slt_tgo_sha256={digest}"])
+        return f"head|-wi------k|||{tags}"
 
 
 if __name__ == "__main__":
