@@ -11,7 +11,8 @@ if [[ $# -lt 2 ]]; then
 fi
 
 run_dir=/var/tmp/slt-long-soak-health
-mkdir -p -m 0700 "$run_dir"
+mkdir -p "$run_dir"
+chmod 0700 "$run_dir"
 log="$run_dir/health.log"
 result="$run_dir/result"
 exec >>"$log" 2>&1

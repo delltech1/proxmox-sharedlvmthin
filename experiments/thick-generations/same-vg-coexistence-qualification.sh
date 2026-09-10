@@ -176,9 +176,15 @@ thick_vol="$(pvesm_alloc_volid "$thick_store" "$vmid" "$thick_name" 64M)"
 pvesm list "$thin_store" --vmid "$vmid" >"$run_dir/thin-list.txt"
 pvesm list "$thick_store" --vmid "$vmid" >"$run_dir/thick-list.txt"
 grep -Fq "$thin_vol" "$run_dir/thin-list.txt"
-! grep -Fq "$thick_vol" "$run_dir/thin-list.txt"
+if grep -Fq "$thick_vol" "$run_dir/thin-list.txt"; then
+    echo "ERROR: thick volume leaked into thin inventory" >&2
+    exit 1
+fi
 grep -Fq "$thick_vol" "$run_dir/thick-list.txt"
-! grep -Fq "$thin_vol" "$run_dir/thick-list.txt"
+if grep -Fq "$thin_vol" "$run_dir/thick-list.txt"; then
+    echo "ERROR: thin volume leaked into thick inventory" >&2
+    exit 1
+fi
 echo "INVENTORY_ISOLATION=PASS"
 
 qm create "$vmid" --name slt-coexistence-disposable --memory 256 \
