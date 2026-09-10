@@ -4,7 +4,7 @@
 
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=$(sed -n 's/^Version:[[:space:]]*//p' "$ROOT/DEBIAN/control")
 ARCH=$(sed -n 's/^Architecture:[[:space:]]*//p' "$ROOT/DEBIAN/control")
 OUT=${1:-"$ROOT/dist"}

@@ -32,7 +32,7 @@ esac
 [ -b "$device" ] || fail "pinned mapper device is not a block device"
 [ ! -e "$output_dir" ] || fail "output directory already exists"
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 guard="$script_dir/guarded-probe.sh"
 [ -x "$guard" ] || fail "guarded probe helper is unavailable"
 
