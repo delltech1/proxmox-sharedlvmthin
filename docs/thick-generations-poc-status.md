@@ -2383,3 +2383,39 @@ SAME_VG_REVERSE_MOVE_FINAL_CLEANUP=PASS
 SAME_VG_REVERSE_MOVE_FINAL_RECOVERY_GATES=PASS
 AUTOMATIC_THIN_ORPHAN_CLEANUP=NO
 ```
+
+## Windows 11 multi-volume snapshot, rollback and online deletion
+
+A UEFI Windows 11 guest with one 36 GiB system disk, a four MiB EFI disk and
+a four MiB TPM state disk exercised the complete Thick Generations lifecycle.
+Before the snapshot, a 64 MiB NTFS oracle was durably flushed and recorded by
+SHA-256. All three snapshot transitions completed, and each frontend returned
+to a destination-only linear mapping. While the system-disk transition was
+still hydrating, Windows overwrote and durably flushed the oracle with a second
+pattern. This also exercised foreground writes through the temporary clone
+mapping.
+
+Windows was shut down from inside the guest. Rollback created fresh independent
+HEAD generations for the system, EFI and TPM volumes, fully materialized them,
+and removed the replaced HEADs. The guest then booted successfully and the NTFS
+oracle matched its exact pre-snapshot SHA-256 rather than the post-snapshot
+pattern. Online snapshot deletion while the restored guest was running removed
+exactly the three immutable snapshot generations. The three current HEADs and
+anchors remained materialized, no transition metadata LV or worker remained,
+and the complete recovery gate returned `HEALTHY` with
+`SAFE_FOR_MUTATION=YES`.
+
+```ini
+WINDOWS_11_UEFI_TPM_SNAPSHOT=PASS
+WINDOWS_FOREGROUND_WRITE_DURING_HYDRATION=PASS
+WINDOWS_CLEAN_SHUTDOWN_DURING_MATERIALIZED_HEAD=PASS
+WINDOWS_MULTI_VOLUME_ROLLBACK=PASS
+WINDOWS_POST_ROLLBACK_BOOT=PASS
+WINDOWS_POST_ROLLBACK_NTFS_SHA256=PASS
+WINDOWS_ONLINE_SNAPSHOT_DELETE=PASS
+WINDOWS_SNAPSHOT_GENERATION_CLEANUP=PASS
+WINDOWS_CURRENT_HEADS_PRESERVED=PASS
+WINDOWS_POST_LIFECYCLE_RECOVERY_GATE=PASS
+POST_WINDOWS_PYTHON_REGRESSION=133/133_PASS
+POST_WINDOWS_PERL_REGRESSION=235/235_PASS
+```
