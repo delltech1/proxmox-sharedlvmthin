@@ -66,6 +66,8 @@ global Thick Generations VG intent is open while holding that lock; an
 unresolved intent blocks the thin callback before its first mutation.
 The same VG must not be exposed concurrently through a native PVE `lvm` or
 `lvmthin` storage definition that cannot participate in this lock domain.
+The canonical thin/thick pair must also use the same PVE node scope; a
+half-visible pair is rejected before activation or mutation.
 
 ## DS-18 — Thick lifecycle LVM commands are device-scoped
 

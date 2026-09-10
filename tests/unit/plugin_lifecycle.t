@@ -1910,6 +1910,8 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
     };
     my $thin = { %$base, 'slt-allocation-mode' => 'thin' };
     my $thick = { %$base, 'slt-allocation-mode' => 'thick-generations' };
+    $thin->{nodes} = 'node-b,node-a';
+    $thick->{nodes} = 'node-a,node-b';
     my $current = { ids => { 'thin-a' => $thin, 'thick-a' => $thick } };
     no warnings 'redefine';
     local *PVE::Storage::config = sub { return $current };
@@ -1930,6 +1932,9 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
         ['path policy mismatch',
             { %$thick, 'slt-expected-min-paths' => 1 },
             qr/same expected minimum path count/],
+        ['node scope mismatch',
+            { %$thick, nodes => 'node-a' },
+            qr/same PVE node scope/],
         ['missing identity pin',
             { %$thick, 'slt-expected-pv-uuid' => undef },
             qr/must pin 'slt-expected-pv-uuid'/],

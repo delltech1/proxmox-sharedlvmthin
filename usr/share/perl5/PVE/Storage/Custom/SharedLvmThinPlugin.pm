@@ -920,6 +920,7 @@ sub _verify_same_vg_alias_configuration {
     my %identity;
     my %reserve;
     my %minimum_paths;
+    my %node_scope;
     for my $alias (@aliases) {
         my $candidate = $ids->{$alias};
         die "same-VG alias '$alias' is not configured as shared storage\n"
@@ -939,6 +940,10 @@ sub _verify_same_vg_alias_configuration {
         );
         $reserve{$reserve_key} = 1;
         $minimum_paths{$candidate->{'slt-expected-min-paths'} // ''} = 1;
+        my @nodes = sort grep { length($_) } split(/,/, $candidate->{nodes} // '');
+        die "same-VG alias '$alias' has an ambiguous PVE node scope\n"
+            if do { my %seen; grep { $seen{$_}++ } @nodes };
+        $node_scope{join(',', @nodes)} = 1;
     }
     die "shared VG '$vg' requires exactly one thin and one thick-generations alias\n"
         if !$mode{thin} || !$mode{'thick-generations'};
@@ -950,6 +955,8 @@ sub _verify_same_vg_alias_configuration {
         if keys(%reserve) != 1;
     die "same-VG aliases must use the same expected minimum path count\n"
         if keys(%minimum_paths) != 1;
+    die "same-VG aliases must use the same PVE node scope\n"
+        if keys(%node_scope) != 1;
     return 1;
 }
 
