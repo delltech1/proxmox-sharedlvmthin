@@ -2540,3 +2540,43 @@ POST_FIX_PYTHON_REGRESSION=137/137_PASS
 POST_FIX_PERL_REGRESSION=235/235_PASS
 AUTOMATIC_PARTIAL_SNAPSHOT_CLEANUP=NO
 ```
+
+## FCoE baseline failure under a small Linux workload
+
+A fresh two-path Linux VN2VN target was exercised by a stopped disposable
+guest using independent one GiB Thin and Thick Generations data disks. The
+test did not inject a path failure. During ordinary filesystem writes, the
+target rejected an oversized WRITE SAME request emitted while initializing
+the Thin pool, one FC path disappeared, and target teardown entered permanent
+uninterruptible sleep.
+
+The primary blocked stack was `ft_prlo -> target_wait_for_sess_cmds` waiting
+for retained commands. LUN reset blocked in `target_put_cmd_and_wait`, while
+VN2VN discovery and timeout workers serialized behind the same teardown path.
+The initiator subsequently blocked device-mapper status in
+`dm_pool_commit_metadata`. A target restart followed by an initiator restart
+restored the exact LUN identity and two healthy paths on every node.
+
+The preserved historical experimental `tcm_fc` patch was not installed. Its
+cleanup predicate covers only an orphaned partial software WRITE before core
+abort ownership. The new failure had commands already owned by abort/TMF state,
+so extending that patch would cross target-core lifetime rules without proof.
+
+Read-only `e2fsck -n` after recovery found both interrupted filesystems
+unclean, as expected after forced host termination. No automatic filesystem or
+target metadata repair was attempted. This result is a transport qualification
+failure below the plugin and does not alter the successful iSCSI Thick
+Generations lifecycle evidence.
+
+```ini
+FCOE_BASELINE_PATH_FAULT_INJECTION=NONE
+FCOE_SMALL_LINUX_THICK_WRITE=COMPLETED_BEFORE_FAILURE
+FCOE_THIN_ZEROING_WRITE_SAME_LIMIT=EXCEEDED
+FCOE_TARGET_SESSION_TEARDOWN=FAIL_DSTATE
+FCOE_INITIATOR_DM_THIN_STATUS=FAIL_DSTATE_SECONDARY
+FCOE_IDENTITY_AFTER_EXPLICIT_RESTART=PASS
+FCOE_PATHS_AFTER_EXPLICIT_RESTART=2_OF_2_ALL_NODES
+AUTOMATIC_TARGET_REPAIR=NO
+HISTORICAL_NARROW_KERNEL_PATCH_APPLIED=NO
+FCOE_PRODUCTION_QUALIFICATION=FAIL_TARGET_TCM_FC
+```

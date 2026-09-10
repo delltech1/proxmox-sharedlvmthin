@@ -20,7 +20,7 @@ Disruptive cluster and transport coverage is tracked separately in the
 | Data protection | Snapshot-mode backup, restore, sparse archive and restored-guest validation | PASS |
 | HA | Controlled relocation and fenced worker-host loss during materialization | PASS |
 | iSCSI multipath | 2-to-1-to-2 and bounded 2-to-0-to-2 recovery with identity and data verification | SINGLE PATH PASS; THICK LINEAR TOTAL LOSS PASS; ACTIVE THIN FAIL_HOST_DM_THIN; ACTIVE HYDRATION FAIL_HOST_DM_CLONE; EXPLICIT POST-REBOOT RESUME PASS, PRE-FAULT SHA NOT PROVEN |
-| FCoE lab transport | Ordinary I/O and 2-to-1 failover | PASS |
+| FCoE lab transport | Ordinary I/O and 2-to-1 failover | READ/THICK WRITE PASS; THIN ZEROING BASELINE FAIL_TARGET_TCM_FC |
 | FCoE path return | Linux VN2VN/tcm_fc target recovery without target restart | FAIL - transport limitation |
 | Windows workload | Long write-through, flush and hash-verification soak | PASS |
 | Windows interruption | Materialization interruption, explicit resume, pivot and guest data verification | PASS |
