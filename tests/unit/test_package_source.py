@@ -274,6 +274,19 @@ class PackageSourceTests(unittest.TestCase):
                 f"{name} can still issue a global LVM inventory",
             )
 
+        for name in ("_thick_activate_volume", "_thick_deactivate_volume"):
+            match = re.search(
+                rf"sub {name} \{{(?P<body>.*?)(?=\nsub )",
+                plugin,
+                re.DOTALL,
+            )
+            body = match.group("body")
+            self.assertLess(
+                body.index("_verify_storage_identity"),
+                body.index("_thick_list_volumes_scoped"),
+                f"{name} must prove storage identity before its first LVM inventory",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

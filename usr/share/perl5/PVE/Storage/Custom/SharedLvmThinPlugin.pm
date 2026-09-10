@@ -770,6 +770,7 @@ sub _thick_deactivate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    $class->_verify_storage_identity($storeid, $scfg, $device);
     my $lvs = $class->_thick_list_volumes_scoped($scfg->{'slt-vgname'}, $device);
     if (defined($snapname)) {
         my ($snapshot) = $class->_thick_find_snapshot(
@@ -783,7 +784,6 @@ sub _thick_deactivate_volume {
         );
         return 1;
     }
-    $class->_verify_storage_identity($storeid, $scfg, $device);
     my ($state, undef, $anchor) =
         $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
     my $vg = $scfg->{'slt-vgname'};
