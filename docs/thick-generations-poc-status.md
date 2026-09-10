@@ -2886,3 +2886,51 @@ QDEVICE_REMOVED_AFTER_TEST=PASS
 FINAL_CLUSTER_NATIVE_VOTES=3
 FINAL_DSTATE=0
 ```
+
+## Repeated endurance infrastructure failure
+
+A new four-hour dual-mode endurance attempt began only after both storage
+recovery gates were healthy. A ten-second preflight completed eight verified
+write, fsync and direct-read SHA-256 cycles on both the Thick and conventional
+Thin guest disks. A separate ESXi counter monitor pinned the local SATA device
+that hosts every nested laboratory component and sampled its error counters
+every 30 seconds.
+
+The full run reproduced the lower-layer datastore fault within minutes. The
+local SATA device increased from 28 to 30 failed commands and from 20 to 22
+failed write operations. ESXi logged AHCI command aborts, H:0x5/D:0x22 write
+failures, COMRESET and VMFS heartbeat timeouts for that exact device. PVE01
+briefly lost both virtual iSCSI paths, its bounded Thick recovery probe failed
+closed, and the nested host then rebooted without a clean shutdown. The guest
+remained stopped with a persistent `RUNNING` marker. Seven durable verified
+cycles for each disk survived in its log.
+
+After PVE01 rejoined, the original three-node cluster was quorate, both
+multipath maps had two healthy paths, both storage identities matched, and the
+Thin and Thick recovery gates returned `HEALTHY` and
+`SAFE_FOR_MUTATION=YES`. No plugin repair or speculative cleanup occurred.
+Guest evidence was collected through a read-only mount with journal replay
+disabled, and every temporary partition map and LV activation was removed.
+
+This is a second independently observed failure of the ESXi local datastore
+path and is not a plugin endurance result. No further load or fault test is
+permitted on that datastore. The endurance gate remains open until the same
+candidate completes on qualified infrastructure.
+
+```ini
+DUAL_MODE_REPEAT_PREFLIGHT_THIN_CYCLES=8_PASS
+DUAL_MODE_REPEAT_PREFLIGHT_THICK_CYCLES=8_PASS
+DUAL_MODE_REPEAT_DURABLE_THIN_CYCLES=7_PASS
+DUAL_MODE_REPEAT_DURABLE_THICK_CYCLES=7_PASS
+ESXI_LOCAL_FAILED_COMMANDS_DELTA=2
+ESXI_LOCAL_FAILED_WRITE_OPERATIONS_DELTA=2
+ESXI_LOCAL_FAILED_BLOCKS_DELTA=0
+NESTED_PVE_UNCLEAN_REBOOT=YES
+POST_REBOOT_CLUSTER_QUORUM=PASS
+POST_REBOOT_MULTIPATH=2_OF_2_BOTH_LUNS
+POST_REBOOT_RECOVERY_GATES=PASS_BOTH_MODES
+PLUGIN_SPECULATIVE_RECOVERY=NO
+RESULT=INFRASTRUCTURE_FAIL_ESXI_LOCAL_DATASTORE_PATH
+DUAL_MODE_ENDURANCE_QUALIFICATION=OPEN
+FURTHER_TESTS_ON_FAILED_DATASTORE=PROHIBITED
+```

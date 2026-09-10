@@ -25,7 +25,7 @@ Disruptive cluster and transport coverage is tracked separately in the
 | Windows workload | Long write-through, flush and hash-verification soak | PASS |
 | Windows interruption | Materialization interruption, explicit resume, pivot and guest data verification | PASS |
 | Cross-node non-interference | Repeated bounded recovery checks on every qualified API node | PASS |
-| Dual-mode endurance | Uninterrupted Thin and Thick guest write, flush and direct-read verification with host-side recovery monitoring | OPEN - LATEST FOUR-HOUR RUN INTERRUPTED BY ESXI DATASTORE FAILURE |
+| Dual-mode endurance | Uninterrupted Thin and Thick guest write, flush and direct-read verification with host-side recovery monitoring | OPEN - REPEATED ESXI LOCAL DATASTORE PATH FAILURE; RETEST DEFERRED TO QUALIFIED INFRASTRUCTURE |
 | Large-capacity arithmetic | 1, 16 and 128 PiB geometry, overflow refusal and exact health counters | PASS |
 | Physical petabyte storage | Representative array qualification | NOT TESTED |
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
