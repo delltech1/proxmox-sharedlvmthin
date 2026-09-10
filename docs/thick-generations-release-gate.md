@@ -6,6 +6,8 @@ is not converted into a success claim.
 
 Disruptive cluster and transport coverage is tracked separately in the
 [Thin and Thick Generations redundancy gate](thick-generations-redundancy-gate.md).
+The executable order and remaining original-cluster work are defined in the
+[original cluster qualification plan](original-cluster-qualification-plan.md).
 
 | Area | Required evidence | Current state |
 | --- | --- | --- |

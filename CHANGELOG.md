@@ -2,6 +2,11 @@
 
 ## Unreleased Thick Generations prototype
 
+- Publish the tg7 local qualification candidate together with an explicit
+  original-cluster test plan. The plan separates non-destructive admission,
+  rolling package qualification, Thin/Thick lifecycle, topology and transport
+  fault gates, and prevents the failed ESXi local datastore from being reused
+  as qualification evidence.
 - Treat only an explicitly disabled SharedLvmThin storage as non-operational:
   Doctor and dashboard inventory retain the entry but skip device, VG, pool,
   path, and anchor probes. Enabled but unavailable storage continues to fail
