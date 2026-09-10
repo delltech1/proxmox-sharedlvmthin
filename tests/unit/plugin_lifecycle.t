@@ -2458,6 +2458,61 @@ subtest 'content listing keeps a valid materializing HEAD visible' => sub {
     }], 'PVE inventory remains readable while materialization is pending');
 };
 
+subtest 'same-VG thin and thick aliases expose only their owned inventory' => sub {
+    my $thin_store = 'thin-alias';
+    my $thick_store = 'thick-alias';
+    my $thin_volume = 'vm-900010-disk-0';
+    my $thick_volume = 'vm-900011-disk-0';
+    my $namespace = 'same-vg-uuid';
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $thick_volume);
+    my $head = PVE::SharedLvmThinThick::generation_name($namespace, $thick_volume, 0);
+    my $state = {
+        v => 5, sid => $thick_store, vol => $thick_volume,
+        phase => 'MATERIALIZED', tx => ('a' x 32), op => 'ALLOC',
+        snapshot => 'none', source => $head, old => $head, new => $head,
+        head => $head, generation => 0, region => 8,
+    };
+    my $inventory = { sharedvg => {
+        'sltp-900010' => {
+            lv_type => 't', tags => "pve-slt-sid-$thin_store",
+        },
+        $thin_volume => {
+            pool_lv => 'sltp-900010', lv_size => 1024, ctime => 11,
+        },
+        $anchor => {
+            tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$state)}),
+        },
+        $head => {
+            tags => join(',', @{PVE::SharedLvmThinThick::generation_tags(
+                sid => $thick_store, vol => $thick_volume,
+                role => 'head', generation => 0,
+            )}),
+            lv_size => 2048, ctime => 22,
+        },
+    } };
+    my $thin_cfg = {
+        'slt-vgname' => 'sharedvg', 'slt-allocation-mode' => 'thin',
+        'slt-expected-vg-uuid' => $namespace,
+    };
+    my $thick_cfg = {
+        %$thin_cfg, 'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd', shared => 1,
+        'slt-vg-reserve-gib' => 5,
+    };
+    no warnings 'redefine';
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return $inventory };
+
+    is_deeply($class->list_images($thin_store, $thin_cfg, undef, undef, undef), [{
+        volid => "$thin_store:$thin_volume", format => 'raw', size => 1024,
+        vmid => 900010, ctime => 11,
+    }], 'thin alias hides every Thick Generations internal object');
+    is_deeply($class->list_images($thick_store, $thick_cfg, undef, undef, undef), [{
+        volid => "$thick_store:$thick_volume", format => 'raw', size => 2048,
+        vmid => 900011, ctime => 22,
+    }], 'thick alias hides the thin pool and thin guest LV');
+};
+
 subtest 'thick snapshot lookup accepts exactly one signed immutable generation' => sub {
     my $storeid = 'thick-test';
     my $volname = 'vm-900001-disk-0';
