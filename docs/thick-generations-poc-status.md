@@ -2830,3 +2830,20 @@ TG6_PERL_REGRESSION=235_PASS
 TG6_REPRODUCIBLE_DEB=PASS
 TG6_DEB_SHA256=ca21702ef95b220b2bf496849d151da46cb0b1835cff92e5c90b41efb2b34c83
 ```
+
+The preflight was also invoked five times while a running mixed-mode guest
+completed 100 consecutive root, Thick and Thin fsync cycles. Every preflight
+returned `UPGRADE_SAFE=YES`, the workload completed, and the QEMU process
+identifier remained unchanged. Both recovery gates were healthy after the VM
+stopped. PVE separately reported deactivation warnings for two pre-existing
+`unused` references on an explicitly disabled and unavailable laboratory
+transport; those references were preserved as evidence and were not treated
+as a preflight or active-storage failure.
+
+```ini
+UPGRADE_CHECK_CONCURRENT_INVOCATIONS=5_PASS
+UPGRADE_CHECK_CONCURRENT_MIXED_FSYNC_CYCLES=100_PASS
+UPGRADE_CHECK_CONCURRENT_QEMU_PID_UNCHANGED=PASS
+UPGRADE_CHECK_POST_WORKLOAD_RECOVERY_GATES=PASS_BOTH_MODES
+UNRELATED_DISABLED_UNUSED_REFERENCE_MUTATION=NO
+```
