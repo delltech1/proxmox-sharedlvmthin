@@ -139,6 +139,20 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("anchor-scoped materialization does not match transaction", worker)
         self.assertIn("a different VG intent targets this materialization anchor", worker)
         self.assertNotIn("lvremove", worker)
+
+    def test_snapshot_delete_recovery_is_an_explicit_command(self):
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "thick-recover-delete <storage-id> <volume>",
+            cli,
+        )
+        self.assertIn('--recover-delete "$2" "$3"', cli)
+        self.assertIn("_thick_recover_snapshot_delete", worker)
+        self.assertIn("SNAPSHOT_DELETE_RECOVERY_START", worker)
         self.assertNotIn("pvcreate", worker)
 
 

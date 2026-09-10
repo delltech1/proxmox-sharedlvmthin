@@ -3331,6 +3331,116 @@ sub _thick_volume_snapshot_delete {
     }, $device);
 }
 
+sub _thick_recover_snapshot_delete {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "VG '$vg' has no snapshot-delete transaction to recover\n"
+            if !defined($intent);
+        die "VG '$vg' intent is not an OPEN snapshot-delete transaction\n"
+            if ($intent->{state} // '') ne 'OPEN'
+            || ($intent->{op} // '') ne 'REMOVE_SNAPSHOT';
+
+        my %expected = %$intent;
+        $class->_require_exact_vg_intent(
+            $vg, %expected, _device => $device,
+        );
+
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        die "snapshot-delete recovery cannot see VG '$vg'\n" if !$lvs->{$vg};
+        my ($state, undef, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        my $snapshot = $intent->{object};
+        die "snapshot-delete intent targets the authoritative HEAD\n"
+            if $snapshot eq $state->{head};
+
+        my $verify_snapshot = sub {
+            my ($objects) = @_;
+            my $info = $objects->{$snapshot};
+            return undef if !defined($info);
+            my $owned = decode_generation_tags($info->{tags} // '');
+            die "snapshot-delete intent object is not an owned snapshot generation\n"
+                if $owned->{sid} ne $storeid
+                || $owned->{vol} ne $volname
+                || $owned->{role} ne 'snapshot';
+            my $namespace = $class->_thick_namespace($scfg);
+            die "snapshot-delete intent object name does not match its signed generation\n"
+                if generation_name($namespace, $volname, $owned->{generation}) ne $snapshot;
+            return $owned;
+        };
+
+        my $owned = $verify_snapshot->($lvs->{$vg});
+        if ($state->{tx} ne $intent->{tx}) {
+            die "snapshot-delete recovery cannot rebase after the exact object disappeared\n"
+                if !defined($owned);
+            my $rebased = materialized_rebase_state($state, $intent->{tx});
+            $class->_change_exact_tags(
+                $vg, $anchor,
+                PVE::SharedLvmThinThick::anchor_tags(%$state),
+                PVE::SharedLvmThinThick::anchor_tags(%$rebased),
+                "recovering materialized anchor '$vg/$anchor' before snapshot delete failed",
+                $device,
+            );
+            $state = $rebased;
+        } else {
+            die "snapshot-delete recovery found a non-canonical rebased anchor\n"
+                if $state->{op} ne 'ALLOC'
+                || $state->{snapshot} ne 'none'
+                || $state->{source} ne $state->{head}
+                || $state->{old} ne $state->{head}
+                || $state->{new} ne $state->{head};
+        }
+
+        if (defined($owned)) {
+            $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
+            $class->_verify_autoactivation_disabled($vg, $snapshot, $device);
+            my $path = "/dev/$vg/$snapshot";
+            if (_block_device_exists($path)) {
+                my $open = _command_lines(
+                    ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $path],
+                    "reading open count of snapshot '$vg/$snapshot' failed",
+                );
+                die "snapshot '$vg/$snapshot' open count is ambiguous\n"
+                    if @$open != 1 || $open->[0] !~ /^\d+$/;
+                die "refusing to recover deletion of open snapshot '$vg/$snapshot'\n"
+                    if int($open->[0]) != 0;
+                run_command(
+                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
+                    errmsg => "deactivating snapshot '$vg/$snapshot' during recovery failed",
+                );
+            }
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$snapshot"],
+                errmsg => "removing snapshot '$vg/$snapshot' during recovery failed",
+            );
+        }
+
+        $class->_verify_storage_identity($storeid, $scfg, $device);
+        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        die "snapshot-delete recovery cannot confirm VG '$vg'\n" if !$after->{$vg};
+        die "snapshot-delete recovery did not remove the exact snapshot object\n"
+            if exists($after->{$vg}->{$snapshot});
+        my ($final) = $class->_thick_anchor($storeid, $scfg, $volname, $after);
+        die "snapshot-delete recovery did not preserve the canonical HEAD\n"
+            if $final->{tx} ne $intent->{tx}
+            || $final->{head} ne $state->{head}
+            || int($final->{generation}) != int($state->{generation})
+            || $final->{op} ne 'ALLOC'
+            || $final->{snapshot} ne 'none'
+            || $final->{source} ne $final->{head}
+            || $final->{old} ne $final->{head}
+            || $final->{new} ne $final->{head};
+        $class->_clear_vg_intent(
+            $vg, %expected, _device => $device,
+        );
+        return 'SNAPSHOT_DELETE_RECOVERED';
+    }, $device);
+}
+
 sub _volume_snapshot_delete_locked {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 

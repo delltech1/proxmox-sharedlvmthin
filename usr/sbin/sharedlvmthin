@@ -1118,6 +1118,14 @@ case "${1:-doctor}" in
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
             --resume "$2" "$3"
         ;;
+    thick-recover-delete)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-delete <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-delete "$2" "$3"
+        ;;
     version|--version|-V)
         echo "sharedlvmthin doctor $VERSION"
         ;;
@@ -1127,8 +1135,8 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin doctor --deep"
         echo "  sharedlvmthin recovery-check <storage-id>"
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"
         echo "  sharedlvmthin version"
         exit 64
         ;;
 esac
-

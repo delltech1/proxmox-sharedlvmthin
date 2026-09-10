@@ -2456,8 +2456,12 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     reset_mocks();
     my $storeid = 'thick-test';
     my $volname = 'vm-900001-disk-0';
-    my $snapshot = 'sltg-g-key-00000000';
-    my $head = 'sltg-g-key-00000001';
+    my $snapshot = PVE::SharedLvmThinThick::generation_name(
+        'vg-uuid', $volname, 0,
+    );
+    my $head = PVE::SharedLvmThinThick::generation_name(
+        'vg-uuid', $volname, 1,
+    );
     my $cfg = {
         shared => 1, 'slt-vgname' => 'testvg',
         'slt-allocation-mode' => 'thick-generations',
@@ -2518,8 +2522,8 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     is($class->volume_snapshot_delete($cfg, $storeid, $volname, 'snap1'), undef,
         'exact closed snapshot is deleted');
     is_deeply([command_lines()], [
-        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/sltg-g-key-00000000',
-        '/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/sltg-g-key-00000000',
+        "/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/$snapshot",
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$snapshot",
     ], 'delete deactivates and removes only the signed snapshot generation');
     is_deeply(\@events, [qw(OPEN REBASE CLEAR)],
         'intent brackets canonical rebase and the verified delete');
@@ -2542,14 +2546,107 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     @events = ();
     $anchor_reads = 0;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
-    $command_failure = qr{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/sltg-g-key-00000000};
+    $command_failure = qr{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/\Q$snapshot\E};
     eval { $class->volume_snapshot_delete($cfg, $storeid, $volname, 'snap1') };
     like($@, qr/PARTIAL SNAPSHOT DELETE.*exact object remains/s,
         'delete failure after canonical rebase is classified as partial');
     is_deeply(\@events, [qw(OPEN REBASE)],
         'partial delete preserves the OPEN intent after the anchor rebase');
-    is(scalar(grep { m{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/sltg-g-key-00000000$} } command_lines()), 1,
+    is(scalar(grep { m{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/\Q$snapshot\E$} } command_lines()), 1,
         'partial delete performs exactly one removal attempt');
+};
+
+subtest 'thick snapshot-delete recovery deterministically resumes prepared and finalize states' => sub {
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $snapshot = PVE::SharedLvmThinThick::generation_name(
+        'vg-uuid', $volname, 0,
+    );
+    my $head = PVE::SharedLvmThinThick::generation_name(
+        'vg-uuid', $volname, 1,
+    );
+    my $anchor = 'anchor';
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $intent = {
+        v => 1, tx => ('7' x 32), state => 'OPEN',
+        op => 'REMOVE_SNAPSHOT', object => $snapshot, before => ('8' x 32),
+    };
+    my $prepared = {
+        v => 5, sid => $storeid, vol => $volname,
+        phase => 'MATERIALIZED', tx => ('6' x 32), op => 'SNAPSHOT',
+        snapshot => 'snap1', source => $snapshot, old => $snapshot,
+        new => $head, head => $head, generation => 1, region => 8,
+    };
+    my $rebased = PVE::SharedLvmThinThick::materialized_rebase_state(
+        $prepared, $intent->{tx},
+    );
+    my $snapshot_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'snapshot',
+        generation => 0, snapshot => 'snap1',
+    )});
+
+    reset_mocks();
+    my @inventory = (
+        { testvg => {
+            $snapshot => { tags => $snapshot_tags }, $head => {}, $anchor => {},
+        } },
+        { testvg => { $head => {}, $anchor => {} } },
+    );
+    my @states = ($prepared, $rebased);
+    my @events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code, $device) = @_;
+        is($device, '/dev/mapper/3600abcd', 'recovery lock is device-scoped');
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { return $intent };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub {
+        push @events, 'INTENT_VERIFIED'; return 1;
+    };
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventory };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
+        return (shift(@states), {}, $anchor);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_change_exact_tags = sub {
+        push @events, 'REBASE'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        push @events, 'CLEAR'; return 1;
+    };
+
+    is($class->_thick_recover_snapshot_delete($cfg, $storeid, $volname),
+        'SNAPSHOT_DELETE_RECOVERED', 'prepared delete is recovered exactly');
+    is_deeply(\@events, [qw(INTENT_VERIFIED REBASE CLEAR)],
+        'prepared recovery verifies intent, rebases, then clears only after delete');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$snapshot",
+    ], 'prepared recovery removes only the exact device-scoped snapshot');
+
+    reset_mocks();
+    @inventory = (
+        { testvg => { $head => {}, $anchor => {} } },
+        { testvg => { $head => {}, $anchor => {} } },
+    );
+    @states = ($rebased, $rebased);
+    @events = ();
+    is($class->_thick_recover_snapshot_delete($cfg, $storeid, $volname),
+        'SNAPSHOT_DELETE_RECOVERED', 'post-delete finalize is idempotently recovered');
+    is_deeply(\@events, [qw(INTENT_VERIFIED CLEAR)],
+        'finalize state performs no rebase and clears the exact intent');
+    is_deeply([command_lines()], [], 'finalize state performs no removal retry');
 };
 
 subtest 'thick rollback refuses an open frontend before mutation' => sub {

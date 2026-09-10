@@ -454,8 +454,8 @@ sub classify_recovery {
                         : 'exact snapshot deletion completed and the OPEN intent awaits clearing'),
                 );
             }
-            return $blocked->('snapshot-delete transaction changed an unexpected anchor')
-                if $anchor->{op} eq 'ALLOC' || !$present;
+            return $blocked->('snapshot-delete object disappeared before anchor rebase')
+                if !$present;
             my $object_error = $require_stable_objects->();
             return $blocked->($object_error) if defined($object_error);
             return $result->(

@@ -506,6 +506,23 @@ HEAD_UNCHANGED_AFTER_SNAPSHOT_DELETE=PASS
 SNAPSHOT_DELETE_INTENT=PASS
 ```
 
+The delete transaction is now ordered as intent, canonical anchor rebase,
+exact object removal, postcondition verification, and exact intent clear.
+Recovery classifies the three possible interrupted states as
+`SNAPSHOT_DELETE_PREPARED`, `SNAPSHOT_DELETE_READY`, and
+`SNAPSHOT_DELETE_FINALIZE`. The explicit
+`sharedlvmthin thick-recover-delete <storage-id> <volume>` command derives the
+object and transaction from persistent state, never accepts caller-supplied
+identity, and never retries removal when the exact object is already absent.
+Its unit qualification covers pre-rebase continuation and post-delete
+finalization; disposable multipath integration remains required.
+
+```ini
+SNAPSHOT_DELETE_CRASH_CLASSIFICATION=PASS
+SNAPSHOT_DELETE_RECOVERY_UNIT=PASS
+SNAPSHOT_DELETE_RECOVERY_MULTIPATH=OPEN
+```
+
 Rollback uses the same persistent dm-clone materialization engine with an
 explicit `ROLLBACK` anchor operation. Its source is the exact signed snapshot,
 its `old` object is the superseded HEAD, and its `new` object is a fresh fully

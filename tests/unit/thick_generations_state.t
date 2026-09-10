@@ -244,6 +244,16 @@ is($delete_prepared->{transaction_state}, 'SNAPSHOT_DELETE_PREPARED',
     'snapshot delete before anchor rebase is classified exactly');
 is($delete_prepared->{safe_for_mutation}, 0,
     'snapshot delete before anchor rebase remains fail-closed');
+my $canonical_before_delete = materialized_rebase_state(
+    $materialized, ('e' x 32),
+);
+my $canonical_delete_prepared = classify_recovery(
+    anchor => $canonical_before_delete, intent => $remove_snapshot_open,
+    objects => { head => 1, source => 1, old => 1, new => 1, meta => 0 },
+    runtime => 'linear-head', intent_object_present => 1,
+);
+is($canonical_delete_prepared->{transaction_state}, 'SNAPSHOT_DELETE_PREPARED',
+    'a canonical ALLOC anchor is a valid pre-rebase snapshot-delete state');
 my $delete_ready = classify_recovery(
     anchor => $rebased, intent => $remove_snapshot_open,
     objects => { head => 1, source => 1, old => 1, new => 1, meta => 0 },

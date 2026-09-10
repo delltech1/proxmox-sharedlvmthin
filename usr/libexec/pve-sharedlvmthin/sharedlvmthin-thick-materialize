@@ -8,12 +8,16 @@ use PVE::Storage;
 use PVE::Storage::Custom::SharedLvmThinPlugin;
 
 my $derive = @ARGV == 3 && $ARGV[0] eq '--resume';
+my $recover_delete = @ARGV == 3 && $ARGV[0] eq '--recover-delete';
 die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <operation> <transaction>\n"
     . "       sharedlvmthin-thick-materialize --resume <storage-id> <volume>\n"
-    if !$derive && @ARGV != 5;
+    . "       sharedlvmthin-thick-materialize --recover-delete <storage-id> <volume>\n"
+    if !$derive && !$recover_delete && @ARGV != 5;
 
 my ($storeid, $volname, $snapshot, $operation, $transaction) =
-    $derive ? ($ARGV[1], $ARGV[2], undef, undef, undef) : @ARGV;
+    ($derive || $recover_delete)
+        ? ($ARGV[1], $ARGV[2], undef, undef, undef)
+        : @ARGV;
 die "invalid storage identifier\n"
     if !defined($storeid) || $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 die "invalid Thick Generations volume name\n"
@@ -28,6 +32,15 @@ my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
 die "storage '$storeid' is not configured for Thick Generations\n"
     if $class->_allocation_mode($scfg) ne 'thick-generations';
 $class->_require_thick_identity_config($storeid, $scfg);
+
+if ($recover_delete) {
+    print "SNAPSHOT_DELETE_RECOVERY_START storage=$storeid volume=$volname\n";
+    my $result = $class->_thick_recover_snapshot_delete(
+        $scfg, $storeid, $volname,
+    );
+    print "$result storage=$storeid volume=$volname\n";
+    exit 0;
+}
 
 if ($derive) {
     my ($state) = $class->_thick_read_anchor($storeid, $scfg, $volname);

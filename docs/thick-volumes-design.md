@@ -64,6 +64,25 @@ ambiguous and is refused. Successful resumption continues persistent dm-clone
 progress, completes the linear pivot, and clears only the exact transition
 metadata and any matching intent.
 
+Snapshot deletion uses a separate crash-classifiable transaction. It first
+records an exact `REMOVE_SNAPSHOT` intent, rebases the materialized anchor to
+the canonical HEAD-only state, and only then removes the signed immutable
+generation. A crash at any boundary is reported as `SNAPSHOT_DELETE_PREPARED`,
+`SNAPSHOT_DELETE_READY`, or `SNAPSHOT_DELETE_FINALIZE`. After read-only
+classification, an operator can resume only that exact transaction with:
+
+```text
+sharedlvmthin thick-recover-delete <storage-id> <volume>
+```
+
+The command accepts neither a snapshot name nor a transaction identifier. It
+derives both from persistent signed state, holds the canonical VG lock,
+requires quorum and pinned storage identity, scopes LVM mutations to the
+expected multipath device, refuses an open or foreign object, performs at most
+one exact removal attempt, verifies the canonical HEAD, and clears only the
+matching intent. If the object is already absent after the verified rebase, it
+performs finalize-only recovery without retrying removal.
+
 The mode does not weaken the existing per-VM thin-pool lifecycle. Thin and
 Thick Generations are separate storage definitions with independent allocation
 semantics, while PVE storage move provides the explicit conversion boundary.
