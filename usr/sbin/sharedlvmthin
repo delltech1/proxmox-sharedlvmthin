@@ -257,6 +257,41 @@ doctor() {
             continue
         fi
 
+        ALIAS_INFO="$(
+            timeout --foreground 15 perl -I/usr/share/perl5 \
+                -MPVE::Storage \
+                -MPVE::Storage::Custom::SharedLvmThinPlugin \
+                -e '
+                    my ($sid) = @ARGV;
+                    my $cfg = PVE::Storage::config();
+                    my $scfg = PVE::Storage::storage_config($cfg, $sid);
+                    my $class = "PVE::Storage::Custom::SharedLvmThinPlugin";
+                    $class->_verify_same_vg_alias_configuration($sid, $scfg);
+                    my $vg = $scfg->{"slt-vgname"};
+                    my @aliases = sort grep {
+                        my $candidate = $cfg->{ids}->{$_};
+                        ref($candidate) eq "HASH"
+                            && ($candidate->{type} // "") eq "sharedlvmthin"
+                            && ($candidate->{"slt-vgname"} // "") eq $vg;
+                    } keys %{$cfg->{ids}};
+                    print scalar(@aliases), "|", join(",", @aliases);
+                ' "$SID" 2>&1
+        )"
+        ALIAS_RC=$?
+        if [ "$ALIAS_RC" -ne 0 ]; then
+            fail "$SID: unsafe same-VG storage alias topology"
+            info "Reason: ${ALIAS_INFO//$'\n'/ }"
+            continue
+        fi
+        ALIAS_COUNT="${ALIAS_INFO%%|*}"
+        ALIAS_IDS="${ALIAS_INFO#*|}"
+        if [ "$ALIAS_COUNT" = "2" ]; then
+            pass "$SID: same-VG thin/thick alias topology is canonical ($ALIAS_IDS)"
+            warn "$SID: both aliases truthfully report the same physical VG capacity; do not sum their PVE capacity values"
+        else
+            pass "$SID: no same-VG capacity aliasing"
+        fi
+
         if timeout --foreground 15 vgs "$VG" >/dev/null 2>&1; then
             pass "$SID: VG '$VG' visible"
         else

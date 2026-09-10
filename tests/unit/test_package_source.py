@@ -31,6 +31,13 @@ class PackageSourceTests(unittest.TestCase):
             doctor,
         )
 
+    def test_doctor_explains_same_vg_capacity_aliasing(self):
+        doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertIn("_verify_same_vg_alias_configuration", doctor)
+        self.assertIn("unsafe same-VG storage alias topology", doctor)
+        self.assertIn("both aliases truthfully report the same physical VG capacity", doctor)
+        self.assertIn("do not sum their PVE capacity values", doctor)
+
     def test_package_does_not_contain_private_keys(self):
         forbidden = []
         for path in ROOT.rglob("*"):

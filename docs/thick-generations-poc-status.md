@@ -1609,3 +1609,14 @@ THICK_LIFECYCLE_DEVICE_SCOPE_IMPLEMENTATION=PASS
 THICK_LIFECYCLE_DEVICE_SCOPE_UNIT_GATE=PASS
 THICK_LIFECYCLE_DEVICE_SCOPE_LIVE=OPEN
 ```
+
+PVE evaluates storage capacity per storage ID. A canonical thin/thick pair over
+one VG therefore reports the same physical VG capacity on each alias. Those
+figures are truthful per alias but are not independent and must not be summed.
+Doctor validates the alias topology and reports this presentation constraint;
+the plugin deliberately does not fabricate divided capacity values.
+
+```ini
+SAME_VG_PER_ALIAS_CAPACITY_TRUTHFUL=PASS
+SAME_VG_CAPACITY_AGGREGATION_WARNING=PASS
+```

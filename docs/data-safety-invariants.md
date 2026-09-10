@@ -74,3 +74,11 @@ activation, deactivation, resize, snapshot transition, snapshot deletion, and
 recovery is restricted to the exact pinned multipath mapper with per-command
 `--devices`. Failure to establish that scope is a hard refusal. The plugin does
 not change the host-wide LVM devices file or scanning configuration.
+
+## DS-19 — Same-VG capacity is never fabricated
+
+When the canonical thin and Thick Generations aliases expose one physical VG,
+each storage status reports that same physical VG truthfully. Administrators
+must not sum both alias values as independent capacity. Doctor detects the
+canonical pair and emits this warning; the plugin does not divide, hide, or
+otherwise fabricate capacity to compensate for a presentation-layer aggregate.
