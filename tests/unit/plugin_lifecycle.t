@@ -2647,6 +2647,40 @@ subtest 'thick snapshot-delete recovery deterministically resumes prepared and f
     is_deeply(\@events, [qw(INTENT_VERIFIED CLEAR)],
         'finalize state performs no rebase and clears the exact intent');
     is_deeply([command_lines()], [], 'finalize state performs no removal retry');
+
+    reset_mocks();
+    @inventory = ({ testvg => {
+        $snapshot => { tags => $snapshot_tags }, $head => {}, $anchor => {},
+    } });
+    @states = ($prepared);
+    @events = ();
+    {
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['1'] };
+        eval { $class->_thick_recover_snapshot_delete($cfg, $storeid, $volname) };
+    }
+    like($@, qr/refusing to recover deletion of open snapshot/,
+        'recovery refuses an open snapshot before anchor mutation');
+    is_deeply(\@events, [qw(INTENT_VERIFIED)],
+        'open snapshot recovery performs no anchor rebase or intent clear');
+    is_deeply([command_lines()], [], 'open snapshot recovery performs no LVM mutation');
+
+    reset_mocks();
+    my $foreign_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => 'foreign-store', vol => $volname, role => 'snapshot',
+        generation => 0, snapshot => 'snap1',
+    )});
+    @inventory = ({ testvg => {
+        $snapshot => { tags => $foreign_tags }, $head => {}, $anchor => {},
+    } });
+    @states = ($prepared);
+    @events = ();
+    eval { $class->_thick_recover_snapshot_delete($cfg, $storeid, $volname) };
+    like($@, qr/not an owned snapshot generation/,
+        'recovery refuses a foreign signed snapshot object');
+    is_deeply(\@events, [qw(INTENT_VERIFIED)],
+        'foreign object rejection performs no anchor rebase or intent clear');
+    is_deeply([command_lines()], [], 'foreign object rejection performs no LVM mutation');
 };
 
 subtest 'thick rollback refuses an open frontend before mutation' => sub {

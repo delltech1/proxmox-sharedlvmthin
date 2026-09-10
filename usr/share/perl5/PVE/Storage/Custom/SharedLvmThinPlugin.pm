@@ -3374,6 +3374,23 @@ sub _thick_recover_snapshot_delete {
         };
 
         my $owned = $verify_snapshot->($lvs->{$vg});
+        my $verify_snapshot_inactive = sub {
+            $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
+            $class->_verify_autoactivation_disabled($vg, $snapshot, $device);
+            my $path = "/dev/$vg/$snapshot";
+            return if !_block_device_exists($path);
+            my $open = _command_lines(
+                ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $path],
+                "reading open count of snapshot '$vg/$snapshot' failed",
+            );
+            die "snapshot '$vg/$snapshot' open count is ambiguous\n"
+                if @$open != 1 || $open->[0] !~ /^\d+$/;
+            die "refusing to recover deletion of open snapshot '$vg/$snapshot'\n"
+                if int($open->[0]) != 0;
+            return 1;
+        };
+        $verify_snapshot_inactive->() if defined($owned);
+
         if ($state->{tx} ne $intent->{tx}) {
             die "snapshot-delete recovery cannot rebase after the exact object disappeared\n"
                 if !defined($owned);
@@ -3396,18 +3413,9 @@ sub _thick_recover_snapshot_delete {
         }
 
         if (defined($owned)) {
-            $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
-            $class->_verify_autoactivation_disabled($vg, $snapshot, $device);
+            $verify_snapshot_inactive->();
             my $path = "/dev/$vg/$snapshot";
             if (_block_device_exists($path)) {
-                my $open = _command_lines(
-                    ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $path],
-                    "reading open count of snapshot '$vg/$snapshot' failed",
-                );
-                die "snapshot '$vg/$snapshot' open count is ambiguous\n"
-                    if @$open != 1 || $open->[0] !~ /^\d+$/;
-                die "refusing to recover deletion of open snapshot '$vg/$snapshot'\n"
-                    if int($open->[0]) != 0;
                 run_command(
                     ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
                     errmsg => "deactivating snapshot '$vg/$snapshot' during recovery failed",
