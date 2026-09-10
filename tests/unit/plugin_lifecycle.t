@@ -657,7 +657,7 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     my @vmstate_commands = command_lines();
     like(
         $vmstate_commands[0],
-        qr{^/sbin/lvcreate -V 262144K -n vm-900001-state-S1 --thinpool testvg/sltp-900001$},
+        qr{^/sbin/lvcreate --yes --wipesignatures y -V 262144K -n vm-900001-state-S1 --thinpool testvg/sltp-900001$},
         'vmstate allocated in the existing per-VM pool',
     );
 
@@ -686,7 +686,7 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     my @fleece_commands = command_lines();
     like(
         $fleece_commands[0],
-        qr{^/sbin/lvcreate -V 262144K -n vm-900001-fleece-0 --thinpool testvg/sltp-900001$},
+        qr{^/sbin/lvcreate --yes --wipesignatures y -V 262144K -n vm-900001-fleece-0 --thinpool testvg/sltp-900001$},
         'fleecing LV allocated in the existing per-VM pool',
     );
 
@@ -715,7 +715,7 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     my @cloudinit_commands = command_lines();
     like(
         $cloudinit_commands[0],
-        qr{^/sbin/lvcreate -V 4096K -n vm-900001-cloudinit --thinpool testvg/sltp-900001$},
+        qr{^/sbin/lvcreate --yes --wipesignatures y -V 4096K -n vm-900001-cloudinit --thinpool testvg/sltp-900001$},
         'cloud-init LV allocated in the existing per-VM pool',
     );
 
@@ -764,10 +764,10 @@ subtest 'new VM allocation creates, converts, tags and uses one pool' => sub {
     );
     is($name, 'vm-900001-disk-0', 'allocated name returned');
     my @lines = command_lines();
-    like($lines[0], qr{^/sbin/lvcreate -L 4194304K -n sltp-900001 testvg$}, 'backing LV command');
+    like($lines[0], qr{^/sbin/lvcreate --yes --wipesignatures y -L 4194304K -n sltp-900001 testvg$}, 'backing LV command');
     like($lines[1], qr{^/sbin/lvconvert -y --type thin-pool testvg/sltp-900001$}, 'thin-pool conversion');
     like($lines[2], qr{--addtag pve-slt-sid-sharedthin-test}, 'storage ownership tag');
-    like($lines[3], qr{^/sbin/lvcreate -V 1024K -n vm-900001-disk-0 --thinpool testvg/sltp-900001$}, 'thin LV allocation');
+    like($lines[3], qr{^/sbin/lvcreate --yes --wipesignatures y -V 1024K -n vm-900001-disk-0 --thinpool testvg/sltp-900001$}, 'thin LV allocation');
 };
 
 subtest 'proportional allocation creates physical burst headroom under reserve gate' => sub {
@@ -794,7 +794,7 @@ subtest 'proportional allocation creates physical burst headroom under reserve g
     );
     is($name, 'vm-900001-disk-0', 'allocation completed');
     my @lines = command_lines();
-    like($lines[0], qr{^/sbin/lvcreate -L 33554432K -n sltp-900001 testvg$}, '50% of 64 GiB was admitted');
+    like($lines[0], qr{^/sbin/lvcreate --yes --wipesignatures y -L 33554432K -n sltp-900001 testvg$}, '50% of 64 GiB was admitted');
     unlike(join("\n", @lines), qr{/sbin/lvextend}, 'new pool was sized directly, not grown after creation');
 };
 
@@ -829,7 +829,7 @@ subtest 'multi-disk proportional allocation pre-grows from live usage' => sub {
     is($name, 'vm-999900-disk-1', 'second disk allocation completed');
     my @lines = command_lines();
     like($lines[0], qr{^/sbin/lvextend -L 61865984K testvg/sltp-999900$}, 'pool target is 27 GiB used plus 32 GiB headroom');
-    like($lines[1], qr{^/sbin/lvcreate -V 67108864K}, 'guest LV is created only after headroom postcondition');
+    like($lines[1], qr{^/sbin/lvcreate --yes --wipesignatures y -V 67108864K}, 'guest LV is created only after headroom postcondition');
     is(scalar(@numeric), 0, 'all live capacity and postcondition reads consumed');
 };
 
@@ -933,7 +933,7 @@ subtest 'uncertain allocation pre-grow is never retried or shrunk' => sub {
         my @lines = command_lines();
         is(scalar(grep { /lvextend/ } @lines), 1, "$case->[0]: no grow retry");
         is(scalar(grep { /lvreduce/ } @lines), 0, "$case->[0]: no rollback shrink");
-        is(scalar(grep { /lvcreate -V/ } @lines), $case->[2], "$case->[0]: guest creation follows only sufficient target");
+        is(scalar(grep { /lvcreate .* -V/ } @lines), $case->[2], "$case->[0]: guest creation follows only sufficient target");
     }
 };
 
@@ -964,7 +964,7 @@ subtest 'unexpected post-allocation reserve loss preserves pool and refuses gues
     ok(!$ok, 'actual reserve breach rejected after pool creation');
     like($@, qr/PARTIAL ALLOCATION.*pool preserved/s, 'preserved partial state reported');
     my @lines = command_lines();
-    is(scalar(grep { /lvcreate -V/ } @lines), 0, 'guest LV was not created');
+    is(scalar(grep { /lvcreate .* -V/ } @lines), 0, 'guest LV was not created');
     is(scalar(grep { /lvremove|lvreduce/ } @lines), 0, 'pool was neither cleaned nor shrunk');
 };
 
@@ -1168,7 +1168,7 @@ subtest 'VMID reuse allows adding a disk only to an actively owned pool' => sub 
         'vm-999900-disk-1', 1024,
     );
     is($name, 'vm-999900-disk-1', 'second disk allocation allowed');
-    is(scalar(grep { /lvcreate -V/ } command_lines()), 1, 'exactly one guest LV created');
+    is(scalar(grep { /lvcreate .* -V/ } command_lines()), 1, 'exactly one guest LV created');
     unlike(join("\n", command_lines()), qr{lvconvert|--addtag}, 'existing pool was not recreated or adopted');
 };
 
@@ -1232,7 +1232,7 @@ subtest 'failed thin LV allocation preserves the newly-created pool' => sub {
             },
         } },
     );
-    $command_failure = qr{/sbin/lvcreate -V};
+    $command_failure = qr{/sbin/lvcreate .* -V};
     my $ok = eval {
         $class->alloc_image(
             'sharedthin-test', $scfg, 900001, 'raw',
@@ -1961,6 +1961,18 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
     eval { $verify_same_vg_alias_configuration->($class, 'thin-a', $thin) };
     like($@, qr/non-SharedLvmThin storage 'native-lvm'/,
         'a native PVE LVM alias over the same VG is rejected');
+
+    $current = { ids => {
+        'thin-a' => { %$thin, nodes => { 'node-b' => 1, 'node-a' => 1 } },
+        'thick-a' => { %$thick, nodes => ['node-a', 'node-b'] },
+    } };
+    ok($verify_same_vg_alias_configuration->($class, 'thin-a', $current->{ids}->{'thin-a'}),
+        'PVE hash and array node scopes normalize to the same semantic set');
+
+    $current->{ids}->{'thick-a'}->{nodes} = { 'node-a' => 1 };
+    eval { $verify_same_vg_alias_configuration->($class, 'thin-a', $current->{ids}->{'thin-a'}) };
+    like($@, qr/same PVE node scope/,
+        'different runtime node-scope sets remain rejected');
 };
 
 subtest 'thick tag mutation enforces exact precondition and postcondition' => sub {

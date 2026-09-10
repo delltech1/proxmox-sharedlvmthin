@@ -275,6 +275,22 @@ class HealthCacheTests(unittest.TestCase):
         self.assertIn("payload_used_bytes", html)
         self.assertIn("reserved_slack_bytes", html)
 
+    def test_dashboard_distinguishes_thin_and_thick_modes(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Thick Generations", html)
+        self.assertIn("thick_anchors", html)
+        self.assertIn("PVE references", html)
+        self.assertIn("never trigger automatic cleanup or repair", html)
+
+    def test_dashboard_warns_not_to_sum_same_vg_alias_capacity(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("shared VG aliases report the same physical capacity", html)
+        self.assertIn("must not be summed", html)
+
 
 if __name__ == "__main__":
     unittest.main()

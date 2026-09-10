@@ -813,6 +813,15 @@ def evaluate_expected_paths(transport, expected_min_paths):
 
 
 def evaluate_allocation_policy(storage):
+    allocation_mode = storage.get("allocation_mode") or "thin"
+    if allocation_mode == "thick-generations":
+        return "PASS", (
+            "Thick Generations mode allocates independent thick LVs; thin-pool "
+            "headroom and autogrow policy do not apply"
+        )
+    if allocation_mode != "thin":
+        return "FAIL", f"invalid allocation mode '{allocation_mode}'"
+
     mode = storage.get("initial_pool_mode") or "fixed"
     fixed = storage.get("initial_pool_size_gib")
     percent = storage.get("initial_pool_percent")

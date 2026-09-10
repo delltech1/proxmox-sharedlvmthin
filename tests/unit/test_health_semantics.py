@@ -128,6 +128,20 @@ class AllocationHeadroomPolicyTests(unittest.TestCase):
         self.assertIn("plugin made no change", message)
         self.assertIn("complete virtual disk", message)
 
+    def test_thick_generations_does_not_inherit_thin_headroom_policy(self):
+        status, message = self.evaluate({
+            "allocation_mode": "thick-generations",
+            "initial_pool_mode": "invalid-thin-only-value",
+        })
+        self.assertEqual(status, "PASS")
+        self.assertIn("independent thick LVs", message)
+        self.assertIn("do not apply", message)
+
+    def test_unknown_allocation_mode_fails_closed(self):
+        status, message = self.evaluate({"allocation_mode": "unknown"})
+        self.assertEqual(status, "FAIL")
+        self.assertIn("invalid allocation mode", message)
+
     def test_proportional_and_full_are_explicit(self):
         status, message = self.evaluate({
             "initial_pool_mode": "proportional", "initial_pool_size_gib": 8,

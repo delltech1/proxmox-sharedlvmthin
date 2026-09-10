@@ -181,6 +181,19 @@ cmp_ok($large_geometry->{regions}, '<=', 134_217_728,
     'large disk in-core bitmap cardinality is bounded');
 cmp_ok($large_geometry->{metadata_bytes}, '>', 16 * 1024 * 1024,
     'large disk does not inherit a fixed 16 MiB metadata device');
+my $pib = 2 ** 50;
+for my $size_pib (1, 16, 128) {
+    my $geometry = clone_geometry($size_pib * $pib);
+    cmp_ok($geometry->{regions}, '<=', 134_217_728,
+        "$size_pib PiB geometry keeps the in-core bitmap bounded");
+    cmp_ok($geometry->{metadata_bytes}, '<=', 16 * 1024 * 1024 * 1024,
+        "$size_pib PiB geometry keeps persistent metadata within the implementation limit");
+    ok(($geometry->{region_sectors} & ($geometry->{region_sectors} - 1)) == 0,
+        "$size_pib PiB geometry retains a power-of-two region size");
+}
+eval { clone_geometry(128 * $pib + 512) };
+like($@, qr/exceeds supported dm-clone geometry/,
+    'geometry above the exact 128 PiB boundary fails closed without integer wrap');
 eval { clone_geometry(513) };
 like($@, qr/sector-aligned/, 'unaligned clone geometry fails closed');
 

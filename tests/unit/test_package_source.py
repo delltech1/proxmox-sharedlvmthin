@@ -252,6 +252,7 @@ class PackageSourceTests(unittest.TestCase):
                     command,
                     f"{name} contains a global LVM command: {command.strip()}",
                 )
+
         self.assertGreater(checked, 0)
 
         scoped_inventory_paths = thick_lifecycle + (
@@ -286,6 +287,32 @@ class PackageSourceTests(unittest.TestCase):
                 body.index("_thick_list_volumes_scoped"),
                 f"{name} must prove storage identity before its first LVM inventory",
             )
+
+    def test_fresh_lv_creation_is_noninteractive_about_stale_signatures(self):
+        source = (ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm").read_text(
+            encoding="utf-8"
+        )
+        commands = re.findall(
+            r"\[(?:\s*)'/sbin/lvcreate'(?P<body>.*?)\]",
+            source,
+            flags=re.S,
+        )
+        fresh = [
+            body for body in commands
+            if ("'-L'" in body and "'-s'" not in body)
+            or ("'-V'" in body and "'--thinpool'" in body)
+        ]
+        self.assertGreaterEqual(len(fresh), 6)
+        for body in fresh:
+            self.assertIn("'--yes'", body)
+            self.assertIn("'--wipesignatures', 'y'", body)
+            if "'--setactivationskip', 'y'" in body:
+                self.assertIn("'--ignoreactivationskip'", body)
+
+        snapshots = [body for body in commands if "'-s'" in body]
+        self.assertGreaterEqual(len(snapshots), 2)
+        for body in snapshots:
+            self.assertNotIn("'--wipesignatures'", body)
 
 
 if __name__ == "__main__":

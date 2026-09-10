@@ -24,6 +24,18 @@ vmid=$3
 [[ $vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
 [[ $thin_store != "$thick_store" ]] || { echo "ERROR: storage IDs must differ" >&2; exit 1; }
 
+pvesm_alloc_volid() {
+    local storage=$1 owner=$2 name=$3 size=$4 output volid
+    output="$(pvesm alloc "$storage" "$owner" "$name" "$size" --format raw)"
+    printf '%s\n' "$output" >&2
+    volid="$(awk -F"'" '/^successfully created / { print $2 }' <<<"$output")"
+    [[ $volid == "$storage:$name" ]] || {
+        echo "ERROR: pvesm did not report the exact expected volume ID" >&2
+        return 1
+    }
+    printf '%s\n' "$volid"
+}
+
 run_dir="/var/tmp/slt-same-vg-coexistence-$(date -u +%Y%m%dT%H%M%SZ)-$vmid"
 umask 077
 mkdir "$run_dir"
@@ -122,7 +134,7 @@ echo "SAME_VG_CANONICAL_LOCK_CONTENTION=PASS"
 
 preexisting="$(lvs --readonly --devices "$device" --noheadings --separator '|' \
     -o lv_name,lv_tags "$vg")"
-if grep -Eq "(^|[|,])(?:sltp-$vmid|vm-$vmid-|snap_vm-$vmid-|slt_tg_vol=vm-$vmid-)" \
+if grep -Eq "(^|[|,])(sltp-$vmid|vm-$vmid-|snap_vm-$vmid-|slt_tg_vol=vm-$vmid-)" \
         <<<"$preexisting"; then
     echo "ERROR: disposable VMID has pre-existing storage objects"
     exit 1
@@ -132,7 +144,7 @@ fi
 # VG-global LVM metadata spare. Stabilize that LVM-owned object before taking
 # the leak-detection baseline; never classify it as a plugin-owned leftover.
 warm_name="vm-$vmid-disk-99"
-warm_vol="$(pvesm alloc "$thin_store" "$vmid" "$warm_name" 64M --format raw | tail -1)"
+warm_vol="$(pvesm_alloc_volid "$thin_store" "$vmid" "$warm_name" 64M)"
 [[ $warm_vol == "$thin_store:$warm_name" ]] || {
     echo "ERROR: unexpected warm-up volume ID"
     exit 1
@@ -140,7 +152,7 @@ warm_vol="$(pvesm alloc "$thin_store" "$vmid" "$warm_name" 64M --format raw | ta
 pvesm free "$warm_vol"
 warm_post="$(lvs --readonly --devices "$device" --noheadings --separator '|' \
     -o lv_name,lv_tags "$vg")"
-if grep -Eq "(^|[|,])(?:sltp-$vmid|vm-$vmid-|snap_vm-$vmid-|slt_tg_vol=vm-$vmid-)" \
+if grep -Eq "(^|[|,])(sltp-$vmid|vm-$vmid-|snap_vm-$vmid-|slt_tg_vol=vm-$vmid-)" \
         <<<"$warm_post"; then
     echo "ERROR: warm-up allocation did not clean up exactly"
     exit 1
@@ -156,8 +168,8 @@ echo "BASELINE_VG_SEQNO=$baseline_seqno"
 
 thin_name="vm-$vmid-disk-0"
 thick_name="vm-$vmid-disk-1"
-thin_vol="$(pvesm alloc "$thin_store" "$vmid" "$thin_name" 64M --format raw | tail -1)"
-thick_vol="$(pvesm alloc "$thick_store" "$vmid" "$thick_name" 64M --format raw | tail -1)"
+thin_vol="$(pvesm_alloc_volid "$thin_store" "$vmid" "$thin_name" 64M)"
+thick_vol="$(pvesm_alloc_volid "$thick_store" "$vmid" "$thick_name" 64M)"
 [[ $thin_vol == "$thin_store:$thin_name" ]] || { echo "ERROR: unexpected thin volume ID"; exit 1; }
 [[ $thick_vol == "$thick_store:$thick_name" ]] || { echo "ERROR: unexpected thick volume ID"; exit 1; }
 
@@ -182,7 +194,7 @@ qm destroy "$vmid" --destroy-unreferenced-disks 1 --purge 1
 
 post="$(lvs --readonly --devices "$device" --noheadings --separator '|' \
     -o lv_name,lv_tags "$vg")"
-if grep -Eq "(^|[|,])(?:sltp-$vmid|vm-$vmid-|snap_vm-$vmid-|slt_tg_vol=vm-$vmid-)" \
+if grep -Eq "(^|[|,])(sltp-$vmid|vm-$vmid-|snap_vm-$vmid-|slt_tg_vol=vm-$vmid-)" \
         <<<"$post"; then
     echo "ERROR: exact test objects remain after successful PVE cleanup"
     exit 1

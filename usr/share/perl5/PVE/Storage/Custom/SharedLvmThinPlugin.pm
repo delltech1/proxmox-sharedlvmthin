@@ -885,6 +885,33 @@ sub _canonical_vg_lock_id {
     return 'slt-vg-' . substr(sha256_hex(lc($uuid)), 0, 32);
 }
 
+sub _canonical_node_scope {
+    my ($nodes) = @_;
+    return '' if !defined($nodes);
+
+    my @nodes;
+    if (!ref($nodes)) {
+        @nodes = split(/,/, $nodes);
+    } elsif (ref($nodes) eq 'HASH') {
+        @nodes = keys %$nodes;
+    } elsif (ref($nodes) eq 'ARRAY') {
+        @nodes = @$nodes;
+    } else {
+        die "same-VG alias has an unsupported PVE node-scope representation\n";
+    }
+
+    for my $node (@nodes) {
+        die "same-VG alias has an ambiguous PVE node scope\n"
+            if !defined($node) || ref($node);
+        $node =~ s/^\s+|\s+$//g;
+        die "same-VG alias has an ambiguous PVE node scope\n" if $node eq '';
+    }
+    @nodes = sort @nodes;
+    die "same-VG alias has an ambiguous PVE node scope\n"
+        if do { my %seen; grep { $seen{$_}++ } @nodes };
+    return join(',', @nodes);
+}
+
 sub _verify_same_vg_alias_configuration {
     my ($class, $storeid, $scfg) = @_;
     my $vg = $scfg->{'slt-vgname'} // die "storage '$storeid' has no VG name\n";
@@ -940,10 +967,7 @@ sub _verify_same_vg_alias_configuration {
         );
         $reserve{$reserve_key} = 1;
         $minimum_paths{$candidate->{'slt-expected-min-paths'} // ''} = 1;
-        my @nodes = sort grep { length($_) } split(/,/, $candidate->{nodes} // '');
-        die "same-VG alias '$alias' has an ambiguous PVE node scope\n"
-            if do { my %seen; grep { $seen{$_}++ } @nodes };
-        $node_scope{join(',', @nodes)} = 1;
+        $node_scope{_canonical_node_scope($candidate->{nodes})} = 1;
     }
     die "shared VG '$vg' requires exactly one thin and one thick-generations alias\n"
         if !$mode{thin} || !$mode{'thick-generations'};
@@ -1309,12 +1333,14 @@ sub _thick_alloc_image {
         );
         $class->_set_vg_intent($vg, %intent, _device => $device);
         run_command(
-            ['/sbin/lvcreate', '--devices', $device, '-L', "${size}K", '-n', $head,
+            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+                '--devices', $device, '-L', "${size}K", '-n', $head,
                 '--setactivationskip', 'y', $vg],
             errmsg => "creating thick generation '$vg/$head' failed",
         );
         run_command(
-            ['/sbin/lvcreate', '--devices', $device, '-L', '8M', '-n', $anchor,
+            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+                '--devices', $device, '-L', '8M', '-n', $anchor,
                 '--setactivationskip', 'y', $vg],
             errmsg => "creating thick generation anchor '$vg/$anchor' failed",
         );
@@ -2047,6 +2073,7 @@ sub _alloc_image_locked {
             run_command(
                 [
                     '/sbin/lvcreate',
+                    '--yes', '--wipesignatures', 'y',
                     '-L', "${pool_size_k}K",
                     '-n', $pool,
                     $vg,
@@ -2139,6 +2166,7 @@ sub _alloc_image_locked {
         run_command(
             [
                 '/sbin/lvcreate',
+                '--yes', '--wipesignatures', 'y',
                 '-V', "${size}K",
                 '-n', $name,
                 '--thinpool', "$vg/$pool",
@@ -2525,12 +2553,14 @@ sub _thick_volume_snapshot {
         $class->_set_vg_intent($vg, %intent, _device => $device);
         $class->_thick_fault_point('C1', $operation, $storeid, $volname);
         run_command(
-            ['/sbin/lvcreate', '--devices', $device, '-L', "${size}B", '-n', $new,
+            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+                '--devices', $device, '-L', "${size}B", '-n', $new,
                 '--setactivationskip', 'y', $vg],
             errmsg => "creating thick snapshot destination '$vg/$new' failed",
         );
         run_command(
-            ['/sbin/lvcreate', '--devices', $device,
+            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+                '--devices', $device,
                 '-L', $geometry->{metadata_bytes} . 'B', '-n', $meta,
                 '--setactivationskip', 'y', $vg],
             errmsg => "creating dm-clone metadata '$vg/$meta' failed",

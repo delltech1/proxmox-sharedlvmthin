@@ -27,6 +27,15 @@ steady-state guest path is deliberately ordinary:
 QEMU -> stable device-mapper frontend -> linear -> current HEAD LV
 ```
 
+### Large-capacity boundary
+
+The geometry implementation is integer-checked through 128 PiB and rejects the
+next sector rather than wrapping. Simulated thin-pool inventory tests cover
+1 PiB with both suitable and undersized chunk geometry and the 16 PiB
+chunk-count boundary. These tests qualify arithmetic, overflow handling, and
+diagnostics only. Petabyte-scale physical SAN operation, materialization time,
+and recovery time remain unqualified until tested on representative hardware.
+
 A snapshot transition temporarily becomes:
 
 ```text
