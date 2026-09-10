@@ -21,6 +21,7 @@ jobs:
       - name: Syntax checks
         run: |
           bash -n usr/sbin/* DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
+          perl -Itests/unit/lib -Iusr/share/perl5 -c usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize
           python3 -m py_compile usr/libexec/pve-sharedlvmthin/sharedlvmthin-web usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
       - name: Reproducible package build
         run: sh scripts/build.sh

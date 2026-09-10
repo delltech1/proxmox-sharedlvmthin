@@ -2158,6 +2158,177 @@ subtest 'thick hydration tuning is bounded and internally consistent' => sub {
     }
 };
 
+subtest 'online materialization mode and worker scheduling are exact' => sub {
+    is($class->_thick_online_materialization_mode({}), 'asynchronous',
+        'online snapshots materialize asynchronously by default');
+    is($class->_thick_online_materialization_mode({
+        'slt-tg-online-materialization' => 'synchronous',
+    }), 'synchronous', 'explicit synchronous diagnostic mode is accepted');
+    eval { $class->_thick_online_materialization_mode({
+        'slt-tg-online-materialization' => 'eventually',
+    }) };
+    like($@, qr/invalid thick-generations online materialization mode/,
+        'unknown online materialization mode fails closed');
+
+    reset_mocks();
+    my $tx = 'a' x 32;
+    is($class->_thick_schedule_materialization(
+        'thick-test', 'vm-900001-disk-0', 'snap1', 'SNAPSHOT', $tx, 600,
+    ), "pve-sharedlvmthin-tg-$tx", 'worker unit identity is transaction-scoped');
+    is_deeply([command_lines()], [
+        "/usr/bin/systemd-run --quiet --collect --unit=pve-sharedlvmthin-tg-$tx "
+            . "--on-active=3s --timer-property=AccuracySec=100ms --property=Type=exec "
+            . "--property=Nice=10 --property=IOSchedulingClass=best-effort "
+            . "--property=IOSchedulingPriority=7 --property=TimeoutStartSec=900 "
+            . "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize "
+            . "thick-test vm-900001-disk-0 snap1 SNAPSHOT $tx",
+    ], 'scheduler passes exact immutable transaction identity to a bounded low-priority worker');
+
+    for my $case (
+        ['b' x 31, 'SNAPSHOT', qr/invalid thick-generations worker transaction UUID/],
+        ['b' x 32, 'ROLLBACK', qr/invalid thick-generations worker operation/],
+    ) {
+        eval { $class->_thick_schedule_materialization(
+            'thick-test', 'vm-900001-disk-0', 'snap1', $case->[1], $case->[0], 600,
+        ) };
+        like($@, $case->[2], 'invalid worker identity is rejected before scheduling');
+    }
+};
+
+subtest 'online snapshot returns after scheduling committed hydration' => sub {
+    reset_mocks();
+    my $tx = 'c' x 32;
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+        'slt-tg-hydration-timeout' => 600,
+    };
+    my $intent = {
+        tx => $tx, state => 'OPEN', op => 'DM_CUTOVER',
+        object => 'anchor', before => ('d' x 32),
+    };
+    my $transition = {
+        state => { phase => 'HYDRATING' }, anchor => 'anchor',
+        old => 'old', new => 'new', source => 'old', source_gen => 0,
+        old_gen => 0, new_gen => 1, meta => 'meta', source_map => 'source',
+        size => 4096, old_size => 4096, geometry => { region_sectors => 8 },
+        operation => 'SNAPSHOT', snapshot => 'snap1',
+    };
+    my (@scheduled, $waited);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { return $intent };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {} };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_resume_transition = sub { return $transition };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_schedule_materialization = sub {
+        @scheduled = @_[1 .. 6]; return 'worker';
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_for_hydration = sub {
+        $waited++; return 1;
+    };
+
+    is($class->volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1'), undef,
+        'online snapshot returns after publishing and scheduling hydration');
+    is_deeply(\@scheduled, [
+        'thick-test', 'vm-900001-disk-0', 'snap1', 'SNAPSHOT', $tx, 600,
+    ], 'asynchronous worker receives the exact committed request');
+    ok(!$waited, 'PVE snapshot callback does not wait for background hydration');
+    is_deeply([command_lines()], [
+        '/sbin/dmsetup message sltg-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
+            ' 0 enable_hydration',
+    ], 'callback only enables hydration before returning');
+};
+
+subtest 'published hydration remains activatable and a stop preserves worker dependencies' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $state = {
+        phase => 'HYDRATING', head => 'new-head', op => 'SNAPSHOT',
+        snapshot => 'snap1',
+    };
+    my $verified = 0;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, {}, 'anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_published_transition_frontend = sub {
+        $verified++; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 0 };
+
+    ok($class->activate_volume('thick-test', $cfg, 'vm-900001-disk-0', undef, undef),
+        'an exact published clone frontend remains available for VM start');
+    ok($class->deactivate_volume('thick-test', $cfg, 'vm-900001-disk-0', undef, undef),
+        'zero-open frontend can be released by the guest without dismantling the transition');
+    is($verified, 2, 'both lifecycle paths positively verify the published transition');
+    is_deeply([command_lines()], [],
+        'guest stop does not remove a worker-owned mapper or deactivate its dependencies');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 1 };
+    eval { $class->deactivate_volume(
+        'thick-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ) };
+    like($@, qr/refusing to deactivate open thick-generations frontend/,
+        'open published frontend remains protected');
+};
+
+subtest 'content listing keeps a valid materializing HEAD visible' => sub {
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $cfg = {
+        'slt-vgname' => 'testvg', 'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid', 'slt-expected-wwid' => '3600abcd',
+        shared => 1, 'slt-vg-reserve-gib' => 5,
+    };
+    my $anchor = PVE::SharedLvmThinThick::anchor_name('vg-uuid', $volname);
+    my $old = PVE::SharedLvmThinThick::generation_name('vg-uuid', $volname, 0);
+    my $head = PVE::SharedLvmThinThick::generation_name('vg-uuid', $volname, 1);
+    my $state = {
+        v => 5, sid => $storeid, vol => $volname, phase => 'HYDRATING',
+        tx => ('e' x 32), op => 'SNAPSHOT', snapshot => 'snap1', source => $old,
+        old => $old, new => $head, head => $head, generation => 1, region => 8,
+    };
+    my $inventory = { testvg => {
+        $anchor => {
+            tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$state)}),
+        },
+        $head => {
+            tags => join(',', @{PVE::SharedLvmThinThick::generation_tags(
+                sid => $storeid, vol => $volname, role => 'head', generation => 1,
+            )}),
+            lv_size => 4096, ctime => 123,
+        },
+    } };
+    no warnings 'redefine';
+    local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return $inventory };
+    my $listed = $class->_thick_list_images($storeid, $cfg, undef, undef, undef);
+    is_deeply($listed, [{
+        volid => "$storeid:$volname", format => 'raw', size => 4096,
+        vmid => 900001, ctime => 123,
+    }], 'PVE inventory remains readable while materialization is pending');
+};
+
 subtest 'thick snapshot lookup accepts exactly one signed immutable generation' => sub {
     my $storeid = 'thick-test';
     my $volname = 'vm-900001-disk-0';
@@ -2420,6 +2591,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'slt-expected-wwid' => '3600abcd',
         'slt-vg-reserve-gib' => 5,
         'slt-tg-hydration-timeout' => 60,
+        'slt-tg-online-materialization' => 'synchronous',
     };
     my $namespace = $cfg->{'slt-expected-vg-uuid'};
     my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);

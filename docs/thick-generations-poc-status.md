@@ -861,9 +861,74 @@ COROSYNC_EVENTS_DURING_ROLLBACK=0
 HYDRATION_8_8_PRODUCTION_QUALIFICATION=OPEN
 ```
 
+## Asynchronous online materialization
+
+The first running-guest integration exposed an important PVE lifecycle detail:
+PVE keeps a running QEMU disk paused in `save-vm` until the storage snapshot
+callback returns. Waiting for complete dm-clone hydration inside that callback
+therefore converted a background copy into several minutes of guest downtime.
+
+The prototype now publishes the committed clone transition first and schedules
+a transaction-scoped, bounded systemd worker. The callback returns only after
+the persistent anchor, immutable snapshot generation, writable HEAD, exact
+clone table, VG intent, and worker identity have all been positively verified.
+The OPEN VG intent blocks every dependency-changing mutation until the worker
+has completed hydration, the destination-only linear pivot, and exact cleanup.
+If worker scheduling fails, the callback completes materialization
+synchronously instead of acknowledging an unsupervised transition.
+
+A live 7 GiB Linux qualification used the conservative 8/8 hydration profile
+while a foreground workload repeatedly replaced and fdatasync'ed a 128 MiB
+file. The snapshot callback returned successfully in 8.731 seconds and PVE
+immediately reported the VM as running. The transaction-specific worker then
+continued hydration while the guest completed 178 foreground write/flush
+cycles. A second snapshot request during hydration failed closed in 4.406
+seconds: the LV count was unchanged and no PVE snapshot entry was created.
+
+After foreground I/O was stopped, hydration completed and the worker exited
+successfully. The stable frontend was a linear target with exactly one
+dependency on generation nine; the source helper mapping, metadata LV, and VG
+intent were absent. A stopped-guest rollback materialized generation ten from
+the immutable snapshot. After restart, a stable 64 MiB guest canary retained
+its exact SHA-256. Snapshot deletion removed only the snapshot generation.
+The final state contained one destination-only linear HEAD, no relevant
+D-state task, active storage, and three-of-three cluster quorum.
+
+This proves the normal asynchronous lifecycle and its fail-closed concurrent
+mutation gate. Host-loss recovery while the asynchronous worker is active,
+explicit operator resumption, and repeated multi-disk snapshots remain open
+qualification work.
+
+```ini
+ONLINE_SNAPSHOT_CALLBACK=PASS
+ONLINE_SNAPSHOT_CALLBACK_ELAPSED_MS=8731
+PVE_VM_RUNNING_AFTER_CALLBACK=PASS
+TRANSACTION_SCOPED_WORKER=PASS
+FOREGROUND_WRITE_FLUSH_CYCLES_DURING_HYDRATION=178
+STABLE_GUEST_CANARY_DURING_HYDRATION=PASS
+CONCURRENT_SNAPSHOT_FAIL_CLOSED=PASS
+CONCURRENT_SNAPSHOT_ELAPSED_MS=4406
+CONCURRENT_SNAPSHOT_LV_DELTA=0
+WORKER_RESULT=SUCCESS
+FINAL_FRONTEND_LINEAR=PASS
+FINAL_DEPENDENCY_DESTINATION_ONLY=PASS
+SOURCE_HELPER_REMOVED=PASS
+METADATA_LV_REMOVED=PASS
+VG_INTENT_CLEARED=PASS
+ROLLBACK_AFTER_ASYNC_SNAPSHOT=PASS
+POST_ROLLBACK_GUEST_CANARY=PASS
+SNAPSHOT_DELETE_EXACT=PASS
+POST_CYCLE_QUORUM=3_OF_3
+POST_CYCLE_DSTATE=0
+ASYNC_HOST_LOSS_RECOVERY=OPEN
+ASYNC_MULTI_DISK_QUALIFICATION=OPEN
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
 2. Qualify physical FC/FCoE path loss and active-guest application outcomes.
 3. Complete a long-duration Windows data-integrity soak and interrupted
    Windows-operation recovery tests.
+4. Qualify active-worker host loss, explicit operator resumption, and repeated
+   multi-disk asynchronous snapshot transactions.

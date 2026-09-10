@@ -97,6 +97,12 @@ sub properties {
             maximum => 256,
             default => 32,
         },
+        'slt-tg-online-materialization' => {
+            description => 'Materialize an online Thick Generations snapshot after returning control to PVE, or synchronously while the VM remains paused.',
+            type => 'string',
+            enum => ['asynchronous', 'synchronous'],
+            default => 'asynchronous',
+        },
         'slt-initial-pool-size' => {
             description => 'Initial physical size of each per-VM thin pool in GiB.',
             type => 'integer',
@@ -170,6 +176,7 @@ sub options {
         'slt-tg-hydration-timeout' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
+        'slt-tg-online-materialization' => { optional => 1 },
         'slt-initial-pool-size' => { optional => 1 },
         'slt-initial-pool-mode' => { optional => 1 },
         'slt-initial-pool-percent' => { optional => 1 },
@@ -209,6 +216,14 @@ sub _thick_hydration_tuning {
     die "thick-generations hydration batch size cannot exceed its threshold\n"
         if $batch > $threshold;
     return (int($threshold), int($batch));
+}
+
+sub _thick_online_materialization_mode {
+    my ($class, $scfg) = @_;
+    my $mode = $scfg->{'slt-tg-online-materialization'} // 'asynchronous';
+    die "invalid thick-generations online materialization mode\n"
+        if $mode ne 'asynchronous' && $mode ne 'synchronous';
+    return $mode;
 }
 
 sub _require_thick_identity_config {
@@ -354,7 +369,10 @@ sub _thick_list_images {
         die "thick-generations anchor name mismatch for '$vg/$anchor'\n"
             if $anchor ne $expected_anchor;
         die "thick-generations object '$vg/$anchor' requires recovery\n"
-            if $state->{phase} ne 'MATERIALIZED';
+            if $state->{phase} ne 'MATERIALIZED'
+            && $state->{phase} ne 'HYDRATING'
+            && $state->{phase} ne 'HYDRATION_COMPLETE'
+            && $state->{phase} ne 'LINEAR_PIVOTED';
         my $head = $lvs->{$vg}->{$state->{head}};
         die "thick-generations head '$vg/$state->{head}' is missing\n" if !$head;
         validate_generation_tags(
@@ -606,6 +624,41 @@ sub _thick_wait_for_hydration {
     return 1;
 }
 
+sub _thick_frontend_open_count {
+    my ($class, $mapper) = @_;
+    my $lines = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $mapper],
+        "reading thick-generations frontend open count '$mapper' failed",
+    );
+    die "thick-generations frontend '$mapper' open count is ambiguous\n"
+        if @$lines != 1 || $lines->[0] !~ /^\s*\d+\s*$/;
+    return int($lines->[0]);
+}
+
+sub _thick_schedule_materialization {
+    my ($class, $storeid, $volname, $snap, $operation, $tx, $timeout) = @_;
+    die "invalid thick-generations worker transaction UUID\n"
+        if !defined($tx) || $tx !~ /^[0-9a-f]{32}$/;
+    die "invalid thick-generations worker operation\n"
+        if !defined($operation) || $operation ne 'SNAPSHOT';
+    $snap = _thick_snapshot_name($snap);
+    die "invalid thick-generations hydration timeout\n"
+        if !defined($timeout) || $timeout !~ /^\d+$/ || $timeout < 60 || $timeout > 86400;
+
+    my $unit = "pve-sharedlvmthin-tg-$tx";
+    my $worker = '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize';
+    run_command(
+        ['/usr/bin/systemd-run', '--quiet', '--collect', "--unit=$unit",
+            '--on-active=3s', '--timer-property=AccuracySec=100ms',
+            '--property=Type=exec', '--property=Nice=10',
+            '--property=IOSchedulingClass=best-effort', '--property=IOSchedulingPriority=7',
+            "--property=TimeoutStartSec=" . ($timeout + 300),
+            $worker, $storeid, $volname, $snap, $operation, $tx],
+        errmsg => "scheduling asynchronous Thick Generations materialization failed",
+    );
+    return $unit;
+}
+
 sub _thick_snapshot_name {
     my ($snap) = @_;
     die "snapshot name is missing\n" if !defined($snap) || $snap eq '';
@@ -633,14 +686,22 @@ sub _thick_activate_volume {
         $class->_thick_verify_snapshot_readonly($vg, $snapshot);
         return 1;
     }
-    my ($state, undef, $anchor) = $class->_thick_anchor($storeid, $scfg, $volname);
+    my ($state, undef, $anchor) = $class->_thick_read_anchor($storeid, $scfg, $volname);
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
     if (_block_device_exists("/dev/mapper/$mapper")) {
-        $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        if ($state->{phase} eq 'MATERIALIZED') {
+            $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        } else {
+            $class->_thick_verify_published_transition_frontend(
+                $storeid, $scfg, $volname, $state,
+            );
+        }
         return 1;
     }
+    die "thick-generations volume '$storeid:$volname' is materializing and its exact frontend is missing; recovery required\n"
+        if $state->{phase} ne 'MATERIALIZED';
     run_command(
         ['/sbin/lvchange', '-ay', '-K', "$vg/$state->{head}", "$vg/$anchor"],
         errmsg => "activating thick-generations state for '$vg/$volname' failed",
@@ -678,19 +739,26 @@ sub _thick_deactivate_volume {
         return 1;
     }
     $class->_verify_storage_identity($storeid, $scfg);
-    my ($state, undef, $anchor) = $class->_thick_anchor($storeid, $scfg, $volname);
+    my ($state, undef, $anchor) = $class->_thick_read_anchor($storeid, $scfg, $volname);
     my $vg = $scfg->{'slt-vgname'};
     my $mapper = mapper_name($class->_thick_namespace($scfg), $volname);
     if (_block_device_exists("/dev/mapper/$mapper")) {
-        $class->_thick_verify_frontend($scfg, $volname, $state->{head});
-        my $opens = _command_lines(
-            ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $mapper],
-            "reading thick-generations frontend open count '$mapper' failed",
-        );
-        die "thick-generations frontend '$mapper' open count is ambiguous\n"
-            if @$opens != 1 || $opens->[0] !~ /^\s*\d+\s*$/;
+        if ($state->{phase} eq 'MATERIALIZED') {
+            $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        } else {
+            $class->_thick_verify_published_transition_frontend(
+                $storeid, $scfg, $volname, $state,
+            );
+        }
+        my $opens = $class->_thick_frontend_open_count($mapper);
         die "refusing to deactivate open thick-generations frontend '$mapper'\n"
-            if int($opens->[0]) != 0;
+            if $opens != 0;
+        # A materialization worker owns the published transition mapping and
+        # its dependencies.  A guest stop may close the frontend while that
+        # worker is still hydrating or finalizing.  Leaving the exact verified
+        # zero-open mapping in place is safe; removing any part of it here
+        # would turn a normal stop into a partial transaction.
+        return 1 if $state->{phase} ne 'MATERIALIZED';
         run_command(
             ['/sbin/dmsetup', 'remove', '--retry', $mapper],
             errmsg => "removing stable thick-generations frontend '$mapper' failed",
@@ -2005,8 +2073,38 @@ sub _thick_resume_transition {
     };
 }
 
+sub _thick_verify_published_transition_frontend {
+    my ($class, $storeid, $scfg, $volname, $state) = @_;
+    my $phase = $state->{phase} // '';
+    if ($phase eq 'LINEAR_PIVOTED') {
+        return $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+    }
+    die "thick-generations frontend is not in a published transition state; recovery required\n"
+        if $phase ne 'HYDRATING' && $phase ne 'HYDRATION_COMPLETE';
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $intent = $class->_read_vg_intent($vg, $device);
+    die "published thick-generations transition has no exact VG intent\n"
+        if !defined($intent);
+    my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+    my $tr = $class->_thick_resume_transition(
+        $scfg, $storeid, $volname, $state->{snapshot}, $state->{op}, $intent, $lvs,
+    );
+    $class->_thick_verify_clone_frontend(
+        $scfg, $volname, sectors => int($tr->{size} / 512),
+        region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
+        new => $tr->{new}, source_map => $tr->{source_map},
+    );
+    $class->_thick_verify_clone_status(
+        mapper_name($class->_thick_namespace($scfg), $volname),
+        $phase eq 'HYDRATION_COMPLETE' ? 1 : 0,
+    );
+    return 1;
+}
+
 sub _thick_volume_snapshot {
-    my ($class, $scfg, $storeid, $volname, $snap, $operation) = @_;
+    my ($class, $scfg, $storeid, $volname, $snap, $operation, $materialize_now) = @_;
     $operation //= 'SNAPSHOT';
     die "invalid thick-generations materialization operation\n"
         if $operation ne 'SNAPSHOT' && $operation ne 'ROLLBACK';
@@ -2018,16 +2116,23 @@ sub _thick_volume_snapshot {
     my $front = mapper_name($namespace, $volname);
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my ($tr, %intent);
+    my $async_snapshot = 0;
+
+    if (!$rollback && !$materialize_now
+        && $class->_thick_online_materialization_mode($scfg) eq 'asynchronous'
+        && _block_device_exists("/dev/mapper/$front")) {
+        # PVE opens and pauses a running QEMU disk before invoking a storage
+        # snapshot callback.  Waiting for full hydration in that callback
+        # would therefore turn background materialization into VM downtime.
+        # A zero-open frontend denotes an offline snapshot and remains
+        # synchronous so no idle transition is left behind unnecessarily.
+        $async_snapshot = $class->_thick_frontend_open_count($front) > 0 ? 1 : 0;
+    }
 
     if ($rollback && _block_device_exists("/dev/mapper/$front")) {
-        my $open = _command_lines(
-            ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'open', $front],
-            "reading thick-generations frontend open count before rollback failed",
-        );
-        die "thick-generations rollback frontend open count is ambiguous\n"
-            if @$open != 1 || $open->[0] !~ /^\d+$/;
+        my $open = $class->_thick_frontend_open_count($front);
         die "refusing thick-generations rollback while the frontend is open\n"
-            if int($open->[0]) != 0;
+            if $open != 0;
     }
 
     $class->_with_vg_lock($storeid, $scfg, sub {
@@ -2344,6 +2449,25 @@ sub _thick_volume_snapshot {
             ['/sbin/dmsetup', 'message', $front, '0', 'enable_hydration'],
             errmsg => "enabling dm-clone hydration failed",
         );
+        if ($async_snapshot) {
+            my $timeout = $scfg->{'slt-tg-hydration-timeout'} // 3600;
+            my $scheduled = eval {
+                $class->_thick_schedule_materialization(
+                    $storeid, $volname, $snap, $operation, $intent{tx}, $timeout,
+                );
+                1;
+            };
+            if ($scheduled) {
+                # COMMITTED data and an exact persistent clone mapping are
+                # already authoritative.  Returning now lets PVE resume QEMU;
+                # the transaction-scoped worker performs bounded hydration,
+                # the linear pivot, and exact cleanup.  The OPEN VG intent
+                # blocks every dependency-changing mutation in the meantime.
+                return;
+            }
+            warn "asynchronous Thick Generations materialization could not be scheduled; "
+                . "completing synchronously: $@";
+        }
         $class->_thick_wait_for_hydration(
             $front, $scfg->{'slt-tg-hydration-timeout'} // 3600,
         );

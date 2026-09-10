@@ -3,6 +3,7 @@ set -e
 
 PLUGIN=/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm
 MONITOR=/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor
+MATERIALIZER=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize
 HEALTH=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json
 WEB=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web
 CONF=/etc/pve-sharedlvmthin/web.conf
@@ -17,10 +18,11 @@ echo "Configuring SharedLvmThin..."
 
 perl -c "$PLUGIN"
 perl -c "$MONITOR"
+perl -c "$MATERIALIZER"
 python3 -m py_compile "$HEALTH"
 python3 -m py_compile "$WEB"
 
-chmod 0755 "$MONITOR" "$HEALTH" "$WEB" \
+chmod 0755 "$MONITOR" "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
