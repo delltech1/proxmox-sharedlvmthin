@@ -283,7 +283,11 @@ sub _thick_read_anchor {
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $anchor = anchor_name($namespace, $volname);
-    $lvs //= PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    if (!defined($lvs)) {
+        my $wwid = $scfg->{'slt-expected-wwid'}
+            // die "thick-generations anchor inventory requires a pinned WWID\n";
+        $lvs = $class->_thick_list_volumes_scoped($vg, "/dev/mapper/$wwid");
+    }
     die "thick-generations storage '$storeid' is unavailable: VG '$vg' is not visible\n"
         if !$lvs->{$vg};
     my $info = $lvs->{$vg}->{$anchor};
@@ -316,7 +320,11 @@ sub _thick_find_snapshot {
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $key = object_key($namespace, $volname);
-    $lvs //= PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    if (!defined($lvs)) {
+        my $wwid = $scfg->{'slt-expected-wwid'}
+            // die "thick-generations snapshot inventory requires a pinned WWID\n";
+        $lvs = $class->_thick_list_volumes_scoped($vg, "/dev/mapper/$wwid");
+    }
     die "thick-generations storage '$storeid' is unavailable: VG '$vg' is not visible\n"
         if !$lvs->{$vg};
     my @matches;
@@ -387,7 +395,8 @@ sub _thick_list_images {
     my ($class, $storeid, $scfg, $vmid, $vollist, $cache) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
-    my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
     my $res = [];
     return $res if !$lvs->{$vg};
     for my $anchor (sort grep { /^sltg-a-[0-9a-f]{24}$/ } keys %{$lvs->{$vg}}) {
@@ -1218,9 +1227,9 @@ sub _thick_verify_allocation_state {
     my $namespace = $class->_thick_namespace($scfg);
     my $anchor = anchor_name($namespace, $volname);
     my $head = generation_name($namespace, $volname, $generation);
-    my $lvs = defined($device)
-        ? $class->_thick_list_volumes_scoped($vg, $device)
-        : PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    die "thick-generations allocation verification requires a pinned mapper device\n"
+        if !defined($device);
+    my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
     die "thick-generations allocation state is unavailable\n" if !$lvs->{$vg};
     die "thick-generations allocation object is incomplete\n"
         if !$lvs->{$vg}->{$anchor} || !$lvs->{$vg}->{$head};
@@ -2171,7 +2180,7 @@ sub _thick_resume_transition {
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
-    $lvs //= PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+    $lvs //= $class->_thick_list_volumes_scoped($vg, $device);
     my ($state, $head_info, $anchor) =
         $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
     my $expected_intent_op = $operation eq 'ROLLBACK' ? 'DM_PIVOT' : 'DM_CUTOVER';
@@ -3400,7 +3409,7 @@ sub _thick_volume_snapshot_delete {
 
     return $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_no_vg_intent($vg, $device);
-        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         my ($state, undef, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
         my ($snapshot, $generation) = $class->_thick_find_snapshot(
@@ -3457,7 +3466,7 @@ sub _thick_volume_snapshot_delete {
         eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
         die "PARTIAL SNAPSHOT DELETE for '$storeid:$volname\@$snap': identity is uncertain; "
             . "OPEN intent preserved and no retry attempted: $@" if $@;
-        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
         my $objects = $after->{$vg} // {};
         die "PARTIAL SNAPSHOT DELETE for '$storeid:$volname\@$snap': exact object remains; "
             . "OPEN intent preserved and no retry attempted"
@@ -3503,7 +3512,7 @@ sub _thick_recover_snapshot_delete {
             $vg, %expected, _device => $device,
         );
 
-        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
         die "snapshot-delete recovery cannot see VG '$vg'\n" if !$lvs->{$vg};
         my ($state, undef, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
@@ -3581,7 +3590,7 @@ sub _thick_recover_snapshot_delete {
         }
 
         $class->_verify_storage_identity($storeid, $scfg, $device);
-        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
         die "snapshot-delete recovery cannot confirm VG '$vg'\n" if !$after->{$vg};
         die "snapshot-delete recovery did not remove the exact snapshot object\n"
             if exists($after->{$vg}->{$snapshot});

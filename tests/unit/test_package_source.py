@@ -254,6 +254,26 @@ class PackageSourceTests(unittest.TestCase):
                 )
         self.assertGreater(checked, 0)
 
+        scoped_inventory_paths = thick_lifecycle + (
+            "_thick_read_anchor",
+            "_thick_find_snapshot",
+            "_thick_list_images",
+            "_thick_verify_allocation_state",
+            "_thick_resume_transition",
+        )
+        for name in scoped_inventory_paths:
+            match = re.search(
+                rf"sub {name} \{{(?P<body>.*?)(?=\nsub )",
+                plugin,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(match, f"missing Thick Generations inventory path {name}")
+            self.assertNotIn(
+                "PVE::Storage::LVMPlugin::lvm_list_volumes",
+                match.group("body"),
+                f"{name} can still issue a global LVM inventory",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
