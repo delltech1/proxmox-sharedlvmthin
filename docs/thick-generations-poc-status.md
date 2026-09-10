@@ -2435,3 +2435,36 @@ WINDOWS_ONLINE_NTFS_GROW=PASS
 WINDOWS_POST_GROW_ORACLE_SHA256=PASS
 WINDOWS_POST_GROW_RECOVERY_GATE=PASS
 ```
+
+## Repeated host loss during same-VG storage move
+
+A fully allocated two GiB disposable disk was moved from the conventional Thin
+alias to Thick Generations on a worker node. The first worker reset landed
+after the mirror had committed but before the caller observed completion. PVE
+referenced the Thick destination, the Thin source was absent, and the complete
+destination SHA-256 matched the flushed source. This proves the post-commit
+side of the storage-move boundary.
+
+The reverse Thick-to-Thin move was then rate-limited to create an observable
+copy window. The worker node was reset after PVE reported approximately 3.2%
+transferred. After rejoin, the PVE configuration still referenced the intact
+Thick source and its complete SHA-256 matched the pre-fault value. The partial
+Thin disk and its owned pool were unreferenced, so the Thin recovery gate
+returned `RECOVERY_REQUIRED` and blocked mutation. Explicit
+`thin-recover-orphan` removed only that exact destination disk and empty owned
+pool. A normal retry completed, switched the PVE reference, removed the Thick
+source, and retained the complete SHA-256. Final PVE deletion left no object in
+either allocation mode and both recovery gates returned healthy.
+
+```ini
+STORAGE_MOVE_POST_COMMIT_HOST_LOSS=PASS
+STORAGE_MOVE_MID_COPY_HOST_LOSS=PASS
+STORAGE_MOVE_SOURCE_AUTHORITY=PASS
+STORAGE_MOVE_SOURCE_SHA256=PASS
+STORAGE_MOVE_PARTIAL_TARGET_GATE=PASS
+STORAGE_MOVE_EXACT_ORPHAN_RECOVERY=PASS
+STORAGE_MOVE_RETRY=PASS
+STORAGE_MOVE_RETRY_SHA256=PASS
+STORAGE_MOVE_FINAL_CLEANUP=PASS
+STORAGE_MOVE_FINAL_RECOVERY_GATES=PASS
+```
