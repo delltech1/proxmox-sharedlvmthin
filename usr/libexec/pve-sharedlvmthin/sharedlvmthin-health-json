@@ -10,6 +10,40 @@ import re
 import socket
 import subprocess
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+
+
+def exact_decimal(value):
+    text = "" if value is None else str(value).strip()
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"invalid decimal value '{text}'") from exc
+    if not number.is_finite():
+        raise ValueError(f"non-finite decimal value '{text}'")
+    return number
+
+
+def exact_byte_count(value):
+    number = exact_decimal(value)
+    integer = number.to_integral_value()
+    if number < 0 or number != integer:
+        raise ValueError(f"byte count is not a non-negative integer: '{value}'")
+    return int(integer)
+
+
+def percentage_decimal(value):
+    if value is None or not str(value).strip():
+        return None
+    number = exact_decimal(value)
+    return number if Decimal(0) <= number <= Decimal(100) else None
+
+
+def percentage_bytes(size_bytes, value):
+    percent = percentage_decimal(value)
+    if percent is None:
+        return None
+    return int(Decimal(size_bytes) * percent / Decimal(100))
 
 
 def run(cmd):
@@ -408,8 +442,8 @@ def vg_info(vg):
     try:
         return {
             "visible": True,
-            "size_bytes": int(float(fields[1])),
-            "free_bytes": int(float(fields[2])),
+            "size_bytes": exact_byte_count(fields[1]),
+            "free_bytes": exact_byte_count(fields[2]),
         }
     except Exception:
         return {
@@ -473,15 +507,19 @@ def pools(vg, sid):
 
         def fnum(v):
             try:
-                return float(v) if v else None
-            except Exception:
+                number = percentage_decimal(v)
+                return float(number) if number is not None else None
+            except (TypeError, ValueError):
                 return None
 
-        size_bytes = int(float(fields[1]))
-        data_percent = fnum(fields[5])
+        size_bytes = exact_byte_count(fields[1])
+        data_percent_decimal = percentage_decimal(fields[5])
+        data_percent = (
+            float(data_percent_decimal)
+            if data_percent_decimal is not None else None
+        )
         payload_used_bytes = (
-            int(size_bytes * data_percent / 100.0)
-            if data_percent is not None else None
+            percentage_bytes(size_bytes, fields[5])
         )
         reserved_slack_bytes = (
             max(0, size_bytes - payload_used_bytes)
@@ -500,7 +538,7 @@ def pools(vg, sid):
             "metadata_percent": fnum(fields[6]),
             "health_status": fields[7] or None,
             "check_needed": fields[8] or None,
-            "metadata_size_bytes": int(fnum(fields[9])) if fnum(fields[9]) is not None else None,
+            "metadata_size_bytes": exact_byte_count(fields[9]) if fields[9] else None,
             "zero": fields[10] or None,
             "discards": fields[11] or None,
             "autoactivation": fields[12] or None,
@@ -661,8 +699,8 @@ def metadata_spares(vg):
         if len(fields) < 2 or not fields[0].endswith("_pmspare"):
             continue
         try:
-            result.append({"name": fields[0], "size_bytes": int(float(fields[1]))})
-        except Exception:
+            result.append({"name": fields[0], "size_bytes": exact_byte_count(fields[1])})
+        except (TypeError, ValueError):
             result.append({"name": fields[0], "size_bytes": None})
     return result
 
@@ -744,8 +782,8 @@ def evaluate_pv_metadata(pvs):
     if len(pvs) != 1:
         return "WARN", "PV metadata capacity requires exactly one visible PV"
     try:
-        size = int(float(pvs[0].get("pv_mda_size") or 0))
-        free = int(float(pvs[0].get("pv_mda_free") or 0))
+        size = exact_byte_count(pvs[0].get("pv_mda_size") or 0)
+        free = exact_byte_count(pvs[0].get("pv_mda_free") or 0)
     except (TypeError, ValueError):
         return "WARN", "PV metadata capacity is unavailable"
     if size <= 0:

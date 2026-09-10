@@ -35,6 +35,10 @@ next sector rather than wrapping. Simulated thin-pool inventory tests cover
 chunk-count boundary. These tests qualify arithmetic, overflow handling, and
 diagnostics only. Petabyte-scale physical SAN operation, materialization time,
 and recovery time remain unqualified until tested on representative hardware.
+Health JSON parses LVM byte counters as exact decimal integers rather than
+passing them through binary floating-point. Simulated values above 2^53 and at
+128 PiB verify that capacity, free-space, and payload calculations do not lose
+low-order bits before the dashboard formats them as GiB, TiB, or PiB.
 
 A snapshot transition temporarily becomes:
 

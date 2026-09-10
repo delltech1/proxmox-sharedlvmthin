@@ -10,13 +10,18 @@ HEALTH = ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json"
 
 def load_function(name):
     tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
-    node = next(
-        item
-        for item in tree.body
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and item.name == name
-    )
-    module = ast.Module(body=[node], type_ignores=[])
+    helpers = {"exact_decimal", "exact_byte_count", "percentage_decimal",
+               "percentage_bytes"}
+    body = [
+        item for item in tree.body
+        if (
+            isinstance(item, ast.ImportFrom) and item.module == "decimal"
+        ) or (
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and (item.name == name or item.name in helpers)
+        )
+    ]
+    module = ast.Module(body=body, type_ignores=[])
     namespace = {"re": __import__("re")}
     exec(compile(module, str(HEALTH), "exec"), namespace)
     return namespace[name]
@@ -260,10 +265,13 @@ class ThinFullPolicyTests(unittest.TestCase):
 class PoolBatchCollectionTests(unittest.TestCase):
     def test_autoactivation_is_collected_in_single_lvs_report(self):
         tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
-        node = next(
+        wanted = {"exact_decimal", "exact_byte_count", "percentage_decimal",
+                  "percentage_bytes", "pools"}
+        body = [
             item for item in tree.body
-            if isinstance(item, ast.FunctionDef) and item.name == "pools"
-        )
+            if (isinstance(item, ast.ImportFrom) and item.module == "decimal")
+            or (isinstance(item, ast.FunctionDef) and item.name in wanted)
+        ]
         calls = []
 
         def fake_run(command):
@@ -277,7 +285,7 @@ class PoolBatchCollectionTests(unittest.TestCase):
 
         namespace = {"re": re, "run": fake_run}
         exec(
-            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            compile(ast.Module(body=body, type_ignores=[]), str(HEALTH), "exec"),
             namespace,
         )
         result, error, thick_anchors = namespace["pools"]("testvg", "test")
