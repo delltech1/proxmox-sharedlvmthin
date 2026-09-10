@@ -2647,3 +2647,51 @@ ENDURANCE_REBOOT_CLASSIFICATION=PASS
 AUTOMATIC_STORAGE_REPAIR_PATHS_FOUND=0
 PLUGIN_CLUSTER_WATCHDOG_ASSUMPTIONS_FOUND=0
 ```
+
+## Mixed-API package reinstall and live-migration repetition
+
+The experimental package was installed and then reinstalled from the identical
+artifact on three cluster nodes. Two nodes ran Storage API 15 and one retained
+Storage API 14. Package checksum, installed version, plugin API, active PVE
+services, global Doctor readiness and the scoped Thin and Thick recovery gates
+were verified after installation. Every node returned zero Doctor failures.
+
+This repetition exposed a diagnostic edge case rather than a storage-lifecycle
+failure. PVE serializes `disable 1` as a bare `disable` property. Doctor and the
+JSON dashboard now recognize both that canonical representation and explicit
+boolean forms. Only explicitly disabled storage skips operational probes;
+enabled but unavailable storage still fails closed. Disabled FCoE aliases and
+their retained unused-volume references were preserved.
+
+A running disposable Linux guest then exercised one materialized Thick root
+disk, one additional Thick disk and one conventional Thin disk concurrently.
+Distinct 16 MiB canaries were synchronously written to the auxiliary Thick and
+Thin devices. The guest migrated online from an API 15 node to another API 15
+node and back over the dedicated migration network. Both canaries matched
+before migration, on the destination node and after return. The Thin and Thick
+recovery gates remained healthy on the destination and source.
+
+PVE correctly refused an earlier attempt while the guest configuration still
+contained unused references to disabled FCoE storage. The references were
+temporarily removed from the disposable VM configuration only after preserving
+the exact configuration, and were restored after the guest was stopped. No
+FCoE volume was deleted or modified.
+
+```ini
+EXPERIMENTAL_PACKAGE_VERSION=0.9.0~rc5.4~tg4
+EXACT_PACKAGE_SHA256=716f7c853c8313b56e7c331c8242dd746f9ff5e2b447255fc6118fb72656aba3
+PYTHON_REGRESSION=144/144_PASS
+PERL_REGRESSION=235/235_PASS
+REPRODUCIBLE_PACKAGE=PASS
+PACKAGE_CONTENT_AND_PRIVACY_GATE=PASS
+API15_INSTALL_AND_REINSTALL=PASS_2_NODES
+API14_INSTALL_AND_REINSTALL=PASS_1_NODE
+GLOBAL_DOCTOR_FAILURES=0_ALL_NODES
+CANONICAL_BARE_DISABLE_PARSING=PASS
+ENABLED_UNAVAILABLE_STORAGE_FAIL_CLOSED=YES
+THIN_AND_THICK_ONLINE_MIGRATION_ROUND_TRIP=PASS
+THICK_CANARY_SHA256=PASS_BEFORE_DESTINATION_AFTER_RETURN
+THIN_CANARY_SHA256=PASS_BEFORE_DESTINATION_AFTER_RETURN
+POST_MIGRATION_RECOVERY_GATES=PASS_BOTH_MODES
+DISABLED_FCOE_REFERENCES_RESTORED=PASS
+```
