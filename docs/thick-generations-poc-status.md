@@ -750,6 +750,65 @@ POST_MIGRATION_DSTATE=0
 COROSYNC_ERRORS_DURING_NODE_MIGRATIONS=0
 ```
 
+## Full-size Windows snapshot and rollback oracle
+
+The shared test LUN was expanded in place twice to provide enough disposable
+capacity for a full-size Windows qualification. Each expansion preserved the
+same multipath, PV, and VG identities. No replacement PV or VG was created.
+
+With the Windows guest running on a 32 GiB thick generation, an online
+snapshot completed through the normal PVE snapshot API. The transition
+retained generation zero as a read-only named snapshot, materialized a new
+writable generation-one HEAD, removed the temporary clone metadata, and
+pivoted the stable frontend back to a single linear dependency. The guest
+remained running throughout the operation.
+
+The guest was then stopped cleanly and complete SHA-256 oracles were recorded
+for both independent generations. Their digests differed, proving that the
+subsequent rollback could not pass merely by leaving the current HEAD in
+place. Rollback through the normal PVE API created generation two from the
+immutable generation-zero snapshot, completed persistent hydration, pivoted
+to a destination-only linear frontend, removed generation one and the
+temporary metadata LV, and committed generation two as the materialized HEAD.
+
+A complete 32 GiB read of generation two produced the exact generation-zero
+SHA-256 digest and not the former generation-one digest. The Windows guest
+then started successfully from the restored linear HEAD. The final state had
+one destination dependency, no relevant D-state task, two usable paths for
+each test map, and three-node quorum.
+
+The online snapshot used the prototype's 32/32 hydration settings. The
+rollback deliberately used a per-storage 16/16 override. Both storage
+transactions completed correctly, but each run coincided with brief Corosync
+link stalls in this two-vCPU nested lab; the rollback included one token
+timeout followed by an immediate three-member reconfiguration without loss of
+quorum. Interface counters, sustained packet probes, kernel logs, and sampled
+hypervisor CPU-ready values did not show a persistent NIC, guest-kernel, or
+CPU-contention fault. VMXNET3 therefore remains functional but does not by
+itself eliminate the sporadic nested-host stall. Neither 32/32 nor 16/16 is
+promoted to a generally qualified production tuning value by this result.
+
+```ini
+IN_PLACE_TEST_LUN_EXPANSION=PASS_IDENTITY_PRESERVED
+WINDOWS_32_GIB_ONLINE_SNAPSHOT=PASS
+SNAPSHOT_GENERATION_IMMUTABLE=PASS
+PRE_ROLLBACK_GENERATION_DIGESTS_DIFFER=PASS
+WINDOWS_32_GIB_ROLLBACK=PASS
+ROLLBACK_FULL_DEVICE_DIGEST=PASS_EXACT_SOURCE_MATCH
+SUPERSEDED_HEAD_REMOVED=PASS
+TEMPORARY_CLONE_METADATA_REMOVED=PASS
+FINAL_FRONTEND_LINEAR=PASS
+FINAL_DEPENDENCY_DESTINATION_ONLY=PASS
+WINDOWS_START_AFTER_ROLLBACK=PASS
+POST_ROLLBACK_PATHS_PER_MAP=2_OF_2
+POST_ROLLBACK_QUORUM=3_OF_3
+POST_ROLLBACK_DSTATE=0
+HYDRATION_32_32_STORAGE_CORRECTNESS=PASS
+HYDRATION_16_16_STORAGE_CORRECTNESS=PASS
+HYDRATION_TUNING_PRODUCTION_QUALIFICATION=OPEN
+NESTED_LAB_COROSYNC_STALL=OBSERVED
+```
+
 ## Open gates
 
 1. Qualify full-hydration metadata occupancy and geometry performance.
