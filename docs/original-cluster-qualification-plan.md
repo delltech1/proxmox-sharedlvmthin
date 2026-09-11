@@ -110,13 +110,13 @@ votes, change watchdog settings, run `pvecm expected`, or infer fencing.
 
 Use one named fault at a time and collect pre-fault identity and guest hashes.
 
-- [ ] iSCSI 2-to-1-to-2 with active Thin and steady-state Thick I/O.
+- [x] iSCSI 2-to-1-to-2 with active Thin and steady-state Thick I/O.
 - [ ] iSCSI 2-to-1-to-2 during Thick materialization.
-- [ ] Bounded iSCSI 2-to-0-to-2 for steady-state Thick, followed by read-only
+- [x] Bounded iSCSI 2-to-0-to-2 for steady-state Thick, followed by read-only
       recovery validation before any mutation.
-- [ ] Active Thin total-path loss: retain the native dm-thin outcome as a host
+- [x] Active Thin total-path loss: retain the native dm-thin outcome as a host
       storage-stack boundary; do not claim plugin recovery.
-- [ ] Thick materialization total-path loss: preserve persistent transaction
+- [x] Thick materialization total-path loss: preserve persistent transaction
       evidence and require explicit post-reboot recovery when necessary.
 - [ ] Repeat equivalent single-path tests on physical FC when representative
       HBA, firmware, fabric and array hardware is available.
