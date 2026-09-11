@@ -3083,6 +3083,28 @@ SNAPSHOT_ORDER_EXACT_CLEANUP=PASS
 SNAPSHOT_ORDER_VG_FREE_DELTA=0
 ```
 
+The same fresh shared VG then qualified live capacity arithmetic for both
+aliases. A one-GiB conventional Thin payload reserved one GiB of pool data plus
+eight MiB of thin metadata. Under the configured elastic policy its initial
+reserved slack was correctly zero; later burst growth remains separately
+guarded by the reserve policy. A one-GiB Thick disk reserved exactly one GiB
+for its HEAD plus an eight-MiB anchor. Both aliases reported the same shared-VG
+total, used and available values, and PVE's used-space delta equalled the exact
+VG free-space delta. Each alias still listed the guest-visible payload as one
+GiB. Exact deletion returned every extent.
+
+```ini
+THIN_PAYLOAD_BYTES=1073741824
+THIN_POOL_DATA_BYTES=1073741824
+THIN_METADATA_AND_EXTENT_OVERHEAD_BYTES=8388608
+THIN_RESERVED_SLACK_BYTES=0
+THICK_HEAD_BYTES=1073741824
+THICK_ANCHOR_BYTES=8388608
+SHARED_ALIAS_CAPACITY_REPORTING=PASS
+PVE_USED_DELTA_EQUALS_VG_FREE_DELTA=PASS
+CAPACITY_ARITHMETIC_VG_FREE_DELTA=0
+```
+
 The production-relevant two-node plus QDevice topology was qualified with a
 separate monotonic Corosync configuration. At two nodes plus QDevice the
 cluster reported three of three votes and both modes completed exact

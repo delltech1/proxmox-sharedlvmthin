@@ -56,7 +56,7 @@ multipath, PV, VG, LV or guest state.
 - [x] Snapshot-mode backup and restore to a new VMID.
 - [x] Offline and online migration between nodes.
 - [ ] Storage move Thin to Thin and exact source cleanup.
-- [ ] Verify capacity reporting: VG reservation, per-VM payload and reserved
+- [x] Verify capacity reporting: VG reservation, per-VM payload and reserved
       slack must be visible and arithmetically consistent.
 - [x] Verify duplicate volume allocation in one storage namespace and
       conflicting ownership attempts are rejected without changing the existing
