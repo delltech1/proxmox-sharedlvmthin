@@ -2,6 +2,9 @@
 
 ## Unreleased Thick Generations prototype
 
+- Add an incident-to-invariant research matrix for PVE rollback dispatch,
+  stale snapshot objects, thin metadata corruption and dm-clone hydration I/O
+  failure. The reports justify fail-closed gates, not automatic repair.
 - Report a quorate two-node cluster without QDevice as an explicit Doctor
   warning, and classify a forced single-node `expected_votes=1` survivor as a
   hard safety failure. The plugin still consumes native PVE quorum and never

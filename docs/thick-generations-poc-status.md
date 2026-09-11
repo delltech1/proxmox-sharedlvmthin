@@ -5,6 +5,8 @@ production feature and is not included in a public release.
 
 The concise requirement-by-requirement view is maintained in the
 [Thick Generations release gate](thick-generations-release-gate.md).
+Externally reported failure classes and their applicability are tracked in the
+[Thick and Thin incident research matrix](thick-thin-incident-research.md).
 
 ## Safety boundary
 
