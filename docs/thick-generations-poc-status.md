@@ -3016,6 +3016,36 @@ THREE_NODE_QUORUM_REJOIN=PASS_4_OF_4
 THREE_NODE_QUORUM_REJOIN_RECOVERY_GATES=PASS_BOTH_MODES
 ```
 
+The production-relevant two-node plus QDevice topology was qualified with a
+separate monotonic Corosync configuration. At two nodes plus QDevice the
+cluster reported three of three votes and both modes completed exact
+allocate/free cycles. With both QDevice clients stopped, two native votes
+retained quorum and both cycles again passed. After restoring QDevice, node
+two was stopped: node one plus QDevice retained two of three votes and both
+modes again passed. Removing QDevice from that survivor produced one of three
+votes and native loss of quorum; both fresh allocation attempts failed with
+no change to the complete LVM inventory digest.
+
+The second node, third node and QDevice were restored. A stale offline
+Corosync configuration was updated through local pmxcfs using the exact
+syntax-validated rollback file; this did not touch storage or VM processes.
+The final topology reported three nodes, four of four votes and QDevice, and
+both storage recovery gates were healthy.
+
+```ini
+TWO_NODE_QDEVICE_NORMAL=PASS_3_OF_3
+TWO_NODE_QDEVICE_NORMAL_DUAL_MODE_LIFECYCLE=PASS
+TWO_NODE_QDEVICE_LOSS=PASS_2_OF_3
+TWO_NODE_QDEVICE_LOSS_DUAL_MODE_LIFECYCLE=PASS
+TWO_NODE_QDEVICE_SURVIVOR=PASS_2_OF_3
+TWO_NODE_QDEVICE_SURVIVOR_DUAL_MODE_LIFECYCLE=PASS
+TWO_NODE_QDEVICE_SURVIVOR_WITHOUT_QDEVICE=FAIL_CLOSED_1_OF_3
+TWO_NODE_QDEVICE_SURVIVOR_FAILED_ATTEMPT_LVM_CHANGE=0
+TWO_NODE_QDEVICE_EXACT_VG_FREE_DELTA=0
+TWO_NODE_QDEVICE_FINAL_REJOIN=PASS_4_OF_4
+TWO_NODE_QDEVICE_FINAL_RECOVERY_GATES=PASS_BOTH_MODES
+```
+
 ## Repeated endurance infrastructure failure
 
 A new four-hour dual-mode endurance attempt began only after both storage

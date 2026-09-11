@@ -8,6 +8,9 @@
 - Qualify native three-node quorum loss: both allocation modes fail before
   mutation, LVM inventory remains byte-identical, and the original 4/4
   QDevice topology recovers without a private vote or watchdog override.
+- Qualify the complete two-node plus QDevice matrix: normal operation,
+  QDevice loss with both nodes, one-node plus QDevice survival, fail-closed
+  one-node without QDevice, and exact return to the three-node 4/4 baseline.
 - Report a quorate two-node cluster without QDevice as an explicit Doctor
   warning, and classify a forced single-node `expected_votes=1` survivor as a
   hard safety failure. The plugin still consumes native PVE quorum and never

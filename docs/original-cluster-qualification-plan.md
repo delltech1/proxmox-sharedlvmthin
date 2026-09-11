@@ -94,7 +94,7 @@ multipath, PV, VG, LV or guest state.
 - [x] Three-node baseline: stop and rejoin one node in both modes.
 - [x] Three-node quorum loss: every new mutation and recovery resume fails
       closed without LV, tag, mapper or configuration changes.
-- [ ] Two-node cluster with QDevice: qualify normal operation, QDevice loss,
+- [x] Two-node cluster with QDevice: qualify normal operation, QDevice loss,
       one-node survival according to native quorum and rejoin.
 - [x] Two-node cluster without QDevice: document the availability limitation,
       prove loss of quorum blocks mutation and verify no private vote override.
