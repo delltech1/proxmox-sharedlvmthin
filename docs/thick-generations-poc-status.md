@@ -2996,6 +2996,26 @@ TWO_NODE_NO_QDEVICE_FAILED_ATTEMPT_LVM_CHANGE=0
 FINAL_THREE_NODE_QDEVICE_BASELINE=PASS
 ```
 
+The native three-node quorum-loss gate was then exercised separately. There
+were no HA-managed resources and fencing was in standby before the test.
+Corosync was stopped on nodes two and three without stopping their QEMU
+processes or touching storage. Node one reported one available vote of four
+and `Quorate: No`. Thin and Thick allocations used fresh VMIDs, failed with
+the native PVE lock/quorum result, and produced an identical before/after LVM
+inventory digest. No matching LV existed afterward. Both members rejoined,
+the QDevice returned, and the final cluster reported four of four votes;
+read-only recovery gates were healthy in both modes.
+
+```ini
+THREE_NODE_QUORUM_LOSS_NATIVE_VOTES=1_OF_4
+THREE_NODE_QUORUM_LOSS_THIN_RC=13
+THREE_NODE_QUORUM_LOSS_THICK_RC=13
+THREE_NODE_QUORUM_LOSS_LVM_INVENTORY_UNCHANGED=PASS
+THREE_NODE_QUORUM_LOSS_NEW_OBJECTS=0
+THREE_NODE_QUORUM_REJOIN=PASS_4_OF_4
+THREE_NODE_QUORUM_REJOIN_RECOVERY_GATES=PASS_BOTH_MODES
+```
+
 ## Repeated endurance infrastructure failure
 
 A new four-hour dual-mode endurance attempt began only after both storage

@@ -92,7 +92,7 @@ multipath, PV, VG, LV or guest state.
 ## 6. Cluster topology
 
 - [x] Three-node baseline: stop and rejoin one node in both modes.
-- [ ] Three-node quorum loss: every new mutation and recovery resume fails
+- [x] Three-node quorum loss: every new mutation and recovery resume fails
       closed without LV, tag, mapper or configuration changes.
 - [ ] Two-node cluster with QDevice: qualify normal operation, QDevice loss,
       one-node survival according to native quorum and rejoin.
