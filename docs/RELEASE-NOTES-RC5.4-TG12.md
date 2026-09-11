@@ -1,4 +1,9 @@
-# SharedLvmThin 0.9.0~rc5.4~tg11 experimental release notes
+# SharedLvmThin 0.9.0~rc5.4~tg12 experimental release notes
+
+tg12 adds a read-only raw block-device size probe for the PVE content API.
+This avoids transient `no format` responses while QEMU holds an active volume
+and removes a ten-retry inventory fallback observed during Veeam HotAdd backup.
+The probe never writes to or auto-detects the format of the guest device.
 
 This is an unpublished Thick Generations qualification candidate for Proxmox
 VE 9 Storage API 14 and 15. It retains the conventional per-VM Thin mode and

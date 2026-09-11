@@ -1,8 +1,8 @@
-# Thick Generations tg11 handoff
+# Thick Generations tg12 handoff
 
 ## Candidate
 
-`0.9.0~rc5.4~tg11` is one unpublished experimental Debian package for Proxmox
+`0.9.0~rc5.4~tg12` is one unpublished experimental Debian package for Proxmox
 VE 9 Storage API 14 and 15. One installed plugin exposes two explicitly chosen
 storage modes:
 
@@ -38,7 +38,7 @@ The accepted DEB SHA-256 is:
 - Copy the final accepted source, package, checksum and sanitized evidence to
   every required offline mirror when those mirror volumes are available.
 
-Until those gates pass, tg11 remains an experimental candidate and must not be
+Until those gates pass, tg12 remains an experimental candidate and must not be
 published or described as production-ready.
 
 ## Authoritative records
