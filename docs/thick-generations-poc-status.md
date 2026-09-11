@@ -3016,6 +3016,54 @@ THREE_NODE_QUORUM_REJOIN=PASS_4_OF_4
 THREE_NODE_QUORUM_REJOIN_RECOVERY_GATES=PASS_BOTH_MODES
 ```
 
+## Clean-archive and namespace-isolation gate
+
+The exact tracked tree at commit `078b4b3` was exported with `git archive`,
+transferred to the API 14 node and extracted into a new temporary directory.
+The first observation stopped after the complete Perl suite because that node
+did not yet have the build-only `node` executable used for JavaScript syntax
+validation. No test was restarted or called successful on that partial result.
+After installing Debian's packaged Node.js test dependency, the complete clean
+archive gate passed Python, Perl taint-mode, shell and language syntax, static
+analysis, package content/security validation and package construction. Its DEB
+was byte-identical to the previously qualified tg10 build.
+
+A live namespace-isolation test then allocated one fresh Thick volume. A second
+allocation of the same volume in the same Thick storage namespace failed and
+the complete LVM inventory digest remained unchanged. Creating the same PVE
+volume name in the conventional Thin alias succeeded by design: the aliases
+have distinct ownership namespaces and must temporarily coexist during a
+Thin-to-Thick or Thick-to-Thin storage move. Their resolved device paths were
+different. Exact deletion of both volumes removed every matching object and
+returned the disposable VG to its byte-exact free-space baseline.
+
+The temporary three-node lab topology was also normalized after the QDevice
+matrix. The third node had joined without a QDevice client, producing an
+asymmetric local vote view. The QDevice was removed with the native PVE command;
+Corosync was restarted one node at a time, with quorum checked after each
+restart. The final working baseline is three native votes of three, no QDevice
+runtime, healthy Thin and Thick recovery gates on every node, two usable iSCSI
+paths and zero D-state tasks. The separately recorded two-node-plus-QDevice and
+two-node-without-QDevice results remain valid qualification evidence.
+
+```ini
+CLEAN_ARCHIVE_GIT_SHA256=94f14b352eb529e912235bad4d3dff62e5925567b2471de54c2b57a09e80210f
+CLEAN_ARCHIVE_PYTHON_REGRESSION=155_PASS
+CLEAN_ARCHIVE_PERL_REGRESSION=235_PASS
+CLEAN_ARCHIVE_STATIC_AND_SYNTAX=PASS
+CLEAN_ARCHIVE_PACKAGE_SECURITY=PASS
+CLEAN_ARCHIVE_DEB_SHA256=5bef479744873e6e5a052ad9612cbe830bca9a2b243f83d5e0d6ba6e2619c7e0
+SAME_NAMESPACE_DUPLICATE_RC=255
+SAME_NAMESPACE_DUPLICATE_LVM_CHANGE=0
+CROSS_MODE_SAME_NAME_DISTINCT_PATHS=PASS
+CROSS_MODE_EXACT_CLEANUP=PASS
+CROSS_MODE_VG_FREE_DELTA=0
+FINAL_THREE_NODE_NATIVE_QUORUM=PASS_3_OF_3
+FINAL_QDEVICE_RUNTIME=ABSENT
+FINAL_RECOVERY_GATES=PASS_BOTH_MODES_ALL_NODES
+FINAL_DSTATE=0
+```
+
 The production-relevant two-node plus QDevice topology was qualified with a
 separate monotonic Corosync configuration. At two nodes plus QDevice the
 cluster reported three of three votes and both modes completed exact

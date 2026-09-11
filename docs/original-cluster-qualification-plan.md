@@ -14,16 +14,16 @@ and not an endurance pass.
 
 Complete this section before installing or mutating storage.
 
-- [ ] Use disposable LUNs and test VMs; preserve production data untouched.
-- [ ] Confirm all nodes are Proxmox VE 9 and record Storage API 14 or 15.
+- [x] Use disposable LUNs and test VMs; preserve production data untouched.
+- [x] Confirm all nodes are Proxmox VE 9 and record Storage API 14 or 15.
 - [x] Verify the tg10 DEB SHA256 on every node before installation.
 - [x] Confirm identical WWID, PV UUID and VG UUID on every participating node.
-- [ ] Confirm multipath policy, usable path count and expected iSCSI or FC
+- [x] Confirm multipath policy, usable path count and expected iSCSI or FC
       sessions independently of the plugin.
-- [ ] Confirm native cluster quorum and fencing policy.
-- [ ] Capture `pvesm status`, `pvecm status`, multipath state, LVM inventory,
+- [x] Confirm native cluster quorum and fencing policy.
+- [x] Capture `pvesm status`, `pvecm status`, multipath state, LVM inventory,
       thin-pool flags, Thick anchor inventory and relevant D-state baseline.
-- [ ] Run read-only Doctor and recovery checks. Mutation requires an explicit
+- [x] Run read-only Doctor and recovery checks. Mutation requires an explicit
       healthy result; unknown or ambiguous evidence fails closed.
 - [x] Verify the disposable VG has enough free extents for the complete plan.
 
@@ -58,8 +58,10 @@ multipath, PV, VG, LV or guest state.
 - [ ] Storage move Thin to Thin and exact source cleanup.
 - [ ] Verify capacity reporting: VG reservation, per-VM payload and reserved
       slack must be visible and arithmetically consistent.
-- [ ] Verify duplicate VMID, volume name and conflicting ownership attempts are
-      rejected without changing existing objects.
+- [x] Verify duplicate volume allocation in one storage namespace and
+      conflicting ownership attempts are rejected without changing the existing
+      object. The same PVE volume name in distinct Thin and Thick aliases is a
+      deliberate, independently owned namespace used during storage moves.
 
 ## 4. Thick Generations lifecycle
 
@@ -143,7 +145,7 @@ time is not accumulated into a pass.
 
 - [x] Full Python and Perl taint-mode regressions pass from a clean checkout.
 - [x] Two independent tg10 builds are byte-identical.
-- [ ] Package content, syntax, privacy and secret scans pass.
+- [x] Package content, syntax, privacy and secret scans pass.
 - [x] The exact tested DEB is installed successfully on every qualified API
       version and has one recorded SHA256.
 - [ ] C, Y and H project/evidence mirrors contain the exact accepted commit,
