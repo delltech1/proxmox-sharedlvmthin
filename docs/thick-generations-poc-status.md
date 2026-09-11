@@ -3175,6 +3175,34 @@ MATERIALIZATION_SINGLE_PATH_HEAD_SHA256=PASS
 MATERIALIZATION_SINGLE_PATH_VG_FREE_DELTA=0
 ```
 
+The conventional Thin model was also exercised through PVE's native clone
+lifecycle on the independent qualification VG. A stopped full clone copied a
+flushed 64-MiB deterministic pattern into a distinct per-VM Thin pool. The
+destination SHA-256 matched, the source remained unchanged, and exact deletion
+returned the VG to its byte-for-byte free-space baseline.
+
+Linked cloning is deliberately not advertised by SharedLvmThin. A disposable
+Thin source was converted to a PVE template and a native linked-clone request
+was issued without a destination-storage override. PVE refused it with
+`Linked clone feature is not supported` before any LVM change. The source hash
+and complete LVM inventory were unchanged, no target config was published, and
+template cleanup returned the VG to baseline. This is an explicitly qualified
+unsupported boundary, not an untested lifecycle.
+
+```ini
+THIN_FULL_CLONE_SOURCE_UNCHANGED=PASS
+THIN_FULL_CLONE_DESTINATION_SHA256=PASS
+THIN_FULL_CLONE_DISTINCT_VOLUME=PASS
+THIN_FULL_CLONE_EXACT_CLEANUP=PASS
+THIN_FULL_CLONE_VG_FREE_DELTA=0
+THIN_LINKED_CLONE_SUPPORTED=NO
+THIN_LINKED_CLONE_FAIL_CLOSED=PASS
+THIN_LINKED_CLONE_LVM_CHANGE=0
+THIN_LINKED_CLONE_SOURCE_SHA256=PASS
+THIN_LINKED_CLONE_EXACT_CLEANUP=PASS
+THIN_LINKED_CLONE_VG_FREE_DELTA=0
+```
+
 The production-relevant two-node plus QDevice topology was qualified with a
 separate monotonic Corosync configuration. At two nodes plus QDevice the
 cluster reported three of three votes and both modes completed exact

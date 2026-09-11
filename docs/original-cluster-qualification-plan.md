@@ -52,7 +52,7 @@ multipath, PV, VG, LV or guest state.
 - [x] Allocate, start, stop and delete a disposable Thin VM disk.
 - [x] Resize and verify guest-visible capacity and retained data.
 - [x] Snapshot, rollback and delete snapshots in supported order.
-- [ ] Full clone and linked lifecycle where supported by the Thin model.
+- [x] Full clone and linked lifecycle where supported by the Thin model.
 - [x] Snapshot-mode backup and restore to a new VMID.
 - [x] Offline and online migration between nodes.
 - [x] Storage move Thin to Thin and exact source cleanup.
