@@ -2957,6 +2957,31 @@ subtest 'volume_size_info always exposes active block devices as raw' => sub {
     is($class->volume_size_info(
         $cfg, 'thin-test', 'vm-900020-disk-0', undef,
     ), 4096, 'scalar context remains compatible with PVE callers');
+
+    for my $case (
+        ['missing output', sub { return }, qr/missing block-device size/],
+        ['non-numeric output', sub {
+            my (undef, %options) = @_;
+            $options{outfunc}->('unknown');
+        }, qr/invalid block-device size/],
+        ['zero size', sub {
+            my (undef, %options) = @_;
+            $options{outfunc}->('0');
+        }, qr/missing block-device size/],
+        ['multiple output records', sub {
+            my (undef, %options) = @_;
+            $options{outfunc}->('4096');
+            $options{outfunc}->('8192');
+        }, qr/ambiguous block-device size/],
+    ) {
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = $case->[1];
+        eval {
+            $class->volume_size_info(
+                $cfg, 'thin-test', 'vm-900020-disk-0', 7,
+            );
+        };
+        like($@, $case->[2], "$case->[0] fails closed");
+    }
 };
 
 subtest 'same-VG thin and thick aliases expose only their owned inventory' => sub {
