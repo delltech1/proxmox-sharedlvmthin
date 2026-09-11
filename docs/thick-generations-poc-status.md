@@ -2899,6 +2899,65 @@ INCOMPATIBLE_SCHEMA_EXACT_CLEANUP=PASS
 INCOMPATIBLE_SCHEMA_VG_FREE_DELTA=0
 ```
 
+## tg11 clean-source and rolling installation gate
+
+The final software candidate was built from a clean `git archive`, not the
+working tree or private lab evidence. The archive completed 155 Python and 235
+Perl tests, all syntax checks, ShellCheck and package-content validation. Two
+independent extractions produced byte-identical Debian packages.
+
+The exact package was then installed and reinstalled on both Storage API 15
+nodes and the Storage API 14 node. Every node verified the same SHA-256 before
+installation. The canonical PVE storage config, complete qualification-VG LVM
+inventory and every already-running QEMU PID were identical before and after,
+and all three qualification storage aliases returned mutation-safe recovery
+results.
+
+The global upgrade preflight also continued to refuse the pre-existing legacy
+orphan on the unrelated original lab VG. That object was neither adopted nor
+deleted; qualification proceeded only after each isolated disposable alias
+independently proved healthy. This is expected fail-closed behavior, not an
+installation regression.
+
+```ini
+TG11_PYTHON_TESTS=155_PASS
+TG11_PERL_TESTS=235_PASS
+TG11_SYNTAX_AND_SHELLCHECK=PASS
+TG11_PACKAGE_CONTENT_GATE=PASS
+TG11_REPRODUCIBLE_BUILD=PASS
+TG11_DEB_SHA256=465451b55976e08e000369a7c95f0a478057037b9e6f0f97c1c452ebe11c222c
+TG11_INSTALL_API15_NODE_1=PASS
+TG11_REINSTALL_API15_NODE_1=PASS
+TG11_INSTALL_API15_NODE_2=PASS
+TG11_REINSTALL_API15_NODE_2=PASS
+TG11_INSTALL_API14_NODE=PASS
+TG11_REINSTALL_API14_NODE=PASS
+TG11_STORAGE_CONFIG_CHANGE=0
+TG11_LVM_INVENTORY_CHANGE=0
+TG11_RUNNING_QEMU_PID_CHANGE=0
+TG11_POST_INSTALL_RECOVERY_GATES=PASS_ALL_NODES
+GLOBAL_PREFLIGHT_LEGACY_ORPHAN_BLOCK=PASS
+```
+
+The installed tg11 candidate completed one final native PVE backup/restore
+oracle. A disposable VM contained one Thick Generations disk and one
+conventional Thin disk on the same pinned VG, each with a distinct flushed
+16-MiB canary. Snapshot-mode `vzdump` completed, the source VM was deleted, and
+`qmrestore` recreated both disks under a new VMID while preserving their
+respective storage aliases. Both restored SHA-256 values matched. Exact cleanup
+removed the VM, archive and all transaction objects, returned the VG to its
+byte-for-byte baseline, and left both recovery gates mutation-safe.
+
+```ini
+TG11_FINAL_VZDUMP=PASS
+TG11_FINAL_RESTORE_MIXED_MODES=PASS
+TG11_FINAL_THICK_SHA256=PASS
+TG11_FINAL_THIN_SHA256=PASS
+TG11_FINAL_BACKUP_RESTORE_EXACT_CLEANUP=PASS
+TG11_FINAL_BACKUP_RESTORE_VG_FREE_DELTA=0
+TG11_FINAL_BACKUP_RESTORE_RECOVERY_GATES=PASS
+```
+
 The next experimental candidate adds a read-only `sharedlvmthin upgrade-check`
 preflight. It inventories the canonical PVE storage configuration and runs the
 bounded recovery gate for every enabled SharedLvmThin alias. It requires one
