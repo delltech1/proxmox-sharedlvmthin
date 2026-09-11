@@ -43,6 +43,13 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('pass "Thin autoextend threshold = 50% (elastic early-grow policy)"', doctor)
         self.assertIn('pass "Thin autoextend threshold = 80% (legacy fixed/proportional policy)"', doctor)
 
+    def test_doctor_reports_two_node_and_forced_quorum_topologies(self):
+        doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertIn("Two-node cluster is quorate (2/2) without qdevice", doctor)
+        self.assertIn("forced single-node quorum without qdevice", doctor)
+        self.assertIn("EXPECTED_VOTES", doctor)
+        self.assertNotIn("pvecm expected", doctor)
+
     def test_doctor_requires_dmeventd_only_for_locally_active_pool(self):
         doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text()
         self.assertIn("-o lv_name,segtype,lv_attr", doctor)

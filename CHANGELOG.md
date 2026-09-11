@@ -2,6 +2,10 @@
 
 ## Unreleased Thick Generations prototype
 
+- Report a quorate two-node cluster without QDevice as an explicit Doctor
+  warning, and classify a forced single-node `expected_votes=1` survivor as a
+  hard safety failure. The plugin still consumes native PVE quorum and never
+  changes votes, watchdog, fencing, or QDevice configuration.
 - Emit an explicit zero-length response body for Web Dashboard redirects so
   strict TLS/HTTP clients do not report an unexpected EOF after a valid 303.
 - Keep the complete shell helper set clean under the same ShellCheck command

@@ -2317,6 +2317,18 @@ TG9_RUNNING_QEMU_PID_UNCHANGED=PASS
 TG9_WEB_REDIRECT_STRICT_CLIENT=PASS
 FRESH_DISPOSABLE_CLEANUP=PASS
 FRESH_FINAL_VG_FREE_DELTA_BYTES=0
+LIVE_TWO_NODE_NO_QDEVICE_WARNING=PASS
+LIVE_TWO_NODE_THIN_THICK_LIFECYCLE=PASS
+LIVE_TWO_NODE_FINAL_VG_FREE_DELTA_BYTES=0
+LIVE_TWO_NODE_ONE_LOST_NATIVE_QUORUM=FAIL_AS_EXPECTED
+LIVE_TWO_NODE_NO_QUORUM_THIN_ALLOC_RC=13
+LIVE_TWO_NODE_NO_QUORUM_THICK_ALLOC_RC=13
+LIVE_TWO_NODE_NO_QUORUM_LVM_INVENTORY_UNCHANGED=PASS
+LIVE_TWO_NODE_NO_QUORUM_SAFE_FOR_MUTATION=NO
+PRIVATE_VOTE_OVERRIDE_USED=NO
+THREE_NODE_QDEVICE_BASELINE_RESTORED=PASS
+THREE_NODE_ALL_PATHS_2_OF_2=PASS
+THREE_NODE_BOTH_MODES_HEALTHY=PASS
 ```
 
 ## Host loss during a mixed Thin and Thick backup
@@ -2942,6 +2954,44 @@ QDEVICE_UNAVAILABLE_EXACT_CLEANUP=PASS_BOTH_MODES
 QDEVICE_REMOVED_AFTER_TEST=PASS
 FINAL_CLUSTER_NATIVE_VOTES=3
 FINAL_DSTATE=0
+```
+
+## TG10 rolling installation and native two-node quorum qualification
+
+The reproducible `0.9.0~rc5.4~tg10` candidate was installed one node at a
+time on both Storage API 15 nodes and the Storage API 14 node. The exact
+package checksum, canonical PVE storage configuration and the identifiers of
+both running QEMU processes were recorded before each installation. All three
+nodes finished on the identical package; the configuration digest and QEMU
+identifiers remained unchanged. Both same-VG Thin and Thick recovery checks
+returned `HEALTHY` and `SAFE_FOR_MUTATION=YES` on every node.
+
+The cluster was also temporarily and explicitly converted to a native
+two-node topology without QDevice. At 2/2 votes Doctor emitted the intended
+availability warning while allowing identity-verified operations. A complete
+same-VG lifecycle returned the VG to its byte-exact free-space baseline. With
+one Corosync member stopped, native quorum became 1/2 and both Thin and Thick
+allocation attempts failed before mutation; the LVM inventory digest was
+unchanged. The third node and original QDevice topology were then restored,
+and all three nodes returned to the healthy two-path baseline.
+
+```ini
+TG10_PYTHON_REGRESSION=155_PASS
+TG10_PERL_REGRESSION=235_PASS
+TG10_STATIC_AND_SHELLCHECK=PASS
+TG10_REPRODUCIBLE_BUILD=PASS
+TG10_DEB_SHA256=5bef479744873e6e5a052ad9612cbe830bca9a2b243f83d5e0d6ba6e2619c7e0
+TG10_ROLLING_INSTALL_API15_NODE_1=PASS
+TG10_ROLLING_INSTALL_API15_NODE_2=PASS
+TG10_ROLLING_INSTALL_API14_NODE=PASS
+TG10_STORAGE_CONFIG_UNCHANGED=PASS
+TG10_RUNNING_QEMU_PIDS_UNCHANGED=PASS
+TG10_RECOVERY_GATES_ALL_NODES=PASS_BOTH_MODES
+TWO_NODE_NO_QDEVICE_2_OF_2_DOCTOR=WARN
+TWO_NODE_NO_QDEVICE_LIFECYCLE=PASS
+TWO_NODE_NO_QDEVICE_1_OF_2_MUTATION=FAIL_CLOSED
+TWO_NODE_NO_QDEVICE_FAILED_ATTEMPT_LVM_CHANGE=0
+FINAL_THREE_NODE_QDEVICE_BASELINE=PASS
 ```
 
 ## Repeated endurance infrastructure failure

@@ -1,7 +1,7 @@
 # Original cluster qualification plan
 
 This document defines the remaining qualification work for the local
-`0.9.0~rc5.4~tg9` Thick Generations candidate. It is a test plan, not a support
+`0.9.0~rc5.4~tg10` Thick Generations candidate. It is a test plan, not a support
 claim. Record exact package checksums, PVE versions, Storage API versions,
 storage identities and results before changing any state.
 
@@ -16,7 +16,7 @@ Complete this section before installing or mutating storage.
 
 - [ ] Use disposable LUNs and test VMs; preserve production data untouched.
 - [ ] Confirm all nodes are Proxmox VE 9 and record Storage API 14 or 15.
-- [x] Verify the tg9 DEB SHA256 on every node before installation.
+- [x] Verify the tg10 DEB SHA256 on every node before installation.
 - [x] Confirm identical WWID, PV UUID and VG UUID on every participating node.
 - [ ] Confirm multipath policy, usable path count and expected iSCSI or FC
       sessions independently of the plugin.
@@ -33,8 +33,8 @@ Run one node at a time while storage remains available through the other
 nodes. Package installation must not deactivate storage or change SAN,
 multipath, PV, VG, LV or guest state.
 
-- [x] Install tg9 over the currently installed candidate on API 15 node 1.
-- [ ] Verify package files, plugin registration, services, Doctor, recovery
+- [x] Install tg10 over the currently installed candidate on API 15 node 1.
+- [x] Verify package files, plugin registration, services, Doctor, recovery
       checks, storage listing and running guest I/O.
 - [x] Repeat on API 15 node 2.
 - [x] Repeat on the API 14 node.
@@ -44,17 +44,17 @@ multipath, PV, VG, LV or guest state.
       blocks incompatible Thick mutations while existing open guest disks keep
       their normal lower-layer I/O path.
 - [x] Finish with the identical package version and checksum on every node.
-- [ ] Reboot one node, then revalidate identity, inventory, services and both
+- [x] Reboot one node, then revalidate identity, inventory, services and both
       storage modes without speculative repair.
 
 ## 3. Thin-mode regression
 
-- [ ] Allocate, start, stop and delete a disposable Thin VM disk.
-- [ ] Resize and verify guest-visible capacity and retained data.
-- [ ] Snapshot, rollback and delete snapshots in supported order.
+- [x] Allocate, start, stop and delete a disposable Thin VM disk.
+- [x] Resize and verify guest-visible capacity and retained data.
+- [x] Snapshot, rollback and delete snapshots in supported order.
 - [ ] Full clone and linked lifecycle where supported by the Thin model.
-- [ ] Snapshot-mode backup and restore to a new VMID.
-- [ ] Offline and online migration between nodes.
+- [x] Snapshot-mode backup and restore to a new VMID.
+- [x] Offline and online migration between nodes.
 - [ ] Storage move Thin to Thin and exact source cleanup.
 - [ ] Verify capacity reporting: VG reservation, per-VM payload and reserved
       slack must be visible and arithmetically consistent.
@@ -63,23 +63,23 @@ multipath, PV, VG, LV or guest state.
 
 ## 4. Thick Generations lifecycle
 
-- [ ] Allocate a Thick disk and prove the steady-state frontend is linear.
-- [ ] Start, stop, resize and delete with exact LV and anchor postconditions.
-- [ ] Create a snapshot, observe persistent dm-clone transition state,
+- [x] Allocate a Thick disk and prove the steady-state frontend is linear.
+- [x] Start, stop, resize and delete with exact LV and anchor postconditions.
+- [x] Create a snapshot, observe persistent dm-clone transition state,
       materialize it and prove the final frontend depends only on destination.
-- [ ] Roll back by creating a new authoritative generation; preserve and then
+- [x] Roll back by creating a new authoritative generation; preserve and then
       remove superseded objects only when ownership is proven.
 - [ ] Delete snapshots in supported and intentionally invalid orders.
 - [ ] Full clone, backup and restore to new VMIDs with guest hash validation.
-- [ ] Offline and online node migration in steady-state linear mode.
-- [ ] Interrupt and explicitly resume materialization; never auto-repair.
+- [x] Offline and online node migration in steady-state linear mode.
+- [x] Interrupt and explicitly resume materialization; never auto-repair.
 - [ ] Confirm transaction-scoped cleanup leaves no mapper, tag, LV, lock or
       temporary evidence artefact.
 
 ## 5. Thin and Thick coexistence and conversion
 
-- [ ] Operate Thin and Thick disks concurrently in the same qualified VG.
-- [ ] Run concurrent writes, flushes and independent read/hash verification.
+- [x] Operate Thin and Thick disks concurrently in the same qualified VG.
+- [x] Run concurrent writes, flushes and independent read/hash verification.
 - [x] Move Thin to Thick and verify destination data before source deletion.
 - [x] Move Thick to Thin and verify destination data before source deletion.
 - [ ] Repeat conversion with snapshots present only for combinations explicitly
@@ -91,12 +91,12 @@ multipath, PV, VG, LV or guest state.
 
 ## 6. Cluster topology
 
-- [ ] Three-node baseline: stop and rejoin one node in both modes.
+- [x] Three-node baseline: stop and rejoin one node in both modes.
 - [ ] Three-node quorum loss: every new mutation and recovery resume fails
       closed without LV, tag, mapper or configuration changes.
 - [ ] Two-node cluster with QDevice: qualify normal operation, QDevice loss,
       one-node survival according to native quorum and rejoin.
-- [ ] Two-node cluster without QDevice: document the availability limitation,
+- [x] Two-node cluster without QDevice: document the availability limitation,
       prove loss of quorum blocks mutation and verify no private vote override.
 - [ ] Repeat cross-node recovery of an interrupted Thick transition only after
       the old worker is demonstrably fenced or stopped.
@@ -141,10 +141,10 @@ time is not accumulated into a pass.
 
 ## 9. Final acceptance
 
-- [ ] Full Python and Perl taint-mode regressions pass from a clean checkout.
-- [ ] Two independent tg7 builds are byte-identical.
+- [x] Full Python and Perl taint-mode regressions pass from a clean checkout.
+- [x] Two independent tg10 builds are byte-identical.
 - [ ] Package content, syntax, privacy and secret scans pass.
-- [ ] The exact tested DEB is installed successfully on every qualified API
+- [x] The exact tested DEB is installed successfully on every qualified API
       version and has one recorded SHA256.
 - [ ] C, Y and H project/evidence mirrors contain the exact accepted commit,
       package checksum and sanitized evidence.

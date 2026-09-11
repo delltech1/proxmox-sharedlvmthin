@@ -202,7 +202,27 @@ doctor() {
         CLUSTER_STATUS="$(timeout --foreground 10 pvecm status 2>&1 || true)"
 
         if grep -q 'Quorate:[[:space:]]*Yes' <<<"$CLUSTER_STATUS"; then
-            pass "Cluster is quorate"
+            CONFIGURED_NODES="$(grep -Ec '^[[:space:]]*node[[:space:]]*\{' /etc/pve/corosync.conf || true)"
+            ONLINE_NODES="$(awk '/^Nodes:[[:space:]]*/ { print $2; exit }' <<<"$CLUSTER_STATUS")"
+            EXPECTED_VOTES="$(awk '/^Expected votes:[[:space:]]*/ { print $3; exit }' <<<"$CLUSTER_STATUS")"
+            if grep -q '^[[:space:]]*device[[:space:]]*{' /etc/pve/corosync.conf; then
+                QDEVICE_CONFIGURED=1
+            else
+                QDEVICE_CONFIGURED=0
+            fi
+
+            if [ "${CONFIGURED_NODES:-0}" -gt 1 ] \
+                && [ "${ONLINE_NODES:-0}" -eq 1 ] \
+                && [ "${EXPECTED_VOTES:-0}" -eq 1 ] \
+                && [ "$QDEVICE_CONFIGURED" -eq 0 ]; then
+                fail "CRITICAL: multi-node cluster is running forced single-node quorum without qdevice; SharedLvmThin mutations remain blocked"
+            elif [ "${CONFIGURED_NODES:-0}" -eq 2 ] \
+                && [ "${ONLINE_NODES:-0}" -eq 2 ] \
+                && [ "$QDEVICE_CONFIGURED" -eq 0 ]; then
+                warn "Two-node cluster is quorate (2/2) without qdevice; loss of either node removes quorum"
+            else
+                pass "Cluster is quorate"
+            fi
         elif grep -q 'Quorate:[[:space:]]*No' <<<"$CLUSTER_STATUS"; then
             fail "Cluster is not quorate"
         else
