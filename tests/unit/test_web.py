@@ -44,6 +44,22 @@ collector_timeout_seconds=120
 
 
 class WebConfigurationTests(unittest.TestCase):
+    def test_redirect_has_explicit_empty_body_length(self):
+        web = load_web()
+        handler = web["H"].__new__(web["H"])
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+
+        handler.redirect("/login")
+
+        handler.send_response.assert_called_once_with(303)
+        self.assertIn(
+            mock.call("Content-Length", "0"),
+            handler.send_header.call_args_list,
+        )
+        handler.end_headers.assert_called_once_with()
+
     def test_session_idle_is_loaded_from_configuration(self):
         web = load_web("\n[override]\nunused=1\n")
         self.assertEqual(web["IDLE"], 1800)

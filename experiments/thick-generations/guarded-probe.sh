@@ -38,8 +38,9 @@ proc_starttime() {
 }
 
 if ! mkdir "$lock_dir" 2>/dev/null; then
-    [ -r "$pid_file" ] && [ -r "$start_file" ] \
-        || fail "probe lock exists without verifiable ownership"
+    if ! { [ -r "$pid_file" ] && [ -r "$start_file" ]; }; then
+        fail "probe lock exists without verifiable ownership"
+    fi
     existing_pid=$(cat "$pid_file")
     existing_start=$(cat "$start_file")
     current_start=$(proc_starttime "$existing_pid" 2>/dev/null || true)
@@ -112,4 +113,3 @@ rm -f "$pid_file" "$start_file"
 rmdir "$lock_dir"
 printf 'PROBE_NAME=%s\nPROBE_STATE=TIMED_OUT_TERMINATED\n' "$probe_name"
 exit 124
-

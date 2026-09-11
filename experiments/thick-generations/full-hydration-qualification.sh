@@ -34,7 +34,9 @@ cleanup() {
         dmsetup remove --retry "$mapper" >/dev/null 2>&1 || true
     fi
     for device in "$metadata_loop" "$destination_loop" "$source_loop"; do
-        [[ -n $device ]] && losetup -d "$device" >/dev/null 2>&1 || true
+        if [[ -n $device ]]; then
+            losetup -d "$device" >/dev/null 2>&1 || true
+        fi
     done
     case $workdir in
         /var/tmp/sltg-full-hydration.*) rm -rf -- "$workdir" ;;

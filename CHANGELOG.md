@@ -2,6 +2,10 @@
 
 ## Unreleased Thick Generations prototype
 
+- Emit an explicit zero-length response body for Web Dashboard redirects so
+  strict TLS/HTTP clients do not report an unexpected EOF after a valid 303.
+- Keep the complete shell helper set clean under the same ShellCheck command
+  used by CI; cleanup and completion predicates now use explicit conditionals.
 - Treat PVE `nodes` scope as a first-class operational boundary in Doctor,
   dashboard health, and upgrade preflight. A storage intentionally assigned
   to other nodes is reported and skipped locally; an assigned but unavailable

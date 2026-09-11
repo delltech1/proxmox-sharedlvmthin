@@ -107,8 +107,9 @@ progress=$(printf '%s\n' "$status" | awk '{print $7}')
 hydrating=$(printf '%s\n' "$status" | awk '{print $8}')
 hydrated=${progress%/*}
 total=${progress#*/}
-[ "$total" -gt 0 ] && [ "$hydrated" -eq "$total" ] && [ "$hydrating" -eq 0 ] \
-    || fail "hydration event did not produce an exact completed state"
+if ! { [ "$total" -gt 0 ] && [ "$hydrated" -eq "$total" ] && [ "$hydrating" -eq 0 ]; }; then
+    fail "hydration event did not produce an exact completed state"
+fi
 
 dmsetup load "$map_name" --table "0 $sectors linear /dev/$vg/$destination_lv 0"
 inactive=$(dmsetup table --inactive "$map_name")

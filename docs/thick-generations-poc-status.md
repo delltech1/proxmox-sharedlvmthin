@@ -2262,6 +2262,63 @@ POST_RECOVERY_SNAPSHOT_DELETE=PASS
 ISCSI_HYDRATING_TOTAL_PATH_LOSS=FAIL_HOST_DM_CLONE
 ```
 
+## Fresh shared-VG qualification on the original three-node cluster
+
+A new 64 GiB sparse TrueNAS iSCSI LUN was mapped through two paths on each of
+the three PVE nodes and initialized exactly once as a disposable qualification
+VG.  Thin and Thick Generations aliases used the same pinned WWID, PV UUID, VG
+UUID, reserve policy and canonical VG lock.  Recovery admission returned
+`HEALTHY` and `SAFE_FOR_MUTATION=YES` for both aliases on Storage API 15 nodes
+and on the Storage API 14 node.
+
+The identical tg8 package was then reinstalled on every node.  The cluster
+storage configuration digest and all running QEMU PIDs were unchanged.  Nodes
+with an existing dashboard configuration preserved and restarted that service;
+the unconfigured API 14 node remained disabled and did not expose a listener.
+The node-scope correction also classified the FCoE alias as not applicable on
+the API 14 node instead of probing unavailable hardware.
+
+The fail-closed same-VG driver completed thin and thick allocation, inventory
+isolation, snapshot, grow-only resize, rollback, snapshot deletion and exact
+cleanup.  Final VG free space equalled the stabilized baseline byte-for-byte.
+A separate thick disk was written on node 1, deactivated, reconstructed as a
+destination-only linear frontend on node 2, verified with the same whole-disk
+SHA-256, returned to node 1 and removed exactly.
+
+A two-disk mixed-mode disposable VM then completed start, stop and online
+migration from node 1 to node 2 and back.  Both offline whole-disk SHA-256
+values remained unchanged.  PVE Storage Move copied the thin disk to Thick
+Generations and the thick disk to thin mode with matching destination digests
+before successful source removal.  A mixed-mode backup restored both disks to
+Thick Generations, and a second all-thick backup restored both disks to thin
+mode.  Every restored whole-disk digest matched its original.
+
+```ini
+FRESH_ISCSI_LUN_PATHS_ALL_NODES=2_OF_2
+FRESH_ISCSI_IDENTITY_ALL_NODES=PASS
+TG8_ROLLING_INSTALL_API15_API14=PASS
+TG8_SAME_VERSION_REINSTALL_ALL_NODES=PASS
+REINSTALL_STORAGE_CFG_UNCHANGED=PASS
+REINSTALL_RUNNING_QEMU_PID_UNCHANGED=PASS
+NODE_SCOPE_FCOE_SKIP_API14=PASS
+FRESH_SAME_VG_COEXISTENCE=PASS
+FRESH_SAME_VG_FINAL_FREE_DELTA_BYTES=0
+FRESH_CROSS_NODE_LINEAR_RECONSTRUCTION=PASS
+FRESH_CROSS_NODE_WHOLE_DISK_SHA256=PASS
+FRESH_MIXED_MODE_LIVE_MIGRATION_ROUND_TRIP=PASS
+FRESH_STORAGE_MOVE_THIN_TO_THICK_SHA256=PASS
+FRESH_STORAGE_MOVE_THICK_TO_THIN_SHA256=PASS
+FRESH_BACKUP_MIXED_RESTORE_THICK_SHA256=PASS
+FRESH_BACKUP_THICK_RESTORE_THIN_SHA256=PASS
+TG9_REPRODUCIBLE_DEB_SHA256=430c21e0be195a9f709a631570999da10bc3d922667f795638c021916f58df3f
+TG9_ROLLING_INSTALL_API15_API14=PASS
+TG9_STORAGE_CFG_UNCHANGED=PASS
+TG9_RUNNING_QEMU_PID_UNCHANGED=PASS
+TG9_WEB_REDIRECT_STRICT_CLIENT=PASS
+FRESH_DISPOSABLE_CLEANUP=PASS
+FRESH_FINAL_VG_FREE_DELTA_BYTES=0
+```
+
 ## Host loss during a mixed Thin and Thick backup
 
 A running guest with two Thick Generations disks and one conventional thin disk

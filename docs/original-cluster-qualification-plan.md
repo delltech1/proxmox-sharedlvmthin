@@ -1,7 +1,7 @@
 # Original cluster qualification plan
 
 This document defines the remaining qualification work for the local
-`0.9.0~rc5.4~tg7` Thick Generations candidate. It is a test plan, not a support
+`0.9.0~rc5.4~tg9` Thick Generations candidate. It is a test plan, not a support
 claim. Record exact package checksums, PVE versions, Storage API versions,
 storage identities and results before changing any state.
 
@@ -16,8 +16,8 @@ Complete this section before installing or mutating storage.
 
 - [ ] Use disposable LUNs and test VMs; preserve production data untouched.
 - [ ] Confirm all nodes are Proxmox VE 9 and record Storage API 14 or 15.
-- [ ] Verify the tg7 DEB SHA256 on every node before installation.
-- [ ] Confirm identical WWID, PV UUID and VG UUID on every participating node.
+- [x] Verify the tg9 DEB SHA256 on every node before installation.
+- [x] Confirm identical WWID, PV UUID and VG UUID on every participating node.
 - [ ] Confirm multipath policy, usable path count and expected iSCSI or FC
       sessions independently of the plugin.
 - [ ] Confirm native cluster quorum and fencing policy.
@@ -25,7 +25,7 @@ Complete this section before installing or mutating storage.
       thin-pool flags, Thick anchor inventory and relevant D-state baseline.
 - [ ] Run read-only Doctor and recovery checks. Mutation requires an explicit
       healthy result; unknown or ambiguous evidence fails closed.
-- [ ] Verify the disposable VG has enough free extents for the complete plan.
+- [x] Verify the disposable VG has enough free extents for the complete plan.
 
 ## 2. Package and rolling-upgrade gate
 
@@ -33,17 +33,17 @@ Run one node at a time while storage remains available through the other
 nodes. Package installation must not deactivate storage or change SAN,
 multipath, PV, VG, LV or guest state.
 
-- [ ] Install tg7 over the currently installed candidate on API 15 node 1.
+- [x] Install tg9 over the currently installed candidate on API 15 node 1.
 - [ ] Verify package files, plugin registration, services, Doctor, recovery
       checks, storage listing and running guest I/O.
-- [ ] Repeat on API 15 node 2.
-- [ ] Repeat on the API 14 node.
-- [ ] Reinstall the exact tg7 package once on every API version.
-- [ ] Verify no old-API warning on API 15 and correct compatibility on API 14.
+- [x] Repeat on API 15 node 2.
+- [x] Repeat on the API 14 node.
+- [x] Reinstall the exact candidate package once on every API version.
+- [x] Verify no old-API warning on API 15 and correct compatibility on API 14.
 - [ ] During a deliberately mixed-version interval, prove upgrade preflight
       blocks incompatible Thick mutations while existing open guest disks keep
       their normal lower-layer I/O path.
-- [ ] Finish with the identical package version and checksum on every node.
+- [x] Finish with the identical package version and checksum on every node.
 - [ ] Reboot one node, then revalidate identity, inventory, services and both
       storage modes without speculative repair.
 
@@ -80,12 +80,12 @@ multipath, PV, VG, LV or guest state.
 
 - [ ] Operate Thin and Thick disks concurrently in the same qualified VG.
 - [ ] Run concurrent writes, flushes and independent read/hash verification.
-- [ ] Move Thin to Thick and verify destination data before source deletion.
-- [ ] Move Thick to Thin and verify destination data before source deletion.
+- [x] Move Thin to Thick and verify destination data before source deletion.
+- [x] Move Thick to Thin and verify destination data before source deletion.
 - [ ] Repeat conversion with snapshots present only for combinations explicitly
       supported by the plugin; unsupported dependency graphs must fail closed.
-- [ ] Restore the same backup independently into Thin and Thick destinations.
-- [ ] Exercise multi-disk VMs containing both modes.
+- [x] Restore the same backup independently into Thin and Thick destinations.
+- [x] Exercise multi-disk VMs containing both modes.
 - [ ] Verify capacity admission and reporting remain correct after every move,
       resize, restore and cleanup.
 

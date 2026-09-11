@@ -17,7 +17,7 @@ result=
 declare -A seen=()
 
 # Invoked through the signal and exit trap below.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     [ -z "$result" ] || rm -f -- "$result"
 }
