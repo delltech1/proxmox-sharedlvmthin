@@ -77,11 +77,48 @@ prove a stall.
   cross-node reconstruction, explicit post-reboot resume and total-path-loss
   qualification.
 
+## Active raw-volume size discovery
+
+The Veeam Proxmox backup workflow queries PVE's per-volume content endpoint
+before starting each disk transfer. During a live HotAdd backup, the generic
+PVE file-oriented size probe can return a size without a format while QEMU
+holds the raw block device. PVE then rejects the endpoint response with
+`volume_size_info ... failed - no format`; Veeam retries and eventually falls
+back to enumerating the complete storage inventory.
+
+- Source: directly reproduced with Veeam Backup & Replication 13.1 and the PVE
+  content API during the Thin-only, Thick-only, and mixed qualification run.
+- Applicability: yes for both allocation modes because both expose raw block
+  devices.
+- Mitigation: the plugin implements a read-only exact-path
+  `blockdev --getsize64` probe and returns the canonical `raw` format without
+  attempting content detection or opening the device for writing.
+- Evidence: list/scalar API regression, active Thin/Thick live probe, and a
+  second Veeam run required on the tg12 package to prove zero endpoint retries.
+
+## Multi-disk restore placement
+
+Current Veeam Proxmox entire-VM restore supports selecting a destination
+storage and disk type, but not independently for every disk in one VM. Native
+PVE/PBS full restore likewise commonly applies one target storage to all disks.
+
+- Sources:
+  <https://helpcenter.veeam.com/docs/vbr/userguide/pve_restore_entire_vm_storage.html>,
+  <https://forum.proxmox.com/threads/best-way-to-migrate-a-multi-disk-vm-from-lvm-to-different-zfs-pools-for-storage-replication.183778/>.
+- Applicability: yes to a mixed Thin/Thick VM restore, but it is a caller/UI
+  placement constraint rather than a storage-plugin data-path defect.
+- Mitigation: expose Thin and Thick as clear separate PVE storage choices;
+  qualify single-disk cross-mode restores directly; use a subsequent native
+  PVE Storage Move when individual restored disks need different modes.
+- Evidence: Thin-to-Thick and Thick-to-Thin Veeam restore cells remain open;
+  per-disk mixed selection is explicitly `NOT_AVAILABLE_BY_PRODUCT` and must
+  never be simulated through an unsupported internal API.
+
 ## Result
 
 No new automatic repair or destructive fallback is justified by these
-incidents. The remaining open qualification items are environmental or
-explicitly listed in the release gate: uninterrupted endurance on healthy
-infrastructure, representative physical FC hardware, and optional Veeam PVE
-backup/restore validation. These boundaries must not be described as passed
-until direct evidence exists.
+incidents. Veeam Thin-only, Thick-only, and mixed HotAdd backup now has direct
+positive evidence; cross-mode Veeam restore remains open. The other remaining
+qualification items are explicitly listed in the release gate: uninterrupted
+endurance on healthy infrastructure and representative physical FC hardware.
+These boundaries must not be described as passed until direct evidence exists.
