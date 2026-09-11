@@ -2925,6 +2925,40 @@ subtest 'content listing keeps a valid materializing HEAD visible' => sub {
     }], 'PVE inventory remains readable while materialization is pending');
 };
 
+subtest 'volume_size_info always exposes active block devices as raw' => sub {
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thin',
+    };
+    my @seen;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        push @seen, [@$command];
+        is($options{timeout}, 7, 'caller timeout is preserved');
+        $options{outfunc}->("1073741824\n");
+        return;
+    };
+
+    my @info = $class->volume_size_info(
+        $cfg, 'thin-test', 'vm-900020-disk-0', 7,
+    );
+    is_deeply(\@info, [1073741824, 'raw', 0, undef],
+        'list context satisfies the PVE content API contract');
+    is_deeply($seen[0], [
+        '/usr/sbin/blockdev', '--getsize64', '/dev/testvg/vm-900020-disk-0',
+    ], 'size probe is a read-only query of the exact volume path');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        $options{outfunc}->('4096');
+        return;
+    };
+    is($class->volume_size_info(
+        $cfg, 'thin-test', 'vm-900020-disk-0', undef,
+    ), 4096, 'scalar context remains compatible with PVE callers');
+};
+
 subtest 'same-VG thin and thick aliases expose only their owned inventory' => sub {
     my $thin_store = 'thin-alias';
     my $thick_store = 'thick-alias';

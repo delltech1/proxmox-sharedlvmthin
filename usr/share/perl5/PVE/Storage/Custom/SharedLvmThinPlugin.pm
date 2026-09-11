@@ -1919,6 +1919,38 @@ sub filesystem_path {
     return wantarray ? ($path, $vmid, $vtype) : $path;
 }
 
+sub volume_size_info {
+    my ($class, $scfg, $storeid, $volname, $timeout) = @_;
+
+    # Every guest volume exposed by this plugin is a raw block device.  Do not
+    # use the generic file_size_info() implementation here: qemu-img can omit
+    # its format result while QEMU holds an active raw device, which makes the
+    # PVE content endpoint return "no format" and forces backup products to
+    # retry/fall back to a full inventory scan.  blockdev is read-only and
+    # reports the kernel-visible size without opening the device for writing.
+    my ($format) = ($class->parse_volname($volname))[6];
+    die "unsupported volume format '$format' for '$storeid:$volname'\n"
+        if $format ne 'raw';
+
+    my $path = $class->filesystem_path($scfg, $volname);
+    my $size;
+    my %options = (
+        errmsg => "can't get size of '$path'",
+        outfunc => sub {
+            my $line = shift;
+            die "ambiguous block-device size for '$path'\n" if defined($size);
+            die "invalid block-device size for '$path'\n"
+                if !defined($line) || $line !~ /^\s*([0-9]+)\s*$/;
+            $size = int($1);
+        },
+    );
+    $options{timeout} = $timeout if defined($timeout);
+    run_command(['/usr/sbin/blockdev', '--getsize64', $path], %options);
+    die "missing block-device size for '$path'\n" if !defined($size) || $size <= 0;
+
+    return wantarray ? ($size, 'raw', 0, undef) : $size;
+}
+
 sub activate_storage {
     my ($class, $storeid, $scfg, $cache) = @_;
     $class->_require_thick_identity_config($storeid, $scfg)
