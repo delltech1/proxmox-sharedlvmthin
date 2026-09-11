@@ -40,7 +40,7 @@ multipath, PV, VG, LV or guest state.
 - [x] Repeat on the API 14 node.
 - [x] Reinstall the exact candidate package once on every API version.
 - [x] Verify no old-API warning on API 15 and correct compatibility on API 14.
-- [ ] During a deliberately mixed-version interval, prove upgrade preflight
+- [x] During a deliberately mixed-version interval, prove upgrade preflight
       blocks incompatible Thick mutations while existing open guest disks keep
       their normal lower-layer I/O path.
 - [x] Finish with the identical package version and checksum on every node.

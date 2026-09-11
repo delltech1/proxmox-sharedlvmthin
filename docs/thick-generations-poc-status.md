@@ -2871,6 +2871,34 @@ MANAGEMENT_SERVICE_REFRESH_DURING_UPGRADE=YES
 ARBITRARY_INCOMPATIBLE_SCHEMA_DOWNGRADE_SUPPORTED=NO
 ```
 
+The incompatible boundary was subsequently exercised rather than inferred. A
+disposable schema-v5 Thick disk was opened by a running QEMU process on one
+node. Only that node was temporarily downgraded to the earlier schema-v4
+implementation while the other nodes retained the current candidate. A native
+snapshot request encountered the unknown schema-v5 `snapshot` anchor field and
+failed before any LVM change. The complete VG inventory remained identical,
+the existing QEMU PID stayed alive and unchanged, and the disk canary retained
+its SHA-256. The node was then restored to the exact tg10 package, its recovery
+gate returned mutation-safe, and exact VM deletion returned the VG to baseline.
+
+This proves the intended compatibility split: already-open QEMU block I/O does
+not traverse the management plugin after activation, while a node that cannot
+decode the authoritative anchor cannot perform a new Thick mutation. The test
+does not claim arbitrary downgrade support.
+
+```ini
+INCOMPATIBLE_NODE_VERSION=0.9.0~rc5.3.1_SCHEMA_V4
+AUTHORITATIVE_ANCHOR_SCHEMA=5
+INCOMPATIBLE_THICK_MUTATION_FAIL_CLOSED=PASS
+INCOMPATIBLE_THICK_MUTATION_LVM_CHANGE=0
+OPEN_QEMU_PID_UNCHANGED=PASS
+OPEN_DISK_SHA256_UNCHANGED=PASS
+CURRENT_PACKAGE_RESTORED=PASS
+POST_RESTORE_RECOVERY_GATE=PASS
+INCOMPATIBLE_SCHEMA_EXACT_CLEANUP=PASS
+INCOMPATIBLE_SCHEMA_VG_FREE_DELTA=0
+```
+
 The next experimental candidate adds a read-only `sharedlvmthin upgrade-check`
 preflight. It inventories the canonical PVE storage configuration and runs the
 bounded recovery gate for every enabled SharedLvmThin alias. It requires one
