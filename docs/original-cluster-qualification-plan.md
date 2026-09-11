@@ -71,11 +71,11 @@ multipath, PV, VG, LV or guest state.
       materialize it and prove the final frontend depends only on destination.
 - [x] Roll back by creating a new authoritative generation; preserve and then
       remove superseded objects only when ownership is proven.
-- [ ] Delete snapshots in supported and intentionally invalid orders.
-- [ ] Full clone, backup and restore to new VMIDs with guest hash validation.
+- [x] Delete snapshots in supported and intentionally invalid orders.
+- [x] Full clone, backup and restore to new VMIDs with guest hash validation.
 - [x] Offline and online node migration in steady-state linear mode.
 - [x] Interrupt and explicitly resume materialization; never auto-repair.
-- [ ] Confirm transaction-scoped cleanup leaves no mapper, tag, LV, lock or
+- [x] Confirm transaction-scoped cleanup leaves no mapper, tag, LV, lock or
       temporary evidence artefact.
 
 ## 5. Thin and Thick coexistence and conversion
@@ -100,7 +100,7 @@ multipath, PV, VG, LV or guest state.
       one-node survival according to native quorum and rejoin.
 - [x] Two-node cluster without QDevice: document the availability limitation,
       prove loss of quorum blocks mutation and verify no private vote override.
-- [ ] Repeat cross-node recovery of an interrupted Thick transition only after
+- [x] Repeat cross-node recovery of an interrupted Thick transition only after
       the old worker is demonstrably fenced or stopped.
 
 The plugin must consume the native Proxmox quorum result. It must not configure

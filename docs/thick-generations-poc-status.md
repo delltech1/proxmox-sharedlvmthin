@@ -3064,6 +3064,25 @@ FINAL_RECOVERY_GATES=PASS_BOTH_MODES_ALL_NODES
 FINAL_DSTATE=0
 ```
 
+A separate live snapshot-order gate created two fully materialized Thick
+snapshots around distinct flushed block patterns. Deleting the older snapshot
+while the newer snapshot remained removed only the signed older generation;
+the authoritative HEAD retained its exact SHA-256. A request to delete a
+nonexistent snapshot failed and the complete LVM inventory digest was
+unchanged. Deleting the remaining snapshot and VM removed the exact anchor and
+generation tree and returned the disposable VG to its byte-exact free-space
+baseline.
+
+```ini
+THICK_TWO_SNAPSHOT_MATERIALIZATION=PASS
+DELETE_OLDER_WHILE_NEWER_REMAINS=PASS
+HEAD_SHA_UNCHANGED_AFTER_OLDER_DELETE=PASS
+INVALID_SNAPSHOT_DELETE_RC=255
+INVALID_SNAPSHOT_DELETE_LVM_CHANGE=0
+SNAPSHOT_ORDER_EXACT_CLEANUP=PASS
+SNAPSHOT_ORDER_VG_FREE_DELTA=0
+```
+
 The production-relevant two-node plus QDevice topology was qualified with a
 separate monotonic Corosync configuration. At two nodes plus QDevice the
 cluster reported three of three votes and both modes completed exact
