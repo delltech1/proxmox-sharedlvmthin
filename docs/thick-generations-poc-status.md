@@ -3105,6 +3105,76 @@ PVE_USED_DELTA_EQUALS_VG_FREE_DELTA=PASS
 CAPACITY_ARITHMETIC_VG_FREE_DELTA=0
 ```
 
+## Independent Thin-to-Thin move and snapshot-present conversion gate
+
+A second disposable 16-GiB sparse iSCSI LUN was exported through two target
+portals and admitted only after all three nodes proved the same WWID, PV UUID,
+VG UUID and two healthy multipath paths. It was registered as a conventional
+Thin alias with the same identity and reserve gates as the primary
+qualification storage. The iSCSI nodes use explicit `manual` startup policy.
+
+A fresh one-GiB Thin disk containing a flushed deterministic 16-MiB pattern
+was moved from the primary Thin VG to the second Thin VG with source deletion.
+The destination SHA-256 matched, the source per-VM pool was absent, and PVE
+published the destination only after the copy completed. The reverse move
+provided the same proofs. Destroying the VM returned both VGs to their exact
+pre-test free-space values.
+
+PVE's snapshot-present conversion boundary was then exercised independently.
+A fresh Thin disk on the second VG retained one native LVM snapshot. A requested
+Thin-to-Thick move with source deletion was refused by PVE before destination
+allocation because PVE does not move the snapshot set. The complete VM config
+digest, combined two-VG LVM inventory digest and source data SHA-256 were
+unchanged. This is the supported fail-closed policy: operators must resolve the
+snapshot graph before requesting a destructive mode conversion. After exact
+snapshot and VM cleanup, both VGs again returned to baseline.
+
+```ini
+SECOND_THIN_LUN_PATHS=2_OF_2_ALL_NODES
+SECOND_THIN_IDENTITY=PASS_ALL_NODES
+SECOND_THIN_RECOVERY_GATE=HEALTHY_ALL_NODES
+ISCSI_NODE_STARTUP_POLICY=MANUAL
+THIN_TO_THIN_FORWARD_SHA256=PASS
+THIN_TO_THIN_FORWARD_SOURCE_CLEANUP=PASS
+THIN_TO_THIN_RETURN_SHA256=PASS
+THIN_TO_THIN_RETURN_SOURCE_CLEANUP=PASS
+THIN_TO_THIN_SOURCE_VG_FREE_DELTA=0
+THIN_TO_THIN_DESTINATION_VG_FREE_DELTA=0
+SNAPSHOT_PRESENT_CONVERSION=FAIL_CLOSED
+SNAPSHOT_PRESENT_CONVERSION_CONFIG_CHANGE=0
+SNAPSHOT_PRESENT_CONVERSION_LVM_CHANGE=0
+SNAPSHOT_PRESENT_CONVERSION_SOURCE_SHA256=PASS
+SNAPSHOT_PRESENT_CONVERSION_VG_FREE_DELTA=0_BOTH_VGS
+```
+
+The remaining iSCSI single-path/materialization combination used a fresh
+four-GiB Thick disk with a flushed 64-MiB canary. A target-side transient timer
+was positively armed before one iSCSI interface was disabled. A passive host
+sample captured exactly one healthy path while the signed anchor remained in
+`HYDRATING`; the path returned automatically and every subsequent sample saw
+two healthy paths while the same transaction continued. Hydration completed,
+the frontend pivoted to its destination-only linear table, the recovery gate
+returned healthy and the authoritative HEAD retained the exact pre-fault
+SHA-256. Snapshot and VM deletion removed the complete transaction tree and
+returned the VG to its exact baseline.
+
+The stopped-VM `qm snapshot` command waits for its storage callback, so a
+post-command prepare check cannot itself observe the in-flight phase. The
+qualification therefore records the independent passive sample taken while
+that exact command and transaction were still live; it does not relabel the
+later command return as evidence of the fault interval.
+
+```ini
+MATERIALIZATION_SINGLE_PATH_PREFAULT_PHASE=HYDRATING
+MATERIALIZATION_SINGLE_PATH_MIN_HEALTHY_PATHS=1
+MATERIALIZATION_SINGLE_PATH_TRANSACTION_CONTINUED=PASS
+MATERIALIZATION_SINGLE_PATH_RETURN_2_OF_2=PASS
+MATERIALIZATION_SINGLE_PATH_LINEAR_PIVOT=PASS
+MATERIALIZATION_SINGLE_PATH_RECOVERY_GATE=PASS
+MATERIALIZATION_SINGLE_PATH_HEAD_SHA256=PASS
+MATERIALIZATION_SINGLE_PATH_VG_FREE_DELTA=0
+```
+
 The production-relevant two-node plus QDevice topology was qualified with a
 separate monotonic Corosync configuration. At two nodes plus QDevice the
 cluster reported three of three votes and both modes completed exact

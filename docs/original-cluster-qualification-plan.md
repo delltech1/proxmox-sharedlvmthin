@@ -55,7 +55,7 @@ multipath, PV, VG, LV or guest state.
 - [ ] Full clone and linked lifecycle where supported by the Thin model.
 - [x] Snapshot-mode backup and restore to a new VMID.
 - [x] Offline and online migration between nodes.
-- [ ] Storage move Thin to Thin and exact source cleanup.
+- [x] Storage move Thin to Thin and exact source cleanup.
 - [x] Verify capacity reporting: VG reservation, per-VM payload and reserved
       slack must be visible and arithmetically consistent.
 - [x] Verify duplicate volume allocation in one storage namespace and
@@ -84,11 +84,11 @@ multipath, PV, VG, LV or guest state.
 - [x] Run concurrent writes, flushes and independent read/hash verification.
 - [x] Move Thin to Thick and verify destination data before source deletion.
 - [x] Move Thick to Thin and verify destination data before source deletion.
-- [ ] Repeat conversion with snapshots present only for combinations explicitly
+- [x] Repeat conversion with snapshots present only for combinations explicitly
       supported by the plugin; unsupported dependency graphs must fail closed.
 - [x] Restore the same backup independently into Thin and Thick destinations.
 - [x] Exercise multi-disk VMs containing both modes.
-- [ ] Verify capacity admission and reporting remain correct after every move,
+- [x] Verify capacity admission and reporting remain correct after every move,
       resize, restore and cleanup.
 
 ## 6. Cluster topology
@@ -111,7 +111,7 @@ votes, change watchdog settings, run `pvecm expected`, or infer fencing.
 Use one named fault at a time and collect pre-fault identity and guest hashes.
 
 - [x] iSCSI 2-to-1-to-2 with active Thin and steady-state Thick I/O.
-- [ ] iSCSI 2-to-1-to-2 during Thick materialization.
+- [x] iSCSI 2-to-1-to-2 during Thick materialization.
 - [x] Bounded iSCSI 2-to-0-to-2 for steady-state Thick, followed by read-only
       recovery validation before any mutation.
 - [x] Active Thin total-path loss: retain the native dm-thin outcome as a host
