@@ -2958,6 +2958,30 @@ TG11_FINAL_BACKUP_RESTORE_VG_FREE_DELTA=0
 TG11_FINAL_BACKUP_RESTORE_RECOVERY_GATES=PASS
 ```
 
+The independent 16-GiB Thin move VG was then retired as a transaction-scoped
+disposable asset. Its PVE alias was removed only after the VG was proven empty
+and the expected VG, PV and WWID identities matched. The exact VG and PV label,
+iSCSI sessions and node records, multipath map, TrueNAS target mapping, extent,
+target and zvol were removed. No other target or map was selected. All three
+nodes subsequently proved the tg11 package, native three-node quorum, two
+healthy paths to the retained primary qualification LUN, mutation-safe Thin
+and Thick gates, zero D-state tasks and the exact primary VG free-space
+baseline.
+
+```ini
+SECONDARY_STORAGE_ALIAS_REMOVED=PASS
+SECONDARY_VG_PV_IDENTITY_BEFORE_DELETE=PASS
+SECONDARY_VG_PV_REMOVED=PASS
+SECONDARY_ISCSI_REMOVED=PASS_ALL_NODES
+SECONDARY_MULTIPATH_MAP_REMOVED=PASS_ALL_NODES
+SECONDARY_TARGET_MAPPING_EXTENT_TARGET_ZVOL_REMOVED=PASS
+TG11_POST_CLEANUP_BASELINE=PASS_ALL_NODES
+PRIMARY_PATHS=2_OF_2_ALL_NODES
+PRIMARY_RECOVERY_GATES=PASS_ALL_NODES
+POST_CLEANUP_DSTATE=0_ALL_NODES
+PRIMARY_VG_FREE_BYTES=68711088128
+```
+
 The next experimental candidate adds a read-only `sharedlvmthin upgrade-check`
 preflight. It inventories the canonical PVE storage configuration and runs the
 bounded recovery gate for every enabled SharedLvmThin alias. It requires one

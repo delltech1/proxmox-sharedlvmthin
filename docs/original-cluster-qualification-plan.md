@@ -150,7 +150,7 @@ time is not accumulated into a pass.
       version and has one recorded SHA256.
 - [ ] C, Y and H project/evidence mirrors contain the exact accepted commit,
       package checksum and sanitized evidence.
-- [ ] Release gate and known limitations match the actual evidence.
+- [x] Release gate and known limitations match the actual evidence.
 - [ ] No internal address, hostname, credential, personal identity or private
       laboratory detail is present in publishable files or the package.
 - [ ] Do not publish Thick Generations until every required software gate is
