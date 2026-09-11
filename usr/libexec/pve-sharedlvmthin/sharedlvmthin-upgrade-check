@@ -11,6 +11,8 @@ PROBE_TIMEOUT=150
 failures=0
 checked=0
 skipped=0
+skipped_disabled=0
+skipped_node_scope=0
 result=
 declare -A seen=()
 
@@ -52,7 +54,7 @@ inventory() {
     awk '
         function emit() {
             if (inside) {
-                print sid "|" disabled "|" mode
+                print sid "|" disabled "|" mode "|" nodes
             }
         }
         /^sharedlvmthin:[[:space:]]+/ {
@@ -61,6 +63,7 @@ inventory() {
             sid=$2
             disabled="0"
             mode="thin"
+            nodes=""
             next
         }
         /^[^[:space:]]/ {
@@ -76,11 +79,17 @@ inventory() {
             mode=$2
             next
         }
+        inside && $1 == "nodes" {
+            nodes=$2
+            next
+        }
         END { emit() }
     ' "$STORAGECFG"
 }
 
-while IFS='|' read -r sid disabled mode; do
+local_node=$(hostname)
+
+while IFS='|' read -r sid disabled mode nodes; do
     [ -n "$sid" ] || continue
 
     if [[ ! "$sid" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
@@ -105,9 +114,23 @@ while IFS='|' read -r sid disabled mode; do
             echo "STORAGE_ID=$sid"
             echo "RESULT=SKIP_DISABLED"
             skipped=$((skipped + 1))
+            skipped_disabled=$((skipped_disabled + 1))
             continue
             ;;
     esac
+
+    if [ -n "$nodes" ]; then
+        case ",$nodes," in
+            *",$local_node,"*) ;;
+            *)
+                echo "STORAGE_ID=$sid"
+                echo "RESULT=SKIP_NODE_SCOPE"
+                skipped=$((skipped + 1))
+                skipped_node_scope=$((skipped_node_scope + 1))
+                continue
+                ;;
+        esac
+    fi
 
     case "$mode" in
         thin|thick-generations) ;;
@@ -157,6 +180,8 @@ done < <(inventory)
 
 echo "UPGRADE_STORAGES_CHECKED=$checked"
 echo "UPGRADE_STORAGES_SKIPPED_DISABLED=$skipped"
+echo "UPGRADE_STORAGES_SKIPPED_EXPLICITLY_DISABLED=$skipped_disabled"
+echo "UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=$skipped_node_scope"
 
 if [ "$failures" -ne 0 ]; then
     echo "UPGRADE_SAFE=NO"

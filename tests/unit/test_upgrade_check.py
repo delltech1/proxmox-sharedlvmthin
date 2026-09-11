@@ -70,6 +70,10 @@ class UpgradeCheckTests(unittest.TestCase):
         self.assertIn("RESULT=SKIP_DISABLED", result.stdout)
         self.assertIn("UPGRADE_STORAGES_CHECKED=2", result.stdout)
         self.assertIn("UPGRADE_STORAGES_SKIPPED_DISABLED=1", result.stdout)
+        self.assertIn(
+            "UPGRADE_STORAGES_SKIPPED_EXPLICITLY_DISABLED=1", result.stdout
+        )
+        self.assertIn("UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=0", result.stdout)
         self.assertIn("UPGRADE_SAFE=YES", result.stdout)
 
     def test_fails_closed_on_recovery_required_storage(self):
@@ -90,6 +94,27 @@ class UpgradeCheckTests(unittest.TestCase):
         self.assertEqual(invoked, ["thick-store"])
         self.assertIn("UPGRADE_STORAGE_RESULT=FAIL", result.stdout)
         self.assertIn("UPGRADE_SAFE=NO", result.stdout)
+
+    def test_skips_storage_outside_local_node_scope(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: remote-only
+                    vgname shared-vg
+                    nodes definitely-not-this-test-host
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            echo THICK_ANCHORS_HEALTHY=PASS
+            echo STATE=HEALTHY
+            echo SAFE_FOR_MUTATION=YES
+            exit 0
+            """,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(invoked, [])
+        self.assertIn("RESULT=SKIP_NODE_SCOPE", result.stdout)
+        self.assertIn("UPGRADE_SAFE=YES", result.stdout)
+        self.assertIn("UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=1", result.stdout)
 
     def test_rejects_duplicate_storage_identifier(self):
         result, invoked = self.run_check(

@@ -58,6 +58,24 @@ storage_is_disabled() {
     esac
 }
 
+storage_is_applicable_on_node() {
+    local sid=$1
+    local local_node configured_nodes
+    local_node="$(hostname)"
+    configured_nodes="$(
+        awk -v sid="$sid" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "nodes" {print $2; exit}
+        ' "$STORAGECFG" 2>/dev/null
+    )"
+    [ -z "$configured_nodes" ] && return 0
+    case ",$configured_nodes," in
+        *",$local_node,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 section() {
     echo
     echo "=== $* ==="
@@ -266,6 +284,10 @@ doctor() {
         if storage_is_disabled "$SID"; then
             pass "$SID: storage is explicitly disabled; operational probes skipped"
             info "Disabled storage remains visible in configuration but does not affect host readiness"
+            continue
+        fi
+        if ! storage_is_applicable_on_node "$SID"; then
+            pass "$SID: storage is not assigned to this PVE node; operational probes skipped"
             continue
         fi
 
@@ -865,6 +887,10 @@ for storage in document.get("storages", []):
     for SID in $STOREIDS; do
         if storage_is_disabled "$SID"; then
             pass "$SID: PVE storage intentionally disabled"
+            continue
+        fi
+        if ! storage_is_applicable_on_node "$SID"; then
+            pass "$SID: PVE storage not assigned to this node"
             continue
         fi
         STATE="$(awk -v sid="$SID" '$1 == sid {print $3}' <<<"$PVE_STATUS")"

@@ -2,6 +2,10 @@
 
 ## Unreleased Thick Generations prototype
 
+- Treat PVE `nodes` scope as a first-class operational boundary in Doctor,
+  dashboard health, and upgrade preflight. A storage intentionally assigned
+  to other nodes is reported and skipped locally; an assigned but unavailable
+  storage remains fail-closed.
 - Publish the tg7 local qualification candidate together with an explicit
   original-cluster test plan. The plan separates non-destructive admission,
   rolling package qualification, Thin/Thick lifecycle, topology and transport

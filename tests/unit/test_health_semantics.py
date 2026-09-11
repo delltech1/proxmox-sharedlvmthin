@@ -76,6 +76,20 @@ class StorageConfigurationTests(unittest.TestCase):
                 )
                 self.assertFalse(storages[0]["disabled"])
 
+    def test_node_scope_is_recorded(self):
+        storages = self.parse_text(
+            "sharedlvmthin: scoped\n"
+            "\tslt-vgname vg_scoped\n"
+            "\tnodes node-a,node-b\n"
+        )
+        self.assertEqual(storages[0]["nodes"], ["node-a", "node-b"])
+
+    def test_unscoped_storage_applies_to_every_node(self):
+        storages = self.parse_text(
+            "sharedlvmthin: global\n\tslt-vgname vg_global\n"
+        )
+        self.assertIsNone(storages[0]["nodes"])
+
 
 class ClusterHealthSemanticsTests(unittest.TestCase):
     @classmethod

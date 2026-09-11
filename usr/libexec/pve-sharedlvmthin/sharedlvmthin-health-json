@@ -98,6 +98,7 @@ def parse_storage_cfg():
                 "id": parts[1] if len(parts) > 1 else "unknown",
                 "vg": None,
                 "disabled": False,
+                "nodes": None,
                 "allocation_mode": "thin",
                 "initial_pool_size_gib": None,
                 "initial_pool_mode": "fixed",
@@ -128,6 +129,11 @@ def parse_storage_cfg():
                     s.split(None, 1)[1].strip().lower()
                     in {"1", "yes", "on", "true"}
                 )
+
+            elif s.startswith("nodes "):
+                current["nodes"] = [
+                    node for node in s.split(None, 1)[1].split(",") if node
+                ]
 
             elif s.startswith("slt-allocation-mode "):
                 current["allocation_mode"] = s.split(None, 1)[1]
@@ -1296,12 +1302,25 @@ for storage in parse_storage_cfg():
         "pool_inventory_error": None,
         "metadata_spares": [],
         "transport": None,
+        "node_applicable": (
+            not storage.get("nodes")
+            or socket.gethostname() in storage.get("nodes", [])
+        ),
     }
 
     if storage.get("disabled"):
         check(
             f"storage_enabled:{sid}", "PASS",
             f"{sid}: storage is explicitly disabled; operational probes skipped",
+        )
+        doc["storages"].append(item)
+        continue
+
+    if not item["node_applicable"]:
+        check(
+            f"storage_scope:{sid}", "PASS",
+            f"{sid}: storage is not assigned to this PVE node; "
+            "operational probes skipped",
         )
         doc["storages"].append(item)
         continue
