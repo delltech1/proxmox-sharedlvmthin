@@ -114,11 +114,31 @@ PVE/PBS full restore likewise commonly applies one target storage to all disks.
   per-disk mixed selection is explicitly `NOT_AVAILABLE_BY_PRODUCT` and must
   never be simulated through an unsupported internal API.
 
+## Veeam Proxmox replication placement
+
+Veeam Backup & Replication 13.1 documents Proxmox VE replication as a desktop
+console-only operation. Unlike entire-VM restore, its destination wizard can
+select storage granularly for individual virtual disks.
+
+- Sources:
+  <https://helpcenter.veeam.com/docs/vbr/userguide/pve_limitations.html>,
+  <https://helpcenter.veeam.com/docs/vbr/userguide/pve_replication_job_create_destination.html>.
+- Applicability: yes. Thin-to-Thick, Thick-to-Thin and mixed per-disk replica
+  placement are valid product-supported qualification cases.
+- Boundary: Veeam's public PowerShell module in the tested 13.1 installation
+  exposes no Proxmox replica-job creation cmdlet. Tests must use the supported
+  desktop wizard and must not call undocumented internal services.
+- Required evidence: exact destination mode and SHA-256, source immutability,
+  no proxy/temporary attachment, clean supported removal, healthy recovery
+  gates and zero final VG free-space delta. A license refusal is
+  `NOT_AVAILABLE_BY_LICENSE`, not a plugin failure.
+
 ## Result
 
 No new automatic repair or destructive fallback is justified by these
 incidents. Veeam Thin-only, Thick-only, and mixed HotAdd backup now has direct
-positive evidence; cross-mode Veeam restore remains open. The other remaining
-qualification items are explicitly listed in the release gate: uninterrupted
-endurance on healthy infrastructure and representative physical FC hardware.
-These boundaries must not be described as passed until direct evidence exists.
+positive evidence; cross-mode Veeam restore and replica qualification remain
+open. The other remaining qualification items are explicitly listed in the
+release gate: uninterrupted endurance on healthy infrastructure and
+representative physical FC hardware. These boundaries must not be described
+as passed until direct evidence exists.
