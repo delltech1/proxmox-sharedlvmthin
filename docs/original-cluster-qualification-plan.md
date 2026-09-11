@@ -151,8 +151,8 @@ time is not accumulated into a pass.
 - [ ] C, Y and H project/evidence mirrors contain the exact accepted commit,
       package checksum and sanitized evidence.
 - [x] Release gate and known limitations match the actual evidence.
-- [ ] No internal address, hostname, credential, personal identity or private
+- [x] No internal address, hostname, credential, personal identity or private
       laboratory detail is present in publishable files or the package.
-- [ ] Do not publish Thick Generations until every required software gate is
+- [x] Do not publish Thick Generations until every required software gate is
       positive. Physical PB and physical FC remain explicit untested hardware
       boundaries until representative equipment is qualified.
