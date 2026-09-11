@@ -2,7 +2,7 @@
 # Non-storage integration check for the one-live-probe invariant.
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 guard=${GUARDED_PROBE:-"$script_dir/../../experiments/thick-generations/guarded-probe.sh"}
 state_dir="/var/tmp/slt-tg-probe-guard-$$"
 
@@ -45,4 +45,3 @@ printf 'TIMEOUT_CLEANUP=PASS\n'
 printf 'PROBE_REUSE_AFTER_TERMINATION=PASS\n'
 printf 'SECOND_LIVE_PROBE_REFUSED=PASS\n'
 printf 'RESULT=PASS\n'
-

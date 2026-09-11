@@ -13,11 +13,15 @@ to independent linear LVs after materialization.
 
 The candidate includes fail-closed identity, quorum, cluster-lock, ownership,
 capacity, recovery and incompatible-anchor-schema gates. Qualification covers
-Thin and Thick allocation, resize, snapshots, rollback, full copy, backup and
-restore, cross-node migration, bidirectional Thin/Thick storage moves, host
-loss, bounded iSCSI path loss, interrupted materialization and exact cleanup.
-Linked clones remain explicitly unsupported.
+Thin and Thick allocation, resize, snapshots, rollback, full copy, native PVE
+backup and restore, supported-UI Veeam HotAdd backup, cross-node migration,
+bidirectional Thin/Thick storage moves, host loss, bounded iSCSI path loss,
+interrupted materialization and exact cleanup. Cross-mode Veeam restore remains
+an open qualification item. Linked clones remain explicitly unsupported.
 
-Physical FC and the final four-hour concurrent endurance window remain release
-gates. This candidate must not be published or used for production until those
-requirements and the final accepted-build checks are complete.
+The final four-hour concurrent endurance window remains a software release
+gate. Physical FC remains an unqualified hardware boundary because no
+representative HBA, fabric and enterprise array are available in this lab; no
+physical-FC support claim may be made from virtual FCoE evidence. This
+candidate must not be published or used for production until the software
+release gates and final accepted-build checks are complete.

@@ -1,7 +1,7 @@
 # Original cluster qualification plan
 
 This document defines the remaining qualification work for the local
-`0.9.0~rc5.4~tg11` Thick Generations candidate. It is a test plan, not a support
+`0.9.0~rc5.4~tg12` Thick Generations candidate. It is a test plan, not a support
 claim. Record exact package checksums, PVE versions, Storage API versions,
 storage identities and results before changing any state.
 
@@ -16,7 +16,7 @@ Complete this section before installing or mutating storage.
 
 - [x] Use disposable LUNs and test VMs; preserve production data untouched.
 - [x] Confirm all nodes are Proxmox VE 9 and record Storage API 14 or 15.
-- [x] Verify the tg11 DEB SHA256 on every node before installation.
+- [x] Verify the tg12 DEB SHA256 on every node before installation.
 - [x] Confirm identical WWID, PV UUID and VG UUID on every participating node.
 - [x] Confirm multipath policy, usable path count and expected iSCSI or FC
       sessions independently of the plugin.
@@ -33,7 +33,7 @@ Run one node at a time while storage remains available through the other
 nodes. Package installation must not deactivate storage or change SAN,
 multipath, PV, VG, LV or guest state.
 
-- [x] Install tg11 over the currently installed candidate on API 15 node 1.
+- [x] Install tg12 over the previously qualified candidate on API 15 node 1.
 - [x] Verify package files, plugin registration, services, Doctor, recovery
       checks, storage listing and running guest I/O.
 - [x] Repeat on API 15 node 2.
@@ -144,7 +144,7 @@ time is not accumulated into a pass.
 ## 9. Final acceptance
 
 - [x] Full Python and Perl taint-mode regressions pass from a clean checkout.
-- [x] Two independent tg11 builds are byte-identical.
+- [x] Two independent candidate builds are byte-identical.
 - [x] Package content, syntax, privacy and secret scans pass.
 - [x] The exact tested DEB is installed successfully on every qualified API
       version and has one recorded SHA256.

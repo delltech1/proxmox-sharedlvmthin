@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import unittest
 from pathlib import Path
@@ -16,7 +17,16 @@ class PackageSourceTests(unittest.TestCase):
             "dell" + "tech",
             "oke" + ".dev",
         )
-        excluded_parts = {".git", "dist", "dist-lab", "__pycache__"}
+        private_networks = tuple(
+            ipaddress.ip_network(value)
+            for value in (
+                "10." + "0.0.0/8",
+                "172." + "16.0.0/12",
+                "192." + "168.0.0/16",
+            )
+        )
+        ipv4 = re.compile(r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])")
+        excluded_parts = {".git", "dist", "dist-lab", "outputs", "__pycache__"}
         for path in ROOT.rglob("*"):
             if not path.is_file() or excluded_parts.intersection(path.parts):
                 continue
@@ -26,6 +36,15 @@ class PackageSourceTests(unittest.TestCase):
                 continue
             for marker in forbidden:
                 self.assertNotIn(marker, content, f"private marker in {path}")
+            for candidate in ipv4.findall(content):
+                try:
+                    address = ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue
+                self.assertFalse(
+                    any(address in network for network in private_networks),
+                    f"private IPv4 address {candidate} in {path}",
+                )
 
     def test_rc5_version(self):
         control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
@@ -37,6 +56,15 @@ class PackageSourceTests(unittest.TestCase):
     def test_experimental_thick_build_has_distinct_package_version(self):
         control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
         self.assertRegex(control, r"(?m)^Version: .*~tg\d+$")
+
+    def test_combined_package_metadata_advertises_both_modes(self):
+        control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
+        self.assertIn(
+            "Description: Shared LVM Thin and Thick Generations storage for Proxmox VE",
+            control,
+        )
+        self.assertIn("one LVM thin pool per VM", control)
+        self.assertIn("fully allocated Thick Generations", control)
 
     def test_doctor_accepts_elastic_and_legacy_thresholds(self):
         doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text()

@@ -3391,3 +3391,352 @@ RESULT=INFRASTRUCTURE_FAIL_ESXI_LOCAL_DATASTORE_PATH
 DUAL_MODE_ENDURANCE_QUALIFICATION=OPEN
 FURTHER_TESTS_ON_FAILED_DATASTORE=PROHIBITED
 ```
+
+## Clean TG12 dual-mode endurance retest
+
+After installing and reinstalling the exact reproducible TG12 candidate on all
+three qualified nodes, the Windows PowerShell 5.1 worker was corrected to avoid
+.NET Core-only APIs. A transaction-scoped short probe performed write-through
+writes, explicit flush, reopened reads and SHA-256 verification on both the Thin
+and Thick guest disks. Both modes passed and no worker remained alive.
+
+The clean endurance run started with guest run ID
+`8cf1117b953e44e2b3c583e80b121190`. Both independent workers use a monotonic
+Stopwatch and are scheduled for 15,300 seconds. The correlated host run ID is
+`8cf1117b953e44e2b3c583e80b121190-host-v2`; its three scheduled durations are
+15,508, 15,506 and 15,505 seconds. Each exceeds the strict 14,400-second gate
+and extends five minutes beyond the guest deadline.
+
+Before host monitoring started, both guest logs were observed advancing, both
+recorded worker PIDs were live and all redirected stderr files were empty. The
+first two host iterations on all three nodes reported native quorum, exactly two
+healthy paths for the pinned WWID, zero D-state tasks, the exact TG12 package,
+healthy Thin and Thick recovery gates and sticky overall PASS.
+
+This entry records only a running qualification. It is not a PASS until both
+guest result files and all three terminal host results satisfy the strict
+classifier, archives and checksums are collected, and transaction-scoped
+cleanup restores the saved baseline.
+
+```ini
+TG12_WORKER_COMPATIBILITY_PROBE=PASS_BOTH_MODES
+TG12_GUEST_RUN_ID=8cf1117b953e44e2b3c583e80b121190
+TG12_HOST_RUN_ID=8cf1117b953e44e2b3c583e80b121190-host-v2
+TG12_HOST_MINIMUM_DURATION_SECONDS=14400
+TG12_INITIAL_HOST_ITERATIONS=PASS_ALL_THREE_NODES
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING
+```
+
+## Transaction-isolated storage moves during clean TG12 endurance
+
+While the independent Windows Thin and Thick write-through workers and all
+three host monitors remained live, a separate disposable VM 999952 exercised
+both storage-conversion directions. The harness admitted mutation only after
+positive Thin and Thick recovery checks, wrote and flushed a 16 MiB data
+canary, and verified the same SHA-256 after each move. PVE removed each source
+only after the corresponding destination copy completed successfully.
+
+The final transaction-scoped cleanup removed the disposable VM, Thin pool,
+Thin LV, Thick anchor and generation. The VG free-byte value returned exactly
+to its saved baseline. A separate postcondition at `2026-09-11T17:21:31Z`
+found no VM or LV containing VMID 999952; both storage aliases retained the
+same WWID, PV UUID and VG UUID, two healthy paths, native quorum,
+`STATE=HEALTHY` and `SAFE_FOR_MUTATION=YES`. The Thick and Thin guest worker
+PIDs and the PVE03 host monitor were still live after cleanup.
+
+```ini
+TG12_ENDURANCE_THIN_TO_THICK_SHA256=PASS
+TG12_ENDURANCE_THICK_TO_THIN_SHA256=PASS
+TG12_ENDURANCE_SOURCE_DELETE_AFTER_COPY=PASS
+TG12_ENDURANCE_CROSS_MODE_CLEANUP=PASS
+TG12_ENDURANCE_VG_FREE_DELTA_BYTES=0
+TG12_ENDURANCE_VM_999952_LEFTOVER=NONE
+TG12_ENDURANCE_LV_999952_LEFTOVER=NONE
+TG12_ENDURANCE_POSTCHECK_RECOVERY_GATES=PASS_BOTH_MODES
+TG12_ENDURANCE_WORKERS_AFTER_MOVE=LIVE
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING
+```
+
+## Transaction-isolated Thick snapshot lifecycle during clean endurance
+
+A second disposable transaction on VM 999966 ran concurrently with the same
+independent endurance workers. It created and fully materialized two Thick
+snapshots around a flushed data change, deleted the older snapshot while the
+newer one remained, and proved that the authoritative HEAD SHA-256 did not
+change. An intentionally invalid snapshot name returned non-zero while the
+complete LVM inventory digest remained byte-identical.
+
+Deleting the remaining snapshot and VM returned VG free bytes to the exact
+saved baseline. A separate postcondition at `2026-09-11T17:26:47Z` found no VM
+or LV containing VMID 999966. Both storage recovery gates remained healthy
+with matching WWID/PV/VG identities, two paths and quorum. Both Windows worker
+PIDs and the PVE01 host monitor remained live, and their verified guest cycles
+continued increasing after the snapshot transaction.
+
+```ini
+TG12_ENDURANCE_THICK_SNAPSHOT_MATERIALIZATION=PASS_TWO_GENERATIONS
+TG12_ENDURANCE_DELETE_OLDER_WITH_NEWER_PRESENT=PASS
+TG12_ENDURANCE_HEAD_SHA_AFTER_DELETE=UNCHANGED
+TG12_ENDURANCE_INVALID_DELETE_RC=255
+TG12_ENDURANCE_INVALID_DELETE_LVM_CHANGE=0
+TG12_ENDURANCE_SNAPSHOT_CLEANUP=PASS
+TG12_ENDURANCE_SNAPSHOT_VG_FREE_DELTA_BYTES=0
+TG12_ENDURANCE_VM_999966_LEFTOVER=NONE
+TG12_ENDURANCE_LV_999966_LEFTOVER=NONE
+TG12_ENDURANCE_POST_SNAPSHOT_RECOVERY_GATES=PASS_BOTH_MODES
+TG12_ENDURANCE_WORKERS_AFTER_SNAPSHOT=LIVE
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING
+```
+
+## Transaction-isolated dual-mode resize during clean endurance
+
+A ShellCheck-clean bounded harness used disposable VMIDs 999953 and 999954 to
+resize one conventional Thin and one Thick Generations disk from exactly
+1 GiB to 2 GiB while the independent endurance workloads continued. Each disk
+received a flushed 16 MiB pattern before resize. Its exact SHA-256 remained
+unchanged after resize and the block device exposed the expected larger byte
+count.
+
+Transaction cleanup returned VG free bytes to the saved baseline. A separate
+postcondition at `2026-09-11T17:30:38Z` found neither disposable VM nor any
+matching LV/tag. Both storage identities and recovery gates remained healthy,
+the PVE03 host monitor was live, and both Windows workers continued producing
+verified cycles after the resize operations.
+
+```ini
+TG12_ENDURANCE_THIN_RESIZE_OLD_BYTES=1073741824
+TG12_ENDURANCE_THIN_RESIZE_NEW_BYTES=2147483648
+TG12_ENDURANCE_THIN_RESIZE_SHA256=PASS
+TG12_ENDURANCE_THICK_RESIZE_OLD_BYTES=1073741824
+TG12_ENDURANCE_THICK_RESIZE_NEW_BYTES=2147483648
+TG12_ENDURANCE_THICK_RESIZE_SHA256=PASS
+TG12_ENDURANCE_DUAL_RESIZE_CLEANUP=PASS
+TG12_ENDURANCE_DUAL_RESIZE_VG_FREE_DELTA_BYTES=0
+TG12_ENDURANCE_RESIZE_LEFTOVERS=NONE
+TG12_ENDURANCE_POST_RESIZE_RECOVERY_GATES=PASS_BOTH_MODES
+TG12_ENDURANCE_WORKERS_AFTER_RESIZE=LIVE
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING
+```
+
+## Transaction-isolated native backup and restore during clean endurance
+
+After a positive preflight proved that VMIDs 999954/999955, their LV
+namespaces and the exact dump directory did not exist, a ShellCheck-clean
+bounded harness created a mixed disposable VM with one Thin and one Thick
+disk. It wrote and flushed distinct 16 MiB data canaries, completed native PVE
+snapshot-mode `vzdump`, destroyed the source, and restored the archive to the
+second VMID. The restored configuration retained the intended storage mode of
+each disk and both restored SHA-256 values matched their sources.
+
+Cleanup removed both VMs, all corresponding LVs and the exact dump directory,
+returned VG free bytes to the saved baseline and left both recovery gates
+healthy. An independent postcondition at `2026-09-11T17:35:50Z` confirmed the
+absence of all scoped artefacts. Both Windows workers and the PVE01 host
+monitor remained live, with verified guest cycles continuing after restore.
+
+```ini
+TG12_ENDURANCE_NATIVE_VZDUMP_SNAPSHOT_MODE=PASS
+TG12_ENDURANCE_NATIVE_RESTORE_MIXED_MODES=PASS
+TG12_ENDURANCE_RESTORED_THICK_SHA256=PASS
+TG12_ENDURANCE_RESTORED_THIN_SHA256=PASS
+TG12_ENDURANCE_BACKUP_RESTORE_CLEANUP=PASS
+TG12_ENDURANCE_BACKUP_RESTORE_VG_FREE_DELTA_BYTES=0
+TG12_ENDURANCE_BACKUP_RESTORE_LEFTOVERS=NONE
+TG12_ENDURANCE_POST_RESTORE_RECOVERY_GATES=PASS_BOTH_MODES
+TG12_ENDURANCE_WORKERS_AFTER_RESTORE=LIVE
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING
+```
+
+## Live cross-node migration during clean endurance
+
+VM 100 was confirmed running on PVE02, outside HA management and with every
+disk on shared storage. PVE01 was online and healthy. Native PVE online
+migration used the dedicated cluster migration network, transferred
+4.5 GiB of VM state, completed in 80 seconds and reported 87 ms downtime.
+
+An independent postcondition at `2026-09-11T17:38:45Z` found VM 100 running
+only on PVE01 with a new QEMU PID, absent from PVE02/PVE03, and without a stale
+migration lock. The original Windows endurance process IDs 9580 and 12048
+remained alive and both verified logs advanced beyond the pre-migration
+cycles. All three exact host monitor PIDs remained live. Thin and Thick
+recovery checks on the destination retained two healthy paths, matching
+WWID/PV/VG identities, quorum, `STATE=HEALTHY` and
+`SAFE_FOR_MUTATION=YES`.
+
+The migration emitted the expected informational warning that conntrack-state
+migration was unavailable; this qualification VM did not depend on preserving
+a network session, and storage/data workers continued normally.
+
+```ini
+TG12_ENDURANCE_LIVE_MIGRATION=PVE02_TO_PVE01_PASS
+TG12_ENDURANCE_MIGRATION_DURATION_SECONDS=80
+TG12_ENDURANCE_MIGRATION_DOWNTIME_MILLISECONDS=87
+TG12_ENDURANCE_SOURCE_QEMU_PID=224581
+TG12_ENDURANCE_TARGET_QEMU_PID=173961
+TG12_ENDURANCE_VM_SINGLE_OWNER_AFTER_MIGRATION=PASS
+TG12_ENDURANCE_ORIGINAL_WINDOWS_PIDS_SURVIVED=PASS
+TG12_ENDURANCE_GUEST_CYCLES_AFTER_MIGRATION=PASS
+TG12_ENDURANCE_HOST_MONITORS_AFTER_MIGRATION=PASS_ALL_THREE
+TG12_ENDURANCE_POST_MIGRATION_RECOVERY_GATES=PASS_BOTH_MODES
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING
+```
+
+## Bounded source-node refusal after endurance live migration
+
+The next scheduled PVE02 host observation began while the completed live
+migration was tearing down the former source. It captured the single
+`pvestatd` process in `D:path_openat`; the state remained present on the
+harness's two-second confirmation. Thin and Thick recovery checks still
+proved healthy paths, exact WWID/PV/VG identities, pool flags, bounded LVM
+probes, PVE storage health and quorum. They nevertheless returned
+`NO_RELEVANT_DSTATE=UNKNOWN`, `STATE=RECOVERY_REQUIRED` and
+`SAFE_FOR_MUTATION=NO`, because positive attribution of the global D-state to
+an unrelated dependency was unavailable. This is the intended DS-16
+fail-closed result.
+
+At `2026-09-11T17:41:19Z`, `pvestatd` had returned to normal sleep, no D-state
+task remained, and both recovery checks again returned `HEALTHY` and
+`SAFE_FOR_MUTATION=YES`. Kernel logs in the interval contained only ordinary
+source tap/firewall teardown. They contained no multipath, SCSI, LVM-thin or
+device error. PVE logged one 30.171-second and one 5.159-second status update
+during the migration interval.
+
+The host monitor deliberately uses a sticky failure. Therefore this run can
+no longer satisfy the strict uninterrupted endurance PASS even though data
+workloads remain live and storage health recovered without intervention. It
+must continue to its scheduled terminal time so its exact negative evidence
+can be collected; it must not be restarted or reclassified opportunistically.
+
+```ini
+TG12_ENDURANCE_PVE02_ITERATION_19=FAIL_CLOSED
+TG12_ENDURANCE_CAPTURED_DSTATE_PROCESS=pvestatd
+TG12_ENDURANCE_CAPTURED_DSTATE_WCHAN=path_openat
+TG12_ENDURANCE_CAPTURED_DSTATE_CONFIRMATION_SECONDS=2
+TG12_ENDURANCE_STORAGE_IDENTITY_DURING_EVENT=PASS
+TG12_ENDURANCE_BOUNDED_LVM_PROBES_DURING_EVENT=PASS
+TG12_ENDURANCE_RECOVERY_GATE_DURING_EVENT=RECOVERY_REQUIRED
+TG12_ENDURANCE_MUTATION_DURING_UNKNOWN_DSTATE=BLOCKED
+TG12_ENDURANCE_CURRENT_DSTATE=0
+TG12_ENDURANCE_RECOVERY_WITHOUT_INTERVENTION=PASS_BOTH_MODES
+TG12_ENDURANCE_STRICT_PASS_POSSIBLE=NO
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING_NEGATIVE_EVIDENCE
+```
+
+## Current-tree package and regression checkpoint during endurance
+
+The combined Thin/Thick Debian package description now uses a valid Debian
+continuation field and contains no line longer than 79 characters. An isolated
+current-tree validation on the Storage API 14 node passed all 156 Python tests,
+all 236 Perl tests, shell syntax and ShellCheck. `dpkg-deb` accepted the package
+metadata and reproduced the intended dependency list and both-mode
+description. The archive transfer from Windows did not preserve executable
+modes, so those modes were restored only inside the disposable validation
+directory before the package parser check; this does not alter installed files
+or the running endurance candidate.
+
+```ini
+TG12_CURRENT_TREE_PYTHON_REGRESSION=156_PASS
+TG12_CURRENT_TREE_PERL_REGRESSION=236_PASS
+TG12_CURRENT_TREE_SHELL_AND_SHELLCHECK=PASS
+TG12_DEBIAN_CONTROL_PARSE=PASS
+TG12_DEBIAN_CONTROL_MAX_LINE_LENGTH=79_OR_LESS
+FINAL_CLEAN_COMMIT_BUILD=STILL_REQUIRED
+DUAL_MODE_ENDURANCE_QUALIFICATION=RUNNING_NEGATIVE_EVIDENCE
+```
+
+## Veeam supported restore topology
+
+The current official Veeam Backup & Replication 13 Proxmox restore guide
+confirms that an entire-VM restore to a new location exposes target storage in
+the supported console wizard. It also states that storage and disk type cannot
+be selected separately for each VM disk. The qualification matrix therefore
+matches the product contract: single-mode backups can be restored to either
+the Thin or Thick alias, while a mixed backup is restored wholly to Thin or
+wholly to Thick. A per-disk mixed target is not claimed or emulated through an
+internal API.
+
+Reference: <https://helpcenter.veeam.com/docs/vbr/userguide/pve_restore_entire_vm_storage.html>
+
+```ini
+VEEAM_SUPPORTED_UI_TARGET_STORAGE_SELECTION=CONFIRMED
+VEEAM_PER_DISK_TARGET_STORAGE_SELECTION=NOT_AVAILABLE_BY_PRODUCT
+VEEAM_SINGLE_MODE_CROSS_RESTORE=REQUIRED
+VEEAM_MIXED_TO_ALL_THIN_OR_ALL_THICK=REQUIRED
+```
+
+Before any restore was created, the transaction-scoped cleanup harness was
+executed as a negative test. It found the saved preflight state but no complete
+restore-evidence directory, exited with code 2 before its recovery checks or
+destroy loop, and left the full qualification-VG inventory digest unchanged.
+Therefore an incomplete matrix is preserved rather than guessed or cleaned.
+
+```ini
+VEEAM_INCOMPLETE_EVIDENCE_CLEANUP=REFUSED
+VEEAM_NEGATIVE_CLEANUP_EXIT_CODE=2
+VEEAM_NEGATIVE_CLEANUP_LVM_CHANGE=0
+```
+
+## Terminal classification of the lifecycle-overlapped endurance run
+
+The lifecycle-overlapped run was allowed to reach its original deadline and
+was never restarted or opportunistically reclassified. Both Windows workers
+completed 15,300 requested seconds using a monotonic clock. Thin completed
+3,742 write-through, flush, reopened-read and SHA-256 cycles; Thick completed
+3,745. Their longest progress gaps were 22.452 and 20.605 seconds and both
+terminal results were `PASS`.
+
+Each host monitor completed 52 iterations and more than 15,500 seconds. PVE03
+passed every iteration. PVE01 retained one recovery-check failure caused by
+an unscoped D-state observation. PVE02 retained two recovery-check failures,
+including the persistent two-second `pvestatd` sample after live migration.
+Both nodes later returned to healthy iterations without intervention, but the
+sticky classifier correctly kept their terminal results at `FAIL`. No node
+recorded a path-count failure, quorum loss, boot-ID change or package-version
+change.
+
+All four evidence archives were copied locally and independently SHA-256
+verified before guest cleanup. The first guarded cleanup attempt exposed a
+Windows CRLF parsing defect in the private qualification helper and refused
+without deleting evidence. The helper now accepts LF and CRLF while retaining
+exact run-ID and PID matching. A four-case regression covers both line endings,
+a live PID and a wrong run ID. Cleanup then succeeded for only the exact
+archived run.
+
+```ini
+TG12_NEGATIVE_GUEST_THIN_CYCLES=3742_PASS
+TG12_NEGATIVE_GUEST_THICK_CYCLES=3745_PASS
+TG12_NEGATIVE_PVE01=FAIL_ONE_PROBE
+TG12_NEGATIVE_PVE02=FAIL_TWO_PROBES_ONE_PERSISTENT_DSTATE
+TG12_NEGATIVE_PVE03=PASS
+TG12_NEGATIVE_PATH_FAILURES=0
+TG12_NEGATIVE_QUORUM_FAILURES=0
+TG12_NEGATIVE_BOOT_CHANGES=0
+TG12_NEGATIVE_CLASSIFIER=FAIL_AS_DESIGNED
+TG12_NEGATIVE_EVIDENCE_ARCHIVED=PASS
+TG12_CLEANUP_CRLF_REGRESSION=PASS
+TG12_NEGATIVE_GUEST_CLEANUP=PASS_AFTER_ARCHIVE
+```
+
+## Isolated clean TG12 endurance run
+
+A new run began only after the negative evidence was archived, checksummed and
+the exact prior guest workspace was removed by its transaction-scoped guard.
+Run `78bc8aceb1d141c6a7826db4ed3bc54e` performs the same independent Thin and
+Thick Windows write-through workload for 15,300 seconds. Correlated host run
+`78bc8aceb1d141c6a7826db4ed3bc54e-host-clean` runs on all three nodes for more
+than 15,530 seconds. No snapshot, resize, migration, backup, restore or other
+lifecycle mutation is permitted during this isolated retest.
+
+The exact TG12 package remained installed, both guest worker PIDs were live,
+and the first host iteration on every node reported quorum, exactly two paths,
+zero D-state, healthy recovery checks and sticky `PASS`. This is a running
+qualification, not a completed PASS; all guest and host terminal evidence must
+still pass the strict classifier.
+
+```ini
+TG12_CLEAN_GUEST_RUN_ID=78bc8aceb1d141c6a7826db4ed3bc54e
+TG12_CLEAN_HOST_RUN_ID=78bc8aceb1d141c6a7826db4ed3bc54e-host-clean
+TG12_CLEAN_NO_LIFECYCLE_MUTATIONS=ENFORCED_BY_TEST_PLAN
+TG12_CLEAN_INITIAL_ITERATION=PASS_ALL_THREE_NODES
+DUAL_MODE_ENDURANCE_QUALIFICATION=CLEAN_RETEST_RUNNING
+```
