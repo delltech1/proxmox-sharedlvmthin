@@ -39,7 +39,10 @@ chmod 0755 \
 
 find "$STAGE" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 
-dpkg-deb --root-owner-group --build "$STAGE" "$OUT/$PACKAGE"
+# Debian and Ubuntu currently choose different dpkg-deb default compressors.
+# Pin the archive format so a release runner and a qualified PVE node produce
+# the same bytes from the same source and SOURCE_DATE_EPOCH.
+dpkg-deb -Zxz --root-owner-group --build "$STAGE" "$OUT/$PACKAGE"
 sh "$ROOT/scripts/check-release.sh" "$OUT/$PACKAGE"
 (cd "$OUT" && sha256sum "$PACKAGE" >SHA256SUMS)
 printf '%s\n' "$OUT/$PACKAGE"
