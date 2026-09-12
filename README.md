@@ -3,6 +3,17 @@
 An open-source storage project developed and published under the **BASTRIX**
 brand.
 
+> [!IMPORTANT]
+> **New: RC5.4 TG12 dual-mode preview is available.** One package now offers
+> the established **Thin** mode and the new **Thick Generations** mode with
+> fully allocated, independent generation LVs and a linear steady-state data
+> path. Thin and Thick storage definitions can coexist over the same pinned VG,
+> and ordinary PVE Storage Move converts disks in either direction.
+>
+> [Read the Thick Generations overview](https://github.com/delltech1/proxmox-sharedlvmthin/blob/experimental/thick-generations/docs/allocation-modes.md),
+> [follow the dual-mode installation guide](https://github.com/delltech1/proxmox-sharedlvmthin/blob/experimental/thick-generations/docs/installation.md), or
+> [download the RC5.4 TG12 pre-release](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.4-tg12).
+
 SharedLvmThin is a safety-focused Proxmox VE storage plugin for an existing
 shared LVM volume group. It provides one LVM-thin pool per VM, snapshots,
 rollback, migration support, cluster locking, guarded autogrow, storage
@@ -132,15 +143,14 @@ other sensitive infrastructure identifiers in a public report.
 
 ## License and support
 
-Copyright (C) 2026 Stanislav Baran.
+Copyright (C) 2026 BASTRIX.
 
 Licensed under GPL-3.0-only. Commercial redistribution is permitted by the
 license, but distributors must comply with all GPLv3 obligations, including
 preserving applicable notices and providing Corresponding Source when
 required. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
-BASTRIX is a registered European Union word trade mark owned by Stanislav Baran
-(EUIPO No. `019343330`), covering Nice classes 9 and 42. The official EUIPO
+BASTRIX is a registered European Union word trade mark (EUIPO No. `019343330`), covering Nice classes 9 and 42. The official EUIPO
 record controls its current status and exact scope. The GPL license applies to
 the code but does not grant rights to present a third-party build, fork,
 product or support service as official, certified or endorsed. Truthful
