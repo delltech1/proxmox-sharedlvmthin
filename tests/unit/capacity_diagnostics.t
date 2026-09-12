@@ -59,6 +59,25 @@ subtest 'chunk geometry reports reason without changing storage' => sub {
         pool_size => 20 * $tib, chunk_size => 0,
     );
     is($unknown->{status}, 'UNKNOWN', 'invalid geometry is unknown');
+
+    my $pib = 1024 * $tib;
+    my $pb_scaled = PVE::SharedLvmThinSafety::evaluate_chunk_geometry(
+        pool_size => $pib, chunk_size => 1024 * 1024 * 1024,
+    );
+    is($pb_scaled->{status}, 'HEALTHY',
+        'simulated 1 PiB inventory with 1 GiB chunks remains below the diagnostic ceiling');
+
+    my $pb_undersized = PVE::SharedLvmThinSafety::evaluate_chunk_geometry(
+        pool_size => $pib, chunk_size => 64 * $kib,
+    );
+    is($pb_undersized->{status}, 'WARN',
+        'simulated 1 PiB inventory with undersized chunks is diagnosed');
+
+    my $multi_pb_boundary = PVE::SharedLvmThinSafety::evaluate_chunk_geometry(
+        pool_size => 16 * $pib, chunk_size => 1024 * 1024 * 1024,
+    );
+    is($multi_pb_boundary->{status}, 'WARN',
+        'simulated 16 PiB inventory reports the chunk-count boundary without overflow');
 };
 
 subtest 'thin-pool health flags fail closed without repair semantics' => sub {

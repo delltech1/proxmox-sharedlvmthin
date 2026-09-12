@@ -85,8 +85,12 @@ applies. A configured maximum that is smaller than the required full target
 causes a fail-closed allocation; it never silently weakens `full` semantics.
 
 An inactive thin pool can omit `Data%`. RC5 does not activate shared storage to
-improve an estimate. It conservatively treats the current pool size as fully
-used, which can over-reserve but cannot under-provision the next allocation.
+improve an estimate and it does not reinterpret the current pool size as used
+data. That older fallback could add the configured headroom again after every
+cancelled allocation. When usage is unknown, an existing pool is therefore not
+pre-grown and the result explicitly carries no bounded burst guarantee. `full`
+mode fails closed because full admission cannot be proven without measured
+usage. Runtime autogrow remains responsible once the owning pool is active.
 
 ## Mutation boundary
 

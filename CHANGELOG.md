@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.9.0~rc5.4~tg12 (2026-09-12)
+
+- Publish one explicitly selected dual-mode package: isolated per-VM Thin
+  pools or fully allocated Thick Generations over the same pinned shared VG.
+- Qualify Thin/Thick Storage Move, native PVE backup/restore, Veeam HotAdd
+  backup and supported-console cross-mode restore with block-hash evidence.
+- Complete the accepted-build gate with 156 Python tests, 236 Perl tests,
+  reproducible byte-identical packages, three-node API 14/15 reinstall, and a
+  clean four-hour dual-mode endurance run.
+
+- Add an incident-to-invariant research matrix for PVE rollback dispatch,
+  stale snapshot objects, thin metadata corruption and dm-clone hydration I/O
+  failure. The reports justify fail-closed gates, not automatic repair.
+- Qualify native three-node quorum loss: both allocation modes fail before
+  mutation, LVM inventory remains byte-identical, and the original 4/4
+  QDevice topology recovers without a private vote or watchdog override.
+- Qualify the complete two-node plus QDevice matrix: normal operation,
+  QDevice loss with both nodes, one-node plus QDevice survival, fail-closed
+  one-node without QDevice, and exact return to the three-node 4/4 baseline.
+- Report a quorate two-node cluster without QDevice as an explicit Doctor
+  warning, and classify a forced single-node `expected_votes=1` survivor as a
+  hard safety failure. The plugin still consumes native PVE quorum and never
+  changes votes, watchdog, fencing, or QDevice configuration.
+- Emit an explicit zero-length response body for Web Dashboard redirects so
+  strict TLS/HTTP clients do not report an unexpected EOF after a valid 303.
+- Keep the complete shell helper set clean under the same ShellCheck command
+  used by CI; cleanup and completion predicates now use explicit conditionals.
+- Treat PVE `nodes` scope as a first-class operational boundary in Doctor,
+  dashboard health, and upgrade preflight. A storage intentionally assigned
+  to other nodes is reported and skipped locally; an assigned but unavailable
+  storage remains fail-closed.
+- Publish the tg7 local qualification candidate together with an explicit
+  original-cluster test plan. The plan separates non-destructive admission,
+  rolling package qualification, Thin/Thick lifecycle, topology and transport
+  fault gates, and prevents the failed ESXi local datastore from being reused
+  as qualification evidence.
+- Treat only an explicitly disabled SharedLvmThin storage as non-operational:
+  Doctor and dashboard inventory retain the entry but skip device, VG, pool,
+  path, and anchor probes. Enabled but unavailable storage continues to fail
+  closed and prevents an operational-ready result. Both the canonical PVE
+  bare `disable` flag and explicit boolean forms are parsed consistently in
+  detailed storage checks and the final PVE status gate.
+- Give local Thick Generations packages a distinct `~tg` Debian pre-release
+  version so experimental runtime bits can never masquerade as the published
+  thin-only RC5.3.1 package.
+- Enforce one argv-only execution boundary for every plugin subprocess under
+  Perl taint mode. API, LVM, sysfs, and device-mapper derived arguments reject
+  control characters; tainted values cannot become command options; validated
+  values are untainted only after exact grammar checks.
+- Add an executable `perl -T` regression covering object identity, VG intent
+  tags, VG state digests, kernel transaction identifiers, command arguments,
+  option injection, and control-character injection.
+- Report each per-VM thin pool's physical reservation, approximate payload, and
+  reserved slack independently. The dashboard and Doctor explicitly explain
+  that pool slack remains unavailable to other VM pools and is included in
+  standard PVE VG utilization.
+- Generate `SHA256SUMS` with a portable package basename rather than a local
+  absolute build path. Two independent builds of the same source are required
+  to be bit-identical before the local artifact is accepted.
+
 ## 0.9.0~rc5.3.1 (2026-09-09)
 
 - Recognize the qualified 50% elastic early-grow threshold as healthy in

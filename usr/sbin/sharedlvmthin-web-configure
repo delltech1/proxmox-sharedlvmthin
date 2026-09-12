@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 set -euo pipefail
@@ -9,7 +9,6 @@ TLS_DIR=/etc/pve-sharedlvmthin/tls
 SERVICE=pve-sharedlvmthin-web.service
 
 green='\033[0;32m'
-yellow='\033[0;33m'
 red='\033[0;31m'
 reset='\033[0m'
 
@@ -37,7 +36,7 @@ echo "Available interfaces:"
 echo
 
 for i in "${!NETS[@]}"; do
-    IFS='|' read -r DEV IP CIDR <<<"${NETS[$i]}"
+    IFS='|' read -r DEV _IP CIDR <<<"${NETS[$i]}"
 
     EXTRA=""
     if [ "$DEV" = "$DEFDEV" ]; then
@@ -297,8 +296,7 @@ echo "Dashboard:"
 echo "  https://$ADDRESS:$PORT"
 echo
 
-if systemctl list-unit-files |
-   grep -q "^${SERVICE}"; then
+if systemctl cat "$SERVICE" >/dev/null 2>&1; then
 
     systemctl daemon-reload
     systemctl enable "$SERVICE" >/dev/null

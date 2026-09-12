@@ -7,8 +7,8 @@ license grants rights to use, study, modify and redistribute the covered code
 subject to its terms. It does not grant any right to use trademarks, logos or
 branding in a way that suggests sponsorship, certification or endorsement.
 
-`BASTRIX` is a registered European Union word trade mark owned by Stanislav
-Baran (EUIPO No. `019343330`). Its registration covers goods and services in
+`BASTRIX` is a registered European Union word trade mark (EUIPO No.
+`019343330`). Its registration covers goods and services in
 Nice classes 9 and 42, including computer software and IT/software services.
 The official EUIPO record controls the current status and exact scope of
 protection. SharedLvmThin is developed and published under the BASTRIX brand.

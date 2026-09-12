@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 use strict;
@@ -93,13 +93,28 @@ if ($pool =~ /^sltp-\d+$/) {
 
     print STDERR
         "SharedLvmThin: event for '$vg/$pool', data=$data meta=$meta, "
-        . "locking storage '$storeid'\n";
+        . "resolving canonical mutation lock\n";
 
     my $lock_error;
 
     eval {
+        my $initial_cfg = PVE::Storage::config();
+        my $initial_scfg = PVE::Storage::storage_config($initial_cfg, $storeid);
+        die "storage '$storeid' is not sharedlvmthin\n"
+            if ($initial_scfg->{type} // '') ne 'sharedlvmthin';
+        die "storage '$storeid' points to a different VG\n"
+            if ($initial_scfg->{'slt-vgname'} // '') ne $vg;
+        my $lockid = $storeid;
+        if (defined($initial_scfg->{'slt-expected-vg-uuid'})
+            && $initial_scfg->{'slt-expected-vg-uuid'} ne '') {
+            $lockid = PVE::Storage::Custom::SharedLvmThinPlugin->_canonical_vg_lock_id(
+                $initial_scfg,
+            );
+        }
+        print STDERR "SharedLvmThin: locking canonical domain '$lockid'\n";
+
         PVE::Cluster::cfs_lock_storage(
-            $storeid,
+            $lockid,
             30,
             sub {
                 my $cfg = PVE::Storage::config();
@@ -108,11 +123,23 @@ if ($pool =~ /^sltp-\d+$/) {
                     if ($scfg->{type} // '') ne 'sharedlvmthin';
                 die "storage '$storeid' points to a different VG\n"
                     if ($scfg->{'slt-vgname'} // '') ne $vg;
+                my $locked_lockid = $storeid;
+                if (defined($scfg->{'slt-expected-vg-uuid'})
+                    && $scfg->{'slt-expected-vg-uuid'} ne '') {
+                    $locked_lockid = PVE::Storage::Custom::SharedLvmThinPlugin->_canonical_vg_lock_id(
+                        $scfg,
+                    );
+                }
+                die "storage '$storeid' canonical mutation lock changed while waiting\n"
+                    if $locked_lockid ne $lockid;
 
                 PVE::Storage::Custom::SharedLvmThinPlugin->_verify_mutation_quorum(
                     $storeid, $scfg,
                 );
                 PVE::Storage::Custom::SharedLvmThinPlugin->_verify_storage_identity(
+                    $storeid, $scfg,
+                );
+                PVE::Storage::Custom::SharedLvmThinPlugin->_verify_same_vg_alias_configuration(
                     $storeid, $scfg,
                 );
 

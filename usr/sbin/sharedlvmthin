@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 set -u
@@ -37,6 +37,43 @@ fail() {
 
 info() {
     printf "${blue}[INFO]${reset} %s\n" "$*"
+}
+
+storage_is_disabled() {
+    local sid=$1
+    local value
+    value="$(
+        awk -v sid="$sid" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "disable" {
+                print (NF == 1 ? "1" : $2)
+                exit
+            }
+        ' "$STORAGECFG" 2>/dev/null
+    )"
+    case "${value,,}" in
+        1|yes|on|true) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+storage_is_applicable_on_node() {
+    local sid=$1
+    local local_node configured_nodes
+    local_node="$(hostname)"
+    configured_nodes="$(
+        awk -v sid="$sid" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "nodes" {print $2; exit}
+        ' "$STORAGECFG" 2>/dev/null
+    )"
+    [ -z "$configured_nodes" ] && return 0
+    case ",$configured_nodes," in
+        *",$local_node,"*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 section() {
@@ -165,7 +202,27 @@ doctor() {
         CLUSTER_STATUS="$(timeout --foreground 10 pvecm status 2>&1 || true)"
 
         if grep -q 'Quorate:[[:space:]]*Yes' <<<"$CLUSTER_STATUS"; then
-            pass "Cluster is quorate"
+            CONFIGURED_NODES="$(grep -Ec '^[[:space:]]*node[[:space:]]*\{' /etc/pve/corosync.conf || true)"
+            ONLINE_NODES="$(awk '/^Nodes:[[:space:]]*/ { print $2; exit }' <<<"$CLUSTER_STATUS")"
+            EXPECTED_VOTES="$(awk '/^Expected votes:[[:space:]]*/ { print $3; exit }' <<<"$CLUSTER_STATUS")"
+            if grep -q '^[[:space:]]*device[[:space:]]*{' /etc/pve/corosync.conf; then
+                QDEVICE_CONFIGURED=1
+            else
+                QDEVICE_CONFIGURED=0
+            fi
+
+            if [ "${CONFIGURED_NODES:-0}" -gt 1 ] \
+                && [ "${ONLINE_NODES:-0}" -eq 1 ] \
+                && [ "${EXPECTED_VOTES:-0}" -eq 1 ] \
+                && [ "$QDEVICE_CONFIGURED" -eq 0 ]; then
+                fail "CRITICAL: multi-node cluster is running forced single-node quorum without qdevice; SharedLvmThin mutations remain blocked"
+            elif [ "${CONFIGURED_NODES:-0}" -eq 2 ] \
+                && [ "${ONLINE_NODES:-0}" -eq 2 ] \
+                && [ "$QDEVICE_CONFIGURED" -eq 0 ]; then
+                warn "Two-node cluster is quorate (2/2) without qdevice; loss of either node removes quorum"
+            else
+                pass "Cluster is quorate"
+            fi
         elif grep -q 'Quorate:[[:space:]]*No' <<<"$CLUSTER_STATUS"; then
             fail "Cluster is not quorate"
         else
@@ -244,6 +301,16 @@ doctor() {
     for SID in $STOREIDS; do
         info "Checking storage '$SID'"
 
+        if storage_is_disabled "$SID"; then
+            pass "$SID: storage is explicitly disabled; operational probes skipped"
+            info "Disabled storage remains visible in configuration but does not affect host readiness"
+            continue
+        fi
+        if ! storage_is_applicable_on_node "$SID"; then
+            pass "$SID: storage is not assigned to this PVE node; operational probes skipped"
+            continue
+        fi
+
         VG="$(
             awk -v sid="$SID" '
                 $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
@@ -257,12 +324,56 @@ doctor() {
             continue
         fi
 
+        # The embedded Perl program must not be expanded by this shell.
+        # shellcheck disable=SC2016
+        ALIAS_INFO="$(
+            timeout --foreground 15 perl -I/usr/share/perl5 \
+                -MPVE::Storage \
+                -MPVE::Storage::Custom::SharedLvmThinPlugin \
+                -e '
+                    my ($sid) = @ARGV;
+                    my $cfg = PVE::Storage::config();
+                    my $scfg = PVE::Storage::storage_config($cfg, $sid);
+                    my $class = "PVE::Storage::Custom::SharedLvmThinPlugin";
+                    $class->_verify_same_vg_alias_configuration($sid, $scfg);
+                    my $vg = $scfg->{"slt-vgname"};
+                    my @aliases = sort grep {
+                        my $candidate = $cfg->{ids}->{$_};
+                        ref($candidate) eq "HASH"
+                            && ($candidate->{type} // "") eq "sharedlvmthin"
+                            && ($candidate->{"slt-vgname"} // "") eq $vg;
+                    } keys %{$cfg->{ids}};
+                    print scalar(@aliases), "|", join(",", @aliases);
+                ' "$SID" 2>&1
+        )"
+        ALIAS_RC=$?
+        if [ "$ALIAS_RC" -ne 0 ]; then
+            fail "$SID: unsafe same-VG storage alias topology"
+            info "Reason: ${ALIAS_INFO//$'\n'/ }"
+            continue
+        fi
+        ALIAS_COUNT="${ALIAS_INFO%%|*}"
+        ALIAS_IDS="${ALIAS_INFO#*|}"
+        if [ "$ALIAS_COUNT" = "2" ]; then
+            pass "$SID: same-VG thin/thick alias topology is canonical ($ALIAS_IDS)"
+            warn "$SID: both aliases truthfully report the same physical VG capacity; do not sum their PVE capacity values"
+        else
+            pass "$SID: no same-VG capacity aliasing"
+        fi
+
         if timeout --foreground 15 vgs "$VG" >/dev/null 2>&1; then
             pass "$SID: VG '$VG' visible"
         else
             fail "$SID: VG '$VG' not visible"
             continue
         fi
+
+        STORAGE_ALLOCATION_MODE="$(awk -v sid="$SID" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-allocation-mode" {print $2; exit}
+        ' "$STORAGECFG")"
+        STORAGE_ALLOCATION_MODE="${STORAGE_ALLOCATION_MODE:-thin}"
 
         ALLOCATION_MODE="$(awk -v sid="$SID" '
             $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
@@ -294,7 +405,12 @@ doctor() {
         ' "$STORAGECFG")"
         BURST_HEADROOM="${BURST_HEADROOM:-64}"
 
-        case "$ALLOCATION_MODE" in
+        if [ "$STORAGE_ALLOCATION_MODE" = "thick-generations" ]; then
+            pass "$SID: Thick Generations mode uses independent thick LVs; thin-pool headroom and autogrow policy do not apply"
+        elif [ "$STORAGE_ALLOCATION_MODE" != "thin" ]; then
+            fail "$SID: invalid storage allocation mode '$STORAGE_ALLOCATION_MODE'"
+        else
+          case "$ALLOCATION_MODE" in
             fixed)
                 warn "$SID: allocation headroom=fixed ${ALLOCATION_SIZE} GiB; burst capacity guarantee=NO"
                 info "Impact: fast bulk write, clone, restore, import, or storage copy may outrun asynchronous autogrow"
@@ -324,7 +440,8 @@ doctor() {
             *)
                 fail "$SID: invalid allocation headroom mode '$ALLOCATION_MODE'"
                 ;;
-        esac
+          esac
+        fi
 
         VG_LINE="$(timeout --foreground 15 vgs --readonly --noheadings --units b --nosuffix \
             --separator '|' -o vg_uuid,vg_size,vg_free "$VG" 2>/dev/null | head -1)"
@@ -528,6 +645,57 @@ doctor() {
             fail "$SID: unable to collect the read-only LVM diagnostic inventory"
             continue
         fi
+
+        if [ "$STORAGE_ALLOCATION_MODE" = "thick-generations" ]; then
+            if ! THICK_HEALTH_JSON="$(
+                timeout --foreground 30 \
+                    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json 2>/dev/null
+            )"; then
+                fail "$SID: Thick Generations anchor state is unavailable; new mutations must remain blocked"
+            else
+                # The embedded Python program must not be expanded by this shell.
+                # shellcheck disable=SC2016
+                THICK_ANCHOR_DIAGNOSTICS="$(
+                    python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+sid = sys.argv[1]
+for storage in document.get("storages", []):
+    if storage.get("id") != sid:
+        continue
+    for anchor in storage.get("thick_anchors", []):
+        status = anchor.get("status") or "FAIL"
+        if status == "PASS":
+            continue
+        values = [
+            status,
+            anchor.get("volid") or anchor.get("name") or "unknown",
+            anchor.get("phase") or "UNKNOWN",
+            anchor.get("materialization_state") or "UNKNOWN",
+            anchor.get("worker_state") or "UNKNOWN",
+            (anchor.get("reason") or "anchor state is unavailable").replace("\t", " ").replace("\n", " "),
+        ]
+        print("\t".join(values))
+' "$SID" <<<"$THICK_HEALTH_JSON"
+                )"
+                if [ -n "$THICK_ANCHOR_DIAGNOSTICS" ]; then
+                    while IFS=$'\t' read -r ANCHOR_STATUS ANCHOR_VOLUME ANCHOR_PHASE \
+                        ANCHOR_STATE ANCHOR_WORKER ANCHOR_REASON; do
+                        [ -n "$ANCHOR_STATUS" ] || continue
+                        if [ "$ANCHOR_STATUS" = "FAIL" ]; then
+                            fail "$SID: $ANCHOR_VOLUME $ANCHOR_STATE: phase=$ANCHOR_PHASE worker=$ANCHOR_WORKER; $ANCHOR_REASON"
+                        else
+                            warn "$SID: $ANCHOR_VOLUME $ANCHOR_STATE: phase=$ANCHOR_PHASE worker=$ANCHOR_WORKER; $ANCHOR_REASON"
+                        fi
+                    done <<<"$THICK_ANCHOR_DIAGNOSTICS"
+                else
+                    pass "$SID: every Thick Generations anchor is materialized and reference-consistent"
+                fi
+            fi
+        fi
+
         POOLS="$(
             awk -F'|' '{name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); if (name ~ /^sltp-[0-9]+$/) print name}' <<<"$LVS_REPORT"
         )"
@@ -554,6 +722,34 @@ doctor() {
             DISCARD_POLICY="$(echo "$LINE" | cut -d'|' -f13 | xargs)"
             AUTOACTIVATION="$(echo "$LINE" | cut -d'|' -f14 | xargs)"
             WHEN_FULL="$(echo "$LINE" | cut -d'|' -f16 | xargs)"
+
+            if [[ "$POOL_SIZE" =~ ^[0-9]+$ ]]; then
+                POOL_GIB="$(awk -v size="$POOL_SIZE" 'BEGIN {printf "%.2f", size / 1073741824}')"
+                info "$SID: $POOL physical reservation=${POOL_GIB} GiB"
+                info "Capacity semantics: this reservation is unavailable to other VM pools"
+            else
+                warn "$SID: $POOL physical reservation is unavailable"
+            fi
+
+            if [[ "$POOL_SIZE" =~ ^[0-9]+$ ]] && [[ "$DATA_PERCENT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                read -r SLACK_BYTES POOL_GIB PAYLOAD_GIB SLACK_GIB <<<"$(
+                    awk -v size="$POOL_SIZE" -v pct="$DATA_PERCENT" 'BEGIN {
+                        payload = size * pct / 100;
+                        slack = size - payload;
+                        if (slack < 0) slack = 0;
+                        printf "%.0f %.2f %.2f %.2f", slack, size / 1073741824,
+                            payload / 1073741824, slack / 1073741824
+                    }'
+                )"
+                info "$SID: $POOL approximate payload=${PAYLOAD_GIB} GiB; reserved slack=${SLACK_GIB} GiB"
+                info "Capacity semantics: reserved slack remains inside this per-VM pool and is not returned to the VG automatically"
+                if awk -v size="$POOL_SIZE" -v slack="$SLACK_BYTES" 'BEGIN {exit !(size >= 1073741824 && slack * 4 >= size * 3)}'; then
+                    warn "$SID: $POOL holds at least 75% reserved slack; standard PVE VG usage includes this real allocation"
+                    info "Reclaim requires an explicit offline migration/recreation workflow; Doctor made no change"
+                fi
+            elif [[ "$POOL_SIZE" =~ ^[0-9]+$ ]]; then
+                info "$SID: $POOL payload and reserved slack are unavailable while the pool is inactive on this node"
+            fi
 
             if [[ "${ATTR:0:1}" != "t" ]]; then
                 fail "$SID: $VG/$POOL exists but is not a thin pool"
@@ -709,6 +905,14 @@ doctor() {
     PVE_STATUS="$(timeout --foreground 20 pvesm status 2>/dev/null || true)"
 
     for SID in $STOREIDS; do
+        if storage_is_disabled "$SID"; then
+            pass "$SID: PVE storage intentionally disabled"
+            continue
+        fi
+        if ! storage_is_applicable_on_node "$SID"; then
+            pass "$SID: PVE storage not assigned to this node"
+            continue
+        fi
         STATE="$(awk -v sid="$SID" '$1 == sid {print $3}' <<<"$PVE_STATUS")"
 
         if [ "$STATE" = "active" ]; then
@@ -726,13 +930,13 @@ doctor() {
     echo
 
     if [ "$FAIL" -gt 0 ]; then
-        printf "${red}RESULT: FAIL${reset}\n"
+        printf '%b\n' "${red}RESULT: FAIL${reset}"
         exit 2
     elif [ "$WARN" -gt 0 ]; then
-        printf "${yellow}RESULT: PASS WITH WARNINGS${reset}\n"
+        printf '%b\n' "${yellow}RESULT: PASS WITH WARNINGS${reset}"
         exit 1
     else
-        printf "${green}RESULT: PASS${reset}\n"
+        printf '%b\n' "${green}RESULT: PASS${reset}"
         exit 0
     fi
 }
@@ -888,9 +1092,9 @@ deep_doctor() {
 
         echo
         if [ "$rc" -eq 0 ]; then
-            printf "${green}RESULT: DEEP TEST PASS${reset}\n"
+            printf '%b\n' "${green}RESULT: DEEP TEST PASS${reset}"
         else
-            printf "${red}RESULT: DEEP TEST FAIL${reset}\n"
+            printf '%b\n' "${red}RESULT: DEEP TEST FAIL${reset}"
         fi
 
         exit "$rc"
@@ -1088,7 +1292,7 @@ deep_doctor() {
     trap - EXIT INT TERM
 
     echo
-    printf "${green}RESULT: DEEP TEST PASS${reset}\n"
+    printf '%b\n' "${green}RESULT: DEEP TEST PASS${reset}"
     return 0
 }
 
@@ -1110,6 +1314,69 @@ case "${1:-doctor}" in
         fi
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$2"
         ;;
+    upgrade-check)
+        if [ -n "${2:-}" ]; then
+            echo "Usage: sharedlvmthin upgrade-check" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
+        ;;
+    thick-resume)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-resume <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --resume "$2" "$3"
+        ;;
+    thick-recover-delete)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-delete <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-delete "$2" "$3"
+        ;;
+    thick-recover-empty-alloc)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-empty-alloc "$2" "$3"
+        ;;
+    thick-recover-partial-alloc)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-partial-alloc "$2" "$3"
+        ;;
+    thick-recover-orphan-alloc)
+        if [ "$#" -ne 3 ]; then
+            echo "Usage: sharedlvmthin thick-recover-orphan-alloc <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-orphan-alloc "$2" "$3"
+        ;;
+    thick-recover-orphan-tree)
+        if [ "$#" -ne 3 ]; then
+            echo "Usage: sharedlvmthin thick-recover-orphan-tree <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-orphan-tree "$2" "$3"
+        ;;
+    thin-recover-orphan)
+        if [ "$#" -ne 3 ]; then
+            echo "Usage: sharedlvmthin thin-recover-orphan <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-thin-orphan "$2" "$3"
+        ;;
     version|--version|-V)
         echo "sharedlvmthin doctor $VERSION"
         ;;
@@ -1118,8 +1385,15 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin doctor"
         echo "  sharedlvmthin doctor --deep"
         echo "  sharedlvmthin recovery-check <storage-id>"
+        echo "  sharedlvmthin upgrade-check"
+        echo "  sharedlvmthin thick-resume <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-orphan-alloc <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-orphan-tree <storage-id> <volume>"
+        echo "  sharedlvmthin thin-recover-orphan <storage-id> <volume>"
         echo "  sharedlvmthin version"
         exit 64
         ;;
 esac
-

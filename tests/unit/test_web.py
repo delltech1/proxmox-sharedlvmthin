@@ -44,6 +44,22 @@ collector_timeout_seconds=120
 
 
 class WebConfigurationTests(unittest.TestCase):
+    def test_redirect_has_explicit_empty_body_length(self):
+        web = load_web()
+        handler = web["H"].__new__(web["H"])
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+
+        handler.redirect("/login")
+
+        handler.send_response.assert_called_once_with(303)
+        self.assertIn(
+            mock.call("Content-Length", "0"),
+            handler.send_header.call_args_list,
+        )
+        handler.end_headers.assert_called_once_with()
+
     def test_session_idle_is_loaded_from_configuration(self):
         web = load_web("\n[override]\nunused=1\n")
         self.assertEqual(web["IDLE"], 1800)
@@ -265,6 +281,40 @@ class HealthCacheTests(unittest.TestCase):
             self.assertEqual(
                 snapshot["cache"]["last_error"], "scale backend unavailable"
             )
+
+    def test_dashboard_explains_non_fungible_pool_reservation(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Pool reservation is physical VG space", html)
+        self.assertIn("Reserved slack", html)
+        self.assertIn("payload_used_bytes", html)
+        self.assertIn("reserved_slack_bytes", html)
+
+    def test_dashboard_distinguishes_thin_and_thick_modes(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Thick Generations", html)
+        self.assertIn("thick_anchors", html)
+        self.assertIn("PVE references", html)
+        self.assertIn("never trigger automatic cleanup or repair", html)
+
+    def test_dashboard_warns_not_to_sum_same_vg_alias_capacity(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("shared VG aliases report the same physical capacity", html)
+        self.assertIn("must not be summed", html)
+
+    def test_dashboard_has_gib_tib_and_pib_capacity_units(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('1125899906842624,"PiB"', html)
+        self.assertIn('1099511627776,"TiB"', html)
+        self.assertIn('1073741824,"GiB"', html)
+        self.assertNotIn("const gib=", html)
 
 
 if __name__ == "__main__":

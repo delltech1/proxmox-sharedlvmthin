@@ -13,15 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build and test dependencies
-        run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl
+        run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
       - name: Python unit tests
         run: python3 -m unittest discover -s tests/unit -v
       - name: Perl unit tests
         run: prove -Itests/unit/lib -v tests/unit/*.t
       - name: Syntax checks
         run: |
-          bash -n usr/sbin/* DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
+          bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
+          node --check experiments/thick-generations/web-dual-mode-live-check.js
+          perl -Itests/unit/lib -Iusr/share/perl5 -c usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize
           python3 -m py_compile usr/libexec/pve-sharedlvmthin/sharedlvmthin-web usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
+      - name: Shell static analysis
+        run: shellcheck -x scripts/*.sh experiments/thick-generations/*.sh usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
       - name: Reproducible package build
         run: sh scripts/build.sh
       - name: Upload package

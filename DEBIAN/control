@@ -1,12 +1,14 @@
 Package: pve-sharedlvmthin
-Version: 0.9.0~rc5.3.1
+Version: 0.9.0~rc5.4~tg12
 Section: admin
 Priority: optional
 Architecture: all
-Depends: lvm2, perl, python3, openssl, multipath-tools, pve-manager, libpve-storage-perl
+Depends: lvm2, perl, python3, openssl, multipath-tools,
+ pve-manager, libpve-storage-perl
 Maintainer: SharedLvmThin Community <noreply@users.noreply.github.com>
-Description: Shared LVM Thin storage plugin and health dashboard for Proxmox VE
- Shared block storage backend using one LVM thin pool per VM,
- Proxmox cluster locking and dmeventd-based cluster-safe autogrow.
+Description: Shared LVM Thin and Thick Generations storage for Proxmox VE
+ Shared block storage backend offering either one LVM thin pool per VM or
+ fully allocated Thick Generations with a linear steady-state frontend.
+ Includes Proxmox cluster locking and guarded thin-pool autogrow.
  Includes read-only HTTPS health dashboard with native Proxmox VE
  authentication and storage path monitoring.

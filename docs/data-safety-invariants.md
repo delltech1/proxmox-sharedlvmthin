@@ -55,3 +55,32 @@ adding a global D-state gate to ordinary plugin mutations.
 
 The checker never performs activation, SCSI rescan, multipath/dmeventd/PVE
 restart, dm-thin reset, cleanup, initialization or metadata repair.
+
+## DS-17 — Canonical same-VG mutation lock
+
+Every metadata mutation against the same pinned VG UUID uses the same
+canonical cluster lock, independent of storage ID or thin/Thick Generations
+allocation mode. Unpinned legacy storage aliases are not qualified for
+same-VG mixed-mode operation. A pinned thin mutation also proves that no
+global Thick Generations VG intent is open while holding that lock; an
+unresolved intent blocks the thin callback before its first mutation.
+The same VG must not be exposed concurrently through a native PVE `lvm` or
+`lvmthin` storage definition that cannot participate in this lock domain.
+The canonical thin/thick pair must also use the same PVE node scope; a
+half-visible pair is rejected before activation or mutation.
+
+## DS-18 — Thick lifecycle LVM commands are device-scoped
+
+Every Thick Generations LVM inventory and mutation used by allocation,
+activation, deactivation, resize, snapshot transition, snapshot deletion, and
+recovery is restricted to the exact pinned multipath mapper with per-command
+`--devices`. Failure to establish that scope is a hard refusal. The plugin does
+not change the host-wide LVM devices file or scanning configuration.
+
+## DS-19 — Same-VG capacity is never fabricated
+
+When the canonical thin and Thick Generations aliases expose one physical VG,
+each storage status reports that same physical VG truthfully. Administrators
+must not sum both alias values as independent capacity. Doctor detects the
+canonical pair and emits this warning; the plugin does not divide, hide, or
+otherwise fabricate capacity to compensate for a presentation-layer aggregate.

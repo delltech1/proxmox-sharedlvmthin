@@ -1,5 +1,5 @@
 SharedLvmThin
-Copyright (C) 2026 Stanislav Baran
+Copyright (C) 2026 BASTRIX Project Contributors
 
 This project is licensed under the GNU General Public License version 3 only
 (GPL-3.0-only). The complete license text is provided in LICENSE.
@@ -14,7 +14,7 @@ The SharedLvmThin name does not imply endorsement of modified or third-party
 distributions. This project is independent community software and is not
 affiliated with or endorsed by Proxmox Server Solutions GmbH.
 
-BASTRIX is a registered European Union word trade mark owned by Stanislav Baran
+BASTRIX is a registered European Union word trade mark
 (EUIPO No. 019343330), covering Nice classes 9 and 42. The official EUIPO
 record controls its current status and exact scope. SharedLvmThin is developed
 and published under the BASTRIX brand. The GPL license for the code does not

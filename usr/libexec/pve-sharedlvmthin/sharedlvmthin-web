@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 import configparser, copy, datetime, html, json, os, secrets, ssl, subprocess, threading, time
@@ -282,6 +282,7 @@ class H(SimpleHTTPRequestHandler):
     def redirect(self,p,cookie=None):
         self.send_response(303); self.send_header("Location",p)
         if cookie: self.send_header("Set-Cookie",cookie)
+        self.send_header("Content-Length","0")
         self.end_headers()
     def form(self):
         try: n=int(self.headers.get("Content-Length","0"))

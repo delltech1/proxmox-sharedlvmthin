@@ -112,14 +112,31 @@ subtest 'elastic mode uses absolute headroom independent of virtual size' => sub
     is($later->{target_bytes}, 144 * $gib, 'ceiling applies to new headroom, not total pool size');
 };
 
-subtest 'inactive-pool fallback can conservatively use current size as used' => sub {
-    my $r = target(
+subtest 'inactive-pool fallback is idempotent and never ratchets capacity' => sub {
+    my %args = (
         mode => 'proportional', fixed_gib => 4, percent => 50,
         requested_kib => 20 * 1024 * 1024,
-        used_bytes => 8 * $gib,
+        used_bytes => 0,
         current_pool_bytes => 8 * $gib,
+        usage_known => 0,
     );
-    is($r->{target_bytes}, 18 * $gib, 'full current pool plus new disk headroom is reserved');
+    my $first = target(%args);
+    my $retry = target(%args);
+    is($first->{target_bytes}, 8 * $gib, 'unknown usage preserves the current pool size');
+    is($first->{growth_bytes}, 0, 'unknown usage cannot pre-grow an existing pool');
+    is($retry->{target_bytes}, $first->{target_bytes}, 'identical cancelled retry is idempotent');
+    is($first->{burst_guarantee}, 'UNKNOWN_INACTIVE_NO_GROWTH', 'unknown guarantee is explicit');
+
+    my $ok = eval {
+        target(
+            mode => 'full', fixed_gib => 4,
+            requested_kib => 20 * 1024 * 1024,
+            used_bytes => 0, current_pool_bytes => 8 * $gib, usage_known => 0,
+        );
+        1;
+    };
+    ok(!$ok, 'full mode fails closed when usage cannot be measured');
+    like($@, qr/requires known thin-pool usage/, 'full-mode refusal explains the missing evidence');
 };
 
 subtest 'invalid percentages and modes fail closed' => sub {

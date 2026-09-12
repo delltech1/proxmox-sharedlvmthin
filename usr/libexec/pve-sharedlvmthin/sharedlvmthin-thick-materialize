@@ -1,0 +1,152 @@
+#!/usr/bin/perl
+# SPDX-License-Identifier: GPL-3.0-only
+
+use strict;
+use warnings;
+
+use PVE::Storage;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+
+my $derive = @ARGV == 3 && $ARGV[0] eq '--resume';
+my $recover_delete = @ARGV == 3 && $ARGV[0] eq '--recover-delete';
+my $recover_empty_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-empty-alloc';
+my $recover_partial_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-partial-alloc';
+my $recover_orphan_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-orphan-alloc';
+my $recover_orphan_tree = @ARGV == 3 && $ARGV[0] eq '--recover-orphan-tree';
+my $recover_thin_orphan = @ARGV == 3 && $ARGV[0] eq '--recover-thin-orphan';
+die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <operation> <transaction>\n"
+    . "       sharedlvmthin-thick-materialize --resume <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-delete <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-empty-alloc <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-partial-alloc <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-orphan-alloc <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-orphan-tree <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-thin-orphan <storage-id> <volume>\n"
+    if !$derive && !$recover_delete && !$recover_empty_alloc && !$recover_partial_alloc
+    && !$recover_orphan_alloc && !$recover_orphan_tree && !$recover_thin_orphan && @ARGV != 5;
+
+my ($storeid, $volname, $snapshot, $operation, $transaction) =
+    ($derive || $recover_delete || $recover_empty_alloc || $recover_partial_alloc
+        || $recover_orphan_alloc || $recover_orphan_tree || $recover_thin_orphan)
+        ? ($ARGV[1], $ARGV[2], undef, undef, undef)
+        : @ARGV;
+die "invalid storage identifier\n"
+    if !defined($storeid) || $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+die "invalid Thick Generations volume name\n"
+    if !defined($volname) || $volname !~ /^(?:vm|base)-\d+-disk-\d+$/;
+
+my $cfg = PVE::Storage::config();
+my $scfg = PVE::Storage::storage_config($cfg, $storeid);
+die "storage '$storeid' is not SharedLvmThin\n"
+    if ($scfg->{type} // '') ne 'sharedlvmthin';
+
+my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+if ($recover_thin_orphan) {
+    die "storage '$storeid' is configured for Thick Generations\n"
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
+    print "THIN_ORPHAN_RECOVERY_START storage=$storeid volume=$volname\n";
+    $class->_thin_recover_orphan($scfg, $storeid, $volname);
+    print "THIN_ORPHAN_RECOVERED storage=$storeid volume=$volname\n";
+    exit 0;
+}
+die "storage '$storeid' is not configured for Thick Generations\n"
+    if $class->_allocation_mode($scfg) ne 'thick-generations';
+$class->_require_thick_identity_config($storeid, $scfg);
+
+if ($recover_empty_alloc) {
+    print "EMPTY_ALLOCATION_RECOVERY_START storage=$storeid volume=$volname\n";
+    my $result = $class->_thick_recover_empty_allocation(
+        $scfg, $storeid, $volname,
+    );
+    print "$result storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($recover_partial_alloc) {
+    print "PARTIAL_ALLOCATION_RECOVERY_START storage=$storeid volume=$volname\n";
+    my $result = $class->_thick_recover_partial_allocation(
+        $scfg, $storeid, $volname,
+    );
+    print "$result storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($recover_orphan_alloc) {
+    print "ORPHAN_ALLOCATION_RECOVERY_START storage=$storeid volume=$volname\n";
+    $class->_thick_free_image($storeid, $scfg, $volname, 0, 1);
+    print "ORPHAN_ALLOCATION_RECOVERED storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($recover_orphan_tree) {
+    print "ORPHAN_TREE_RECOVERY_START storage=$storeid volume=$volname\n";
+    $class->_thick_recover_orphan_tree($scfg, $storeid, $volname);
+    print "ORPHAN_TREE_RECOVERED storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($recover_delete) {
+    print "SNAPSHOT_DELETE_RECOVERY_START storage=$storeid volume=$volname\n";
+    my $result = eval {
+        $class->_thick_recover_snapshot_delete($scfg, $storeid, $volname);
+    };
+    if (my $error = $@) {
+        die "snapshot-delete recovery could not acquire the canonical cluster/VG lock; "
+            . "no recovery mutation was started. Do not remove or bypass the lock. "
+            . "After an interrupted lock holder, wait for Proxmox's 120-second "
+            . "stale-lock window and re-run the same recovery command: $error"
+            if $error =~ /cfs-lock .*got lock request timeout/;
+        die $error;
+    }
+    print "$result storage=$storeid volume=$volname\n";
+    exit 0;
+}
+
+if ($derive) {
+    my ($state) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+    my $phase = $state->{phase} // '';
+    die "volume '$storeid:$volname' has no resumable materialization transition\n"
+        if $phase ne 'HYDRATING'
+        && $phase ne 'HYDRATION_COMPLETE'
+        && $phase ne 'LINEAR_PIVOTED';
+    $snapshot = $state->{snapshot};
+    $operation = $state->{op};
+    $transaction = $state->{tx};
+}
+
+die "invalid snapshot name\n"
+    if !defined($snapshot) || $snapshot !~ /^[A-Za-z0-9_.+-]+$/;
+die "invalid materialization operation\n"
+    if !defined($operation)
+    || ($derive
+        ? ($operation ne 'SNAPSHOT' && $operation ne 'ROLLBACK')
+        : $operation ne 'SNAPSHOT');
+die "invalid transaction UUID\n"
+    if !defined($transaction) || $transaction !~ /^[0-9a-f]{32}$/;
+
+my $vg = $scfg->{'slt-vgname'};
+my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+my $intent = $class->_read_vg_intent($vg, $device);
+my $expected_intent_op = $operation eq 'ROLLBACK' ? 'DM_PIVOT' : 'DM_CUTOVER';
+my $exact_vg_intent = defined($intent)
+    && ($intent->{tx} // '') eq $transaction
+    && ($intent->{state} // '') eq 'OPEN'
+    && ($intent->{op} // '') eq $expected_intent_op;
+if (!$exact_vg_intent) {
+    my ($state, undef, $anchor) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+    die "a different VG intent targets this materialization anchor\n"
+        if defined($intent) && ($intent->{object} // '') eq $anchor;
+    die "anchor-scoped materialization does not match transaction '$transaction'\n"
+        if ($state->{tx} // '') ne $transaction
+        || ($state->{op} // '') ne $operation
+        || ($state->{snapshot} // '') ne $snapshot
+        || ($state->{phase} // '') !~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+}
+
+print "MATERIALIZATION_START transaction=$transaction storage=$storeid volume=$volname\n";
+$class->_thick_volume_snapshot(
+    $scfg, $storeid, $volname, $snapshot, $operation, 1,
+);
+print "MATERIALIZATION_COMPLETE transaction=$transaction storage=$storeid volume=$volname\n";
+
+exit 0;

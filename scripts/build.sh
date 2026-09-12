@@ -1,10 +1,10 @@
 #!/bin/sh
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=$(sed -n 's/^Version:[[:space:]]*//p' "$ROOT/DEBIAN/control")
 ARCH=$(sed -n 's/^Architecture:[[:space:]]*//p' "$ROOT/DEBIAN/control")
 OUT=${1:-"$ROOT/dist"}
@@ -31,6 +31,8 @@ chmod 0755 \
     "$STAGE/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web" \
     "$STAGE/usr/sbin/sharedlvmthin" \
     "$STAGE/usr/sbin/sharedlvmthin-web-configure"
@@ -39,5 +41,5 @@ find "$STAGE" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 
 dpkg-deb --root-owner-group --build "$STAGE" "$OUT/$PACKAGE"
 sh "$ROOT/scripts/check-release.sh" "$OUT/$PACKAGE"
-sha256sum "$OUT/$PACKAGE" >"$OUT/SHA256SUMS"
+(cd "$OUT" && sha256sum "$PACKAGE" >SHA256SUMS)
 printf '%s\n' "$OUT/$PACKAGE"

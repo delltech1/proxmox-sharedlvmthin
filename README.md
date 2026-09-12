@@ -4,9 +4,14 @@ An open-source storage project developed and published under the **BASTRIX**
 brand.
 
 SharedLvmThin is a safety-focused Proxmox VE storage plugin for an existing
-shared LVM volume group. It provides one LVM-thin pool per VM, snapshots,
-rollback, migration support, cluster locking, guarded autogrow, storage
-identity checks, and an optional read-only HTTPS health dashboard.
+shared LVM volume group. One package exposes two explicit allocation models:
+
+- **Thin** — one isolated LVM-thin pool per VM, with guarded autogrow.
+- **Thick Generations** — fully allocated independent generations with an
+  ordinary linear steady-state device and temporary `dm-clone` transitions.
+
+Both modes provide snapshots, rollback, resize, migration, cluster locking,
+storage identity checks, and an optional read-only HTTPS health dashboard.
 
 The plugin manages storage objects. It is not in the guest I/O path after QEMU
 opens an LV and does not provide SAN connectivity, multipath configuration,
@@ -14,12 +19,18 @@ replication, fencing, quorum, or automatic metadata repair.
 
 ## Release status
 
-`0.9.0~rc5.3.1` is a release candidate intended exclusively for Proxmox VE 9.
-It passed extensive unit, fault-injection and three-node integration
-qualification on the Proxmox VE 9.2.x release line with Storage API 14 and 15,
-but this is not universal certification of every SAN, HBA,
-array, multipath policy, firmware, or failure mode. Validate it on disposable
-storage matching your production design before carrying production data.
+`0.9.0~rc5.4~tg12` is a dual-mode release candidate intended exclusively for
+Proxmox VE 9. It passed 156 Python and 236 Perl tests, fault injection,
+two-node and three-node cluster qualification, API 14/15 installation and
+reinstallation, and a clean four-hour dual-mode endurance run on the Proxmox
+VE 9.2.x release line. This is not universal certification of every SAN, HBA,
+array, multipath policy, firmware, or failure mode. Validate it first on
+disposable storage matching your production design.
+
+The previously published RC5.2/RC5.3 Thin behavior remains available through
+the explicit `thin` allocation mode. Thick Generations is newer and should be
+treated as a release-candidate technology until it has broader independent
+hardware and workload coverage.
 
 For new deployments, the recommended capacity mode is `elastic`: physical
 pool size follows actual allocation plus bounded absolute burst headroom, so a
@@ -39,7 +50,8 @@ logical size. See [clone/restore burst capacity](docs/clone-restore-burst-capaci
 Read [storage requirements](docs/storage-requirements.md),
 [iSCSI/FC/FCoE setup examples](docs/transport-setup-examples.md),
 [known issues](docs/known-issues.md), and
-[critical recovery guidance](docs/critical-storage-recovery.md) first.
+[critical recovery guidance](docs/critical-storage-recovery.md), and the
+[allocation-mode guide](docs/allocation-modes.md) first.
 
 ## Per-VM thin-pool trade-off
 
@@ -63,7 +75,7 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install ./pve-sharedlvmthin_0.9.0-rc5.3_all.deb
+apt install ./pve-sharedlvmthin_0.9.0.rc5.4.tg12_all.deb
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -77,7 +89,7 @@ unknown or unavailable device.
 ## Upgrade or reinstall
 
 ```bash
-apt install ./pve-sharedlvmthin_0.9.0-rc5.3_all.deb
+apt install ./pve-sharedlvmthin_0.9.0.rc5.4.tg12_all.deb
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```
@@ -122,6 +134,23 @@ content and common credential leaks.
 See [data-safety invariants](docs/data-safety-invariants.md) and
 [recovery-check](docs/recovery-check.md).
 
+## Qualification summary
+
+The accepted TG12 candidate has exercised both modes through allocation,
+online and offline lifecycle operations, snapshot/rollback, resize, live
+migration, cross-node reconstruction, Thin-to-Thick and Thick-to-Thin Storage
+Move, native PVE backup/restore, and exact cleanup. Veeam qualification covered
+HotAdd backup of Thin, Thick and mixed guests plus supported-console restores
+to Thin, Thick and mixed single-target layouts with block-hash verification.
+Veeam replication was not available in the installed edition and is not
+claimed.
+
+Multipathed iSCSI and virtual Linux FCoE were exercised. Representative
+physical enterprise FC hardware was not available; physical FC therefore
+remains outside the tested hardware envelope even though the plugin itself is
+transport-agnostic. See [compatibility](docs/compatibility.md) and the detailed
+[qualification record](docs/thick-generations-poc-status.md).
+
 ## Support the project
 
 If SharedLvmThin helped you, consider giving the repository a GitHub Star.
@@ -132,14 +161,14 @@ other sensitive infrastructure identifiers in a public report.
 
 ## License and support
 
-Copyright (C) 2026 Stanislav Baran.
+Copyright (C) 2026 BASTRIX Project Contributors.
 
 Licensed under GPL-3.0-only. Commercial redistribution is permitted by the
 license, but distributors must comply with all GPLv3 obligations, including
 preserving applicable notices and providing Corresponding Source when
 required. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
-BASTRIX is a registered European Union word trade mark owned by Stanislav Baran
+BASTRIX is a registered European Union word trade mark
 (EUIPO No. `019343330`), covering Nice classes 9 and 42. The official EUIPO
 record controls its current status and exact scope. The GPL license applies to
 the code but does not grant rights to present a third-party build, fork,

@@ -1,6 +1,10 @@
 import ast
+import io
+import os
 import re
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -10,16 +14,81 @@ HEALTH = ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json"
 
 def load_function(name):
     tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
-    node = next(
-        item
-        for item in tree.body
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and item.name == name
-    )
-    module = ast.Module(body=[node], type_ignores=[])
+    helpers = {"exact_decimal", "exact_byte_count", "percentage_decimal",
+               "percentage_bytes"}
+    body = [
+        item for item in tree.body
+        if (
+            isinstance(item, ast.ImportFrom) and item.module == "decimal"
+        ) or (
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and (item.name == name or item.name in helpers)
+        )
+    ]
+    module = ast.Module(body=body, type_ignores=[])
     namespace = {"re": __import__("re")}
     exec(compile(module, str(HEALTH), "exec"), namespace)
     return namespace[name]
+
+
+class StorageConfigurationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.parse = staticmethod(load_function("parse_storage_cfg"))
+
+    def parse_text(self, text):
+        with mock.patch("builtins.open", mock.mock_open(read_data=text)):
+            return self.parse()
+
+    def test_explicitly_disabled_storage_is_recorded(self):
+        storages = self.parse_text(
+            "sharedlvmthin: offline\n"
+            "\tslt-vgname vg_offline\n"
+            "\tdisable 1\n"
+        )
+        self.assertEqual(len(storages), 1)
+        self.assertTrue(storages[0]["disabled"])
+
+    def test_canonical_pve_bare_disable_is_recorded(self):
+        storages = self.parse_text(
+            "sharedlvmthin: offline\n"
+            "\tdisable\n"
+            "\tslt-vgname vg_offline\n"
+        )
+        self.assertEqual(len(storages), 1)
+        self.assertTrue(storages[0]["disabled"])
+
+    def test_enabled_storage_remains_enabled_by_default(self):
+        storages = self.parse_text(
+            "sharedlvmthin: online\n"
+            "\tslt-vgname vg_online\n"
+        )
+        self.assertEqual(len(storages), 1)
+        self.assertFalse(storages[0]["disabled"])
+
+    def test_false_disable_values_do_not_skip_storage(self):
+        for value in ("0", "no", "off", "false"):
+            with self.subTest(value=value):
+                storages = self.parse_text(
+                    "sharedlvmthin: online\n"
+                    "\tslt-vgname vg_online\n"
+                    f"\tdisable {value}\n"
+                )
+                self.assertFalse(storages[0]["disabled"])
+
+    def test_node_scope_is_recorded(self):
+        storages = self.parse_text(
+            "sharedlvmthin: scoped\n"
+            "\tslt-vgname vg_scoped\n"
+            "\tnodes node-a,node-b\n"
+        )
+        self.assertEqual(storages[0]["nodes"], ["node-a", "node-b"])
+
+    def test_unscoped_storage_applies_to_every_node(self):
+        storages = self.parse_text(
+            "sharedlvmthin: global\n\tslt-vgname vg_global\n"
+        )
+        self.assertIsNone(storages[0]["nodes"])
 
 
 class ClusterHealthSemanticsTests(unittest.TestCase):
@@ -127,6 +196,20 @@ class AllocationHeadroomPolicyTests(unittest.TestCase):
         self.assertIn("burst capacity guarantee NO", message)
         self.assertIn("plugin made no change", message)
         self.assertIn("complete virtual disk", message)
+
+    def test_thick_generations_does_not_inherit_thin_headroom_policy(self):
+        status, message = self.evaluate({
+            "allocation_mode": "thick-generations",
+            "initial_pool_mode": "invalid-thin-only-value",
+        })
+        self.assertEqual(status, "PASS")
+        self.assertIn("independent thick LVs", message)
+        self.assertIn("do not apply", message)
+
+    def test_unknown_allocation_mode_fails_closed(self):
+        status, message = self.evaluate({"allocation_mode": "unknown"})
+        self.assertEqual(status, "FAIL")
+        self.assertIn("invalid allocation mode", message)
 
     def test_proportional_and_full_are_explicit(self):
         status, message = self.evaluate({
@@ -243,13 +326,53 @@ class ThinFullPolicyTests(unittest.TestCase):
         self.assertEqual(self.evaluate(None, None)[0], "WARN")
 
 
+class DmeventdRequirementTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.evaluate = staticmethod(load_function("evaluate_dmeventd"))
+
+    def test_active_service_passes(self):
+        status, message = self.evaluate(True, [])
+        self.assertEqual(status, "PASS")
+        self.assertIn("active", message)
+
+    def test_inactive_service_without_active_pool_warns(self):
+        storages = [{
+            "id": "thin-a",
+            "pools": [{"name": "pool-a", "owned": True, "attr": "twi---tz--"}],
+        }]
+        status, message = self.evaluate(False, storages)
+        self.assertEqual(status, "WARN")
+        self.assertIn("no local owned thin pool", message)
+
+    def test_inactive_service_with_active_owned_pool_fails(self):
+        storages = [{
+            "id": "thin-a",
+            "pools": [{"name": "pool-a", "owned": True, "attr": "twi-a-tz--"}],
+        }]
+        status, message = self.evaluate(False, storages)
+        self.assertEqual(status, "FAIL")
+        self.assertIn("thin-a:pool-a", message)
+
+    def test_unowned_active_pool_does_not_create_requirement(self):
+        storages = [{
+            "id": "foreign",
+            "pools": [{"name": "pool-x", "owned": False, "attr": "twi-a-tz--"}],
+        }]
+        status, _ = self.evaluate(False, storages)
+        self.assertEqual(status, "WARN")
+
+
 class PoolBatchCollectionTests(unittest.TestCase):
     def test_autoactivation_is_collected_in_single_lvs_report(self):
         tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
-        node = next(
+        wanted = {"exact_decimal", "exact_byte_count", "percentage_decimal",
+                  "percentage_bytes", "pools"}
+        body = [
             item for item in tree.body
-            if isinstance(item, ast.FunctionDef) and item.name == "pools"
-        )
+            if (isinstance(item, ast.ImportFrom) and item.module == "decimal")
+            or (isinstance(item, ast.FunctionDef) and item.name in wanted)
+        ]
         calls = []
 
         def fake_run(command):
@@ -263,10 +386,10 @@ class PoolBatchCollectionTests(unittest.TestCase):
 
         namespace = {"re": re, "run": fake_run}
         exec(
-            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            compile(ast.Module(body=body, type_ignores=[]), str(HEALTH), "exec"),
             namespace,
         )
-        result, error = namespace["pools"]("testvg", "test")
+        result, error, thick_anchors = namespace["pools"]("testvg", "test")
         self.assertEqual(len(calls), 1)
         self.assertIn("lv_autoactivation", " ".join(calls[0]))
         self.assertIn("lv_when_full", " ".join(calls[0]))
@@ -274,6 +397,9 @@ class PoolBatchCollectionTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["autoactivation"], "0")
         self.assertEqual(result[0]["when_full"], "queue")
+        self.assertEqual(result[0]["payload_used_bytes"], 10737418)
+        self.assertEqual(result[0]["reserved_slack_bytes"], 1063004406)
+        self.assertEqual(thick_anchors, [])
 
     def test_lvs_failure_is_not_reported_as_an_empty_inventory(self):
         tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
@@ -286,9 +412,185 @@ class PoolBatchCollectionTests(unittest.TestCase):
             compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
             namespace,
         )
-        result, error = namespace["pools"]("testvg", "test")
+        result, error, thick_anchors = namespace["pools"]("testvg", "test")
         self.assertIsNone(result)
         self.assertEqual(error, "timed out")
+        self.assertIsNone(thick_anchors)
+
+
+class ThickAnchorReferenceTests(unittest.TestCase):
+    def test_cluster_wide_reference_scan_and_exact_token_matching(self):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "pve_volume_reference_files"
+        )
+
+        class FakeGlob:
+            @staticmethod
+            def glob(pattern):
+                if pattern == "/etc/pve/nodes/*/qemu-server/*.conf":
+                    return ["/etc/pve/nodes/node-a/qemu-server/100.conf"]
+                if pattern == "/etc/pve/qemu-server/*.conf":
+                    return ["/etc/pve/qemu-server/duplicate-local.conf"]
+                return []
+
+        contents = {
+            "/etc/pve/nodes/node-a/qemu-server/100.conf": (
+                "scsi0: thick:vm-100-disk-0,size=1G\n"
+            ),
+            "/etc/pve/qemu-server/duplicate-local.conf": (
+                "scsi0: thick:vm-100-disk-0,size=1G\n"
+            ),
+        }
+        namespace = {
+            "re": re,
+            "glob": FakeGlob,
+            "read_file": lambda path: contents.get(path),
+        }
+        exec(
+            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            namespace,
+        )
+        scan = namespace["pve_volume_reference_files"]
+        self.assertEqual(
+            scan("thick:vm-100-disk-0"),
+            ["/etc/pve/nodes/node-a/qemu-server/100.conf"],
+        )
+        self.assertEqual(scan("thick:vm-100-disk"), [])
+
+    def evaluate_with_counts(self, counts):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "evaluate_thick_anchor_references"
+        )
+        namespace = {
+            "re": re,
+            "pve_volume_reference_files": lambda volid: [
+                f"config-{index}" for index in range(counts.get(volid, 0))
+            ],
+        }
+        exec(
+            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            namespace,
+        )
+        return namespace["evaluate_thick_anchor_references"]
+
+    def test_exactly_one_reference_passes(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MATERIALIZED",
+        }])
+        self.assertEqual(result[0]["status"], "PASS")
+        self.assertEqual(result[0]["reference_count"], 1)
+
+    def test_unreferenced_anchor_warns_without_cleanup_claim(self):
+        evaluate = self.evaluate_with_counts({})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MATERIALIZED",
+        }])
+        self.assertEqual(result[0]["status"], "WARN")
+        self.assertIn("incomplete destination", result[0]["reason"])
+        self.assertIn("before any explicit cleanup", result[0]["reason"])
+
+    def test_multiple_references_are_ambiguous(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 2})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MATERIALIZED",
+        }])
+        self.assertEqual(result[0]["status"], "WARN")
+        self.assertIn("ambiguous", result[0]["reason"])
+
+    def test_active_materialization_is_visible_and_blocks_dependency_changes(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "HYDRATING", "transaction": "a" * 32,
+        }], lambda _transaction, _sid, _volume: "RUNNING")
+        self.assertEqual(result[0]["status"], "WARN")
+        self.assertEqual(result[0]["materialization_state"], "IN_PROGRESS")
+        self.assertIn("remain blocked", result[0]["reason"])
+
+    def test_interrupted_materialization_is_recovery_required(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "HYDRATING", "transaction": "b" * 32,
+        }], lambda _transaction, _sid, _volume: "ABSENT")
+        self.assertEqual(result[0]["status"], "FAIL")
+        self.assertEqual(result[0]["materialization_state"], "RECOVERY_REQUIRED")
+        self.assertIn("thick-resume", result[0]["reason"])
+        self.assertIn("no automatic repair", result[0]["reason"])
+
+    def test_ambiguous_materialization_phase_fails_closed(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate("thick", [{
+            "name": "sltg-a-key", "volume": "vm-100-disk-0",
+            "phase": "MAYBE", "transaction": "c" * 32,
+        }], lambda _transaction, _sid, _volume: "RUNNING")
+        self.assertEqual(result[0]["status"], "FAIL")
+        self.assertEqual(result[0]["materialization_state"], "RECOVERY_REQUIRED")
+
+
+class ThickWorkerStateTests(unittest.TestCase):
+    def load_worker_state(self, cmdlines=None, unit_state="inactive"):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "thick_worker_state"
+        )
+        cmdlines = cmdlines or {}
+        namespace = {
+            "re": re,
+            "os": os,
+            "glob": types.SimpleNamespace(glob=lambda _pattern: list(cmdlines)),
+            "open": lambda path, _mode: io.BytesIO(cmdlines[path]),
+            "run": lambda _command: (0, unit_state, ""),
+        }
+        exec(
+            compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"),
+            namespace,
+        )
+        return namespace["thick_worker_state"]
+
+    def test_exact_explicit_resume_process_is_running(self):
+        worker = self.load_worker_state({
+            "/proc/42/cmdline": (
+                b"/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize\0"
+                b"--resume\0thick\0vm-100-disk-0\0"
+            ),
+        })
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "RUNNING")
+
+    def test_perl_interpreter_resume_process_is_running(self):
+        worker = self.load_worker_state({
+            "/proc/42/cmdline": (
+                b"/usr/bin/perl\0"
+                b"/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize\0"
+                b"--resume\0thick\0vm-100-disk-0\0"
+            ),
+        })
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "RUNNING")
+
+    def test_near_match_resume_process_is_rejected(self):
+        worker = self.load_worker_state({
+            "/proc/42/cmdline": (
+                b"/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize\0"
+                b"--resume\0thick\0vm-100-disk-00\0"
+            ),
+        })
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "ABSENT")
+
+    def test_active_canonical_transaction_unit_is_running(self):
+        worker = self.load_worker_state(unit_state="active")
+        self.assertEqual(worker("a" * 32, "thick", "vm-100-disk-0"), "RUNNING")
 
 
 class PvBindingPolicyTests(unittest.TestCase):

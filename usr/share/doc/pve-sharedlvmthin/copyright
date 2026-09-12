@@ -1,9 +1,8 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: SharedLvmThin
-Source: https://github.com/delltech1/proxmox-sharedlvmthin
 
 Files: *
-Copyright: 2026 Stanislav Baran
+Copyright: 2026 BASTRIX Project Contributors
 License: GPL-3.0-only
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by

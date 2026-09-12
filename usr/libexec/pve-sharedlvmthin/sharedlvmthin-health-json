@@ -1,14 +1,49 @@
 #!/usr/bin/python3
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 import json
+import glob
 import os
 import platform
 import re
 import socket
 import subprocess
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+
+
+def exact_decimal(value):
+    text = "" if value is None else str(value).strip()
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"invalid decimal value '{text}'") from exc
+    if not number.is_finite():
+        raise ValueError(f"non-finite decimal value '{text}'")
+    return number
+
+
+def exact_byte_count(value):
+    number = exact_decimal(value)
+    integer = number.to_integral_value()
+    if number < 0 or number != integer:
+        raise ValueError(f"byte count is not a non-negative integer: '{value}'")
+    return int(integer)
+
+
+def percentage_decimal(value):
+    if value is None or not str(value).strip():
+        return None
+    number = exact_decimal(value)
+    return number if Decimal(0) <= number <= Decimal(100) else None
+
+
+def percentage_bytes(size_bytes, value):
+    percent = percentage_decimal(value)
+    if percent is None:
+        return None
+    return int(Decimal(size_bytes) * percent / Decimal(100))
 
 
 def run(cmd):
@@ -62,6 +97,9 @@ def parse_storage_cfg():
             current = {
                 "id": parts[1] if len(parts) > 1 else "unknown",
                 "vg": None,
+                "disabled": False,
+                "nodes": None,
+                "allocation_mode": "thin",
                 "initial_pool_size_gib": None,
                 "initial_pool_mode": "fixed",
                 "initial_pool_percent": 50,
@@ -82,6 +120,23 @@ def parse_storage_cfg():
 
             if s.startswith("slt-vgname "):
                 current["vg"] = s.split(None, 1)[1]
+
+            elif s == "disable":
+                current["disabled"] = True
+
+            elif s.startswith("disable "):
+                current["disabled"] = (
+                    s.split(None, 1)[1].strip().lower()
+                    in {"1", "yes", "on", "true"}
+                )
+
+            elif s.startswith("nodes "):
+                current["nodes"] = [
+                    node for node in s.split(None, 1)[1].split(",") if node
+                ]
+
+            elif s.startswith("slt-allocation-mode "):
+                current["allocation_mode"] = s.split(None, 1)[1]
 
             elif s.startswith("slt-initial-pool-size "):
                 try:
@@ -403,8 +458,8 @@ def vg_info(vg):
     try:
         return {
             "visible": True,
-            "size_bytes": int(float(fields[1])),
-            "free_bytes": int(float(fields[2])),
+            "size_bytes": exact_byte_count(fields[1]),
+            "free_bytes": exact_byte_count(fields[2]),
         }
     except Exception:
         return {
@@ -429,9 +484,10 @@ def pools(vg, sid):
     ])
 
     result = []
+    thick_anchors = []
 
     if rc != 0:
-        return None, err or out or f"lvs exited with status {rc}"
+        return None, err or out or f"lvs exited with status {rc}", None
 
     expected_tag = "pve-slt-sid-" + sid
 
@@ -443,36 +499,212 @@ def pools(vg, sid):
 
         name = fields[0]
 
+        tags = [x for x in fields[3].split(",") if x]
+        tag_values = {}
+        for tag in tags:
+            if not tag.startswith("slt_tg_") or "=" not in tag:
+                continue
+            key, tag_value = tag.split("=", 1)
+            tag_values[key[7:]] = tag_value
+
+        if name.startswith("sltg-a-") and tag_values.get("sid") == sid:
+            thick_anchors.append({
+                "name": name,
+                "volume": tag_values.get("vol"),
+                "phase": tag_values.get("phase"),
+                "operation": tag_values.get("op"),
+                "transaction": tag_values.get("tx"),
+                "head": tag_values.get("head"),
+                "generation": tag_values.get("generation"),
+            })
+
         if not re.fullmatch(r"sltp-\d+", name):
             continue
 
         def fnum(v):
             try:
-                return float(v) if v else None
-            except Exception:
+                number = percentage_decimal(v)
+                return float(number) if number is not None else None
+            except (TypeError, ValueError):
                 return None
 
+        size_bytes = exact_byte_count(fields[1])
+        data_percent_decimal = percentage_decimal(fields[5])
+        data_percent = (
+            float(data_percent_decimal)
+            if data_percent_decimal is not None else None
+        )
+        payload_used_bytes = (
+            percentage_bytes(size_bytes, fields[5])
+        )
+        reserved_slack_bytes = (
+            max(0, size_bytes - payload_used_bytes)
+            if payload_used_bytes is not None else None
+        )
         result.append({
             "name": name,
-            "size_bytes": int(float(fields[1])),
+            "size_bytes": size_bytes,
             "attr": fields[2],
-            "tags": [
-                x for x in fields[3].split(",") if x
-            ],
+            "tags": tags,
             "owned": expected_tag in fields[3].split(","),
             "monitor": fields[4] or None,
-            "data_percent": fnum(fields[5]),
+            "data_percent": data_percent,
+            "payload_used_bytes": payload_used_bytes,
+            "reserved_slack_bytes": reserved_slack_bytes,
             "metadata_percent": fnum(fields[6]),
             "health_status": fields[7] or None,
             "check_needed": fields[8] or None,
-            "metadata_size_bytes": int(fnum(fields[9])) if fnum(fields[9]) is not None else None,
+            "metadata_size_bytes": exact_byte_count(fields[9]) if fields[9] else None,
             "zero": fields[10] or None,
             "discards": fields[11] or None,
             "autoactivation": fields[12] or None,
             "when_full": fields[13] or None,
         })
 
-    return result, None
+    return result, None, thick_anchors
+
+
+def pve_volume_reference_files(volid):
+    """Return config files that contain an exact PVE volume reference."""
+    if not volid or not re.fullmatch(r"[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+-]+", volid):
+        return []
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_.+-])" + re.escape(volid) + r"(?=[,\s]|$)"
+    )
+    cluster_paths = (
+        glob.glob("/etc/pve/nodes/*/qemu-server/*.conf")
+        + glob.glob("/etc/pve/nodes/*/lxc/*.conf")
+    )
+    config_paths = cluster_paths or (
+        glob.glob("/etc/pve/qemu-server/*.conf")
+        + glob.glob("/etc/pve/lxc/*.conf")
+    )
+    matches = []
+    for cfg_path in sorted(set(config_paths)):
+        content = read_file(cfg_path)
+        if content is not None and pattern.search(content):
+            matches.append(cfg_path)
+    return matches
+
+
+def thick_worker_state(transaction, sid=None, volume=None):
+    """Return the observed state of one transaction-scoped worker."""
+    if not transaction or not re.fullmatch(r"[0-9a-f]{32}", transaction):
+        return "UNKNOWN"
+    unit = f"pve-sharedlvmthin-tg-{transaction}"
+    observed = []
+    for suffix in ("service", "timer"):
+        rc, out, _ = run([
+            "systemctl", "show", f"{unit}.{suffix}",
+            "--property=ActiveState", "--value",
+        ])
+        if rc == 0 and out:
+            observed.append(out.strip().lower())
+    if any(state in {"active", "activating", "reloading"} for state in observed):
+        return "RUNNING"
+    if (
+        sid and volume
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sid)
+        and re.fullmatch(r"(?:vm|base)-[0-9]+-disk-[0-9]+", volume)
+    ):
+        for path in glob.glob("/proc/[0-9]*/cmdline"):
+            try:
+                with open(path, "rb") as process_cmdline:
+                    command = process_cmdline.read()
+                argv = [
+                    item.decode("utf-8", "strict")
+                    for item in command.split(b"\0") if item
+                ]
+            except (OSError, UnicodeError):
+                continue
+            worker_args = None
+            if argv and os.path.basename(argv[0]) == "sharedlvmthin-thick-materialize":
+                worker_args = argv[1:]
+            elif (
+                len(argv) >= 2
+                and os.path.basename(argv[0]) == "perl"
+                and os.path.basename(argv[1]) == "sharedlvmthin-thick-materialize"
+            ):
+                worker_args = argv[2:]
+            if worker_args == ["--resume", sid, volume]:
+                return "RUNNING"
+    if "failed" in observed:
+        return "FAILED"
+    if observed:
+        return "ABSENT"
+    return "UNKNOWN"
+
+
+def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
+    """Classify anchors without mutating or guessing cleanup eligibility."""
+    results = []
+    for anchor in anchors or []:
+        volume = anchor.get("volume")
+        volid = f"{sid}:{volume}" if volume else None
+        references = pve_volume_reference_files(volid) if volid else []
+        item = {
+            **anchor,
+            "volid": volid,
+            "reference_count": len(references),
+        }
+        phase = anchor.get("phase")
+        transaction = anchor.get("transaction")
+        if phase != "MATERIALIZED":
+            observed_worker = (
+                worker_state(transaction, sid, volume)
+                if worker_state is not None else "UNKNOWN"
+            )
+            item["worker_state"] = observed_worker
+            if (
+                phase not in {"PREPARED", "HYDRATING", "HYDRATION_COMPLETE", "LINEAR_PIVOTED"}
+                or not transaction
+                or not re.fullmatch(r"[0-9a-f]{32}", transaction)
+            ):
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    "anchor has an invalid or ambiguous materialization state; "
+                    "new mutations must remain blocked"
+                )
+            elif observed_worker == "RUNNING":
+                item["status"] = "WARN"
+                item["materialization_state"] = "IN_PROGRESS"
+                item["reason"] = (
+                    f"materialization phase {phase} has its exact transaction worker; "
+                    "dependency-changing mutations remain blocked until completion"
+                )
+            else:
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    f"materialization phase {phase} has no active exact transaction "
+                    "worker; preserve evidence and run the explicit thick-resume "
+                    "workflow; no automatic repair attempted"
+                )
+        elif not volume:
+            item["status"] = "WARN"
+            item["materialization_state"] = "MATERIALIZED"
+            item["reason"] = "anchor volume identity is unavailable; no cleanup attempted"
+        elif not references:
+            item["status"] = "WARN"
+            item["materialization_state"] = "MATERIALIZED"
+            item["reason"] = (
+                "unreferenced Thick Generations volume; it may be an incomplete "
+                "destination after an interrupted import, clone, or move; prove its "
+                "purpose and identity before any explicit cleanup"
+            )
+        elif len(references) > 1:
+            item["status"] = "WARN"
+            item["materialization_state"] = "MATERIALIZED"
+            item["reason"] = (
+                "volume is referenced by multiple PVE configs; ownership is ambiguous"
+            )
+        else:
+            item["status"] = "PASS"
+            item["materialization_state"] = "MATERIALIZED"
+            item["reason"] = "volume has exactly one PVE configuration reference"
+        results.append(item)
+    return results
 
 
 def evaluate_pool_flags(attr, health_status, check_needed=None):
@@ -548,6 +780,29 @@ def evaluate_thin_full_policy(when_full, no_space_timeout):
     )
 
 
+def evaluate_dmeventd(dmeventd_active, storages):
+    """Require dmeventd only when an owned thin pool is active locally."""
+    active_pools = []
+    for storage in storages or []:
+        sid = storage.get("id") or "unknown"
+        for pool in storage.get("pools") or []:
+            attr = str(pool.get("attr") or "")
+            if pool.get("owned") and len(attr) > 4 and attr[4] == "a":
+                active_pools.append(f"{sid}:{pool.get('name') or 'unknown'}")
+
+    if dmeventd_active:
+        return "PASS", "dm-event.service active"
+    if active_pools:
+        return "FAIL", (
+            "dm-event.service inactive while owned thin pools are active: "
+            + ", ".join(sorted(active_pools))
+        )
+    return "WARN", (
+        "dm-event.service inactive; no local owned thin pool currently "
+        "requires monitoring"
+    )
+
+
 def thin_pool_no_space_timeout(path="/sys/module/dm_thin_pool/parameters/no_space_timeout"):
     try:
         with open(path, "r", encoding="ascii") as handle:
@@ -569,8 +824,8 @@ def metadata_spares(vg):
         if len(fields) < 2 or not fields[0].endswith("_pmspare"):
             continue
         try:
-            result.append({"name": fields[0], "size_bytes": int(float(fields[1]))})
-        except Exception:
+            result.append({"name": fields[0], "size_bytes": exact_byte_count(fields[1])})
+        except (TypeError, ValueError):
             result.append({"name": fields[0], "size_bytes": None})
     return result
 
@@ -652,8 +907,8 @@ def evaluate_pv_metadata(pvs):
     if len(pvs) != 1:
         return "WARN", "PV metadata capacity requires exactly one visible PV"
     try:
-        size = int(float(pvs[0].get("pv_mda_size") or 0))
-        free = int(float(pvs[0].get("pv_mda_free") or 0))
+        size = exact_byte_count(pvs[0].get("pv_mda_size") or 0)
+        free = exact_byte_count(pvs[0].get("pv_mda_free") or 0)
     except (TypeError, ValueError):
         return "WARN", "PV metadata capacity is unavailable"
     if size <= 0:
@@ -721,6 +976,15 @@ def evaluate_expected_paths(transport, expected_min_paths):
 
 
 def evaluate_allocation_policy(storage):
+    allocation_mode = storage.get("allocation_mode") or "thin"
+    if allocation_mode == "thick-generations":
+        return "PASS", (
+            "Thick Generations mode allocates independent thick LVs; thin-pool "
+            "headroom and autogrow policy do not apply"
+        )
+    if allocation_mode != "thin":
+        return "FAIL", f"invalid allocation mode '{allocation_mode}'"
+
     mode = storage.get("initial_pool_mode") or "fixed"
     fixed = storage.get("initial_pool_size_gib")
     percent = storage.get("initial_pool_percent")
@@ -1021,12 +1285,6 @@ api_status, api_message = evaluate_api_compatibility(api, apiage, papi)
 check("storage_api", api_status, api_message)
 
 
-if doc["lvm"]["dmeventd_active"]:
-    check("dmeventd", "PASS", "dm-event.service active")
-else:
-    check("dmeventd", "FAIL", "dm-event.service inactive")
-
-
 cluster_status, cluster_message = cluster_check_status(doc["cluster"])
 check("cluster_quorum", cluster_status, cluster_message)
 
@@ -1040,10 +1298,32 @@ for storage in parse_storage_cfg():
         "pve": states.get(sid, {}),
         "vg_info": None,
         "pools": [],
+        "thick_anchors": [],
         "pool_inventory_error": None,
         "metadata_spares": [],
         "transport": None,
+        "node_applicable": (
+            not storage.get("nodes")
+            or socket.gethostname() in storage.get("nodes", [])
+        ),
     }
+
+    if storage.get("disabled"):
+        check(
+            f"storage_enabled:{sid}", "PASS",
+            f"{sid}: storage is explicitly disabled; operational probes skipped",
+        )
+        doc["storages"].append(item)
+        continue
+
+    if not item["node_applicable"]:
+        check(
+            f"storage_scope:{sid}", "PASS",
+            f"{sid}: storage is not assigned to this PVE node; "
+            "operational probes skipped",
+        )
+        doc["storages"].append(item)
+        continue
 
     allocation_status, allocation_message = evaluate_allocation_policy(storage)
     check(
@@ -1055,7 +1335,7 @@ for storage in parse_storage_cfg():
         item["vg_info"] = vg_info(vg)
 
         if item["vg_info"].get("visible"):
-            pool_inventory, pool_error = pools(vg, sid)
+            pool_inventory, pool_error, thick_anchors = pools(vg, sid)
             item["pool_inventory_error"] = pool_error
             if pool_error is not None:
                 check(
@@ -1065,6 +1345,17 @@ for storage in parse_storage_cfg():
                 )
             else:
                 item["pools"] = pool_inventory
+                item["thick_anchors"] = evaluate_thick_anchor_references(
+                    sid, thick_anchors, thick_worker_state
+                )
+                for anchor in item["thick_anchors"]:
+                    if anchor.get("status") in {"WARN", "FAIL"}:
+                        check(
+                            f"thick_reference:{sid}:{anchor.get('name')}",
+                            anchor.get("status"),
+                            f"{sid}: {anchor.get('volid') or anchor.get('name')}: "
+                            f"{anchor.get('reason')}; no cleanup attempted",
+                        )
             item["metadata_spares"] = metadata_spares(vg)
             item["transport"] = build_transport(vg)
 
@@ -1211,6 +1502,12 @@ for storage in parse_storage_cfg():
         )
 
     doc["storages"].append(item)
+
+
+dmeventd_status, dmeventd_message = evaluate_dmeventd(
+    doc["lvm"]["dmeventd_active"], doc["storages"]
+)
+check("dmeventd", dmeventd_status, dmeventd_message)
 
 
 print(json.dumps(doc, indent=2, sort_keys=False))

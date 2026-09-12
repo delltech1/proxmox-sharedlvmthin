@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 package PVE::SharedLvmThinSafety;
@@ -21,10 +21,34 @@ sub evaluate_allocation_target {
     }
     die "invalid fixed_gib\n" if $args{fixed_gib} < 1;
 
+    my $usage_known = $args{usage_known} // 1;
+    die "invalid usage_known\n" if $usage_known !~ /^(?:0|1)$/;
+
     my $gib = 1024 * 1024 * 1024;
     my $requested = $args{requested_kib} * 1024;
     my $fixed = $args{fixed_gib} * $gib;
     my $target;
+
+    if (!$usage_known && $args{current_pool_bytes} > 0) {
+        die "full allocation requires known thin-pool usage\n" if $mode eq 'full';
+        if ($mode eq 'proportional') {
+            die "missing percent\n" if !defined($args{percent});
+            die "invalid percent\n"
+                if $args{percent} !~ /^\d+$/ || $args{percent} < 1 || $args{percent} > 100;
+        } elsif ($mode eq 'elastic') {
+            my $headroom_gib = $args{headroom_gib} // 64;
+            die "invalid headroom_gib\n"
+                if $headroom_gib !~ /^\d+$/ || $headroom_gib < 1;
+        }
+        return {
+            target_bytes => $args{current_pool_bytes},
+            growth_bytes => 0,
+            requested_bytes => $requested,
+            burst_guarantee => $mode eq 'fixed' ? 'NONE' : 'UNKNOWN_INACTIVE_NO_GROWTH',
+            headroom_bytes => undef,
+            usage_known => 0,
+        };
+    }
 
     if ($mode eq 'fixed') {
         $target = $fixed;
@@ -73,6 +97,7 @@ sub evaluate_allocation_target {
         burst_guarantee => $mode eq 'full' ? 'FULL_AT_ADMISSION'
             : ($mode eq 'proportional' || $mode eq 'elastic') ? 'BOUNDED' : 'NONE',
         headroom_bytes => $mode eq 'elastic' ? $target - $args{used_bytes} : undef,
+        usage_known => $usage_known ? 1 : 0,
     };
 }
 

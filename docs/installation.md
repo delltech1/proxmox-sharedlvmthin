@@ -153,6 +153,53 @@ latency. Existing `fixed`, `proportional`, and `full` policies remain available
 for compatibility and explicit operational choices. See
 `clone-restore-burst-capacity.md`.
 
+### Thin and Thick Generations coexistence
+
+The dual-mode package does not guess which capacity model an administrator
+wants. Create one storage definition for each mode you intend to expose. To
+offer both modes over one VG, create exactly two SharedLvmThin definitions.
+Both must use the same identity, reserve, expected-path, shared, and node-scope
+values:
+
+```bash
+pvesm add sharedlvmthin <THIN_STORAGE_ID> \
+  --slt-vgname <DEDICATED_VG_NAME> \
+  --slt-allocation-mode thin \
+  --slt-initial-pool-mode elastic \
+  --slt-burst-headroom-gib 64 \
+  --slt-expected-vg-uuid <VG_UUID> \
+  --slt-expected-pv-uuid <PV_UUID> \
+  --slt-expected-wwid <WWID> \
+  --slt-expected-min-paths <EXPECTED_PATH_COUNT> \
+  --slt-vg-reserve-percent 5 \
+  --nodes <node1,node2,node3> \
+  --shared 1 --content images,rootdir
+
+pvesm add sharedlvmthin <THICK_STORAGE_ID> \
+  --slt-vgname <DEDICATED_VG_NAME> \
+  --slt-allocation-mode thick-generations \
+  --slt-expected-vg-uuid <VG_UUID> \
+  --slt-expected-pv-uuid <PV_UUID> \
+  --slt-expected-wwid <WWID> \
+  --slt-expected-min-paths <EXPECTED_PATH_COUNT> \
+  --slt-vg-reserve-percent 5 \
+  --nodes <node1,node2,node3> \
+  --shared 1 --content images,rootdir
+```
+
+Omit `--nodes` from both definitions when the LUN is intentionally available
+on every cluster node. Never configure a third SharedLvmThin alias or a native
+PVE `lvm`/`lvmthin` storage over this VG. The plugin rejects mismatched or
+half-visible pairs before activation or mutation.
+
+Both storage entries report the same physical VG capacity. They are two views
+of one allocation domain, not two independent capacity pools; never add their
+reported capacities together. Doctor validates and explains this relationship.
+The chosen PVE storage ID is the user-visible mode selector when creating,
+restoring or moving a disk. Existing volumes retain their own allocation mode;
+changing the default does not silently convert them. Use a normal PVE Storage
+Move for an explicit Thin-to-Thick or Thick-to-Thin conversion.
+
 ## 7. Validate before storing a VM
 
 ```bash
@@ -189,6 +236,46 @@ autoextend settings already exist. Existing policy is preserved and reported,
 never overwritten. Purge removes only the marked package fragment and private
 Python cache/state. PVE Storage APIs 14 and 15 are explicitly supported; other
 runtime API versions refuse mutation until separately qualified.
+
+## Rolling package upgrade
+
+A package upgrade replaces the plugin and diagnostic files and refreshes only
+active PVE management consumers. It does not restart QEMU, deactivate an LVM
+volume, reload a device-mapper table, restart multipath or modify the SAN. A
+qualified compatible upgrade can therefore preserve running guest I/O, while
+the PVE API and web interface can be briefly unavailable during service
+refresh.
+
+Upgrade one node at a time:
+
+1. Run `sharedlvmthin upgrade-check`. It inventories every enabled
+   SharedLvmThin storage, runs its bounded read-only recovery gate and requires
+   one exact `STATE=HEALTHY`, `SAFE_FOR_MUTATION=YES` and
+   `THICK_ANCHORS_HEALTHY=PASS` result. Explicitly disabled storage is reported
+   and skipped; a duplicate storage ID, timeout, unavailable probe or ambiguous
+   output fails closed. Continue only when the final line is
+   `UPGRADE_SAFE=YES`.
+2. Require every Thick Generations anchor to be `MATERIALIZED`. Do not upgrade
+   a node that owns a hydration, rollback, snapshot deletion or recovery
+   transaction. This condition is enforced by the upgrade check through the
+   Thick anchor recovery gate.
+3. Verify the package checksum and confirm that the target release explicitly
+   supports the installed anchor schema and PVE Storage API.
+4. Install the package on one node. Do not restart QEMU, LVM, multipath or the
+   SAN merely because the plugin package changed.
+5. Verify the installed version, PVE services, Doctor, recovery checks, running
+   VM state and guest I/O before continuing to the next node.
+
+Never assume that an arbitrary downgrade is safe. A release that removes
+support for an existing configuration property or persistent Thick Generations
+anchor schema requires an explicit downgrade procedure. If compatibility
+cannot be positively proven, stop mutations and keep the current package.
+
+`upgrade-check` is advisory and read-only: it never installs a package,
+deactivates storage, changes an anchor or repairs a failed gate. It is not run
+automatically by `dpkg`, because blocking package replacement can also prevent
+installation of a recovery or security fix. The administrator remains in
+control of the maintenance transaction.
 
 ## RC5 to RC4 rollback
 

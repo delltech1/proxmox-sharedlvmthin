@@ -1,0 +1,192 @@
+#!/bin/bash
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+set -u
+
+STORAGECFG=/etc/pve/storage.cfg
+RECOVERY_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
+PROBE_TIMEOUT=150
+
+failures=0
+checked=0
+skipped=0
+skipped_disabled=0
+skipped_node_scope=0
+result=
+declare -A seen=()
+
+# Invoked through the signal and exit trap below.
+# shellcheck disable=SC2317,SC2329
+cleanup() {
+    [ -z "$result" ] || rm -f -- "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
+
+case "$PROBE_TIMEOUT" in
+    ''|*[!0-9]*)
+        echo "UPGRADE_SAFE=NO" >&2
+        echo "ERROR=probe timeout must be an integer" >&2
+        exit 64
+        ;;
+esac
+
+if [ "$PROBE_TIMEOUT" -lt 1 ] || [ "$PROBE_TIMEOUT" -gt 600 ]; then
+    echo "UPGRADE_SAFE=NO" >&2
+    echo "ERROR=probe timeout must be between 1 and 600 seconds" >&2
+    exit 64
+fi
+
+if [ ! -r "$STORAGECFG" ]; then
+    echo "UPGRADE_SAFE=NO"
+    echo "ERROR=storage configuration is not readable"
+    exit 2
+fi
+
+if [ ! -x "$RECOVERY_CHECK" ]; then
+    echo "UPGRADE_SAFE=NO"
+    echo "ERROR=recovery checker is not executable"
+    exit 2
+fi
+
+inventory() {
+    awk '
+        function emit() {
+            if (inside) {
+                print sid "|" disabled "|" mode "|" nodes
+            }
+        }
+        /^sharedlvmthin:[[:space:]]+/ {
+            emit()
+            inside=1
+            sid=$2
+            disabled="0"
+            mode="thin"
+            nodes=""
+            next
+        }
+        /^[^[:space:]]/ {
+            emit()
+            inside=0
+            next
+        }
+        inside && $1 == "disable" {
+            disabled=(NF == 1 ? "1" : tolower($2))
+            next
+        }
+        inside && $1 == "slt-allocation-mode" {
+            mode=$2
+            next
+        }
+        inside && $1 == "nodes" {
+            nodes=$2
+            next
+        }
+        END { emit() }
+    ' "$STORAGECFG"
+}
+
+local_node=$(hostname)
+
+while IFS='|' read -r sid disabled mode nodes; do
+    [ -n "$sid" ] || continue
+
+    if [[ ! "$sid" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+        echo "STORAGE_ID=$sid"
+        echo "RESULT=FAIL"
+        echo "DETAIL=invalid storage identifier"
+        failures=$((failures + 1))
+        continue
+    fi
+
+    if [ -n "${seen[$sid]+x}" ]; then
+        echo "STORAGE_ID=$sid"
+        echo "RESULT=FAIL"
+        echo "DETAIL=duplicate storage identifier"
+        failures=$((failures + 1))
+        continue
+    fi
+    seen[$sid]=1
+
+    case "$disabled" in
+        1|yes|on|true)
+            echo "STORAGE_ID=$sid"
+            echo "RESULT=SKIP_DISABLED"
+            skipped=$((skipped + 1))
+            skipped_disabled=$((skipped_disabled + 1))
+            continue
+            ;;
+    esac
+
+    if [ -n "$nodes" ]; then
+        case ",$nodes," in
+            *",$local_node,"*) ;;
+            *)
+                echo "STORAGE_ID=$sid"
+                echo "RESULT=SKIP_NODE_SCOPE"
+                skipped=$((skipped + 1))
+                skipped_node_scope=$((skipped_node_scope + 1))
+                continue
+                ;;
+        esac
+    fi
+
+    case "$mode" in
+        thin|thick-generations) ;;
+        *)
+            echo "STORAGE_ID=$sid"
+            echo "RESULT=FAIL"
+            echo "DETAIL=unsupported allocation mode"
+            failures=$((failures + 1))
+            continue
+            ;;
+    esac
+
+    checked=$((checked + 1))
+    echo "UPGRADE_STORAGE_ID=$sid"
+    echo "UPGRADE_ALLOCATION_MODE=$mode"
+    if ! result=$(mktemp); then
+        echo "UPGRADE_STORAGE_RESULT=FAIL"
+        echo "UPGRADE_STORAGE_DETAIL=could not create private probe output"
+        failures=$((failures + 1))
+        continue
+    fi
+    if timeout --foreground --kill-after=10 "$PROBE_TIMEOUT" \
+        "$RECOVERY_CHECK" "$sid" >"$result" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    cat "$result"
+
+    healthy=$(grep -c '^STATE=HEALTHY$' "$result" || true)
+    safe=$(grep -c '^SAFE_FOR_MUTATION=YES$' "$result" || true)
+    anchors=$(grep -c '^THICK_ANCHORS_HEALTHY=PASS$' "$result" || true)
+
+    rm -f -- "$result"
+    result=
+
+    if [ "$rc" -eq 0 ] && [ "$healthy" -eq 1 ] && \
+       [ "$safe" -eq 1 ] && [ "$anchors" -eq 1 ]; then
+        echo "UPGRADE_STORAGE_RESULT=PASS"
+    else
+        echo "UPGRADE_STORAGE_RESULT=FAIL"
+        echo "UPGRADE_STORAGE_DETAIL=recovery gate did not positively prove a healthy mutation-safe state"
+        failures=$((failures + 1))
+    fi
+done < <(inventory)
+
+echo "UPGRADE_STORAGES_CHECKED=$checked"
+echo "UPGRADE_STORAGES_SKIPPED_DISABLED=$skipped"
+echo "UPGRADE_STORAGES_SKIPPED_EXPLICITLY_DISABLED=$skipped_disabled"
+echo "UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=$skipped_node_scope"
+
+if [ "$failures" -ne 0 ]; then
+    echo "UPGRADE_SAFE=NO"
+    exit 2
+fi
+
+echo "UPGRADE_SAFE=YES"
+exit 0

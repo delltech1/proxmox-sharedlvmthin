@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# Copyright (C) 2026 Stanislav Baran
+# Copyright (C) 2026 BASTRIX Project Contributors
 # SPDX-License-Identifier: GPL-3.0-only
 
 """Side-effect-free recovery qualification for one SharedLvmThin storage."""
@@ -9,9 +9,13 @@ import re
 import signal
 import subprocess
 import sys
+import time
+import hashlib
+import glob
 
 
 PROBE_TIMEOUT = 10
+DSTATE_CONFIRM_SECONDS = 2
 FORBIDDEN = {
     "pvcreate", "vgcreate", "lvcreate", "lvremove", "vgremove", "pvremove",
     "wipefs", "thin_repair", "vgcfgrestore", "lvchange", "multipathd",
@@ -100,8 +104,291 @@ def dstate_evidence(tokens):
     return "PASS", [], []
 
 
+def settled_dstate_evidence(tokens):
+    """Require a second bounded observation before calling D-state persistent."""
+    status, relevant, unknown = dstate_evidence(tokens)
+    if status == "PASS":
+        return status, relevant, unknown, 0
+    transient_candidates = len(relevant) + len(unknown)
+    time.sleep(DSTATE_CONFIRM_SECONDS)
+    status, relevant, unknown = dstate_evidence(tokens)
+    return status, relevant, unknown, transient_candidates if status == "PASS" else 0
+
+
 def clean(value):
     return str(value or "").strip()
+
+
+def pve_reference_files(sid, vol):
+    """Return exact cluster configuration references without mutating state."""
+    needle = f"{sid}:{vol}"
+    paths = set()
+    for pattern in (
+        "/etc/pve/nodes/*/qemu-server/*.conf",
+        "/etc/pve/nodes/*/lxc/*.conf",
+        "/etc/pve/qemu-server/*.conf",
+        "/etc/pve/lxc/*.conf",
+    ):
+        paths.update(glob.glob(pattern))
+    references = []
+    pattern = re.compile(re.escape(needle) + r"(?:,|\s|$)", re.MULTILINE)
+    for path in sorted(paths):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                if pattern.search(handle.read()):
+                    references.append(path)
+        except OSError as exc:
+            raise RuntimeError(f"cannot read PVE reference file '{path}': {exc}") from exc
+    return references
+
+
+def pve_snapshot_references(sid):
+    """Return exact (base volume, snapshot) pairs declared by PVE configs."""
+    paths = set()
+    for pattern in (
+        "/etc/pve/nodes/*/qemu-server/*.conf",
+        "/etc/pve/nodes/*/lxc/*.conf",
+        "/etc/pve/qemu-server/*.conf",
+        "/etc/pve/lxc/*.conf",
+    ):
+        paths.update(glob.glob(pattern))
+    references = set()
+    section_re = re.compile(r"^\[([A-Za-z0-9][A-Za-z0-9_.-]*)\]\s*$")
+    volume_re = re.compile(
+        rf"(?:^|\s){re.escape(sid)}:(vm-\d+-disk-\d+)(?:,|\s|$)"
+    )
+    for path in sorted(paths):
+        # A section never crosses a PVE configuration-file boundary.
+        section = None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        except OSError as exc:
+            raise RuntimeError(f"cannot read PVE reference file '{path}': {exc}") from exc
+        for line in lines:
+            header = section_re.fullmatch(line.strip())
+            if header:
+                section = header.group(1)
+                continue
+            if line.lstrip().startswith("["):
+                section = None
+                continue
+            if section is None or re.search(r"(?:^|,)snapshot=0(?:,|$)", line):
+                continue
+            match = volume_re.search(line)
+            if match:
+                references.add((match.group(1), section))
+    return references
+
+
+def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None):
+    """Fail closed on every Thick Generations anchor owned by this storage."""
+    anchors = []
+    failures = []
+    canonical_fields = (
+        "v", "sid", "vol", "phase", "tx", "op", "snapshot", "source",
+        "old", "new", "head", "generation", "region",
+    )
+    required = {f"slt_tg_{field}" for field in canonical_fields} | {"slt_tg_sha256"}
+    token = re.compile(r"[A-Za-z0-9_.+-]+")
+    rows = {}
+    for line in pool_output.splitlines():
+        fields = [x.strip() for x in line.split("|")]
+        if len(fields) >= 5 and fields[0]:
+            rows[fields[0]] = fields
+    for fields in rows.values():
+        if len(fields) < 5 or not re.fullmatch(r"sltg-a-[0-9a-f]{24}", fields[0]):
+            continue
+        tags = {}
+        malformed = False
+        for raw in fields[4].split(","):
+            if not raw.startswith("slt_tg_"):
+                continue
+            if "=" not in raw:
+                malformed = True
+                continue
+            key, value = raw.split("=", 1)
+            if key in tags:
+                malformed = True
+            tags[key] = value
+        # A Thick storage alias is the sole owner of sltg-a-* anchors in its
+        # pinned VG. Missing or foreign ownership is therefore ambiguous.
+        anchors.append(fields[0])
+        missing = sorted(required - set(tags))
+        unknown = sorted(set(tags) - required)
+        if malformed or missing or unknown or len(tags) != len(required):
+            failures.append(
+                f"{fields[0]} malformed anchor tags"
+                + (f" missing={','.join(missing)}" if missing else "")
+                + (f" unknown={','.join(unknown)}" if unknown else "")
+            )
+            continue
+        values = {field: tags[f"slt_tg_{field}"] for field in canonical_fields}
+        if any(not token.fullmatch(value) for value in values.values()):
+            failures.append(f"{fields[0]} contains a non-canonical tag value")
+            continue
+        if tags.get("slt_tg_sid") != sid:
+            failures.append(f"{fields[0]} ownership does not match storage")
+            continue
+        expected_name = "sltg-a-" + hashlib.sha256(
+            (namespace.lower() + "\0" + values["vol"]).encode("utf-8")
+        ).hexdigest()[:24]
+        if fields[0] != expected_name:
+            failures.append(f"{fields[0]} name does not match storage and volume identity")
+            continue
+        canonical = "|".join(f"{field}={values[field]}" for field in canonical_fields)
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+        if tags["slt_tg_sha256"] != digest:
+            failures.append(f"{fields[0]} anchor digest mismatch")
+            continue
+        if values["v"] != "5" or not re.fullmatch(r"[0-9a-f]{32}", values["tx"]):
+            failures.append(f"{fields[0]} unsupported version or transaction identity")
+            continue
+        if (not values["generation"].isdigit()
+                or int(values["generation"]) > 99_999_999):
+            failures.append(f"{fields[0]} invalid generation")
+            continue
+        if (not values["region"].isdigit()
+                or not 8 <= int(values["region"]) <= 2_097_152
+                or int(values["region"]) & (int(values["region"]) - 1)):
+            failures.append(f"{fields[0]} invalid dm-clone region")
+            continue
+        if values["phase"] != "MATERIALIZED":
+            failures.append(
+                f"{fields[0]} phase={values['phase'] or 'UNKNOWN'}"
+            )
+            continue
+        if values["head"] != values["new"]:
+            failures.append(f"{fields[0]} materialized HEAD is not the new generation")
+            continue
+        if values["op"] == "ALLOC":
+            if (values["snapshot"] != "none"
+                    or len({values[key] for key in ("source", "old", "new", "head")}) != 1):
+                failures.append(f"{fields[0]} invalid materialized allocation state")
+        elif values["op"] in {"SNAPSHOT", "ROLLBACK"}:
+            if (values["snapshot"] == "none" or values["old"] == values["new"]
+                    or values["source"] == values["new"]
+                    or (values["op"] == "SNAPSHOT" and values["source"] != values["old"])
+                    or (values["op"] == "ROLLBACK" and values["source"] == values["old"])):
+                failures.append(f"{fields[0]} invalid materialized {values['op'].lower()} state")
+        else:
+            failures.append(f"{fields[0]} unknown operation")
+            continue
+        head = rows.get(values["head"])
+        if not head:
+            failures.append(f"{fields[0]} authoritative HEAD LV is missing")
+            continue
+        generation = {}
+        malformed_generation = False
+        for raw in head[4].split(","):
+            if not raw.startswith("slt_tgo_"):
+                continue
+            if "=" not in raw:
+                malformed_generation = True
+                continue
+            key, value = raw.split("=", 1)
+            if key in generation:
+                malformed_generation = True
+            generation[key] = value
+        generation_required = {
+            "slt_tgo_v", "slt_tgo_sid", "slt_tgo_vol", "slt_tgo_role",
+            "slt_tgo_generation", "slt_tgo_sha256",
+        }
+        if (malformed_generation or set(generation) != generation_required
+                or any(not token.fullmatch(value) for value in generation.values())):
+            failures.append(f"{fields[0]} authoritative HEAD ownership is malformed")
+            continue
+        generation_values = {
+            "v": generation["slt_tgo_v"], "sid": generation["slt_tgo_sid"],
+            "vol": generation["slt_tgo_vol"], "role": generation["slt_tgo_role"],
+            "generation": generation["slt_tgo_generation"],
+        }
+        generation_canonical = "|".join(
+            f"{key}={generation_values[key]}"
+            for key in ("v", "sid", "vol", "role", "generation")
+        )
+        generation_digest = hashlib.sha256(
+            generation_canonical.encode("utf-8")
+        ).hexdigest()[:32]
+        if (generation_values["v"] != "1"
+                or generation_values["sid"] != sid
+                or generation_values["vol"] != values["vol"]
+                or generation_values["role"] != "head"
+                or generation_values["generation"] != values["generation"]
+                or generation["slt_tgo_sha256"] != generation_digest):
+            failures.append(f"{fields[0]} authoritative HEAD ownership does not match")
+            continue
+        key = fields[0][len("sltg-a-"):]
+        if any(name.startswith(f"sltg-m-{key}-") for name in rows):
+            failures.append(f"{fields[0]} materialized state retains transition metadata")
+            continue
+        if reference_lookup is not None and not reference_lookup(sid, values["vol"]):
+            failures.append(
+                f"{fields[0]} materialized volume {sid}:{values['vol']} has no PVE reference"
+            )
+    return (not failures), anchors, failures
+
+
+def thin_reference_health(pool_output, sid, reference_lookup,
+                          snapshot_reference_lookup=None):
+    """Require exact agreement between owned thin LVs and PVE references."""
+    rows = {}
+    for line in pool_output.splitlines():
+        fields = [x.strip() for x in line.split("|")]
+        if len(fields) >= 6 and fields[0]:
+            rows[fields[0]] = fields
+    failures = []
+    pools = []
+    expected_snapshots = (
+        snapshot_reference_lookup(sid) if snapshot_reference_lookup else set()
+    )
+    for name, fields in rows.items():
+        match = re.fullmatch(r"sltp-(\d+)", name)
+        if not match or f"pve-slt-sid-{sid}" not in fields[4].split(","):
+            continue
+        pools.append(name)
+        vmid = match.group(1)
+        disks = sorted(
+            candidate for candidate, candidate_fields in rows.items()
+            if len(candidate_fields) >= 6
+            and candidate_fields[5] == name
+            and re.fullmatch(rf"vm-{re.escape(vmid)}-disk-\d+", candidate)
+        )
+        if not disks:
+            failures.append(f"{name} has no canonical guest disk")
+            continue
+        for disk in disks:
+            if not reference_lookup(sid, disk):
+                failures.append(f"{disk} in {name} has no PVE reference")
+        owned_disks = set(disks)
+        actual_snapshots = set()
+        snapshot_prefix = re.compile(r"^snap_(vm-\d+-disk-\d+)_(.+)$")
+        for candidate, candidate_fields in rows.items():
+            if len(candidate_fields) < 6 or candidate_fields[5] != name:
+                continue
+            if not candidate.startswith("snap_"):
+                continue
+            snapshot_match = snapshot_prefix.fullmatch(candidate)
+            if (not snapshot_match
+                    or snapshot_match.group(1) not in owned_disks
+                    or not re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_.-]*", snapshot_match.group(2)
+                    )):
+                failures.append(f"{candidate} in {name} has a malformed snapshot identity")
+                continue
+            actual_snapshots.add(snapshot_match.groups())
+        expected_for_pool = {
+            pair for pair in expected_snapshots if pair[0] in owned_disks
+        }
+        for disk, snapshot in sorted(expected_for_pool - actual_snapshots):
+            failures.append(
+                f"snap_{disk}_{snapshot} is required by PVE but missing from {name}"
+            )
+        for disk, snapshot in sorted(actual_snapshots - expected_for_pool):
+            failures.append(
+                f"snap_{disk}_{snapshot} in {name} has no matching PVE snapshot reference"
+            )
+    return (not failures), pools, failures
 
 
 def main(argv=None):
@@ -121,6 +408,7 @@ def main(argv=None):
     expected_pv = clean(cfg.get("slt-expected-pv-uuid"))
     expected_wwid = clean(cfg.get("slt-expected-wwid")).lower()
     expected_paths = clean(cfg.get("slt-expected-min-paths"))
+    allocation_mode = clean(cfg.get("slt-allocation-mode") or "thin")
     results = {}
     details = []
 
@@ -132,7 +420,7 @@ def main(argv=None):
         ("PV", ["/sbin/pvs", "--readonly", "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
-        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags", vg]),
+        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv", vg]),
         ("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]),
     ]
     evidence = {}
@@ -182,6 +470,30 @@ def main(argv=None):
     if owned_count == 0:
         details.append("no owned thin pool currently exists; pool-health gate is not applicable")
 
+    if allocation_mode == "thick-generations":
+        anchor_ok, anchors, anchor_failures = thick_anchor_health(
+            evidence.get("POOL", {}).get("out", ""), sid, expected_vg,
+            pve_reference_files,
+        )
+        results["THICK_ANCHORS_HEALTHY"] = "PASS" if anchor_ok else "FAIL"
+        details.append(f"thick_anchors={len(anchors)}")
+        details.extend(f"recovery-required: {item}" for item in anchor_failures)
+    else:
+        results["THICK_ANCHORS_HEALTHY"] = "PASS"
+        details.append("Thick Generations anchor gate is not applicable")
+
+    if allocation_mode == "thick-generations":
+        results["THIN_REFERENCES_HEALTHY"] = "PASS"
+        details.append("thin reference gate is not applicable")
+    else:
+        thin_ok, thin_pools, thin_failures = thin_reference_health(
+            evidence.get("POOL", {}).get("out", ""), sid, pve_reference_files,
+            pve_snapshot_references,
+        )
+        results["THIN_REFERENCES_HEALTHY"] = "PASS" if thin_ok else "FAIL"
+        details.append(f"owned_thin_pools={len(thin_pools)}")
+        details.extend(f"recovery-required: {item}" for item in thin_failures)
+
     pve_out = evidence.get("PVE", {}).get("out", "")
     results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
         rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
@@ -205,14 +517,21 @@ def main(argv=None):
     else:
         results["QUORUM"] = "PASS"
 
-    dstatus, relevant, unknown = dstate_evidence([vg, expected_wwid, actual_dev])
+    dstatus, relevant, unknown, transient = settled_dstate_evidence(
+        [vg, expected_wwid, actual_dev]
+    )
     results["NO_RELEVANT_DSTATE"] = dstatus
     details.extend(relevant)
+    if transient:
+        details.append(
+            f"transient_dstate_tasks={transient}; bounded persistence recheck passed"
+        )
     if unknown:
         details.append(f"unscoped_dstate_tasks={len(unknown)}; positive storage attribution unavailable")
 
     ordered = ["PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
-               "POOL_FLAGS_HEALTHY", "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
+               "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "THIN_REFERENCES_HEALTHY",
+               "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
                "PVE_STORAGE_HEALTH", "QUORUM"]
     safe = all(results.get(name) == "PASS" for name in ordered)
     print(f"STORAGE_ID={sid}")
