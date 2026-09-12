@@ -23,6 +23,17 @@ The plugin manages storage objects. It is not in the guest I/O path after QEMU
 opens an LV and does not provide SAN connectivity, multipath configuration,
 replication, fencing, quorum, or automatic metadata repair.
 
+## Why does this exist?
+
+The primary use case is a Proxmox cluster that must keep using an existing
+shared FC or iSCSI SAN. Native shared LVM provides shared access and live
+migration but not the expected snapshot lifecycle, while ordinary LVM-thin is
+not designed as concurrently shared cluster storage.
+
+BASTRIX SharedLVM bridges that gap with snapshots, rollback, resize and
+migration in either Thin or Thick Generations mode. If you already use Ceph,
+NFS or a suitable vendor-native plugin, you probably do not need it.
+
 ## Release status
 
 `0.9.0~rc5.3.1` is a release candidate intended exclusively for Proxmox VE 9.
