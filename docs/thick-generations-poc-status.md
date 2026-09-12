@@ -3727,16 +3727,31 @@ Thick Windows write-through workload for 15,300 seconds. Correlated host run
 than 15,530 seconds. No snapshot, resize, migration, backup, restore or other
 lifecycle mutation is permitted during this isolated retest.
 
-The exact TG12 package remained installed, both guest worker PIDs were live,
-and the first host iteration on every node reported quorum, exactly two paths,
-zero D-state, healthy recovery checks and sticky `PASS`. This is a running
-qualification, not a completed PASS; all guest and host terminal evidence must
-still pass the strict classifier.
+The run completed without a lifecycle mutation. The Thin worker completed
+4,045 contiguous cycles in 15,302 seconds with a maximum progress gap of
+67.637 seconds. The Thick worker completed 4,167 contiguous cycles in 15,303
+seconds with a maximum progress gap of 5.588 seconds. Both terminal results
+were canonical `PASS`; redirected stdout and stderr remained empty.
+
+Each host completed 52 iterations. PVE01, PVE02 and PVE03 respectively ran for
+15,542, 15,540 and 15,536 monotonic seconds. Every node retained quorum,
+exactly two paths and package `0.9.0~rc5.4~tg12`; there were zero failed
+recovery probes, persistent D-state samples, path failures, quorum failures or
+boot changes. Short global D-state observations disappeared before the
+two-second persistence check and therefore did not satisfy the predeclared
+failure condition. All four archives were checksummed on their source system,
+downloaded and verified locally before extraction. The strict classifier
+returned terminal `overall=PASS`.
 
 ```ini
 TG12_CLEAN_GUEST_RUN_ID=78bc8aceb1d141c6a7826db4ed3bc54e
 TG12_CLEAN_HOST_RUN_ID=78bc8aceb1d141c6a7826db4ed3bc54e-host-clean
 TG12_CLEAN_NO_LIFECYCLE_MUTATIONS=ENFORCED_BY_TEST_PLAN
-TG12_CLEAN_INITIAL_ITERATION=PASS_ALL_THREE_NODES
-DUAL_MODE_ENDURANCE_QUALIFICATION=CLEAN_RETEST_RUNNING
+TG12_CLEAN_GUEST_THIN=PASS_4045_CYCLES_15302_SECONDS
+TG12_CLEAN_GUEST_THICK=PASS_4167_CYCLES_15303_SECONDS
+TG12_CLEAN_PVE01=PASS_52_ITERATIONS_15542_SECONDS
+TG12_CLEAN_PVE02=PASS_52_ITERATIONS_15540_SECONDS
+TG12_CLEAN_PVE03=PASS_52_ITERATIONS_15536_SECONDS
+TG12_CLEAN_STRICT_CLASSIFIER=PASS
+DUAL_MODE_ENDURANCE_QUALIFICATION=PASS
 ```
