@@ -3755,3 +3755,34 @@ TG12_CLEAN_PVE03=PASS_52_ITERATIONS_15536_SECONDS
 TG12_CLEAN_STRICT_CLASSIFIER=PASS
 DUAL_MODE_ENDURANCE_QUALIFICATION=PASS
 ```
+
+## Pre-final release gate after clean endurance
+
+Exact commit `bbae95b` was exported with `git archive` and SHA-256 verified on
+the API 14 node before execution. The complete Linux release gate passed: 156
+Python unit tests, 236 Perl tests, shell syntax, ShellCheck, and Python bytecode
+compilation. Two builds in independently extracted source directories were
+byte-identical with SHA-256
+`9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e8968464f2b7`.
+
+This is a pre-final checkpoint. It must be repeated after the supported Veeam
+restore matrix is either completed and documented or explicitly retained as
+an unqualified external integration boundary.
+
+The read-only cluster inventory showed quorum 3/3, no D-state, no scoped TG12
+test VMIDs or LVs, and both `slt-tg-thin` and `slt-tg-thick` healthy on every
+node. The older `sharedthin-test` alias correctly remains
+`RECOVERY_REQUIRED`: owned `vm-203-disk-0` has no PVE reference. That object is
+outside the TG12 transaction scope and is intentionally preserved rather than
+being treated as disposable cleanup.
+
+```ini
+PRE_FINAL_COMMIT=bbae95b
+PRE_FINAL_FULL_REGRESSION=PASS
+PRE_FINAL_PYTHON_TESTS=156
+PRE_FINAL_PERL_TESTS=236
+PRE_FINAL_REPRODUCIBLE_BUILD=PASS
+PRE_FINAL_DEB_SHA256=9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e8968464f2b7
+TG12_SCOPED_LEFTOVERS=0
+PREEXISTING_UNREFERENCED_OBJECT=PRESERVED_FAIL_CLOSED
+```
