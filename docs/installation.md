@@ -153,12 +153,13 @@ latency. Existing `fixed`, `proportional`, and `full` policies remain available
 for compatibility and explicit operational choices. See
 `clone-restore-burst-capacity.md`.
 
-### Experimental thin and Thick Generations coexistence
+### Thin and Thick Generations coexistence
 
-This subsection applies only to a Thick Generations qualification build. Do
-not use it with the public thin-only release. To offer both allocation models
-over one VG, create exactly two SharedLvmThin storage definitions. Both must
-use the same identity, reserve, expected-path, shared, and node-scope values:
+The dual-mode package does not guess which capacity model an administrator
+wants. Create one storage definition for each mode you intend to expose. To
+offer both modes over one VG, create exactly two SharedLvmThin definitions.
+Both must use the same identity, reserve, expected-path, shared, and node-scope
+values:
 
 ```bash
 pvesm add sharedlvmthin <THIN_STORAGE_ID> \
@@ -194,6 +195,10 @@ half-visible pairs before activation or mutation.
 Both storage entries report the same physical VG capacity. They are two views
 of one allocation domain, not two independent capacity pools; never add their
 reported capacities together. Doctor validates and explains this relationship.
+The chosen PVE storage ID is the user-visible mode selector when creating,
+restoring or moving a disk. Existing volumes retain their own allocation mode;
+changing the default does not silently convert them. Use a normal PVE Storage
+Move for an explicit Thin-to-Thick or Thick-to-Thin conversion.
 
 ## 7. Validate before storing a VM
 

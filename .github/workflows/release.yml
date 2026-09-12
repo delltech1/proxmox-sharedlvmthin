@@ -51,8 +51,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag_name="${GITHUB_REF_NAME##*/}"
-          suffix="${tag_name##*-}"
-          release_name="$(printf '%s' "$suffix" | tr '[:lower:]' '[:upper:]')"
+          case "$tag_name" in
+            v0.9.0-*) release_name="${tag_name#v0.9.0-}" ;;
+            v*) release_name="${tag_name#v}" ;;
+            *) release_name="$tag_name" ;;
+          esac
+          release_name="$(printf '%s' "$release_name" | tr '[:lower:]' '[:upper:]')"
           notes="docs/RELEASE-NOTES-${release_name}.md"
           test -f "$notes"
           if gh release view "$tag_name" >/dev/null 2>&1; then

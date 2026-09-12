@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased Thick Generations prototype
+## 0.9.0~rc5.4~tg12 (2026-09-12)
+
+- Publish one explicitly selected dual-mode package: isolated per-VM Thin
+  pools or fully allocated Thick Generations over the same pinned shared VG.
+- Qualify Thin/Thick Storage Move, native PVE backup/restore, Veeam HotAdd
+  backup and supported-console cross-mode restore with block-hash evidence.
+- Complete the accepted-build gate with 156 Python tests, 236 Perl tests,
+  reproducible byte-identical packages, three-node API 14/15 reinstall, and a
+  clean four-hour dual-mode endurance run.
 
 - Add an incident-to-invariant research matrix for PVE rollback dispatch,
   stale snapshot objects, thin metadata corruption and dm-clone hydration I/O

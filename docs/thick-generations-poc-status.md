@@ -3855,7 +3855,8 @@ test LVs. All observed multipath paths were active.
 
 The final package payload is unchanged from the candidate already subjected to
 two consecutive install operations on Storage API 14 and 15. A fresh export
-of commit `ce7c44b` passed the full Linux regression and produced two
+of accepted qualification commit `8622dab` passed the full Linux regression
+and produced two
 byte-identical packages with the same installed SHA-256.
 
 The unrelated older `sharedthin-test` object `vm-203-disk-0` remains
@@ -3869,7 +3870,7 @@ POST_QUALIFICATION_TG_STORAGE=HEALTHY_ALL_NODES
 POST_QUALIFICATION_TEST_VMIDS=0
 POST_QUALIFICATION_TEST_LVS=0
 POST_QUALIFICATION_MULTIPATH=ACTIVE
-FINAL_CODE_CHECKPOINT=ce7c44b
+FINAL_CODE_CHECKPOINT=8622dab
 FINAL_CODE_REGRESSION=PASS
 FINAL_CODE_REPRODUCIBLE_BUILD=PASS
 FINAL_CODE_DEB_SHA256=9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e8968464f2b7

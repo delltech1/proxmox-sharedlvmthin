@@ -1,8 +1,8 @@
 # Thick Generations release gate
 
-Thick Generations remains experimental until every required software and live
-integration gate below has positive evidence. A documented hardware boundary
-is not converted into a success claim.
+Thick Generations remains a release candidate. Every required software and
+available live integration gate below has positive evidence; a documented
+hardware boundary is not converted into a success claim.
 
 Disruptive cluster and transport coverage is tracked separately in the
 [Thin and Thick Generations redundancy gate](thick-generations-redundancy-gate.md).
@@ -21,7 +21,7 @@ The executable order and remaining original-cluster work are defined in the
 | Mobility | Offline/live migration, storage move and thin-to-thick/thick-to-thin conversion | PASS |
 | Native PVE data protection | Snapshot-mode backup, restore, sparse archive and restored-guest validation | PASS |
 | Veeam HotAdd backup | Supported-UI Thin, Thick and mixed-VM backup with exact proxy cleanup | PASS |
-| Veeam cross-mode restore | Supported-UI Thin-to-Thin, Thin-to-Thick, Thick-to-Thick, Thick-to-Thin and mixed restore with data verification | OPEN |
+| Veeam cross-mode restore | Supported-UI Thin-to-Thin, Thin-to-Thick, Thick-to-Thick, Thick-to-Thin and mixed restore with data verification | PASS |
 | HA | Controlled relocation and fenced worker-host loss during materialization | PASS |
 | iSCSI multipath | 2-to-1-to-2 and bounded 2-to-0-to-2 recovery with identity and data verification | SINGLE PATH PASS; THICK LINEAR TOTAL LOSS PASS; ACTIVE THIN FAIL_HOST_DM_THIN; ACTIVE HYDRATION FAIL_HOST_DM_CLONE; EXPLICIT POST-REBOOT RESUME PASS, PRE-FAULT SHA NOT PROVEN |
 | FCoE lab transport | Ordinary I/O and 2-to-1 failover | READ/THICK WRITE PASS; THIN ZEROING BASELINE FAIL_TARGET_TCM_FC |
@@ -29,17 +29,17 @@ The executable order and remaining original-cluster work are defined in the
 | Windows workload | Long write-through, flush and hash-verification soak | PASS |
 | Windows interruption | Materialization interruption, explicit resume, pivot and guest data verification | PASS |
 | Cross-node non-interference | Repeated bounded recovery checks on every qualified API node | PASS |
-| Dual-mode endurance | Uninterrupted Thin and Thick guest write, flush and direct-read verification with host-side recovery monitoring | NEGATIVE RUN ARCHIVED; CLEAN RETEST RUNNING |
+| Dual-mode endurance | Uninterrupted Thin and Thick guest write, flush and direct-read verification with host-side recovery monitoring | NEGATIVE RUN ARCHIVED; CLEAN RETEST PASS |
 | Large-capacity arithmetic | 1, 16 and 128 PiB geometry, overflow refusal and exact health counters | PASS |
 | Physical petabyte storage | Representative array qualification | NOT TESTED |
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
 | Web and installer | Dual-mode configuration, authentication, monitoring and live rendering | PASS |
 | Recovery monitoring | Live IN_PROGRESS, RECOVERY_REQUIRED and post-resume MATERIALIZED classification; scoped dmeventd requirement | PASS |
-| Regression | Python, Perl taint-mode, package content and privacy gates | PASS |
+| Regression | Python, Perl taint-mode, package content and privacy gates at accepted commit | PASS: 156 PYTHON, 236 PERL |
 
 `PASS` means the evidence is recorded in
 [`thick-generations-poc-status.md`](thick-generations-poc-status.md). A current
-`RUNNING` or `OPEN` entry in this table is a release blocker; historical
+`RUNNING` or `OPEN` entry in this table would be a release blocker; historical
 intermediate states remain unchanged in the chronological evidence log. A
 physical PB or FC claim remains outside the qualified support envelope until
 representative hardware is available. The
