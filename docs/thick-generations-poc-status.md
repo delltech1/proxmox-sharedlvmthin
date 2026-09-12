@@ -3802,3 +3802,44 @@ PVE01_PVE02_STORAGE_API=15_PASS
 INSTALLED_DEB_SHA256=9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e8968464f2b7
 PACKAGE_INSTALL_STATE_DRIFT=0
 ```
+
+## Supported Veeam cross-mode restore qualification
+
+Veeam Backup & Replication restored all six planned cases through its
+supported Proxmox desktop-console workflow. Veeam selected free destination
+VMIDs `107..112`; exact names, stopped state and storage placement were
+verified rather than assuming the planning VMIDs:
+
+- Thin source to Thin and Thick;
+- Thick source to Thick and Thin;
+- mixed Thin/Thick source to all-Thin and all-Thick destinations.
+
+The eight destination disks matched the four saved source prefixes by
+SHA-256. The three source VMs and all four source disks were independently
+rehash-verified after restore. Both storage recovery gates passed before and
+after verification. Evidence was archived and locally SHA-256 verified before
+cleanup.
+
+The cleanup helper accepted the six observed VMIDs only as explicit
+parameters and additionally required their exact names, stopped state, disk
+count, target storage and PASS evidence. It removed only those restored VMs,
+proved zero PVE/LVM references, and restored the exact LVM inventory and VG
+free-byte baseline. The disposable source transaction then restored the
+original `VEEAMTEST` membership, reverified source data and removed only VMIDs
+`999949..999951`.
+
+```ini
+VEEAM_THIN_TO_THIN_RESTORE=PASS
+VEEAM_THIN_TO_THICK_RESTORE=PASS
+VEEAM_THICK_TO_THICK_RESTORE=PASS
+VEEAM_THICK_TO_THIN_RESTORE=PASS
+VEEAM_MIXED_TO_ALL_THIN_RESTORE=PASS
+VEEAM_MIXED_TO_ALL_THICK_RESTORE=PASS
+VEEAM_DESTINATION_DISK_SHA_COUNT=8_PASS
+VEEAM_POST_RESTORE_SOURCE_SHA_COUNT=4_PASS
+VEEAM_RESTORE_EXACT_CLEANUP=PASS
+VEEAM_LVM_BASELINE_RESTORED=PASS
+VEEAM_VG_FREE_DELTA=0
+VEEAM_SOURCE_SELECTION_RESTORED=PASS
+VEEAM_FINAL_EVIDENCE_SHA256=ff75f5360d0d8637abf2e98b453698d50738d18747396004d9c37555a580a78b
+```
