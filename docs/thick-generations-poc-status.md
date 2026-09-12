@@ -3786,3 +3786,19 @@ PRE_FINAL_DEB_SHA256=9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e896846
 TG12_SCOPED_LEFTOVERS=0
 PREEXISTING_UNREFERENCED_OBJECT=PRESERVED_FAIL_CLOSED
 ```
+
+The same reproducible candidate DEB was then installed twice consecutively on
+each cluster member. PVE03 exercised Storage API 14; PVE01 and PVE02 exercised
+Storage API 15. Every node preserved the exact storage configuration digest,
+LVM inventory digest, running-VM set, web configuration, TLS files, service
+enablement and web health. Both Thick Generations recovery checks remained
+healthy and the pre-existing unreferenced Thin object remained fail-closed.
+
+```ini
+PRE_FINAL_THREE_NODE_INSTALL=PASS
+PRE_FINAL_THREE_NODE_REINSTALL=PASS
+PVE03_STORAGE_API=14_PASS
+PVE01_PVE02_STORAGE_API=15_PASS
+INSTALLED_DEB_SHA256=9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e8968464f2b7
+PACKAGE_INSTALL_STATE_DRIFT=0
+```
