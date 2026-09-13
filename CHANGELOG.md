@@ -16,6 +16,10 @@
   three PVE nodes, with identical package/plugin hashes, mixed API 14/15,
   quorum, two healthy paths per node, pinned WWID/PV/VG identity and zero
   D-state processes after rolling TG21 installation.
+- Complete a 60/60 thick online evacuation at 16-way concurrency and a 50/50
+  native PVE HA maintenance relocation, then restore the exact saved placement
+  with 106/106 bounded online migrations. Six full-device SHA256 samples,
+  source mapper cleanup, quorum, path and D-state postconditions passed.
 
 ## 0.9.0~rc5.4~tg21 (2026-09-13)
 

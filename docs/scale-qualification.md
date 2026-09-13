@@ -14,6 +14,16 @@ arbitrary SAN, CPU, network, guest workload or cluster size.
 - the thick baseline retained identical package/plugin hashes, quorum, 2/2
   paths per node, exact WWID/PV/VG identity and zero D-state processes;
 - 72-VM node evacuation driven by 16 migration workers;
+- 60/60 thick-mode online node-evacuation migrations at 16-way concurrency,
+  followed by zero source-node Thick Generations mappers, 150/150 running VMs,
+  zero D-state processes and six full 1 GiB post-migration SHA256 checks;
+- 50/50 native PVE HA maintenance relocations completed from one node to
+  another eligible node with all resources returning to stable `started`, no
+  HA error, quorum retained and no plugin-specific HA mechanism;
+- exact post-test placement reconciliation performed 106/106 online migrations
+  at a bounded maximum of six workers per source node (18 cluster-wide). The
+  saved per-VM baseline then had zero placement differences and mapper counts
+  returned to 48/42/60 with 150/150 VMs running;
 - exact source/destination configuration, local mapper, D-state, quorum,
   multipath and recovery checks after each fault or implementation change.
 
@@ -91,3 +101,6 @@ The direct A/B result for the second fix was:
   within one check while preserving exact postconditions.
 
 No 200–500 LUN or enterprise-array scale claim is made by this gate.
+The 150-VM result is a disposable-lab concurrency and lifecycle envelope, not
+a promise that arbitrary guest memory, I/O intensity, SAN latency or HA policy
+will produce the same timings.
