@@ -146,6 +146,42 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
         'a failed callback is not hidden behind a post-success yield');
 };
 
+subtest 'thick allocation zeroing offloads safely and has a complete fallback' => sub {
+    reset_mocks();
+    is($class->_zero_new_thick_generation('/dev/testvg/exact-head', 4096, 'test head'),
+        'blkzeroout', 'standard block zeroout is preferred when supported');
+    is_deeply([command_lines()], [
+        '/usr/sbin/blkdiscard --zeroout --offset 0 --length 4096 /dev/testvg/exact-head',
+    ], 'zeroout targets the exact full range and never issues discard');
+
+    reset_mocks();
+    $command_failure = qr{/usr/sbin/blkdiscard};
+    is($class->_zero_new_thick_generation('/dev/testvg/exact-head', 4096, 'test head'),
+        'direct-write-fallback', 'unsupported zeroout falls back to a full direct write');
+    is_deeply([command_lines()], [
+        '/usr/sbin/blkdiscard --zeroout --offset 0 --length 4096 /dev/testvg/exact-head',
+        '/usr/bin/dd if=/dev/zero of=/dev/testvg/exact-head bs=4M count=4096 iflag=count_bytes oflag=direct conv=fsync,nocreat status=none',
+    ], 'fallback rewrites the entire exact range after any partial ioctl result');
+
+    reset_mocks();
+    $command_failure = qr{(?:/usr/sbin/blkdiscard|/usr/bin/dd)};
+    eval { $class->_zero_new_thick_generation('/dev/testvg/exact-head', 4096, 'test head') };
+    like($@, qr/BLKZEROOUT was unavailable.*full direct-write fallback failed/s,
+        'double failure is explicit and never reported as initialized');
+    is(scalar(@commands), 2, 'each zero primitive is attempted at most once');
+
+    reset_mocks();
+    eval { $class->_zero_new_thick_generation('/dev/testvg/exact-head', 513, 'test head') };
+    like($@, qr/invalid thick-generation zero length/,
+        'unaligned ranges are rejected before any block operation');
+    is(scalar(@commands), 0, 'invalid zero range performs no command');
+
+    eval { $class->_zero_new_thick_generation('/dev/testvg/../wrong', 4096, 'test head') };
+    like($@, qr/invalid thick-generation block-device path/,
+        'path traversal is rejected before any block operation');
+    is(scalar(@commands), 0, 'invalid block path performs no command');
+};
+
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
     for my $case (
         ['twi-aotz--||', 1, 'healthy'],

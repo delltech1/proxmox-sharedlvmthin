@@ -9,9 +9,10 @@ arbitrary SAN, CPU, network, guest workload or cluster size.
 - one pinned two-path iSCSI LUN, expanded online from 150 GiB to 450 GiB;
 - WWID, PV UUID and VG UUID unchanged across the expansion;
 - 150 simultaneously running thin-mode VMs and 150 independent per-VM pools;
-- thick-generations scale qualification targets 150 additional 1 GiB VMs;
-  this result remains `IN_PROGRESS` until the final inventory and health
-  postconditions are recorded;
+- 150 simultaneously running thick-mode 1 GiB VMs, distributed across all
+  three nodes, after rolling TG21 installation;
+- the thick baseline retained identical package/plugin hashes, quorum, 2/2
+  paths per node, exact WWID/PV/VG identity and zero D-state processes;
 - 72-VM node evacuation driven by 16 migration workers;
 - exact source/destination configuration, local mapper, D-state, quorum,
   multipath and recovery checks after each fault or implementation change.
@@ -34,6 +35,15 @@ allocation this reduced the archive-producing metadata commits from nine to
 five and completed in 48.3 seconds. Exact tag and autoactivation read-back,
 PREPARED/MATERIALIZED phase verification, VG intent and capacity gates remain
 in place.
+
+For TG22, an exact 1 GiB SAN A/B used full-device SHA256 readback before and
+after each operation. `BLKZEROOUT` completed in 0.50--0.81 seconds and the
+direct synchronous zero fallback in 28.78--30.40 seconds. Both produced the
+same all-zero SHA256, removed only their transaction-scoped test LV, and
+returned the VG to exactly 159161253888 free bytes. The optimization never
+uses discard/UNMAP and falls back to a complete direct rewrite after any
+zeroout error. Results are specific to this target and are not a throughput
+claim for other SAN implementations.
 
 The direct A/B result for the second fix was:
 
@@ -66,6 +76,15 @@ The direct A/B result for the second fix was:
 - LVM archive retention is administrator-owned host policy.  The plugin does
   not prune archives or rewrite `lvm.conf`; Doctor/runbooks may report the
   condition but never clean it automatically.
+- VG text-metadata capacity is a separate hard scale limit. At 526 LVs during
+  this gate, the deliberately provisioned 8 MiB metadata area had about
+  3.65 MiB free. `pv_mda_free` must therefore be recorded alongside VG data
+  capacity: more timeout, RAM or SAN throughput cannot recover an exhausted
+  circular metadata area. Size `pvmetadatasize` before creating a production
+  PV and use multiple independently pinned VG/storage domains when one VG
+  cannot retain safe metadata and failure-domain headroom at the intended
+  object count. The plugin diagnoses this state but never rewrites PV/VG
+  metadata layout automatically.
 - At 150 pools a full positive recovery check can take roughly one to two
   minutes in this lab.  Safety checks are not silently skipped to improve a
   benchmark.  Further work should cache only immutable/read-only inventory

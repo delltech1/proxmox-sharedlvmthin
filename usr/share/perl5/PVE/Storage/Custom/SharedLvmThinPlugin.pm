@@ -1568,6 +1568,45 @@ sub _thick_recover_partial_allocation {
     }, $device);
 }
 
+sub _zero_new_thick_generation {
+    my ($class, $path, $bytes, $description) = @_;
+    die "invalid thick-generation zero length\n"
+        if !defined($bytes) || $bytes !~ /^\d+$/ || $bytes < 512 || $bytes % 512;
+    die "invalid thick-generation block-device path\n"
+        if !defined($path)
+        || $path !~ m{^/dev/[A-Za-z0-9+_.-]+/[A-Za-z0-9+_.-]+$}
+        || $path =~ m{(?:^|/)\.\.?($|/)};
+
+    # BLKZEROOUT is a standard Linux block ioctl. It can be offloaded through
+    # DM/SCSI by capable storage and otherwise fails before we use the
+    # universally qualified direct-write path. A failed ioctl may have
+    # completed a prefix, which is harmless because the fallback rewrites the
+    # entire exact range. Never use BLKDISCARD here: a Thick Generation must
+    # remain a fully allocated LVM LV with deterministic zero contents.
+    my $zeroout_error;
+    eval {
+        run_command(
+            ['/usr/sbin/blkdiscard', '--zeroout', '--offset', '0',
+                '--length', "$bytes", $path],
+            errmsg => "BLKZEROOUT of $description failed",
+        );
+    };
+    return 'blkzeroout' if !$@;
+    $zeroout_error = $@;
+
+    eval {
+        run_command(
+            ['/usr/bin/dd', 'if=/dev/zero', "of=$path", 'bs=4M',
+                "count=$bytes", 'iflag=count_bytes', 'oflag=direct',
+                'conv=fsync,nocreat', 'status=none'],
+            errmsg => "direct zero initialization of $description failed",
+        );
+    };
+    die "BLKZEROOUT was unavailable for $description ($zeroout_error)"
+        . "and the full direct-write fallback failed: $@" if $@;
+    return 'direct-write-fallback';
+}
+
 sub _thick_alloc_image {
     my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
     die "unsupported format '$fmt'\n" if defined($fmt) && $fmt ne 'raw';
@@ -1652,11 +1691,8 @@ sub _thick_alloc_image {
             errmsg => "activating new thick generation '$vg/$head' for zeroing failed",
         );
         my $zero_bytes = int($size) * 1024;
-        run_command(
-            ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$head", 'bs=4M',
-                "count=$zero_bytes", 'iflag=count_bytes', 'oflag=direct',
-                'conv=fsync,nocreat', 'status=none'],
-            errmsg => "zero-initializing new thick generation '$vg/$head' failed",
+        $class->_zero_new_thick_generation(
+            "/dev/$vg/$head", $zero_bytes, "new thick generation '$vg/$head'",
         );
         run_command(
             ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$head"],

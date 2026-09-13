@@ -1,8 +1,8 @@
-# Thick Generations tg12 handoff
+# Thick Generations tg22 handoff
 
 ## Candidate
 
-`0.9.0~rc5.4~tg12` is one dual-mode release-candidate Debian package for Proxmox
+`0.9.0~rc5.4~tg22` is one dual-mode laboratory release-candidate Debian package for Proxmox
 VE 9 Storage API 14 and 15. One installed plugin exposes two explicitly chosen
 storage modes:
 
@@ -26,17 +26,21 @@ node. The first lifecycle-overlapped four-hour run correctly classified
 `FAIL` after fail-closed D-state observations; its guest-integrity evidence is
 preserved as a negative qualification result. The isolated mutation-free
 four-hour retest subsequently passed on both modes with all three host
-collectors green.
+collectors green. TG22 additionally passes 158 Python and 243 Perl tests,
+rolling installation on all three nodes, a 150/150 running thick-VM baseline,
+and exact SAN zero-initialization A/B qualification. Bounded parallel
+migration/HA qualification of the 150-VM population remains in progress and
+must not be inferred from the baseline count.
 
-The accepted TG12 DEB SHA-256 is:
+The current TG22 laboratory DEB SHA-256 is:
 
 ```text
-9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e8968464f2b7
+e7f731b1747270e5085ce71f7fe0bbeb575a474d414892c7014058322d3d95b0
 ```
 
-Two isolated builds of accepted commit `8622dab` produced this byte-identical
-package. The same artifact passed consecutive installation/reinstallation on
-all three qualified nodes.
+Two isolated TG22 builds produced this byte-identical package. The same
+artifact passed rolling installation on all three qualified nodes. Record the
+final commit identifier only after the in-progress scale gate is frozen.
 
 ## Remaining support boundary
 

@@ -44,6 +44,12 @@ extents in the VG. A high object count can exhaust the metadata area even when
 read-only `pv_mda_size`/`pv_mda_free` state and warn below 20% or at exhaustion.
 They do not resize, relocate, repair, or recreate PV metadata. Size it during
 storage provisioning and validate expected object scale before production.
+Timeout tuning does not change this limit. For high object counts, qualify the
+projected maximum of guest LVs, per-VM pools, generation anchors, HEADs and
+retained snapshots. If a single VG cannot preserve adequate headroom, shard
+the deployment across multiple independently identity-pinned VGs instead of
+suppressing the warning or attempting automatic metadata relocation in the
+plugin.
 
 ## Optional fail-closed identity gate
 

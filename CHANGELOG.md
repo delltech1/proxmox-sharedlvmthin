@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.0~rc5.4~tg22 (2026-09-13)
+
+- Use the standard Linux `BLKZEROOUT` ioctl for a newly allocated Thick
+  Generation when the exact block device supports it. Never issue discard or
+  UNMAP. If zeroout is unavailable or reports any failure, rewrite the entire
+  requested range with the previously qualified direct synchronous zero path;
+  fail allocation if both methods fail.
+- Qualify the primitive on the disposable two-path iSCSI SAN with full-device
+  pre/post SHA256 verification and unchanged VG free space. Repeated 1 GiB
+  samples completed in about 0.50--0.81 seconds with BLKZEROOUT versus
+  28.78--30.40 seconds for direct writes on this lab target. These timings are
+  observations, not a performance guarantee for other arrays.
+- Record a 150/150 simultaneously running Thick Generations VM baseline across
+  three PVE nodes, with identical package/plugin hashes, mixed API 14/15,
+  quorum, two healthy paths per node, pinned WWID/PV/VG identity and zero
+  D-state processes after rolling TG21 installation.
+
+## 0.9.0~rc5.4~tg21 (2026-09-13)
+
+- Add cooperative post-lock yield after successful implicit outer PVE storage
+  mutations, configurable with `slt-lock-yield-ms` (default 1000 ms). It never
+  sleeps inside a critical section or retries an ambiguous callback outcome.
+- Extend the explicitly bounded storage-lock timeout range to 10--86400 seconds
+  and require same-VG Thin/Thick aliases to use identical admission policy.
+- Document VG text-metadata capacity as an independent object-scale limit that
+  cannot be solved by RAM, timeout or SAN throughput tuning.
+
 ## 0.9.0~rc5.4~tg20 (2026-09-13)
 
 - Create a fresh Thick Generations head and anchor with their complete
