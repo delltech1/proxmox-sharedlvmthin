@@ -36,13 +36,13 @@ probably do not need this project.
 
 ## Release status
 
-`0.9.0~rc5.4~tg12` is the current dual-mode pre-release for Proxmox VE 9 and
-is published from the `experimental/thick-generations` branch. The established
-Thin-only line remains available, while RC5.4 TG12 adds Thick Generations and
-cross-mode operation. Qualification covers Proxmox VE 9.2.x with Storage API
-14 and 15, but is not universal certification of every SAN, HBA, array,
-multipath policy, firmware or failure mode. Validate it first on disposable
-storage matching your production design.
+`0.9.0~rc5.4~tg24` is the current dual-mode pre-release for Proxmox VE 9 and
+is published from the `experimental/thick-generations-tg24` branch. The
+established Thin-only line remains available, while TG24 adds Thick
+Generations and cross-mode operation. Qualification covers Proxmox VE 9.2.x
+with Storage API 14 and 15, but is not universal certification of every SAN,
+HBA, array, multipath policy, firmware or failure mode. Validate it first on
+disposable storage matching your production design.
 
 ### Experimental Thin + Thick Generations preview
 
