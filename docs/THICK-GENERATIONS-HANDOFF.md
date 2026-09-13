@@ -43,7 +43,7 @@ dependency. A live two-disk snapshot, immediate stop, start during hydration,
 linear pivot, stopped rollback, restart and exact cleanup all passed. Both
 rollback HEAD devices were byte-identical to their immutable snapshot
 generations. Cleanup restored the original one-disk VM configuration and
-exactly 159161253888 free VG bytes.
+the exact recorded VG free-space baseline.
 
 TG24 separates the bounded installation preflight from the complete Doctor.
 Rolling installation on API 14 and API 15 nodes completed in 75.00--79.15

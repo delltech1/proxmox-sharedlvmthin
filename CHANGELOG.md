@@ -18,7 +18,7 @@
 - Qualify a disposable same-VG cross-mode lifecycle: stopped Thin-to-Thick
   Storage Move completed in 37 seconds, running Thick-to-Thin native QEMU
   mirror in 128 seconds, and exact VM/storage cleanup restored the original
-  159161253888-byte VG free-space baseline with no residual object.
+  recorded VG free-space baseline with no residual object.
 - Full gates pass 244 Perl and 160 Python tests.
 
 ## 0.9.0~rc5.4~tg23 (2026-09-13)
@@ -40,7 +40,7 @@
   third-disk allocation, online grow, native multi-disk snapshot, stop,
   rollback, start, snapshot deletion and exact disk deletion all passed. No
   snapshot, rollback or temporary guest LV remained and VG free space returned
-  exactly to 159161253888 bytes.
+  exactly to the recorded pre-test VG free-space baseline.
 
 ## 0.9.0~rc5.4~tg22 (2026-09-13)
 
@@ -50,7 +50,7 @@
   requested range with the previously qualified direct synchronous zero path;
   fail allocation if both methods fail.
 - Qualify the primitive on the disposable two-path iSCSI SAN with full-device
-  pre/post SHA256 verification and unchanged VG free space. Repeated 1 GiB
+  pre/post SHA256 verification and unchanged VG free space. Repeated small
   samples completed in about 0.50--0.81 seconds with BLKZEROOUT versus
   28.78--30.40 seconds for direct writes on this lab target. These timings are
   observations, not a performance guarantee for other arrays.
@@ -79,7 +79,7 @@
 - Create a fresh Thick Generations head and anchor with their complete
   ownership tags, activation-skip policy and `autoactivation=n` in the same
   `lvcreate` metadata transaction. Read-only postconditions remain mandatory.
-- Reduce a qualified 1 GiB thick allocation from nine metadata-changing LVM
+- Reduce a qualified small thick allocation from nine metadata-changing LVM
   steps to five archive-producing commits. The isolated lab A/B completed in
   48.3 seconds; the earlier three-node contention samples commonly required
   70–120 seconds.
@@ -155,7 +155,7 @@
 - Scope the dm-event health requirement to locally active pools so a healthy
   non-owner cluster node does not fail merely because it sees inactive shared
   pool metadata.
-- Qualified the public package with a live 4 GiB -> 7 GiB elastic grow at
+- Qualified the public package with a live elastic grow at
   approximately 400 MiB/s, exact one-event enforcement, pattern readback,
   reserve verification, and complete disposable cleanup.
 

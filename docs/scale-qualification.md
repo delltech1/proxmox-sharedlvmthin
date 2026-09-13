@@ -6,10 +6,10 @@ arbitrary SAN, CPU, network, guest workload or cluster size.
 ## 2026-09-13 disposable three-node gate
 
 - mixed PVE 9 Storage API 14 and 15 cluster;
-- one pinned two-path iSCSI LUN, expanded online from 150 GiB to 450 GiB;
+- one pinned two-path iSCSI LUN, expanded online without changing identity;
 - WWID, PV UUID and VG UUID unchanged across the expansion;
 - 150 simultaneously running thin-mode VMs and 150 independent per-VM pools;
-- 150 simultaneously running thick-mode 1 GiB VMs, distributed across all
+- 150 simultaneously running small thick-mode VMs, distributed across all
   three nodes, after rolling TG21 installation; both populations were running
   concurrently for a 300-VM lab baseline;
 - the thick baseline retained identical package/plugin hashes, quorum, 2/2
@@ -17,7 +17,7 @@ arbitrary SAN, CPU, network, guest workload or cluster size.
 - 72-VM node evacuation driven by 16 migration workers;
 - 60/60 thick-mode online node-evacuation migrations at 16-way concurrency,
   followed by zero source-node Thick Generations mappers, 150/150 running VMs,
-  zero D-state processes and six full 1 GiB post-migration SHA256 checks;
+  zero D-state processes and six full-disk post-migration SHA256 checks;
 - 50/50 native PVE HA maintenance relocations completed from one node to
   another eligible node with all resources returning to stable `started`, no
   HA error, quorum retained and no plugin-specific HA mechanism;
@@ -41,17 +41,17 @@ The gate found and fixed two real contention defects:
   serializing unrelated VM migrations cluster-wide.
 
 The thick allocation path was also reduced from separate post-create tag and
-autoactivation mutations to atomic creation attributes. In an isolated 1 GiB
+autoactivation mutations to atomic creation attributes. In an isolated small
 allocation this reduced the archive-producing metadata commits from nine to
 five and completed in 48.3 seconds. Exact tag and autoactivation read-back,
 PREPARED/MATERIALIZED phase verification, VG intent and capacity gates remain
 in place.
 
-For TG22, an exact 1 GiB SAN A/B used full-device SHA256 readback before and
+For TG22, an exact SAN A/B used full-device SHA256 readback before and
 after each operation. `BLKZEROOUT` completed in 0.50--0.81 seconds and the
 direct synchronous zero fallback in 28.78--30.40 seconds. Both produced the
 same all-zero SHA256, removed only their transaction-scoped test LV, and
-returned the VG to exactly 159161253888 free bytes. The optimization never
+returned the VG to the exact recorded free-space baseline. The optimization never
 uses discard/UNMAP and falls back to a complete direct rewrite after any
 zeroout error. Results are specific to this target and are not a throughput
 claim for other SAN implementations.
@@ -66,7 +66,7 @@ exact immutable snapshot generations, no OPEN VG intent or clone mapping
 remained after completion, and no persistent D-state task was observed. Exact
 deletion of the two test snapshots and temporary second disk restored the
 one-disk configuration, 150/150 Thin plus 150/150 Thick running VMs, and the
-159161253888-byte free-space baseline.
+exact recorded free-space baseline.
 
 The matching Thin gate used a running VM with two existing disks and one
 transaction-scoped temporary disk. Allocation completed in 13 seconds, online
@@ -74,15 +74,15 @@ growth in 8 seconds, the native three-disk snapshot in 21 seconds, and rollback
 in 27 seconds. Stop, restart, exact snapshot deletion and forced unlink of only
 the temporary disk passed. The original two-disk configuration remained,
 there was no snapshot, replacement or temporary LV residue, and VG free space
-again returned to exactly 159161253888 bytes.
+again returned to the exact recorded pre-test VG free-space baseline.
 
 A separate VM proved same-VG cross-mode movement under the 300-VM baseline.
 Stopped Thin-to-Thick completed in 37 seconds. After booting from the Thick
 generation, a running Thick-to-Thin move completed through native PVE/QEMU
 block mirroring in 128 seconds, and only then removed the source generation.
 Exact VM destruction removed the returned thin LV and per-VM pool; no VMID or
-Thick namespace object remained and VG free space returned to 159161253888
-bytes with quorum, 2/2 paths and zero D-state tasks.
+Thick namespace object remained and VG free space returned to the exact
+recorded pre-test baseline with quorum, 2/2 paths and zero D-state tasks.
 
 The full Doctor took 138.98 seconds over this deliberately large inventory.
 TG24 therefore uses a distinct bounded installation preflight rather than
@@ -131,9 +131,9 @@ The direct A/B result for the second fix was:
 - LVM archive retention is administrator-owned host policy.  The plugin does
   not prune archives or rewrite `lvm.conf`; Doctor/runbooks may report the
   condition but never clean it automatically.
-- VG text-metadata capacity is a separate hard scale limit. At 526 LVs during
-  this gate, the deliberately provisioned 8 MiB metadata area had about
-  3.65 MiB free. `pv_mda_free` must therefore be recorded alongside VG data
+- VG text-metadata capacity is a separate hard scale limit. The populated gate
+  materially consumed the deliberately bounded metadata area. `pv_mda_free`
+  must therefore be recorded alongside VG data
   capacity: more timeout, RAM or SAN throughput cannot recover an exhausted
   circular metadata area. Size `pvmetadatasize` before creating a production
   PV and use multiple independently pinned VG/storage domains when one VG
