@@ -15,6 +15,11 @@
 - Add a regression for snapshot-to-immediate-stop, missing VG intent, and an
   unrelated concurrent same-VG intent. Full gates now pass 244 Perl and 158
   Python tests.
+- Qualify a three-disk Thin lifecycle under the concurrent 300-VM baseline:
+  third-disk allocation, online grow, native multi-disk snapshot, stop,
+  rollback, start, snapshot deletion and exact disk deletion all passed. No
+  snapshot, rollback or temporary guest LV remained and VG free space returned
+  exactly to 159161253888 bytes.
 
 ## 0.9.0~rc5.4~tg22 (2026-09-13)
 

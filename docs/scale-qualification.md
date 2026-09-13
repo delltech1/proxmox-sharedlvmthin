@@ -68,6 +68,14 @@ deletion of the two test snapshots and temporary second disk restored the
 one-disk configuration, 150/150 Thin plus 150/150 Thick running VMs, and the
 159161253888-byte free-space baseline.
 
+The matching Thin gate used a running VM with two existing disks and one
+transaction-scoped temporary disk. Allocation completed in 13 seconds, online
+growth in 8 seconds, the native three-disk snapshot in 21 seconds, and rollback
+in 27 seconds. Stop, restart, exact snapshot deletion and forced unlink of only
+the temporary disk passed. The original two-disk configuration remained,
+there was no snapshot, replacement or temporary LV residue, and VG free space
+again returned to exactly 159161253888 bytes.
+
 The direct A/B result for the second fix was:
 
 - before: 50 successful migrations, 5 completed-with-cleanup-timeout and 17
