@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0~rc5.4~tg23 (2026-09-13)
+
+- Fix thick lifecycle verification during the intentional asynchronous
+  materialization handoff. After clone publication, the signed
+  non-MATERIALIZED anchor is the transaction authority and the short-lived
+  VG-wide intent is deliberately cleared so unrelated volumes can progress.
+  VM stop/activation now derives only that exact signed anchor-scoped identity
+  and still verifies the complete generation, metadata and live DM dependency
+  graph before accepting the existing frontend.
+- Keep rollback and every non-snapshot transition fail-closed when no exact VG
+  intent exists; a foreign same-VG intent is never adopted as this volume's
+  transaction identity.
+- Add a regression for snapshot-to-immediate-stop, missing VG intent, and an
+  unrelated concurrent same-VG intent. Full gates now pass 244 Perl and 158
+  Python tests.
+
 ## 0.9.0~rc5.4~tg22 (2026-09-13)
 
 - Use the standard Linux `BLKZEROOUT` ioctl for a newly allocated Thick
@@ -12,8 +28,9 @@
   samples completed in about 0.50--0.81 seconds with BLKZEROOUT versus
   28.78--30.40 seconds for direct writes on this lab target. These timings are
   observations, not a performance guarantee for other arrays.
-- Record a 150/150 simultaneously running Thick Generations VM baseline across
-  three PVE nodes, with identical package/plugin hashes, mixed API 14/15,
+- Record 150/150 simultaneously running Thick Generations VMs alongside
+  150/150 running Thin VMs (300 total) across three PVE nodes, with identical
+  package/plugin hashes, mixed API 14/15,
   quorum, two healthy paths per node, pinned WWID/PV/VG identity and zero
   D-state processes after rolling TG21 installation.
 - Complete a 60/60 thick online evacuation at 16-way concurrency and a 50/50

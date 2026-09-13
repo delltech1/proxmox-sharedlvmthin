@@ -10,7 +10,8 @@ arbitrary SAN, CPU, network, guest workload or cluster size.
 - WWID, PV UUID and VG UUID unchanged across the expansion;
 - 150 simultaneously running thin-mode VMs and 150 independent per-VM pools;
 - 150 simultaneously running thick-mode 1 GiB VMs, distributed across all
-  three nodes, after rolling TG21 installation;
+  three nodes, after rolling TG21 installation; both populations were running
+  concurrently for a 300-VM lab baseline;
 - the thick baseline retained identical package/plugin hashes, quorum, 2/2
   paths per node, exact WWID/PV/VG identity and zero D-state processes;
 - 72-VM node evacuation driven by 16 migration workers;
@@ -54,6 +55,18 @@ returned the VG to exactly 159161253888 free bytes. The optimization never
 uses discard/UNMAP and falls back to a complete direct rewrite after any
 zeroout error. Results are specific to this target and are not a throughput
 claim for other SAN implementations.
+
+TG23 closed a lifecycle race discovered only under the concurrent 300-VM
+baseline. On a running two-disk Thick Generations VM, the qualified sequence
+was snapshot publication, immediate stop while both anchors were HYDRATING,
+start while hydration was still active, completion to two ordinary linear
+frontends, stopped rollback of both disks, and restart. The stop log contained
+no deactivation warning, both rollback HEADs were byte-identical to their
+exact immutable snapshot generations, no OPEN VG intent or clone mapping
+remained after completion, and no persistent D-state task was observed. Exact
+deletion of the two test snapshots and temporary second disk restored the
+one-disk configuration, 150/150 Thin plus 150/150 Thick running VMs, and the
+159161253888-byte free-space baseline.
 
 The direct A/B result for the second fix was:
 

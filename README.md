@@ -19,8 +19,8 @@ replication, fencing, quorum, or automatic metadata repair.
 
 ## Release status
 
-`0.9.0~rc5.4~tg22` is a dual-mode laboratory release candidate intended
-exclusively for Proxmox VE 9. It passes 158 Python and 243 Perl tests, fault injection,
+`0.9.0~rc5.4~tg23` is a dual-mode laboratory release candidate intended
+exclusively for Proxmox VE 9. It passes 158 Python and 244 Perl tests, fault injection,
 two-node and three-node cluster qualification, API 14/15 installation and
 reinstallation, and a clean four-hour dual-mode endurance run on the Proxmox
 VE 9.2.x release line. A three-node lab baseline also ran 150 Thick Generations
@@ -79,7 +79,7 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install './pve-sharedlvmthin_0.9.0~rc5.4~tg22_all.deb'
+apt install './pve-sharedlvmthin_0.9.0~rc5.4~tg23_all.deb'
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -93,7 +93,7 @@ unknown or unavailable device.
 ## Upgrade or reinstall
 
 ```bash
-apt install ./pve-sharedlvmthin_0.9.0.rc5.4.tg12_all.deb
+apt install './pve-sharedlvmthin_0.9.0~rc5.4~tg23_all.deb'
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```

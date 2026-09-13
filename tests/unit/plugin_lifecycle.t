@@ -3082,6 +3082,69 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
     is(scalar(@opens), 0, 'close state was observed rather than assumed');
 };
 
+subtest 'published lifecycle verification accepts the signed anchor handoff' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $tx = 'a' x 32;
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $state = {
+        phase => 'HYDRATING', head => 'new-head', op => 'SNAPSHOT',
+        snapshot => 'snap1', tx => $tx,
+    };
+    my $anchor = PVE::SharedLvmThinThick::anchor_name('vg-uuid', $volname);
+    my @observed;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { undef };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+        return { testvg => {} };
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, {}, $anchor);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_resume_transition = sub {
+        my (undef, undef, undef, undef, undef, undef, $intent) = @_;
+        push @observed, { %$intent };
+        return {
+            size => 4096, geometry => { region_sectors => 8 }, meta => 'meta',
+            new => 'new-head', source_map => 'source-map',
+        };
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_frontend = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub { 1 };
+
+    ok($class->_thick_verify_published_transition_frontend(
+        $storeid, $cfg, $volname, $state,
+    ), 'a published asynchronous snapshot remains lifecycle-verifiable after handoff');
+    is_deeply($observed[0], {
+        tx => $tx, state => 'OPEN', op => 'DM_CUTOVER', object => $anchor,
+        before => ('0' x 32), _anchor_scoped => 1,
+    }, 'verification derives only the exact signed anchor-scoped identity');
+
+    my $foreign = {
+        tx => ('b' x 32), state => 'OPEN', op => 'ALLOCATE',
+        object => 'another-volume', before => ('c' x 32),
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { $foreign };
+    ok($class->_thick_verify_published_transition_frontend(
+        $storeid, $cfg, $volname, $state,
+    ), 'an unrelated same-VG transaction does not invalidate the signed handoff');
+    is($observed[1]->{tx}, $tx,
+        'a foreign VG intent is never substituted for this volume transaction');
+
+    my $rollback = { %$state, op => 'ROLLBACK' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { undef };
+    eval { $class->_thick_verify_published_transition_frontend(
+        $storeid, $cfg, $volname, $rollback,
+    ) };
+    like($@, qr/no exact anchor-scoped handoff/,
+        'an operation that was never eligible for asynchronous handoff still fails closed');
+};
+
 subtest 'host-loss recovery reconstructs only the exact persisted clone runtime' => sub {
     reset_mocks();
     my $tx = 'f' x 32;

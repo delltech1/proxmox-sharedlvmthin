@@ -1,8 +1,8 @@
-# Thick Generations tg22 handoff
+# Thick Generations tg23 handoff
 
 ## Candidate
 
-`0.9.0~rc5.4~tg22` is one dual-mode laboratory release-candidate Debian package for Proxmox
+`0.9.0~rc5.4~tg23` is one dual-mode laboratory release-candidate Debian package for Proxmox
 VE 9 Storage API 14 and 15. One installed plugin exposes two explicitly chosen
 storage modes:
 
@@ -26,26 +26,39 @@ node. The first lifecycle-overlapped four-hour run correctly classified
 `FAIL` after fail-closed D-state observations; its guest-integrity evidence is
 preserved as a negative qualification result. The isolated mutation-free
 four-hour retest subsequently passed on both modes with all three host
-collectors green. TG22 additionally passes 158 Python and 243 Perl tests,
-rolling installation on all three nodes, a 150/150 running thick-VM baseline,
-and exact SAN zero-initialization A/B qualification. Bounded parallel
-migration/HA qualification of the 150-VM population remains in progress and
-must not be inferred from the baseline count.
+collectors green. TG23 additionally passes 158 Python and 244 Perl tests,
+rolling installation on all three nodes, a concurrent 150 Thin plus 150 Thick
+Generations running-VM baseline, exact SAN zero-initialization A/B
+qualification, 60/60 bounded parallel thick migrations, 50/50 native PVE HA
+relocations, and exact restoration of 106 changed placements. These results
+must not be presented as a 200--500 VM enterprise certification.
 
-The current TG22 laboratory DEB SHA-256 is:
+TG23 fixes a lifecycle race found by the two-disk scale test. An asynchronous
+snapshot intentionally clears the VG-wide intent after handing transaction
+authority to its signed non-MATERIALIZED anchor. Immediate VM stop previously
+required the already-cleared intent while validating the still-running clone
+frontend. The verifier now derives only the exact signed anchor-scoped
+snapshot identity and revalidates every persistent object and live DM
+dependency. A live two-disk snapshot, immediate stop, start during hydration,
+linear pivot, stopped rollback, restart and exact cleanup all passed. Both
+rollback HEAD devices were byte-identical to their immutable snapshot
+generations. Cleanup restored the original one-disk VM configuration and
+exactly 159161253888 free VG bytes.
+
+The current TG23 laboratory DEB SHA-256 is:
 
 ```text
-e7f731b1747270e5085ce71f7fe0bbeb575a474d414892c7014058322d3d95b0
+60bd74d1114164bd6cb89bb4b6860ead9339d9e32118f1599594ca99d79ccf2f
 ```
 
-Two isolated TG22 builds produced this byte-identical package. The same
+Two isolated TG23 builds produced this byte-identical package. The same
 artifact passed rolling installation on all three qualified nodes. Record the
 final commit identifier only after the in-progress scale gate is frozen.
 
 ## Remaining support boundary
 
 All required software and available laboratory integration gates are closed.
-TG12 remains a pre-release rather than a universal production certification.
+TG23 remains a pre-release rather than a universal production certification.
 Every deployment must be qualified on disposable storage matching its own SAN,
 multipath, fencing, firmware and workload design.
 

@@ -2887,9 +2887,27 @@ sub _thick_verify_published_transition_frontend {
     my $vg = $scfg->{'slt-vgname'};
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my $intent = $class->_read_vg_intent($vg, $device);
-    die "published thick-generations transition has no exact VG intent\n"
-        if !defined($intent);
     my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+    my (undef, undef, $anchor) =
+        $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
+
+    # An asynchronous snapshot deliberately hands the published transition
+    # from the VG-wide intent to its signed anchor before the PVE callback
+    # returns.  From that point the anchor is the persistent transaction
+    # authority and another volume may legitimately own a short-lived VG
+    # intent.  Lifecycle verification is read-only, so derive only the exact
+    # identity already signed by this anchor; _thick_resume_transition below
+    # still verifies every generation, tag, size, metadata LV and mapper
+    # dependency before the existing runtime is accepted.
+    if (!defined($intent) || ($intent->{object} // '') ne $anchor) {
+        die "published thick-generations transition has no exact anchor-scoped handoff\n"
+            if ($state->{op} // '') ne 'SNAPSHOT'
+            || ($state->{tx} // '') !~ /^[0-9a-f]{32}$/;
+        $intent = {
+            tx => $state->{tx}, state => 'OPEN', op => 'DM_CUTOVER',
+            object => $anchor, before => ('0' x 32), _anchor_scoped => 1,
+        };
+    }
     my $tr = $class->_thick_resume_transition(
         $scfg, $storeid, $volname, $state->{snapshot}, $state->{op}, $intent, $lvs,
     );
