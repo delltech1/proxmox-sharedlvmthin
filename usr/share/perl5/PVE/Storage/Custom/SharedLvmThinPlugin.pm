@@ -1575,18 +1575,6 @@ sub _thick_alloc_image {
             before => $before,
         );
         $class->_set_vg_intent($vg, %intent, _device => $device);
-        run_command(
-            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
-                '--devices', $device, '-L', "${size}K", '-n', $head,
-                '--setactivationskip', 'y', $vg],
-            errmsg => "creating thick generation '$vg/$head' failed",
-        );
-        run_command(
-            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
-                '--devices', $device, '-L', '8M', '-n', $anchor,
-                '--setactivationskip', 'y', $vg],
-            errmsg => "creating thick generation anchor '$vg/$anchor' failed",
-        );
         my $head_tags = PVE::SharedLvmThinThick::generation_tags(
             sid => $storeid, vol => $name, role => 'head', generation => $generation,
         );
@@ -1596,12 +1584,28 @@ sub _thick_alloc_image {
             old => $head, new => $head, head => $head, generation => $generation,
             region => $geometry->{region_sectors},
         );
-        $class->_change_exact_tags($vg, $head, [], $head_tags,
-            "tagging thick generation '$vg/$head' failed", $device);
-        $class->_change_exact_tags($vg, $anchor, [], $anchor_tags,
-            "tagging thick generation anchor '$vg/$anchor' failed", $device);
-        $class->_disable_and_verify_autoactivation($vg, $head, $device);
-        $class->_disable_and_verify_autoactivation($vg, $anchor, $device);
+        my @head_create = (
+            '/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+            '--devices', $device, '-L', "${size}K", '-n', $head,
+            '--setactivationskip', 'y', '--setautoactivation', 'n',
+        );
+        push @head_create, map { ('--addtag', $_) } @$head_tags;
+        push @head_create, $vg;
+        run_command(
+            \@head_create,
+            errmsg => "creating thick generation '$vg/$head' failed",
+        );
+        my @anchor_create = (
+            '/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+            '--devices', $device, '-L', '8M', '-n', $anchor,
+            '--setactivationskip', 'y', '--setautoactivation', 'n',
+        );
+        push @anchor_create, map { ('--addtag', $_) } @$anchor_tags;
+        push @anchor_create, $vg;
+        run_command(
+            \@anchor_create,
+            errmsg => "creating thick generation anchor '$vg/$anchor' failed",
+        );
         $class->_thick_verify_allocation_state(
             $storeid, $scfg, $name, $tx, 'PREPARED', $generation, $device,
         );

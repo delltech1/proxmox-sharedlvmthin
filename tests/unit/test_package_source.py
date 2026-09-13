@@ -455,6 +455,13 @@ class PackageSourceTests(unittest.TestCase):
             source,
             flags=re.S,
         )
+        commands.extend(
+            re.findall(
+                r"my @(?:head|anchor)_create = \(\s*'/sbin/lvcreate'(?P<body>.*?)\);",
+                source,
+                flags=re.S,
+            )
+        )
         fresh = [
             body for body in commands
             if ("'-L'" in body and "'-s'" not in body)
@@ -471,6 +478,24 @@ class PackageSourceTests(unittest.TestCase):
         self.assertGreaterEqual(len(snapshots), 2)
         for body in snapshots:
             self.assertNotIn("'--wipesignatures'", body)
+
+    def test_thick_allocation_creates_owned_non_autoactivated_objects_atomically(self):
+        source = (ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"sub _thick_alloc_image \{(?P<body>.*?)\n\}\n\nsub _verify_storage_identity",
+            source,
+            flags=re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        prepared = body[:body.index("    eval {")]
+        self.assertGreaterEqual(prepared.count("'--setautoactivation', 'n'"), 2)
+        self.assertIn("push @head_create, map { ('--addtag', $_) } @$head_tags", prepared)
+        self.assertIn("push @anchor_create, map { ('--addtag', $_) } @$anchor_tags", prepared)
+        self.assertNotIn("_change_exact_tags", prepared)
+        self.assertNotIn("_disable_and_verify_autoactivation", prepared)
 
 
 if __name__ == "__main__":

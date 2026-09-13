@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0~rc5.4~tg20 (2026-09-13)
+
+- Create a fresh Thick Generations head and anchor with their complete
+  ownership tags, activation-skip policy and `autoactivation=n` in the same
+  `lvcreate` metadata transaction. Read-only postconditions remain mandatory.
+- Reduce a qualified 1 GiB thick allocation from nine metadata-changing LVM
+  steps to five archive-producing commits. The isolated lab A/B completed in
+  48.3 seconds; the earlier three-node contention samples commonly required
+  70–120 seconds.
+- Preserve fail-closed interrupted-allocation recovery. A real interruption
+  left one exact `PREPARED` pair and OPEN VG intent; a later allocation was
+  refused, and the transaction-scoped recovery removed only that pair before
+  clearing the exact intent.
+
 ## 0.9.0~rc5.4~tg12 (2026-09-12)
 
 - Publish one explicitly selected dual-mode package: isolated per-VM Thin

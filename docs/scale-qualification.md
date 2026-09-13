@@ -9,6 +9,9 @@ arbitrary SAN, CPU, network, guest workload or cluster size.
 - one pinned two-path iSCSI LUN, expanded online from 150 GiB to 450 GiB;
 - WWID, PV UUID and VG UUID unchanged across the expansion;
 - 150 simultaneously running thin-mode VMs and 150 independent per-VM pools;
+- thick-generations scale qualification targets 150 additional 1 GiB VMs;
+  this result remains `IN_PROGRESS` until the final inventory and health
+  postconditions are recorded;
 - 72-VM node evacuation driven by 16 migration workers;
 - exact source/destination configuration, local mapper, D-state, quorum,
   multipath and recovery checks after each fault or implementation change.
@@ -22,8 +25,15 @@ The gate found and fixed two real contention defects:
 2. Thin deactivation was incorrectly serialized by the canonical shared-VG
    mutation lock.  Deactivation, dmeventd unregister and DM teardown are
    node-local runtime operations and do not update shared VG metadata.  They
-   now retain exact identity, ownership and mapper postconditions without
-   serializing unrelated VM migrations cluster-wide.
+  now retain exact identity, ownership and mapper postconditions without
+  serializing unrelated VM migrations cluster-wide.
+
+The thick allocation path was also reduced from separate post-create tag and
+autoactivation mutations to atomic creation attributes. In an isolated 1 GiB
+allocation this reduced the archive-producing metadata commits from nine to
+five and completed in 48.3 seconds. Exact tag and autoactivation read-back,
+PREPARED/MATERIALIZED phase verification, VG intent and capacity gates remain
+in place.
 
 The direct A/B result for the second fix was:
 
