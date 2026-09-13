@@ -1,32 +1,37 @@
-# SharedLvmThin for Proxmox VE
+# BASTRIX SharedLVM for Proxmox VE
 
-An open-source storage project developed and published under the **BASTRIX**
-brand.
+**Shared FC/iSCSI SAN storage for Proxmox VE 9, with Thin Pools and Thick
+Generations.** This project was originally published as SharedLvmThin; the
+existing package, command and storage-plugin identifiers remain compatible.
 
-SharedLvmThin is a safety-focused Proxmox VE storage plugin for an existing
-shared LVM volume group. One package exposes two explicit allocation models:
+## What is it for?
 
-- **Thin** — one isolated LVM-thin pool per VM, with guarded autogrow.
+BASTRIX SharedLVM is intended for organizations moving VMware or other
+virtualized workloads to a Proxmox cluster while retaining an existing shared
+FC, FCoE or iSCSI SAN.
+
+Proxmox shared LVM provides cluster-wide access and live migration, but not the
+snapshot lifecycle many administrators expect. Ordinary LVM-thin provides
+snapshots, but is not designed as one concurrently shared cluster-wide thin
+pool. BASTRIX SharedLVM addresses this gap with per-VM ownership domains and
+two selectable modes:
+
+- **Thin** — an isolated LVM-thin pool per VM with guarded autogrow.
 - **Thick Generations** — fully allocated independent generations with an
   ordinary linear steady-state device and temporary `dm-clone` transitions.
 
-Both modes provide snapshots, rollback, resize, migration, cluster locking,
-storage identity checks, and an optional read-only HTTPS health dashboard.
+Both modes integrate through the standard Proxmox Storage API and support
+snapshots, rollback, resize, backup, Storage Move and live migration. The
+implementation uses standard Proxmox orchestration and Linux LVM,
+device-mapper and multipath components—without proprietary SAN integration,
+third-party kernel modules or an external locking service.
 
-The plugin manages storage objects. It is not in the guest I/O path after QEMU
-opens an LV and does not provide SAN connectivity, multipath configuration,
-replication, fencing, quorum, or automatic metadata repair.
+The SAN LUN remains shared and visible to every participating node. The plugin
+does not use array snapshots, move LUNs between hosts, configure the SAN,
+replace fencing or quorum, or make simultaneous writable activation safe.
 
-## Why does this exist?
-
-The primary use case is a Proxmox cluster that must keep using an existing
-shared FC or iSCSI SAN. Native shared LVM provides shared access and live
-migration but not the expected snapshot lifecycle, while ordinary LVM-thin is
-not designed as concurrently shared cluster storage.
-
-BASTRIX SharedLVM bridges that gap with snapshots, rollback, resize and
-migration in either Thin or Thick Generations mode. If you already use Ceph,
-NFS or a suitable vendor-native plugin, you probably do not need it.
+If you already use Ceph, NFS or a suitable vendor-native Proxmox plugin, you
+probably do not need this project.
 
 ## Release status
 
