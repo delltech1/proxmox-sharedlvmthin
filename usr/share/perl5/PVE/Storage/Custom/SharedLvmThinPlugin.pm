@@ -75,6 +75,13 @@ sub type {
     return 'sharedlvmthin';
 }
 
+sub _outer_lock_yield {
+    my ($class, $milliseconds) = @_;
+    return if !$milliseconds;
+    select(undef, undef, undef, $milliseconds / 1000);
+    return;
+}
+
 # PVE wraps vdisk_alloc() and vdisk_free() in cluster_lock_storage() with an
 # undefined timeout.  The base implementation consequently uses the CFS
 # default (10 seconds on the qualified PVE 9 releases), which is shorter than
@@ -84,22 +91,37 @@ sub type {
 # are therefore left untouched.
 sub cluster_lock_storage {
     my ($class, $storeid, $shared, $timeout, $code, @params) = @_;
+    my $implicit_outer = !defined($timeout);
+    my $yield_ms = 0;
 
-    if (!defined($timeout)) {
+    if ($implicit_outer) {
         my $resolved = eval {
             require PVE::Storage;
             my $cfg = PVE::Storage::config();
             my $scfg = PVE::Storage::storage_config($cfg, $storeid);
             die "not a SharedLvmThin storage\n"
                 if ($scfg->{type} // '') ne $class->type();
-            return $scfg->{'slt-lock-timeout'} // 30;
+            return [
+                $scfg->{'slt-lock-timeout'} // 30,
+                $scfg->{'slt-lock-yield-ms'} // 1000,
+            ];
         };
-        $timeout = $resolved if !$@ && defined($resolved);
+        if (!$@ && defined($resolved)) {
+            ($timeout, $yield_ms) = @$resolved;
+        }
     }
 
-    return PVE::Storage::Plugin::cluster_lock_storage(
+    my $result = PVE::Storage::Plugin::cluster_lock_storage(
         $class, $storeid, $shared, $timeout, $code, @params,
     );
+    # pmxcfs lock acquisition is bounded but not a FIFO admission queue.  A
+    # successful client that immediately starts another operation can starve
+    # an already waiting node.  Yield only after the outer PVE wrapper has
+    # released the lock; never sleep inside the critical section and never
+    # retry a callback or an ambiguous failure.
+    $class->_outer_lock_yield($yield_ms)
+        if $implicit_outer && $shared && $yield_ms > 0;
+    return $result;
 }
 
 sub plugindata {
@@ -144,8 +166,15 @@ sub properties {
             description => 'Bounded Proxmox cluster storage-lock acquisition timeout in seconds. Size this from measured worst-case serialized metadata operations; it does not configure or replace the PVE HA watchdog.',
             type => 'integer',
             minimum => 10,
-            maximum => 600,
+            maximum => 86400,
             default => 30,
+        },
+        'slt-lock-yield-ms' => {
+            description => 'Cooperative post-release delay for outer PVE storage mutations. This reduces cross-node lock starvation without retrying an operation.',
+            type => 'integer',
+            minimum => 0,
+            maximum => 5000,
+            default => 1000,
         },
         'slt-tg-hydration-threshold' => {
             description => 'Maximum number of Thick Generations regions copied concurrently during background hydration.',
@@ -239,6 +268,7 @@ sub options {
         'slt-allocation-mode' => { fixed => 1, optional => 1 },
         'slt-tg-hydration-timeout' => { optional => 1 },
         'slt-lock-timeout' => { optional => 1 },
+        'slt-lock-yield-ms' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
         'slt-tg-online-materialization' => { optional => 1 },
@@ -999,6 +1029,7 @@ sub _verify_same_vg_alias_configuration {
     my %reserve;
     my %minimum_paths;
     my %lock_timeout;
+    my %lock_yield;
     my %node_scope;
     for my $alias (@aliases) {
         my $candidate = $ids->{$alias};
@@ -1020,6 +1051,7 @@ sub _verify_same_vg_alias_configuration {
         $reserve{$reserve_key} = 1;
         $minimum_paths{$candidate->{'slt-expected-min-paths'} // ''} = 1;
         $lock_timeout{$candidate->{'slt-lock-timeout'} // 30} = 1;
+        $lock_yield{$candidate->{'slt-lock-yield-ms'} // 1000} = 1;
         $node_scope{_canonical_node_scope($candidate->{nodes})} = 1;
     }
     die "shared VG '$vg' requires exactly one thin and one thick-generations alias\n"
@@ -1034,6 +1066,8 @@ sub _verify_same_vg_alias_configuration {
         if keys(%minimum_paths) != 1;
     die "same-VG aliases must use the same cluster lock timeout\n"
         if keys(%lock_timeout) != 1;
+    die "same-VG aliases must use the same cooperative lock yield\n"
+        if keys(%lock_yield) != 1;
     die "same-VG aliases must use the same PVE node scope\n"
         if keys(%node_scope) != 1;
     return 1;

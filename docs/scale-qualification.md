@@ -49,10 +49,20 @@ The direct A/B result for the second fix was:
 - Per-VM pool creation generates several LVM metadata transactions.  Large VG
   inventories and accumulated `/etc/lvm/archive` files materially increase
   latency and can expose bounded lock timeouts.
-- `slt-lock-timeout` accepts 10..600 seconds.  It must be chosen from measured
-  worst-case serialized operations at the site.  Raising it increases how
-  long a worker may wait; it does not create parallel shared-metadata writes,
-  configure fencing or change the PVE HA watchdog.
+- `slt-lock-timeout` accepts 10..86400 seconds. It is a bounded admission wait,
+  not a watchdog value or universal enterprise default. It must be chosen from
+  measured worst-case serialized operations at the site. Raising it increases
+  how long a worker may wait; it does not create parallel shared-metadata
+  writes, configure fencing or change the PVE HA watchdog.
+- `slt-lock-yield-ms` (default 1000, range 0..5000) introduces a cooperative
+  delay only after an outer PVE mutation releases the pmxcfs storage lock. It
+  gives already-waiting nodes an opportunity to acquire a lock which is
+  bounded but not FIFO. It never sleeps inside the critical section, retries a
+  callback, or treats a timeout as proof that a mutation did not occur.
+- Size the admission timeout from observed P95/P99/max operation latency, the
+  largest qualified disk-zeroing time and the maximum qualified number of
+  contenders. A higher timeout alone does not establish fairness or scale;
+  the measured scale gate remains authoritative.
 - LVM archive retention is administrator-owned host policy.  The plugin does
   not prune archives or rewrite `lvm.conf`; Doctor/runbooks may report the
   condition but never clean it automatically.

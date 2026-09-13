@@ -82,9 +82,13 @@ sub command_lines {
 
 subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => sub {
     my @seen;
+    my @yields;
     my $property = $class->properties()->{'slt-lock-timeout'};
     is($property->{minimum}, 10, 'lock policy remains bounded below');
-    is($property->{maximum}, 600, 'large measured storage inventories can select a bounded timeout');
+    is($property->{maximum}, 86400, 'large measured storage inventories can select a bounded timeout');
+    my $yield_property = $class->properties()->{'slt-lock-yield-ms'};
+    is($yield_property->{minimum}, 0, 'cooperative yield can be explicitly disabled');
+    is($yield_property->{maximum}, 5000, 'cooperative yield remains tightly bounded');
     require PVE::Storage;
     no warnings 'redefine';
     local *PVE::Storage::config = sub {
@@ -92,6 +96,7 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
             type => 'sharedlvmthin',
             shared => 1,
             'slt-lock-timeout' => 180,
+            'slt-lock-yield-ms' => 1250,
         } } };
     };
     local *PVE::Storage::storage_config = sub {
@@ -104,21 +109,41 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
         push @seen, [$storeid, $shared, $timeout];
         return $code->();
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_outer_lock_yield = sub {
+        my (undef, $milliseconds) = @_;
+        push @yields, $milliseconds;
+    };
 
     is($cluster_lock_storage->($class, 'sharedthin-test', 1, undef, sub { 42 }), 42,
         'outer PVE wrapper callback result is preserved');
     is_deeply($seen[-1], ['sharedthin-test', 1, 180],
         'undefined PVE wrapper timeout resolves to the storage policy');
+    is_deeply(\@yields, [1250],
+        'outer wrapper yields once only after the callback returns');
 
     is($cluster_lock_storage->($class, 'sharedthin-test', 1, 17, sub { 43 }), 43,
         'explicit internal lock callback result is preserved');
     is_deeply($seen[-1], ['sharedthin-test', 1, 17],
         'an explicit caller timeout is never overridden');
+    is_deeply(\@yields, [1250], 'internal explicit locks never add a yield');
 
     is($cluster_lock_storage->($class, 'unknown-lock-id', 1, undef, sub { 44 }), 44,
         'unknown lock IDs retain the PVE base behavior');
     is_deeply($seen[-1], ['unknown-lock-id', 1, undef],
         'failed configuration lookup does not invent a timeout');
+    is_deeply(\@yields, [1250], 'unknown lock IDs do not invent a yield');
+
+    my $calls_before_failure = scalar(@seen);
+    eval {
+        $cluster_lock_storage->($class, 'sharedthin-test', 1, undef,
+            sub { die "simulated ambiguous callback failure\n" });
+    };
+    like($@, qr/simulated ambiguous callback failure/,
+        'an outer callback failure is returned unchanged');
+    is(scalar(@seen), $calls_before_failure + 1,
+        'an ambiguous callback failure is never retried');
+    is_deeply(\@yields, [1250],
+        'a failed callback is not hidden behind a post-success yield');
 };
 
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
@@ -2005,6 +2030,9 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
         ['path policy mismatch',
             { %$thick, 'slt-expected-min-paths' => 1 },
             qr/same expected minimum path count/],
+        ['cooperative yield mismatch',
+            { %$thick, 'slt-lock-yield-ms' => 2000 },
+            qr/same cooperative lock yield/],
         ['node scope mismatch',
             { %$thick, nodes => 'node-a' },
             qr/same PVE node scope/],

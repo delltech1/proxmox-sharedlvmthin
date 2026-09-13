@@ -1,5 +1,20 @@
 # SharedLvmThin RC5.4 TG12 release notes
 
+## TG21 scale admission hardening
+
+- Outer PVE storage mutations use the explicitly bounded
+  `slt-lock-timeout`; the accepted range is 10..86400 seconds for sites whose
+  measured inventory latency requires a longer admission window. This value
+  is not derived from, and never changes, the PVE HA watchdog.
+- `slt-lock-yield-ms` adds a small configurable post-release cooperative
+  delay (default 1000 ms, range 0..5000). It addresses cross-node starvation
+  observed during the 150-thin plus 150-thick qualification without sleeping
+  while holding the lock or retrying an ambiguous mutation.
+- Same-VG thin/thick aliases must use identical timeout and yield policies.
+  Configuration disagreement fails closed.
+- A timeout remains an ambiguous result: the plugin never assumes that a
+  timed-out command made no change, and never automatically retries it.
+
 RC5.4 TG12 is the first public dual-mode release candidate. One Debian package
 supports explicit `thin` and `thick-generations` storage definitions over an
 existing dedicated shared LVM VG. It is intended exclusively for Proxmox VE 9
