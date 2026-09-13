@@ -29,6 +29,9 @@ universal certification of every SAN, HBA,
 array, multipath policy, firmware, or failure mode. Validate it first on
 disposable storage matching your production design.
 
+See the [TG24 laboratory release notes](docs/RELEASE-NOTES-RC5.4-TG24.md) for
+the exact tested envelope, package identity and remaining support boundaries.
+
 The previously published RC5.2/RC5.3 Thin behavior remains available through
 the explicit `thin` allocation mode. Thick Generations is newer and should be
 treated as a release-candidate technology until it has broader independent
