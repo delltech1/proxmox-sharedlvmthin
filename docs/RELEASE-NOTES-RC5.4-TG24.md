@@ -44,7 +44,7 @@ array firmware, multipath policy, workload or failure domain.
 ## Package identity
 
 ```text
-pve-sharedlvmthin_0.9.0~rc5.4~tg24_all.deb
+pve-sharedlvmthin_0.9.0.rc5.4.tg24_all.deb
 SHA256 6309f058305468533c3a48f681f69069867ecbc0b18f6eaf30523eede1f1401f
 ```
 
