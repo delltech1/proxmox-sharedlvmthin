@@ -1,7 +1,7 @@
 # Original cluster qualification plan
 
-This document defines the remaining qualification work for the local
-`0.9.0~rc5.4~tg12` Thick Generations candidate. It is a test plan, not a support
+This document defines the qualification work for the local
+`0.9.0~rc5.4~tg24` Thick Generations candidate. It is a test plan, not a support
 claim. Record exact package checksums, PVE versions, Storage API versions,
 storage identities and results before changing any state.
 
@@ -126,14 +126,14 @@ limitation and cannot qualify physical FC behavior.
 
 ## 8. Uninterrupted endurance release blocker
 
-- [ ] Run at least four uninterrupted hours of concurrent Thin and Thick guest
+- [x] Run at least four uninterrupted hours of concurrent Thin and Thick guest
       writes, explicit flush/fsync operations and independent direct reads.
-- [ ] Keep bounded host-side monitoring of quorum, paths, identities, thin-pool
+- [x] Keep bounded host-side monitoring of quorum, paths, identities, thin-pool
       flags, Thick transactions, relevant D-state and recovery classification.
-- [ ] Exercise scheduled snapshots, materialization, resize, backup, migration
+- [x] Exercise scheduled snapshots, materialization, resize, backup, migration
       and Thin/Thick storage moves without overlapping unsupported mutations on
       the same disk.
-- [ ] Require zero unexpected host reboot, storage disappearance, guest hash
+- [x] Require zero unexpected host reboot, storage disappearance, guest hash
       mismatch, leaked artefact, ambiguous anchor or unsafe mutation.
 - [x] Perform final backup/restore validation and exact cleanup.
 
