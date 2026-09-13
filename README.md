@@ -44,6 +44,23 @@ cross-mode operation. Qualification covers Proxmox VE 9.2.x with Storage API
 multipath policy, firmware or failure mode. Validate it first on disposable
 storage matching your production design.
 
+### Experimental Thin + Thick Generations preview
+
+[`RC5.4 TG24`](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.4-tg24)
+adds a second, explicitly selected **Thick Generations** allocation mode next
+to the existing per-VM Thin mode. Thick snapshots become independent fully
+allocated linear LVs after a temporary persistent `dm-clone` transition, so
+there is no permanent snapshot chain in the steady-state guest I/O path.
+
+The TG24 disposable multi-node qualification ran 150 Thin and 150 Thick VMs
+concurrently and covered bounded parallel migration, native HA relocation,
+snapshot/rollback, Thin-to-Thick and Thick-to-Thin storage moves, backup and
+restore, rolling API 14/15 installation, exact cleanup and endurance testing.
+This is a laboratory release candidate, not an enterprise-scale certification.
+See the
+[experimental source branch](https://github.com/delltech1/proxmox-sharedlvmthin/tree/experimental/thick-generations-tg24)
+and [TG24 release notes](https://github.com/delltech1/proxmox-sharedlvmthin/blob/experimental/thick-generations-tg24/docs/RELEASE-NOTES-RC5.4-TG24.md).
+
 For new deployments, the recommended capacity mode is `elastic`: physical
 pool size follows actual allocation plus bounded absolute burst headroom, so a
 multi-terabyte virtual disk does not reserve a proportional fraction of its
