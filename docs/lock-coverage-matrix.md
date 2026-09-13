@@ -6,14 +6,14 @@ The source inspected was `/usr/share/perl5/PVE/Storage.pm` and
 
 | Path | Mutation | PVE wrapper lock | Plugin lock | Quorum gate | Identity gate | Ownership gate | Postcondition | RC5 status |
 |---|---|---|---|---|---|---|---|---|
-| `vdisk_alloc` → `alloc_image` | pool/LV create, tag | Yes: `PVE::Storage::vdisk_alloc` | No; avoids double-lock | Yes | Yes | Existing pool only | Created object re-read; ambiguous partial state preserved | MOCK + DISPOSABLE INTEGRATION PASS |
-| `vdisk_free` → `free_image` | snapshot/LV/pool delete | Yes: `PVE::Storage::vdisk_free` | No; avoids double-lock | Yes | Yes | Yes, positive tag and relationship | Refresh before pool cleanup | MOCK + DISPOSABLE INTEGRATION PASS |
+| `vdisk_alloc` → `alloc_image` | pool/LV create, tag | Yes: `PVE::Storage::vdisk_alloc`; undefined PVE timeout resolves to `slt-lock-timeout` | Canonical VG lock for shared metadata | Yes | Yes | Existing pool only | Created object re-read; ambiguous partial state preserved | MOCK + 150-POOL INTEGRATION PASS |
+| `vdisk_free` → `free_image` | snapshot/LV/pool delete | Yes: `PVE::Storage::vdisk_free`; undefined PVE timeout resolves to `slt-lock-timeout` | Canonical VG lock for shared metadata | Yes | Yes | Yes, positive tag and relationship | Refresh before pool cleanup | MOCK + DISPOSABLE INTEGRATION PASS |
 | `volume_resize` | `lvextend` | No | Yes | Yes | Yes | Yes | Requested size re-read | MOCK + LINUX/WINDOWS INTEGRATION PASS |
 | snapshot create | `lvcreate -s` | No | Yes | Yes | Yes | Yes | Snapshot/pool relationship re-read | MOCK + API-14/API-15 INTEGRATION PASS |
 | snapshot delete | `lvremove` | No | Yes | Yes | Yes | Yes, including candidate snapshot preflight | Absence re-read | MOCK + disposable integration PASS |
 | snapshot rollback | create replacement, remove origin, rename | No | Yes | Yes | Yes | Yes plus rollback relationship checks | Replacement and final relationship checked | MOCK + LINUX/WINDOWS INTEGRATION PASS |
 | `activate_volume` | local LV activation state | No | No | No | No | No | LVM exit status | REVIEW: not shared metadata; must never create/repair |
-| `deactivate_volume` | local LV activation state | No | No | No | No | No | LVM exit status | REVIEW: not shared metadata; must never delete/repair |
+| `deactivate_volume` | exact node-local LV, dmeventd and DM state | No | No canonical VG lock; PVE VM lock + LVM/DM serialization apply | No | Yes, pinned device | Positive exact-volume ownership | Guest, pool and hidden mapper absence re-read | UNIT + 150-POOL/16-WAY MIGRATION PASS |
 | empty-pool cleanup | `lvremove pool` inside `free_image` | Inherited `vdisk_free` lock | No | Yes | Yes | Positive pool tag plus zero references of any name | Refreshed LVM inventory | MOCK + DISPOSABLE INTEGRATION PASS |
 | dmeventd autogrow | `lvextend --use-policies` | Not through PVE wrapper | Yes: canonical VG lock | Yes | Yes | Positive storage tag revalidated under lock | Size re-read after uncertain result | UNIT + SAME-VG LOCK INTEGRATION PASS; DAEMON RECOVERY IS MANUAL |
 

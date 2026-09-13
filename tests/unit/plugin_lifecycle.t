@@ -19,6 +19,7 @@ my $verify_resize_postcondition = \&PVE::Storage::Custom::SharedLvmThinPlugin::_
 my $verify_snapshot_postcondition = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition;
 my $verify_pool_health = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_pool_health;
 my $verify_same_vg_alias_configuration = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration;
+my $cluster_lock_storage = \&PVE::Storage::Custom::SharedLvmThinPlugin::cluster_lock_storage;
 my $disable_and_verify_autoactivation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation;
 my $verify_autoactivation_disabled = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled;
 my $record_disable_autoactivation = sub {
@@ -78,6 +79,47 @@ sub reset_mocks {
 sub command_lines {
     return map { join(' ', @$_) } @commands;
 }
+
+subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => sub {
+    my @seen;
+    my $property = $class->properties()->{'slt-lock-timeout'};
+    is($property->{minimum}, 10, 'lock policy remains bounded below');
+    is($property->{maximum}, 600, 'large measured storage inventories can select a bounded timeout');
+    require PVE::Storage;
+    no warnings 'redefine';
+    local *PVE::Storage::config = sub {
+        return { ids => { 'sharedthin-test' => {
+            type => 'sharedlvmthin',
+            shared => 1,
+            'slt-lock-timeout' => 180,
+        } } };
+    };
+    local *PVE::Storage::storage_config = sub {
+        my ($cfg, $storeid) = @_;
+        die "unknown storage\n" if !defined($cfg->{ids}->{$storeid});
+        return $cfg->{ids}->{$storeid};
+    };
+    local *PVE::Storage::Plugin::cluster_lock_storage = sub {
+        my ($base, $storeid, $shared, $timeout, $code) = @_;
+        push @seen, [$storeid, $shared, $timeout];
+        return $code->();
+    };
+
+    is($cluster_lock_storage->($class, 'sharedthin-test', 1, undef, sub { 42 }), 42,
+        'outer PVE wrapper callback result is preserved');
+    is_deeply($seen[-1], ['sharedthin-test', 1, 180],
+        'undefined PVE wrapper timeout resolves to the storage policy');
+
+    is($cluster_lock_storage->($class, 'sharedthin-test', 1, 17, sub { 43 }), 43,
+        'explicit internal lock callback result is preserved');
+    is_deeply($seen[-1], ['sharedthin-test', 1, 17],
+        'an explicit caller timeout is never overridden');
+
+    is($cluster_lock_storage->($class, 'unknown-lock-id', 1, undef, sub { 44 }), 44,
+        'unknown lock IDs retain the PVE base behavior');
+    is_deeply($seen[-1], ['unknown-lock-id', 1, undef],
+        'failed configuration lookup does not invent a timeout');
+};
 
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
     for my $case (
@@ -1881,6 +1923,8 @@ subtest 'thin and thick aliases over one pinned VG share one canonical mutation 
         'each pinned alias checks for an OPEN VG intent inside the canonical lock');
     like($locks[0]->[0], qr/^slt-vg-[0-9a-f]{32}$/,
         'shared lock identity is canonical and does not contain a storage alias');
+    is($locks[0]->[2], 30, 'canonical VG lock uses the bounded default acquire timeout');
+    is($locks[1]->[2], 30, 'thin and thick aliases use the same default timeout');
 
     $class->_with_mutation_lock('other-alias', {
         %$thin, 'slt-expected-vg-uuid' => 'other-vg-uuid',
@@ -1888,11 +1932,17 @@ subtest 'thin and thick aliases over one pinned VG share one canonical mutation 
     isnt($locks[2]->[0], $locks[0]->[0],
         'different pinned VG UUID cannot collide with the shared lock');
 
+    $class->_with_mutation_lock('custom-timeout-alias', {
+        %$thin, 'slt-lock-timeout' => 45,
+    }, sub { return 1; });
+    is($locks[3]->[2], 45, 'explicit supported lock timeout reaches the PVE lock API');
+
     $class->_with_mutation_lock('legacy-alias', {
         shared => 1, 'slt-vgname' => 'legacyvg',
     }, sub { return 1; });
-    is($locks[3]->[0], 'legacy-alias',
+    is($locks[4]->[0], 'legacy-alias',
         'legacy unpinned storage retains its historic per-storage lock');
+    is($locks[4]->[2], 30, 'legacy lock also remains bounded');
 };
 
 subtest 'pinned thin mutation refuses an OPEN Thick Generations VG intent' => sub {
@@ -2749,6 +2799,169 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
             PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
             ' 0 enable_hydration',
     ], 'callback only enables hydration before returning');
+};
+
+subtest 'thin runtime state trusts exact local DM nodes over shared LVM activity flags' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return [
+            'sltp-900001|twi-XXtz--|',
+            'vm-900001-disk-0|Vwi-XXtz--|sltp-900001',
+            'vm-900001-disk-1|Vwi-XXtz--|sltp-900001',
+        ];
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
+        my ($path) = @_;
+        return 1 if $path eq '/dev/mapper/testvg-sltp--900001-tpool';
+        return 1 if $path eq '/dev/mapper/testvg-vm--900001--disk--0';
+        return 0;
+    };
+
+    my $state = $class->_thin_pool_runtime_state('testvg', 'sltp-900001', '/dev/mapper/3600abcd');
+    ok($state->{pool_mapper_active}, 'hidden local tpool mapper is detected');
+    is_deeply($state->{active_children}, ['vm-900001-disk-0'],
+        'exact local guest mapper wins even when shared lv_attr reports inactive');
+};
+
+subtest 'thin deactivate removes an idle monitored pool without a shared mutation lock' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my @states = (
+        { pool_active => 1, pool_mapper_active => 1,
+            active_children => ['vm-900001-disk-0'] },
+        { pool_active => 1, pool_mapper_active => 1, active_children => [] },
+        { pool_active => 0, pool_mapper_active => 0, active_children => [] },
+    );
+    my $locked = 0;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        $locked++;
+        die "node-local teardown must not acquire the shared VG mutation lock\n";
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_owned_volume = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return shift @states;
+    };
+
+    ok($class->deactivate_volume(
+        'shared-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ), 'last thin child deactivation succeeds');
+    is($locked, 0, 'thin deactivation does not serialize unrelated VM teardown cluster-wide');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --monitor n testvg/sltp-900001',
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/vm-900001-disk-0',
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/sltp-900001',
+    ], 'idle pool is unregistered non-force and deactivated exactly');
+};
+
+subtest 'thin deactivate preserves a pool with another active child' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_owned_volume = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return {
+            pool_active => 1,
+            active_children => ['vm-900001-disk-1'],
+        };
+    };
+
+    ok($class->deactivate_volume(
+        'shared-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ), 'one child can stop while another remains active');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/vm-900001-disk-0',
+    ], 'active sibling prevents pool unregister or deactivation');
+};
+
+subtest 'thin deactivate waits for the exact deferred child before pool teardown' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my @states = (
+        { pool_active => 1, pool_mapper_active => 1,
+            active_children => ['vm-900001-disk-0'] },
+        { pool_active => 1, pool_mapper_active => 1,
+            active_children => ['vm-900001-disk-0'] },
+        { pool_active => 1, pool_mapper_active => 1, active_children => [] },
+        { pool_active => 0, pool_mapper_active => 0, active_children => [] },
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_owned_volume = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return shift @states;
+    };
+
+    ok($class->deactivate_volume(
+        'shared-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ), 'deferred removal converges before exact pool teardown');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --monitor n testvg/sltp-900001',
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/vm-900001-disk-0',
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/sltp-900001',
+    ], 'bounded observation adds no speculative mutation');
+};
+
+subtest 'thin deactivate fails closed when the pool remains active' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my @states = (
+        { pool_active => 1, pool_mapper_active => 1,
+            active_children => ['vm-900001-disk-0'] },
+        { pool_active => 1, pool_mapper_active => 1, active_children => [] },
+        { pool_active => 1, pool_mapper_active => 1, active_children => [] },
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_owned_volume = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return shift @states;
+    };
+
+    eval { $class->deactivate_volume(
+        'shared-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ) };
+    like($@, qr/remains active/, 'ambiguous postcondition is rejected');
+    is(scalar(@commands), 3, 'failure does not broaden into cleanup or retry');
 };
 
 subtest 'published hydration remains activatable and a stop preserves worker dependencies' => sub {

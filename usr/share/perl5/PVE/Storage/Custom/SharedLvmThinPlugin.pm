@@ -75,6 +75,33 @@ sub type {
     return 'sharedlvmthin';
 }
 
+# PVE wraps vdisk_alloc() and vdisk_free() in cluster_lock_storage() with an
+# undefined timeout.  The base implementation consequently uses the CFS
+# default (10 seconds on the qualified PVE 9 releases), which is shorter than
+# a legitimate per-VM pool creation once a shared VG contains many objects.
+# Honour the same bounded administrator-selected timeout at that outer wrapper
+# boundary.  Calls made by this plugin already pass an explicit timeout and
+# are therefore left untouched.
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $code, @params) = @_;
+
+    if (!defined($timeout)) {
+        my $resolved = eval {
+            require PVE::Storage;
+            my $cfg = PVE::Storage::config();
+            my $scfg = PVE::Storage::storage_config($cfg, $storeid);
+            die "not a SharedLvmThin storage\n"
+                if ($scfg->{type} // '') ne $class->type();
+            return $scfg->{'slt-lock-timeout'} // 30;
+        };
+        $timeout = $resolved if !$@ && defined($resolved);
+    }
+
+    return PVE::Storage::Plugin::cluster_lock_storage(
+        $class, $storeid, $shared, $timeout, $code, @params,
+    );
+}
+
 sub plugindata {
     return {
         content => [
@@ -112,6 +139,13 @@ sub properties {
             minimum => 60,
             maximum => 86400,
             default => 3600,
+        },
+        'slt-lock-timeout' => {
+            description => 'Bounded Proxmox cluster storage-lock acquisition timeout in seconds. Size this from measured worst-case serialized metadata operations; it does not configure or replace the PVE HA watchdog.',
+            type => 'integer',
+            minimum => 10,
+            maximum => 600,
+            default => 30,
         },
         'slt-tg-hydration-threshold' => {
             description => 'Maximum number of Thick Generations regions copied concurrently during background hydration.',
@@ -204,6 +238,7 @@ sub options {
         'slt-vgname' => { fixed => 1 },
         'slt-allocation-mode' => { fixed => 1, optional => 1 },
         'slt-tg-hydration-timeout' => { optional => 1 },
+        'slt-lock-timeout' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
         'slt-tg-online-materialization' => { optional => 1 },
@@ -963,6 +998,7 @@ sub _verify_same_vg_alias_configuration {
     my %identity;
     my %reserve;
     my %minimum_paths;
+    my %lock_timeout;
     my %node_scope;
     for my $alias (@aliases) {
         my $candidate = $ids->{$alias};
@@ -983,6 +1019,7 @@ sub _verify_same_vg_alias_configuration {
         );
         $reserve{$reserve_key} = 1;
         $minimum_paths{$candidate->{'slt-expected-min-paths'} // ''} = 1;
+        $lock_timeout{$candidate->{'slt-lock-timeout'} // 30} = 1;
         $node_scope{_canonical_node_scope($candidate->{nodes})} = 1;
     }
     die "shared VG '$vg' requires exactly one thin and one thick-generations alias\n"
@@ -995,6 +1032,8 @@ sub _verify_same_vg_alias_configuration {
         if keys(%reserve) != 1;
     die "same-VG aliases must use the same expected minimum path count\n"
         if keys(%minimum_paths) != 1;
+    die "same-VG aliases must use the same cluster lock timeout\n"
+        if keys(%lock_timeout) != 1;
     die "same-VG aliases must use the same PVE node scope\n"
         if keys(%node_scope) != 1;
     return 1;
@@ -1006,8 +1045,9 @@ sub _with_vg_lock {
     # Fail immediately when quorum is already absent. The same gate is repeated
     # under the lock because quorum may disappear while the caller waits.
     $class->_verify_mutation_quorum($storeid, $scfg);
+    my $timeout = $scfg->{'slt-lock-timeout'} // 30;
     return $class->cluster_lock_storage(
-        $lockid, $scfg->{shared}, undef,
+        $lockid, $scfg->{shared}, $timeout,
         sub {
             $class->_verify_mutation_quorum($storeid, $scfg);
             $class->_verify_storage_identity($storeid, $scfg, $device);
@@ -1036,8 +1076,9 @@ sub _with_mutation_lock {
     }
 
     $class->_verify_mutation_quorum($storeid, $scfg);
+    my $timeout = $scfg->{'slt-lock-timeout'} // 30;
     return $class->cluster_lock_storage(
-        $storeid, $scfg->{shared}, undef,
+        $storeid, $scfg->{shared}, $timeout,
         sub {
             $class->_verify_mutation_quorum($storeid, $scfg);
             $class->_verify_storage_identity($storeid, $scfg);
@@ -2447,6 +2488,56 @@ sub activate_volume {
     return 1;
 }
 
+sub _thin_pool_runtime_state {
+    my ($class, $vg, $pool, $device) = @_;
+    my @command = ('/sbin/lvs', '--readonly');
+    push @command, ('--devices', $device) if defined($device);
+    push @command, ('--noheadings', '--separator', '|',
+        '-o', 'lv_name,lv_attr,pool_lv', $vg);
+    my $lines = _command_lines(
+        \@command,
+        "reading runtime state of thin pool '$vg/$pool' failed",
+    );
+
+    my $vg_dm = $vg;
+    $vg_dm =~ s/-/--/g;
+    my ($pool_found, @active_children);
+    for my $line (@$lines) {
+        my ($name, $attr, $pool_lv) = split(/\|/, $line, -1);
+        for ($name, $attr, $pool_lv) {
+            $_ //= '';
+            s/^\s+|\s+$//g;
+        }
+        die "runtime thin-pool inventory of '$vg/$pool' is malformed\n"
+            if $name eq '' || length($attr) < 5;
+        if ($name eq $pool) {
+            die "runtime thin-pool inventory contains duplicate pool '$vg/$pool'\n"
+                if $pool_found;
+            $pool_found = 1;
+        }
+        if ($pool_lv eq $pool) {
+            my $name_dm = $name;
+            $name_dm =~ s/-/--/g;
+            push @active_children, $name
+                if _block_device_exists("/dev/mapper/$vg_dm-$name_dm");
+        }
+    }
+    die "runtime thin-pool inventory is missing '$vg/$pool'\n"
+        if !$pool_found;
+
+    my $pool_dm = $pool;
+    $pool_dm =~ s/-/--/g;
+    my $pool_mapper = "$vg_dm-$pool_dm-tpool";
+    my $pool_mapper_active = _block_device_exists("/dev/mapper/$pool_mapper") ? 1 : 0;
+
+    return {
+        pool_active => $pool_mapper_active,
+        pool_mapper => $pool_mapper,
+        pool_mapper_active => $pool_mapper_active,
+        active_children => \@active_children,
+    };
+}
+
 sub deactivate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     return $class->_thick_deactivate_volume($storeid, $scfg, $volname, $snapname, $cache)
@@ -2454,12 +2545,79 @@ sub deactivate_volume {
 
     my $vg = $scfg->{'slt-vgname'};
     my $lv = $snapname ? "snap_${volname}_${snapname}" : $volname;
+    my (undef, undef, $vmid) = $class->parse_volname($volname);
+    my $pool = "sltp-$vmid";
+    my $device = defined($scfg->{'slt-expected-wwid'})
+        ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+        : undef;
 
+    # Activation, dmeventd registration and DM teardown are node-local runtime
+    # state.  They do not change shared VG metadata and must not serialize all
+    # VM migrations behind the canonical VG mutation lock.  PVE already holds
+    # the VM operation lock; exact mapper names plus the pinned device and
+    # ownership checks scope this cleanup to one VM pool on this node.
+    $class->_verify_storage_identity($storeid, $scfg, $device);
+    $class->_verify_owned_volume($storeid, $scfg, $volname);
+
+    my $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
+    my @other_children = grep { $_ ne $lv } @{$state->{active_children}};
+
+        # dmeventd must release the hidden -tpool mapping while the public
+        # pool is still active.  Once the final guest LV is deactivated LVM
+        # can report the public pool inactive even though dmeventd remains
+        # the sole opener of the hidden mapper, at which point --monitor n
+        # no longer unregisters it.
+    if (!@other_children && $state->{pool_active}) {
+        my @unmonitor = ('/sbin/lvchange');
+        push @unmonitor, ('--devices', $device) if defined($device);
+        push @unmonitor, ('--monitor', 'n', "$vg/$pool");
+        run_command(
+            \@unmonitor,
+            errmsg => "unregistering final shared thin pool '$vg/$pool' from dmeventd failed",
+        );
+    }
+
+    my @deactivate = ('/sbin/lvchange');
+    push @deactivate, ('--devices', $device) if defined($device);
+    push @deactivate, ('-an', "$vg/$lv");
     run_command(
-        ['/sbin/lvchange', '-an', "$vg/$lv"],
+        \@deactivate,
         errmsg => "deactivating shared thin LV '$vg/$lv' failed",
     );
 
+    $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
+        # Under concurrent live migration QEMU teardown can make lvchange -an
+        # complete while the exact thin mapping is still being removed by DM.
+        # Do not mistake that bounded transition for an independently active
+        # sibling, otherwise dmeventd remains the sole opener of the pool on
+        # the evacuated node.  Wait only for the exact requested LV and never
+        # for an unrelated child.
+    for (1 .. 20) {
+        last if !grep { $_ eq $lv } @{$state->{active_children}};
+        select(undef, undef, undef, 0.25);
+        $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
+    }
+    die "thin LV deactivation postcondition failed: '$vg/$lv' remains active\n"
+        if grep { $_ eq $lv } @{$state->{active_children}};
+    return 1 if @{$state->{active_children}};
+
+    if ($state->{pool_active} || $state->{pool_mapper_active}) {
+        my @pool_deactivate = ('/sbin/lvchange');
+        push @pool_deactivate, ('--devices', $device) if defined($device);
+        push @pool_deactivate, ('-an', "$vg/$pool");
+        run_command(
+            \@pool_deactivate,
+            errmsg => "deactivating idle shared thin pool '$vg/$pool' failed",
+        );
+    }
+
+    my $after = $class->_thin_pool_runtime_state($vg, $pool, $device);
+    die "thin-pool deactivation postcondition failed: '$vg/$pool' remains active\n"
+        if $after->{pool_active};
+    die "thin-pool deactivation postcondition failed: hidden mapper '$after->{pool_mapper}' remains active\n"
+        if $after->{pool_mapper_active};
+    die "thin-pool deactivation postcondition failed: active children remain in '$vg/$pool'\n"
+        if @{$after->{active_children}};
     return 1;
 }
 

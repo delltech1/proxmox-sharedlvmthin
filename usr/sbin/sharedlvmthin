@@ -239,6 +239,19 @@ doctor() {
         fail "LVM executable not found"
     fi
 
+    if [ -d /etc/lvm/archive ]; then
+        LVM_ARCHIVE_COUNT="$(find /etc/lvm/archive -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c)"
+        LVM_ARCHIVE_KIB="$(du -sk /etc/lvm/archive 2>/dev/null | awk '{print $1}')"
+        if [ "${LVM_ARCHIVE_COUNT:-0}" -ge 1000 ]; then
+            warn "LVM metadata archive contains ${LVM_ARCHIVE_COUNT} files (${LVM_ARCHIVE_KIB:-unknown} KiB); high-object-count mutations may be slower"
+            info "Action: review administrator-owned LVM archive retention and preserve a current vgcfgbackup; Doctor made no change"
+        else
+            pass "LVM metadata archive count is ${LVM_ARCHIVE_COUNT:-0} (${LVM_ARCHIVE_KIB:-unknown} KiB)"
+        fi
+    else
+        warn "LVM metadata archive directory is unavailable; Doctor made no change"
+    fi
+
     if command -v dmeventd >/dev/null 2>&1; then
         DMEV="$(dmeventd -V 2>&1 | head -1)"
         pass "dmeventd installed: $DMEV"

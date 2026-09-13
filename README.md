@@ -51,7 +51,9 @@ Read [storage requirements](docs/storage-requirements.md),
 [iSCSI/FC/FCoE setup examples](docs/transport-setup-examples.md),
 [known issues](docs/known-issues.md), and
 [critical recovery guidance](docs/critical-storage-recovery.md), and the
-[allocation-mode guide](docs/allocation-modes.md) first.
+[allocation-mode guide](docs/allocation-modes.md) first. Measured concurrency
+limits and the 150-pool lab evidence are recorded in
+[scale qualification](docs/scale-qualification.md).
 
 ## Per-VM thin-pool trade-off
 
