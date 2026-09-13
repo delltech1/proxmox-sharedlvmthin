@@ -159,12 +159,15 @@ class PackageSourceTests(unittest.TestCase):
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
         self.assertNotIn("fully installed and operational", postinst)
         self.assertIn(
-            "Operational status: NOT READY (health check or PVE service refresh failed)",
+            "Operational status: NOT READY (installation preflight or PVE service refresh failed)",
             postinst,
         )
         self.assertIn("must NOT be treated as operational", postinst)
         self.assertIn('DOCTOR_RC', postinst)
-        self.assertIn('passed with diagnostic warnings', postinst)
+        self.assertIn('installation preflight passed with diagnostic warnings', postinst)
+        self.assertIn('sharedlvmthin doctor --quick', postinst)
+        self.assertIn('The full Doctor was not run automatically', postinst)
+        self.assertNotIn('Operational status: HEALTH CHECK PASSED', postinst)
 
     def test_postinst_refreshes_only_active_pve_storage_consumers(self):
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
@@ -246,6 +249,27 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("sharedlvmthin-health-json", doctor)
         self.assertIn("ANCHOR_STATE ANCHOR_WORKER ANCHOR_REASON", doctor)
         self.assertIn("new mutations must remain blocked", doctor)
+
+    def test_doctor_collects_thick_inventory_once_and_does_not_relabel_thin_pools(self):
+        doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertIn("THICK_HEALTH_JSON_COLLECTED=0", doctor)
+        self.assertIn('[ "$THICK_HEALTH_JSON_COLLECTED" -eq 0 ]', doctor)
+        self.assertIn("THICK_HEALTH_JSON_COLLECTED=1", doctor)
+        self.assertIn("timeout --foreground 90", doctor)
+        self.assertIn(
+            "Thin pools sharing this VG belong to the canonical Thin alias",
+            doctor,
+        )
+
+    def test_bounded_install_preflight_does_not_claim_full_volume_audit(self):
+        doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        self.assertIn('DOCTOR_MODE="${DOCTOR_MODE:-full}"', doctor)
+        self.assertIn('[ "$DOCTOR_MODE" = "quick" ]', doctor)
+        self.assertIn('per-volume and Thick anchor diagnostics require the full Doctor', doctor)
+        self.assertIn('DOCTOR_MODE=quick doctor', doctor)
+        self.assertIn('timeout --foreground --kill-after=10 60', postinst)
+        self.assertIn('/usr/sbin/sharedlvmthin doctor --quick', postinst)
 
     def test_recovery_check_is_read_only_and_fail_closed(self):
         checker = (

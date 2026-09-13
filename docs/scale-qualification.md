@@ -76,6 +76,30 @@ the temporary disk passed. The original two-disk configuration remained,
 there was no snapshot, replacement or temporary LV residue, and VG free space
 again returned to exactly 159161253888 bytes.
 
+A separate VM proved same-VG cross-mode movement under the 300-VM baseline.
+Stopped Thin-to-Thick completed in 37 seconds. After booting from the Thick
+generation, a running Thick-to-Thin move completed through native PVE/QEMU
+block mirroring in 128 seconds, and only then removed the source generation.
+Exact VM destruction removed the returned thin LV and per-VM pool; no VMID or
+Thick namespace object remained and VG free space returned to 159161253888
+bytes with quorum, 2/2 paths and zero D-state tasks.
+
+The full Doctor took 138.98 seconds over this deliberately large inventory.
+TG24 therefore uses a distinct bounded installation preflight rather than
+running the full per-volume audit from `postinst`. On the same node,
+`doctor --quick` completed in 37.69 seconds with 88 PASS, eight expected
+site-policy warnings and zero failures. It still verifies package/API,
+quorum, VG/PV/WWID, reserve, multipath and PVE storage state, while explicitly
+deferring per-volume and Thick anchor diagnostics to the full Doctor. This
+changes installation latency and wording only; storage mutation callbacks
+always perform fresh authoritative checks.
+
+The reproducible TG24 package was then installed one node at a time on API 14
+and API 15. Complete `dpkg` runs, including PVE consumer refresh and the quick
+preflight, took 75.00--79.15 seconds. Every node reported the exact TG24
+version, zero preflight failures, active scale aliases, 2/2 paths, quorum and
+zero D-state tasks before the next node was changed.
+
 The direct A/B result for the second fix was:
 
 - before: 50 successful migrations, 5 completed-with-cleanup-timeout and 17

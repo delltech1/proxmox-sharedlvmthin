@@ -136,31 +136,32 @@ else
 fi
 
 echo
-echo "Running SharedLvmThin health check..."
+echo "Running bounded SharedLvmThin installation preflight..."
 
 HEALTH_OK=0
 set +e
-timeout --foreground --kill-after=10 120 /usr/sbin/sharedlvmthin doctor
+timeout --foreground --kill-after=10 60 /usr/sbin/sharedlvmthin doctor --quick
 DOCTOR_RC=$?
 set -e
 if [ "$DOCTOR_RC" -eq 0 ]; then
     HEALTH_OK=1
-    echo "SharedLvmThin health check passed."
+    echo "SharedLvmThin installation preflight passed."
 elif [ "$DOCTOR_RC" -eq 1 ]; then
     HEALTH_OK=1
-    echo "SharedLvmThin health check passed with diagnostic warnings."
+    echo "SharedLvmThin installation preflight passed with diagnostic warnings."
 else
-    echo "WARNING: SharedLvmThin health check reported a problem."
+    echo "WARNING: SharedLvmThin installation preflight reported a problem."
     echo "SharedLvmThin is installed but must NOT be treated as operational."
-    echo "Review the output above."
+    echo "Review the output above. The full Doctor was not run automatically."
 fi
 
 echo
 echo "SharedLvmThin installation complete."
 if [ "$HEALTH_OK" -eq 1 ] && [ "$PVE_REFRESH_OK" -eq 1 ]; then
-    echo "Operational status: HEALTH CHECK PASSED"
+    echo "Installation status: BOUNDED PREFLIGHT PASSED"
+    echo "Run 'sharedlvmthin doctor' for the full per-volume and Thick anchor audit."
 else
-    echo "Operational status: NOT READY (health check or PVE service refresh failed)"
+    echo "Operational status: NOT READY (installation preflight or PVE service refresh failed)"
 fi
 echo
 echo "CLI:"

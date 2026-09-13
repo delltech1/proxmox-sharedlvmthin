@@ -5,6 +5,7 @@
 set -u
 
 VERSION="0.3-doctor"
+DOCTOR_MODE="${DOCTOR_MODE:-full}"
 PLUGIN="/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 MONITOR="/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor"
 LVMCONF="/etc/lvm/lvmlocal.conf"
@@ -310,6 +311,15 @@ doctor() {
     if [ -z "$STOREIDS" ]; then
         warn "No sharedlvmthin storage configured"
     fi
+
+    # The JSON collector already inventories every configured storage and VG.
+    # Capture that point-in-time read-only document once per Doctor run instead
+    # of repeating all anchor/process probes for every Thick alias.  This is a
+    # diagnostic cache only; mutation callbacks always perform fresh identity
+    # and state checks.
+    THICK_HEALTH_JSON_COLLECTED=0
+    THICK_HEALTH_JSON_OK=0
+    THICK_HEALTH_JSON=''
 
     for SID in $STOREIDS; do
         info "Checking storage '$SID'"
@@ -632,6 +642,11 @@ doctor() {
             fi
         fi
 
+        if [ "$DOCTOR_MODE" = "quick" ]; then
+            pass "$SID: bounded installation preflight completed; per-volume and Thick anchor diagnostics require the full Doctor"
+            continue
+        fi
+
         EXPECTED_TAG="pve-slt-sid-$SID"
 
         PMSPARE_SIZE="$(
@@ -660,10 +675,16 @@ doctor() {
         fi
 
         if [ "$STORAGE_ALLOCATION_MODE" = "thick-generations" ]; then
-            if ! THICK_HEALTH_JSON="$(
-                timeout --foreground 30 \
-                    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json 2>/dev/null
-            )"; then
+            if [ "$THICK_HEALTH_JSON_COLLECTED" -eq 0 ]; then
+                if THICK_HEALTH_JSON="$(
+                    timeout --foreground 90 \
+                        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json 2>/dev/null
+                )"; then
+                    THICK_HEALTH_JSON_OK=1
+                fi
+                THICK_HEALTH_JSON_COLLECTED=1
+            fi
+            if [ "$THICK_HEALTH_JSON_OK" -ne 1 ]; then
                 fail "$SID: Thick Generations anchor state is unavailable; new mutations must remain blocked"
             else
                 # The embedded Python program must not be expanded by this shell.
@@ -707,6 +728,13 @@ for storage in document.get("storages", []):
                     pass "$SID: every Thick Generations anchor is materialized and reference-consistent"
                 fi
             fi
+
+            # Thin pools sharing this VG belong to the canonical Thin alias.
+            # Auditing them again with the Thick storage ID would invent false
+            # ownership and health failures and doubles O(number-of-pools)
+            # work. Storage-level identity, capacity, path and anchor checks
+            # above remain in force for the Thick alias.
+            continue
         fi
 
         POOLS="$(
@@ -1313,6 +1341,11 @@ case "${1:-doctor}" in
     doctor)
         if [ "${2:-}" = "--deep" ]; then
             deep_doctor
+        elif [ "${2:-}" = "--quick" ]; then
+            DOCTOR_MODE=quick doctor
+        elif [ -n "${2:-}" ]; then
+            echo "Usage: sharedlvmthin doctor [--quick|--deep]" >&2
+            exit 64
         else
             doctor
         fi
@@ -1396,6 +1429,7 @@ case "${1:-doctor}" in
     *)
         echo "Usage:"
         echo "  sharedlvmthin doctor"
+        echo "  sharedlvmthin doctor --quick"
         echo "  sharedlvmthin doctor --deep"
         echo "  sharedlvmthin recovery-check <storage-id>"
         echo "  sharedlvmthin upgrade-check"

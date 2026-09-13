@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.0~rc5.4~tg24 (2026-09-13)
+
+- Separate the bounded installation preflight from the complete per-volume
+  Doctor audit. `postinst` now runs `doctor --quick` with a 60-second bound and
+  explicitly states that the full Doctor was not run automatically. The quick
+  gate retains package/API, quorum, VG/PV/WWID, reserve, multipath and PVE
+  storage-state checks; it never claims per-volume or Thick anchor health.
+- Cache the read-only all-storage Thick health document once per full Doctor
+  invocation and do not relabel same-VG Thin pools as objects owned by the
+  Thick alias. Mutation hooks continue to re-read authoritative state and do
+  not consume the diagnostic cache.
+- On the concurrent 300-VM lab baseline, the new installation preflight
+  completed in 37.69 seconds with 88 PASS, eight expected site-policy warnings
+  and zero failures. The complete fail-closed Doctor remained available and
+  took 138.98 seconds over the same high-object-count inventory.
+- Qualify a disposable same-VG cross-mode lifecycle: stopped Thin-to-Thick
+  Storage Move completed in 37 seconds, running Thick-to-Thin native QEMU
+  mirror in 128 seconds, and exact VM/storage cleanup restored the original
+  159161253888-byte VG free-space baseline with no residual object.
+- Full gates pass 244 Perl and 160 Python tests.
+
 ## 0.9.0~rc5.4~tg23 (2026-09-13)
 
 - Fix thick lifecycle verification during the intentional asynchronous
