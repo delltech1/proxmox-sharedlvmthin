@@ -1,47 +1,47 @@
-# SharedLvmThin for Proxmox VE
+# BASTRIX SharedLVM for Proxmox VE
 
-An open-source storage project developed and published under the **BASTRIX**
-brand.
+**Shared FC/iSCSI SAN storage for Proxmox VE 9, with Thin Pools and Thick
+Generations.** This project was originally published as SharedLvmThin; the
+existing package, command and storage-plugin identifiers remain compatible.
 
-> [!IMPORTANT]
-> **New: RC5.4 TG12 dual-mode preview is available.** One package now offers
-> the established **Thin** mode and the new **Thick Generations** mode with
-> fully allocated, independent generation LVs and a linear steady-state data
-> path. Thin and Thick storage definitions can coexist over the same pinned VG,
-> and ordinary PVE Storage Move converts disks in either direction.
->
-> [Read the Thick Generations overview](https://github.com/delltech1/proxmox-sharedlvmthin/blob/experimental/thick-generations/docs/allocation-modes.md),
-> [follow the dual-mode installation guide](https://github.com/delltech1/proxmox-sharedlvmthin/blob/experimental/thick-generations/docs/installation.md), or
-> [download the RC5.4 TG12 pre-release](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.4-tg12).
+## What is it for?
 
-SharedLvmThin is a safety-focused Proxmox VE storage plugin for an existing
-shared LVM volume group. It provides one LVM-thin pool per VM, snapshots,
-rollback, migration support, cluster locking, guarded autogrow, storage
-identity checks, and an optional read-only HTTPS health dashboard.
+BASTRIX SharedLVM is intended for organizations moving VMware or other
+virtualized workloads to a Proxmox cluster while retaining an existing shared
+FC, FCoE or iSCSI SAN.
 
-The plugin manages storage objects. It is not in the guest I/O path after QEMU
-opens an LV and does not provide SAN connectivity, multipath configuration,
-replication, fencing, quorum, or automatic metadata repair.
+Proxmox shared LVM provides cluster-wide access and live migration, but not the
+snapshot lifecycle many administrators expect. Ordinary LVM-thin provides
+snapshots, but is not designed as one concurrently shared cluster-wide thin
+pool. BASTRIX SharedLVM addresses this gap with per-VM ownership domains and
+two selectable modes:
 
-## Why does this exist?
+- **Thin** — an isolated LVM-thin pool per VM with guarded autogrow.
+- **Thick Generations** — fully allocated independent generations with an
+  ordinary linear steady-state device and temporary `dm-clone` transitions.
 
-The primary use case is a Proxmox cluster that must keep using an existing
-shared FC or iSCSI SAN. Native shared LVM provides shared access and live
-migration but not the expected snapshot lifecycle, while ordinary LVM-thin is
-not designed as concurrently shared cluster storage.
+Both modes integrate through the standard Proxmox Storage API and support
+snapshots, rollback, resize, backup, Storage Move and live migration. The
+implementation uses standard Proxmox orchestration and Linux LVM,
+device-mapper and multipath components—without proprietary SAN integration,
+third-party kernel modules or an external locking service.
 
-BASTRIX SharedLVM bridges that gap with snapshots, rollback, resize and
-migration in either Thin or Thick Generations mode. If you already use Ceph,
-NFS or a suitable vendor-native plugin, you probably do not need it.
+The SAN LUN remains shared and visible to every participating node. The plugin
+does not use array snapshots, move LUNs between hosts, configure the SAN,
+replace fencing or quorum, or make simultaneous writable activation safe.
+
+If you already use Ceph, NFS or a suitable vendor-native Proxmox plugin, you
+probably do not need this project.
 
 ## Release status
 
-`0.9.0~rc5.3.1` is a release candidate intended exclusively for Proxmox VE 9.
-It passed extensive unit, fault-injection and three-node integration
-qualification on the Proxmox VE 9.2.x release line with Storage API 14 and 15,
-but this is not universal certification of every SAN, HBA,
-array, multipath policy, firmware, or failure mode. Validate it on disposable
-storage matching your production design before carrying production data.
+`0.9.0~rc5.4~tg12` is the current dual-mode pre-release for Proxmox VE 9 and
+is published from the `experimental/thick-generations` branch. The established
+Thin-only line remains available, while RC5.4 TG12 adds Thick Generations and
+cross-mode operation. Qualification covers Proxmox VE 9.2.x with Storage API
+14 and 15, but is not universal certification of every SAN, HBA, array,
+multipath policy, firmware or failure mode. Validate it first on disposable
+storage matching your production design.
 
 For new deployments, the recommended capacity mode is `elastic`: physical
 pool size follows actual allocation plus bounded absolute burst headroom, so a
@@ -85,7 +85,7 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install ./pve-sharedlvmthin_0.9.0-rc5.3_all.deb
+apt install ./pve-sharedlvmthin_0.9.0.rc5.4.tg12_all.deb
 ```
 
 Install the same version on every participating PVE node, one node at a time.
