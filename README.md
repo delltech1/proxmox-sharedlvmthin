@@ -6,15 +6,16 @@ existing package, command and storage-plugin identifiers remain compatible.
 
 ## What is it for?
 
-BASTRIX SharedLVM is intended for organizations moving VMware or other
-virtualized workloads to a Proxmox cluster while retaining an existing shared
-FC, FCoE or iSCSI SAN.
+BASTRIX SharedLVM addresses a specific gap in native Proxmox storage support:
+an existing shared FC, FCoE or iSCSI SAN can be used through the shared LVM
+backend, but that backend does not support snapshots or clones. The native
+LVM-thin backend supports snapshots and clones, but Proxmox supports it only as
+local storage because an LVM-thin pool cannot be shared across cluster nodes.
 
-Proxmox shared LVM provides cluster-wide access and live migration, but not the
-snapshot lifecycle many administrators expect. Ordinary LVM-thin provides
-snapshots, but is not designed as one concurrently shared cluster-wide thin
-pool. BASTRIX SharedLVM addresses this gap with per-VM ownership domains and
-two selectable modes:
+This project adds snapshot-capable shared LVM storage for Proxmox clusters,
+with per-VM ownership domains and two selectable modes. Retaining an existing
+SAN during a VMware-to-Proxmox migration is one common use case, but migration
+from VMware is not a requirement:
 
 - **Thin** — an isolated LVM-thin pool per VM with guarded autogrow.
 - **Thick Generations** — fully allocated independent generations with an
