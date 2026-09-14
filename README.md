@@ -97,7 +97,7 @@ Read [storage requirements](docs/storage-requirements.md),
 [known issues](docs/known-issues.md), and
 [critical recovery guidance](docs/critical-storage-recovery.md), and the
 [allocation-mode guide](docs/allocation-modes.md) first. Measured concurrency
-limits and the 150-pool lab evidence are recorded in
+limits and the 300-VM dual-mode lab evidence are recorded in
 [scale qualification](docs/scale-qualification.md).
 
 ## Per-VM thin-pool trade-off
@@ -183,7 +183,7 @@ See [data-safety invariants](docs/data-safety-invariants.md) and
 
 ## Qualification summary
 
-The accepted TG12 candidate has exercised both modes through allocation,
+The TG24 milestone and TG25 maintenance candidate have exercised both modes through allocation,
 online and offline lifecycle operations, snapshot/rollback, resize, live
 migration, cross-node reconstruction, Thin-to-Thick and Thick-to-Thin Storage
 Move, native PVE backup/restore, and exact cleanup. Veeam qualification covered

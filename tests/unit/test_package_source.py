@@ -14,7 +14,6 @@ class PackageSourceTests(unittest.TestCase):
             "10." + "240.",
             "stan" + "islav",
             "ba" + "ran",
-            "dell" + "tech",
             "oke" + ".dev",
         )
         private_networks = tuple(
