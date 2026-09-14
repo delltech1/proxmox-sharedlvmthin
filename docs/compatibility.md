@@ -1,12 +1,12 @@
 # Compatibility
 
-RC5.4 TG12 is intended exclusively for **Proxmox VE 9**. The qualified release line
+RC5.4.1 TG25 is intended exclusively for **Proxmox VE 9**. The qualified release line
 is PVE 9.2.x with Storage API 14 or 15. PVE 8 and earlier are unsupported.
 
 | PVE | Storage API | Plugin API | Status |
 |---|---:|---:|---|
-| 9.2.2 | 14 | 14 | Disposable-node lifecycle and packaging qualification |
-| 9.2.x | 15 | 15 | Three-node lifecycle, package and endurance qualification |
+| 9.2.x | 14 | 14 | Lifecycle, install/reinstall and mixed-API qualification |
+| 9.2.x | 15 | 15 | Lifecycle, package-update, reboot and endurance qualification |
 
 Storage transports:
 

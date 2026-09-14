@@ -1,4 +1,9 @@
-# Thick Generations tg24 handoff
+# Thick Generations TG24 milestone handoff
+
+> Historical milestone record. The current compatible maintenance candidate is
+> RC5.4.1 TG25. TG25 preserves the TG24 storage and anchor formats and adds PVE
+> package-update, initramfs, reboot-recovery and runtime compatibility
+> hardening. See `RELEASE-NOTES-RC5.4.1-TG25.md` for current package identity.
 
 ## Candidate
 
@@ -82,4 +87,5 @@ supported-console restore are qualified; replication is not claimed.
 - `docs/thick-generations-poc-status.md` is the chronological evidence log.
 - `docs/thick-generations-release-gate.md` is the support decision table.
 - `docs/known-issues.md` contains the current limitations.
-- `docs/RELEASE-NOTES-RC5.4-TG12.md` contains candidate release wording.
+- `docs/RELEASE-NOTES-RC5.4-TG24.md` contains the milestone release wording.
+- `docs/RELEASE-NOTES-RC5.4.1-TG25.md` contains the current maintenance release wording.
