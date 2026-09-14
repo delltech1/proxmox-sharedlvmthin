@@ -39,6 +39,9 @@ or repair SAN sessions, multipath policy, fencing or quorum.
 ## Package identity
 
 ```text
-pve-sharedlvmthin_0.9.0~rc5.4.1~tg25_all.deb
+pve-sharedlvmthin_0.9.0.rc5.4.1.tg25_all.deb
 SHA256 68a350292fb58e72bd145065bfc5fe049a3b73647c01932edef476ad98663209
 ```
+
+The installed Debian package version remains `0.9.0~rc5.4.1~tg25`; only the
+portable release-asset filename replaces Debian's `~` separators with dots.

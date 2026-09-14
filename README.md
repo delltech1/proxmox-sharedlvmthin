@@ -122,7 +122,7 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install './pve-sharedlvmthin_0.9.0~rc5.4.1~tg25_all.deb'
+apt install './pve-sharedlvmthin_0.9.0.rc5.4.1.tg25_all.deb'
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -136,7 +136,7 @@ unknown or unavailable device.
 ## Upgrade or reinstall
 
 ```bash
-apt install './pve-sharedlvmthin_0.9.0~rc5.4.1~tg25_all.deb'
+apt install './pve-sharedlvmthin_0.9.0.rc5.4.1.tg25_all.deb'
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```
