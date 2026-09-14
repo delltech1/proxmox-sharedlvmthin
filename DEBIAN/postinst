@@ -23,6 +23,7 @@ python3 -m py_compile "$HEALTH"
 python3 -m py_compile "$WEB"
 
 chmod 0755 "$MONITOR" "$MATERIALIZER" "$HEALTH" "$WEB" \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
     /usr/sbin/sharedlvmthin \
@@ -137,6 +138,32 @@ fi
 
 echo
 echo "Running bounded SharedLvmThin installation preflight..."
+
+# Debian's stock lvm2 initramfs hook recursively copies /etc/lvm. Large-scale
+# lifecycle tests can leave thousands of host recovery archives there. They
+# are useful on the running host but must never be embedded in an initramfs:
+# decompression can otherwise exhaust early-boot memory before the real root
+# filesystem is mounted. The packaged follow-up hook removes only staging
+# copies. Rebuild existing initramfs images now so upgrading this package also
+# protects the next reboot; a failed rebuild makes package configuration fail.
+if command -v update-initramfs >/dev/null 2>&1 && command -v lsinitramfs >/dev/null 2>&1; then
+    INITRAMFS_REBUILD=0
+    for INITRD in /boot/initrd.img-*; do
+        [ -f "$INITRD" ] || continue
+        if lsinitramfs "$INITRD" 2>/dev/null \
+            | grep -qE '^etc/lvm/(archive|backup)/'; then
+            INITRAMFS_REBUILD=1
+            break
+        fi
+    done
+
+    if [ "$INITRAMFS_REBUILD" -eq 1 ]; then
+        echo "Rebuilding initramfs images without host-only LVM recovery archives..."
+        update-initramfs -u -k all
+    else
+        echo "Initramfs images contain no host-only LVM recovery archives; rebuild skipped."
+    fi
+fi
 
 HEALTH_OK=0
 set +e

@@ -1367,6 +1367,13 @@ case "${1:-doctor}" in
         fi
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
         ;;
+    compat-check)
+        if [ -n "${2:-}" ]; then
+            echo "Usage: sharedlvmthin compat-check" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check
+        ;;
     thick-resume)
         if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
             echo "Usage: sharedlvmthin thick-resume <storage-id> <volume>" >&2
@@ -1433,6 +1440,7 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin doctor --deep"
         echo "  sharedlvmthin recovery-check <storage-id>"
         echo "  sharedlvmthin upgrade-check"
+        echo "  sharedlvmthin compat-check"
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>"

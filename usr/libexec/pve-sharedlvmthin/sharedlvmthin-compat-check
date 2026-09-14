@@ -1,0 +1,103 @@
+#!/bin/bash
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+set -u
+
+fail=0
+pass=0
+check() {
+    local label=$1
+    shift
+    if timeout --foreground --kill-after=5 60 "$@"; then
+        echo "PASS=$label"
+        pass=$((pass + 1))
+    else
+        echo "FAIL=$label"
+        fail=$((fail + 1))
+    fi
+}
+
+echo "COMPATIBILITY_CHECK_VERSION=1"
+echo "HOST=$(hostname)"
+echo "KERNEL=$(uname -r)"
+
+for command in perl python3 pvesm pvesh qm lvs vgs pvs lvcreate lvremove \
+    lvchange lvextend vgcfgbackup dmsetup multipath multipathd iscsiadm \
+    qemu-img qemu-io sha256sum timeout systemctl lsinitramfs update-initramfs; do
+    if command -v "$command" >/dev/null 2>&1; then
+        echo "PASS=command:$command"
+        pass=$((pass + 1))
+    else
+        echo "FAIL=command:$command"
+        fail=$((fail + 1))
+    fi
+done
+
+check perl-module-load perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e 1
+check api-and-hook-contract perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e '
+    my $api = PVE::Storage::APIVER();
+    die "unsupported API $api\n" if $api < 14 || $api > 15;
+    die "plugin API mismatch\n" if PVE::Storage::Custom::SharedLvmThinPlugin->api() != $api;
+    for my $hook (qw(type plugindata properties options status list_images alloc_image free_image
+        activate_storage deactivate_storage activate_volume deactivate_volume volume_size_info
+        volume_resize volume_snapshot volume_snapshot_delete volume_snapshot_rollback
+        volume_has_feature path parse_volname)) {
+        die "missing hook $hook\n" if !PVE::Storage::Custom::SharedLvmThinPlugin->can($hook);
+    }
+'
+
+check pve-storage-status pvesm status
+check pve-storage-api pvesh get /storage --output-format json
+if [ -f /etc/pve/corosync.conf ]; then
+    check quorum bash -c "pvecm status | grep -q 'Quorate:[[:space:]]*Yes'"
+fi
+
+for service in pvedaemon.service pvestatd.service pveproxy.service multipathd.service dm-event.service; do
+    check "service:$service" systemctl is-active --quiet "$service"
+done
+
+initrd_dirty=0
+for image in /boot/initrd.img-*; do
+    [ -f "$image" ] || continue
+    if lsinitramfs "$image" 2>/dev/null | grep -qE '^etc/lvm/(archive|backup)/'; then
+        echo "FAIL=initramfs-host-lvm-recovery-copy:$image"
+        fail=$((fail + 1))
+        initrd_dirty=1
+    fi
+done
+if [ "$initrd_dirty" -eq 0 ]; then
+    echo "PASS=initramfs-no-host-lvm-recovery-copies"
+    pass=$((pass + 1))
+fi
+
+while IFS='|' read -r sid disabled nodes; do
+    [ -n "$sid" ] || continue
+    case "$disabled" in 1|yes|on|true) continue;; esac
+    if [ -n "$nodes" ]; then case ",$nodes," in *",$(hostname),"*) ;; *) continue;; esac; fi
+    check "recovery:$sid" /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$sid"
+done < <(awk '
+    function emit(){if(inside) print sid "|" disabled "|" nodes}
+    /^sharedlvmthin:[[:space:]]+/{emit(); inside=1; sid=$2; disabled="0"; nodes=""; next}
+    /^[^[:space:]]/{emit(); inside=0; next}
+    inside && $1=="disable"{disabled=(NF==1?"1":tolower($2)); next}
+    inside && $1=="nodes"{nodes=$2; next}
+    END{emit()}
+' /etc/pve/storage.cfg)
+
+if ps -eo stat= | grep -q '^D'; then
+    echo "FAIL=global-dstate-present"
+    fail=$((fail + 1))
+else
+    echo "PASS=no-global-dstate"
+    pass=$((pass + 1))
+fi
+
+echo "COMPAT_PASS=$pass"
+echo "COMPAT_FAIL=$fail"
+if [ "$fail" -ne 0 ]; then
+    echo "COMPATIBILITY=FAIL"
+    exit 2
+fi
+echo "COMPATIBILITY=PASS"
+

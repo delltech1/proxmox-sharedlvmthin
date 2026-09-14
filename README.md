@@ -19,8 +19,11 @@ replication, fencing, quorum, or automatic metadata repair.
 
 ## Release status
 
-`0.9.0~rc5.4~tg24` is a dual-mode laboratory release candidate intended
-exclusively for Proxmox VE 9. It passes 160 Python and 244 Perl tests, fault injection,
+`0.9.0~rc5.4.1~tg25` is a maintenance hotfix for the TG24 dual-mode laboratory
+release candidate, intended exclusively for Proxmox VE 9. TG24 introduced the
+Thin/Thick Generations architecture; TG25 keeps its on-disk formats unchanged
+and hardens PVE package-update and reboot qualification. It passes 163 Python
+and 244 Perl tests, fault injection,
 two-node and three-node cluster qualification, API 14/15 installation and
 reinstallation, and a clean four-hour dual-mode endurance run on the Proxmox
 VE 9.2.x release line. A three-node lab baseline also ran 150 Thick Generations
@@ -29,8 +32,9 @@ universal certification of every SAN, HBA,
 array, multipath policy, firmware, or failure mode. Validate it first on
 disposable storage matching your production design.
 
-See the [TG24 laboratory release notes](docs/RELEASE-NOTES-RC5.4-TG24.md) for
-the exact tested envelope, package identity and remaining support boundaries.
+See the [TG25 hotfix notes](docs/RELEASE-NOTES-RC5.4.1-TG25.md) and the original
+[TG24 milestone notes](docs/RELEASE-NOTES-RC5.4-TG24.md) for the exact tested
+envelope, package identity and remaining support boundaries.
 
 The previously published RC5.2/RC5.3 Thin behavior remains available through
 the explicit `thin` allocation mode. Thick Generations is newer and should be
@@ -82,7 +86,7 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install './pve-sharedlvmthin_0.9.0.rc5.4.tg24_all.deb'
+apt install './pve-sharedlvmthin_0.9.0~rc5.4.1~tg25_all.deb'
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -96,7 +100,7 @@ unknown or unavailable device.
 ## Upgrade or reinstall
 
 ```bash
-apt install './pve-sharedlvmthin_0.9.0.rc5.4.tg24_all.deb'
+apt install './pve-sharedlvmthin_0.9.0~rc5.4.1~tg25_all.deb'
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```

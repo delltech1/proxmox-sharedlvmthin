@@ -521,6 +521,42 @@ class PackageSourceTests(unittest.TestCase):
         self.assertNotIn("_change_exact_tags", prepared)
         self.assertNotIn("_disable_and_verify_autoactivation", prepared)
 
+    def test_package_prunes_only_initramfs_staging_lvm_recovery_copies(self):
+        hook = ROOT / "usr/share/initramfs-tools/hooks/zz-pve-sharedlvmthin-lvm-prune"
+        source = hook.read_text(encoding="utf-8")
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+
+        self.assertIn('PREREQ="lvm2"', source)
+        self.assertIn('/var/tmp/mkinitramfs_*|/tmp/mkinitramfs_*', source)
+        self.assertIn('$DESTDIR/etc/lvm/archive', source)
+        self.assertIn('$DESTDIR/etc/lvm/backup', source)
+        self.assertNotIn('rm -rf -- /etc/lvm', source)
+        self.assertIn("zz-pve-sharedlvmthin-lvm-prune", build)
+        self.assertIn("update-initramfs -u -k all", postinst)
+        self.assertIn("lsinitramfs", postinst)
+        self.assertIn("^etc/lvm/(archive|backup)/", postinst)
+        self.assertIn("rebuild skipped", postinst)
+
+    def test_initramfs_rebuild_failure_is_not_ignored(self):
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        rebuild = postinst.index("update-initramfs -u -k all")
+        preflight = postinst.index("HEALTH_OK=0")
+        self.assertLess(rebuild, preflight)
+        self.assertNotIn("update-initramfs -u -k all || true", postinst)
+
+    def test_compatibility_gate_is_packaged_and_checks_runtime_contract(self):
+        checker = ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check"
+        source = checker.read_text(encoding="utf-8")
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertIn("api-and-hook-contract", source)
+        self.assertIn("volume_snapshot_rollback", source)
+        self.assertIn("initramfs-no-host-lvm-recovery-copies", source)
+        self.assertIn("sharedlvmthin-recovery-check", source)
+        self.assertIn("sharedlvmthin-compat-check", build)
+        self.assertIn("compat-check)", cli)
+
 
 if __name__ == "__main__":
     unittest.main()

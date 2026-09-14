@@ -1,0 +1,31 @@
+#!/bin/sh
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+set -eu
+
+PREREQ="lvm2"
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "${1:-}" in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+# The Debian lvm2 hook copies /etc/lvm recursively. Archive and backup files
+# are host-side recovery evidence, not early-boot configuration. Remove only
+# their copies inside mkinitramfs' private staging tree. Never touch /etc/lvm.
+case "${DESTDIR:-}" in
+    /var/tmp/mkinitramfs_*|/tmp/mkinitramfs_*)
+        rm -rf -- "$DESTDIR/etc/lvm/archive" "$DESTDIR/etc/lvm/backup"
+        ;;
+    *)
+        echo "unsafe or unexpected initramfs DESTDIR: ${DESTDIR:-<unset>}" >&2
+        exit 1
+        ;;
+esac
