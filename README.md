@@ -1,8 +1,10 @@
-# BASTRIX SharedLVM for Proxmox VE
+# BASTRIX SharedLVM — Snapshot-Capable Shared FC/iSCSI SAN Storage for Proxmox VE 9 Clusters
 
-**Shared FC/iSCSI SAN storage for Proxmox VE 9, with Thin Pools and Thick
-Generations.** This project was originally published as SharedLvmThin; the
-existing package, command and storage-plugin identifiers remain compatible.
+BASTRIX SharedLVM is an open-source storage plugin for Proxmox VE 9 clusters.
+It provides snapshot-capable Thin and Thick allocation modes on an existing
+shared LVM volume group backed by FC, FCoE or iSCSI SAN storage. This project
+was originally published as SharedLvmThin; the existing package, command and
+storage-plugin identifiers remain compatible.
 
 ## What is it for?
 
@@ -169,6 +171,16 @@ Feedback, reproducible issue reports, and anonymized compatibility results for
 Proxmox VE, SAN arrays, HBAs, multipath configurations, and firmware versions
 are also appreciated. Never include credentials, private addresses, WWIDs, or
 other sensitive infrastructure identifiers in a public report.
+
+## Community and feedback
+
+- [Proxmox Support Forum project thread](https://forum.proxmox.com/threads/project-sharedlvmthin-for-proxmox-ve-9-%E2%80%94-shared-fc-iscsi-san-storage-with-lvm-thin-snapshots-multipath-safety.186250/)
+- [Reddit r/Proxmox community showcase](https://www.reddit.com/r/Proxmox/comments/1weg33h/community_showcase_bastrix_sharedlvm_for_proxmox/)
+- [GitHub Discussions](https://github.com/delltech1/proxmox-sharedlvmthin/discussions)
+- [Bug reports and feature requests](https://github.com/delltech1/proxmox-sharedlvmthin/issues)
+
+Please use Discussions for design questions and general usage. Use Issues for
+reproducible defects and include sanitized diagnostics only.
 
 ## License and support
 
