@@ -1,35 +1,61 @@
-# SharedLvmThin for Proxmox VE
+# BASTRIX SharedLVM — Snapshot-Capable Shared FC/iSCSI SAN Storage for Proxmox VE 9 Clusters
 
-An open-source storage project developed and published under the **BASTRIX**
-brand.
+BASTRIX SharedLVM is an open-source storage plugin for Proxmox VE 9 clusters.
+It provides snapshot-capable Thin and Thick allocation modes on an existing
+shared LVM volume group backed by FC, FCoE or iSCSI SAN storage. This project
+was originally published as SharedLvmThin; the existing package, command and
+storage-plugin identifiers remain compatible.
 
-SharedLvmThin is a safety-focused Proxmox VE storage plugin for an existing
-shared LVM volume group. One package exposes two explicit allocation models:
+## What is it for?
 
-- **Thin** — one isolated LVM-thin pool per VM, with guarded autogrow.
+BASTRIX SharedLVM addresses a specific gap in native Proxmox storage support:
+an existing shared FC, FCoE or iSCSI SAN can be used through the shared LVM
+backend, but that backend does not support snapshots or clones. The native
+LVM-thin backend supports snapshots and clones, but Proxmox supports it only as
+local storage because an LVM-thin pool cannot be shared across cluster nodes.
+
+This project adds snapshot-capable shared LVM storage for Proxmox clusters,
+with per-VM ownership domains and two selectable modes. Retaining an existing
+SAN during a VMware-to-Proxmox migration is one common use case, but migration
+from VMware is not a requirement:
+
+- **Thin** — an isolated LVM-thin pool per VM with guarded autogrow.
 - **Thick Generations** — fully allocated independent generations with an
   ordinary linear steady-state device and temporary `dm-clone` transitions.
 
-Both modes provide snapshots, rollback, resize, migration, cluster locking,
-storage identity checks, and an optional read-only HTTPS health dashboard.
+Both modes integrate through the standard Proxmox Storage API and support
+snapshots, rollback, resize, backup, Storage Move and live migration. The
+implementation uses standard Proxmox orchestration and Linux LVM,
+device-mapper and multipath components—without proprietary SAN integration,
+third-party kernel modules or an external locking service.
 
-The plugin manages storage objects. It is not in the guest I/O path after QEMU
-opens an LV and does not provide SAN connectivity, multipath configuration,
-replication, fencing, quorum, or automatic metadata repair.
+The SAN LUN remains shared and visible to every participating node. The plugin
+does not use array snapshots, move LUNs between hosts, configure the SAN,
+replace fencing or quorum, or make simultaneous writable activation safe.
+
+If you already use Ceph, NFS or a suitable vendor-native Proxmox plugin, you
+probably do not need this project.
 
 ## Release status
 
 `0.9.0~rc5.4.1~tg25` is a maintenance hotfix for the TG24 dual-mode laboratory
 release candidate, intended exclusively for Proxmox VE 9. TG24 introduced the
 Thin/Thick Generations architecture; TG25 keeps its on-disk formats unchanged
-and hardens PVE package-update and reboot qualification. It passes 163 Python
-and 244 Perl tests, fault injection,
+and hardens PVE package-update, reboot recovery and runtime compatibility
+qualification. It passes 163 Python and 244 Perl tests, fault injection,
 two-node and three-node cluster qualification, API 14/15 installation and
 reinstallation, and a clean four-hour dual-mode endurance run on the Proxmox
-VE 9.2.x release line. A three-node lab baseline also ran 150 Thick Generations
-VMs simultaneously; this is not validation of 200--500 VM enterprise scale or
-universal certification of every SAN, HBA,
-array, multipath policy, firmware, or failure mode. Validate it first on
+VE 9.2.x release line.
+
+The TG24 disposable multi-node qualification ran 150 Thin and 150 Thick VMs
+concurrently and covered bounded parallel migration, native HA relocation,
+snapshot/rollback, Thin-to-Thick and Thick-to-Thin storage moves, backup and
+restore, rolling API 14/15 installation, exact cleanup and endurance testing.
+TG25 additionally qualifies a full PVE package upgrade and reboot followed by
+automatic transport recovery, storage revalidation and Thin/Thick lifecycle
+operations. This is a laboratory release candidate, not validation of
+200--500 VM enterprise scale or universal certification of every SAN, HBA,
+array, multipath policy, firmware or failure mode. Validate it first on
 disposable storage matching your production design.
 
 See the [TG25 hotfix notes](docs/RELEASE-NOTES-RC5.4.1-TG25.md) and the original
@@ -40,6 +66,16 @@ The previously published RC5.2/RC5.3 Thin behavior remains available through
 the explicit `thin` allocation mode. Thick Generations is newer and should be
 treated as a release-candidate technology until it has broader independent
 hardware and workload coverage.
+
+### TG24 dual-mode milestone
+
+[`RC5.4 TG24`](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.4-tg24)
+introduced a second, explicitly selected **Thick Generations** allocation mode next
+to the existing per-VM Thin mode. Thick snapshots become independent fully
+allocated linear LVs after a temporary persistent `dm-clone` transition, so
+there is no permanent snapshot chain in the steady-state guest I/O path.
+TG25 is a compatible hardening update to that milestone, not a new storage
+format. See the [TG24 milestone notes](docs/RELEASE-NOTES-RC5.4-TG24.md).
 
 For new deployments, the recommended capacity mode is `elastic`: physical
 pool size follows actual allocation plus bounded absolute burst headroom, so a
@@ -169,6 +205,16 @@ Feedback, reproducible issue reports, and anonymized compatibility results for
 Proxmox VE, SAN arrays, HBAs, multipath configurations, and firmware versions
 are also appreciated. Never include credentials, private addresses, WWIDs, or
 other sensitive infrastructure identifiers in a public report.
+
+## Community and feedback
+
+- [Proxmox Support Forum project thread](https://forum.proxmox.com/threads/project-sharedlvmthin-for-proxmox-ve-9-%E2%80%94-shared-fc-iscsi-san-storage-with-lvm-thin-snapshots-multipath-safety.186250/)
+- [Reddit r/Proxmox community showcase](https://www.reddit.com/r/Proxmox/comments/1weg33h/community_showcase_bastrix_sharedlvm_for_proxmox/)
+- [GitHub Discussions](https://github.com/delltech1/proxmox-sharedlvmthin/discussions)
+- [Bug reports and feature requests](https://github.com/delltech1/proxmox-sharedlvmthin/issues)
+
+Please use Discussions for design questions and general usage. Use Issues for
+reproducible defects and include sanitized diagnostics only.
 
 ## License and support
 
