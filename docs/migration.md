@@ -50,6 +50,11 @@ blocked until the administrator completes this one-time offline conversion:
 sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE
 ```
 
+The same command is idempotent for an already-adopted, unowned pool and
+hardens older releases by disabling generic LVM autoactivation on the exact
+pool and all of its thin volumes. It refuses while any local mapper exists;
+the operator assertion must be true on every participating node.
+
 The confirmation is an explicit operator assertion about all nodes. The
 command independently verifies identity, quorum, cluster locking, ownership,
 and local runtime absence; it adds only the persistent schema marker. The next

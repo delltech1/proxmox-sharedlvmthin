@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0~rc5.6~tg27 (unreleased development candidate)
+
+- Refuse Thin activation when generic LVM autoactivation is enabled on the
+  exact pool or requested LV.
+- Refuse to claim an unowned Thin pool when any exact local pool/child mapper
+  already exists; an automatically restored hidden `-tpool` is never blessed
+  retroactively.
+- Extend the explicit `ALL-NODES-INACTIVE` owner-model transaction to disable
+  and verify autoactivation on the exact pool and every member LV. The same
+  command safely hardens an already-adopted, unowned pool.
+- Add fail-closed transaction-fingerprint and bounded read-only metadata
+  validation primitives.
+- Add an observation-only predictive Capacity Stability Governor primitive.
+- Add a deliberately non-arming sanlock-to-PVE-watchdog-mux state-machine
+  prototype with fake-socket tests. No watchdog or lease service is enabled.
+- Preserve all Thick Generations runtime behavior while expanding its
+  mandatory regression coverage.
+
 ## 0.9.0~rc5.5~tg26 (2026-09-17, development pre-release)
 
 - Enforce the dm-thin single-kernel invariant with a persistent, versioned

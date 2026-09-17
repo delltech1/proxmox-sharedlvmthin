@@ -2926,6 +2926,9 @@ subtest 'thin activation claim writes and verifies one persistent owner' => sub 
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub {
         return '0123456789abcdef0123456789abcdef';
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return { pool_active => 0, pool_mapper_active => 0, active_children => [] };
+    };
     ok($thin_claim_pool_owner_locked->(
         $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
     ), 'unowned pool is claimed');
@@ -2985,6 +2988,9 @@ subtest 'thin claim postcondition failure never guesses a compensating release' 
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
         return shift @tags;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return { pool_active => 0, pool_mapper_active => 0, active_children => [] };
     };
 
     eval {
@@ -3054,12 +3060,20 @@ subtest 'thin owner-model adoption is explicit, offline and postcondition verifi
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
         return { pool_active => 0, pool_mapper_active => 0, active_children => [] };
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_members = sub {
+        return ['vm-900001-disk-0', 'vm-900001-disk-1'];
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation
+        = $record_disable_autoactivation;
     is($thin_adopt_owner_model->(
         $class, $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'ALL-NODES-INACTIVE',
-    ), 'THIN_OWNER_MODEL_ADOPTED', 'explicit inactive legacy pool adoption succeeds');
+    ), 'THIN_OWNER_MODEL_ADOPTED_AND_HARDENED', 'explicit inactive legacy pool adoption succeeds');
     is_deeply([command_lines()], [
+        '/sbin/lvchange --setautoactivation n testvg/sltp-900001',
+        '/sbin/lvchange --setautoactivation n testvg/vm-900001-disk-0',
+        '/sbin/lvchange --setautoactivation n testvg/vm-900001-disk-1',
         '/sbin/lvchange --addtag pve-slt-owner-v1 testvg/sltp-900001',
-    ], 'adoption adds only the persistent schema marker');
+    ], 'adoption disables exact pool family before publishing the schema marker');
 
     reset_mocks();
     eval { $thin_adopt_owner_model->(
@@ -3068,6 +3082,24 @@ subtest 'thin owner-model adoption is explicit, offline and postcondition verifi
     like($@, qr/exact confirmation ALL-NODES-INACTIVE/,
         'casual confirmation cannot enter the adoption path');
     is(scalar(@commands), 0, 'invalid confirmation performs zero mutation');
+};
+
+subtest 'unowned preactivated thin mapper is never retroactively claimed' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-owner-v1';
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return { pool_active => 1, pool_mapper_active => 1, active_children => [] };
+    };
+    eval { $thin_claim_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
+    ) };
+    like($@, qr/unowned pool .* already has local runtime mappings/,
+        'preactivated mapper fails closed before owner claim');
+    is(scalar(@commands), 0, 'preactivated mapper performs zero metadata mutation');
 };
 
 subtest 'thin runtime state trusts exact local DM nodes over shared LVM activity flags' => sub {

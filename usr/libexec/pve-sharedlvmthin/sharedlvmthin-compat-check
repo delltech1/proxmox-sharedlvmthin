@@ -18,6 +18,47 @@ check() {
     fi
 }
 
+# Return 0 when this kernel owns at least one managed thin-pool mapper, 1 when
+# no managed pool has a local mapper, and 2 when the evidence cannot be read or
+# LVM and device-mapper disagree.  A hidden "-tpool" mapper counts as active
+# even when the public pool LV is reported inactive.
+managed_thin_runtime_present() {
+    local lvm_inventory dm_inventory line vg pool segtype attr tags mapper
+
+    if ! lvm_inventory=$(timeout --foreground --kill-after=5 60 \
+        lvs --noheadings --separator '|' \
+        -o vg_name,lv_name,segtype,lv_attr,lv_tags 2>/dev/null); then
+        return 2
+    fi
+    if ! dm_inventory=$(timeout --foreground --kill-after=5 60 \
+        dmsetup info -c --noheadings -o name 2>/dev/null); then
+        return 2
+    fi
+    dm_inventory=$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$dm_inventory")
+
+    while IFS='|' read -r vg pool segtype attr tags; do
+        vg=${vg//[[:space:]]/}
+        pool=${pool//[[:space:]]/}
+        segtype=${segtype//[[:space:]]/}
+        attr=${attr//[[:space:]]/}
+        tags=${tags//[[:space:]]/}
+        [ "$segtype" = "thin-pool" ] || continue
+        [[ ",$tags," =~ ,pve-slt-sid-[A-Za-z0-9_-]+, ]] || continue
+
+        mapper=${vg//-/--}-${pool//-/--}-tpool
+        if grep -Fxq "$mapper" <<<"$dm_inventory"; then
+            return 0
+        fi
+        # LVM claiming an active managed pool without its exact hidden mapper
+        # is contradictory evidence and must fail closed.
+        if [[ "$attr" =~ ^....a ]]; then
+            return 2
+        fi
+    done <<<"$lvm_inventory"
+
+    return 1
+}
+
 echo "COMPATIBILITY_CHECK_VERSION=1"
 echo "HOST=$(hostname)"
 echo "KERNEL=$(uname -r)"
@@ -53,9 +94,27 @@ if [ -f /etc/pve/corosync.conf ]; then
     check quorum bash -c "pvecm status | grep -q 'Quorate:[[:space:]]*Yes'"
 fi
 
-for service in pvedaemon.service pvestatd.service pveproxy.service multipathd.service dm-event.service; do
+for service in pvedaemon.service pvestatd.service pveproxy.service multipathd.service; do
     check "service:$service" systemctl is-active --quiet "$service"
 done
+
+if systemctl is-active --quiet dm-event.service; then
+    echo "PASS=service:dm-event.service:active"
+    pass=$((pass + 1))
+else
+    managed_thin_runtime_present
+    runtime_rc=$?
+    if [ "$runtime_rc" -eq 1 ]; then
+        echo "PASS=service:dm-event.service:not-required-no-local-managed-thin-mapper"
+        pass=$((pass + 1))
+    elif [ "$runtime_rc" -eq 0 ]; then
+        echo "FAIL=service:dm-event.service:inactive-with-local-managed-thin-mapper"
+        fail=$((fail + 1))
+    else
+        echo "FAIL=service:dm-event.service:runtime-evidence-unknown"
+        fail=$((fail + 1))
+    fi
+fi
 
 initrd_dirty=0
 for image in /boot/initrd.img-*; do
@@ -100,4 +159,3 @@ if [ "$fail" -ne 0 ]; then
     exit 2
 fi
 echo "COMPATIBILITY=PASS"
-

@@ -1928,6 +1928,15 @@ sub _thin_claim_pool_owner_locked {
         if defined($owner) && $owner ne $node;
     return 1 if defined($owner);
 
+    # An unowned pool must also be absent from this kernel.  Generic LVM
+    # autoactivation or a leaked dmeventd mapping can otherwise load the same
+    # thin metadata before the durable owner is claimed.  Never bless that
+    # mapper retroactively: require explicit offline hardening/recovery.
+    my $runtime = $class->_thin_pool_runtime_state($vg, $pool, $device);
+    die "UNSAFE shared LVM-thin activation refused: unowned pool '$vg/$pool' already has local runtime mappings; concurrent or automatic metadata activation is possible; run the explicit ALL-NODES-INACTIVE hardening procedure\n"
+        if $runtime->{pool_active} || $runtime->{pool_mapper_active}
+        || @{$runtime->{active_children}};
+
     my $epoch = _new_transaction_id();
     my @claim = ('/sbin/lvchange');
     push @claim, ('--devices', $device) if defined($device);
@@ -2707,6 +2716,8 @@ sub activate_volume {
     # owner's tag is never stolen or inferred stale here.
     return $class->_with_mutation_lock($storeid, $scfg, sub {
         $class->_verify_owned_volume($storeid, $scfg, $volname);
+        $class->_verify_autoactivation_disabled($vg, $pool, $device);
+        $class->_verify_autoactivation_disabled($vg, $lv, $device);
         $class->_thin_claim_pool_owner_locked($vg, $pool, $device);
         my @activate = ('/sbin/lvchange');
         push @activate, ('--devices', $device) if defined($device);
@@ -2767,6 +2778,31 @@ sub _thin_pool_runtime_state {
         pool_mapper_active => $pool_mapper_active,
         active_children => \@active_children,
     };
+}
+
+sub _thin_pool_members {
+    my ($class, $vg, $pool, $device) = @_;
+    my @command = ('/sbin/lvs', '--readonly');
+    push @command, ('--devices', $device) if defined($device);
+    push @command, ('--noheadings', '--separator', '|', '-o', 'lv_name,pool_lv', $vg);
+    my $lines = _command_lines(
+        \@command,
+        "reading exact thin-pool membership of '$vg/$pool' failed",
+    );
+    my %members;
+    for my $line (@$lines) {
+        my ($name, $pool_lv) = split(/\|/, $line, -1);
+        for ($name, $pool_lv) {
+            $_ //= '';
+            s/^\s+|\s+$//g;
+        }
+        die "thin-pool membership inventory contains an invalid LV name\n"
+            if $name !~ /^[A-Za-z0-9_.+-]+$/;
+        next if $pool_lv ne $pool;
+        die "thin-pool membership inventory contains duplicate '$vg/$name'\n"
+            if $members{$name}++;
+    }
+    return [sort keys %members];
 }
 
 sub deactivate_volume {
@@ -3830,8 +3866,6 @@ sub _thin_adopt_owner_model {
         my $owner = _thin_owner_state_from_tags(
             $class->_thin_pool_tags($vg, $pool, $device),
         );
-        die "owner-model adoption refused: '$vg/$pool' already has the schema\n"
-            if $owner->{schema};
         die "owner-model adoption refused: legacy/ambiguous owner tags exist\n"
             if defined($owner->{owner}) || defined($owner->{epoch});
         my $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
@@ -3839,17 +3873,34 @@ sub _thin_adopt_owner_model {
             if $state->{pool_active} || $state->{pool_mapper_active}
             || @{$state->{active_children}};
 
-        my @adopt = ('/sbin/lvchange');
-        push @adopt, ('--devices', $device) if defined($device);
-        push @adopt, ('--addtag', THIN_OWNER_SCHEMA_TAG, "$vg/$pool");
-        run_command(\@adopt,
-            errmsg => "adopting exclusive-owner schema for '$vg/$pool' failed");
+        # The same explicit offline transaction also hardens already-adopted
+        # pools created by older releases.  Disable generic activation on the
+        # pool and every exact child before publishing the owner schema.  A
+        # partial failure only leaves additional objects disabled and can be
+        # retried; it never claims safety prematurely.
+        my $members = $class->_thin_pool_members($vg, $pool, $device);
+        die "owner-model adoption refused: '$vg/$pool' has no thin members\n"
+            if !@$members;
+        $class->_disable_and_verify_autoactivation($vg, $pool, $device);
+        for my $member (@$members) {
+            $class->_disable_and_verify_autoactivation($vg, $member, $device);
+        }
+
+        if (!$owner->{schema}) {
+            my @adopt = ('/sbin/lvchange');
+            push @adopt, ('--devices', $device) if defined($device);
+            push @adopt, ('--addtag', THIN_OWNER_SCHEMA_TAG, "$vg/$pool");
+            run_command(\@adopt,
+                errmsg => "adopting exclusive-owner schema for '$vg/$pool' failed");
+        }
         my $after = _thin_owner_state_from_tags(
             $class->_thin_pool_tags($vg, $pool, $device),
         );
         die "owner-model adoption postcondition failed for '$vg/$pool'\n"
             if !$after->{schema} || defined($after->{owner}) || defined($after->{epoch});
-        return 'THIN_OWNER_MODEL_ADOPTED';
+        return $owner->{schema}
+            ? 'THIN_AUTOACTIVATION_HARDENED'
+            : 'THIN_OWNER_MODEL_ADOPTED_AND_HARDENED';
     });
 }
 

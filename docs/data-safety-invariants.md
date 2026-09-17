@@ -16,7 +16,7 @@ These invariants are RC5 P0 release gates. Availability loss is preferable to an
 - **DS-12:** A transport failure must never trigger destructive storage cleanup.
 - **DS-13:** Configuration that changes persistent volume layout, ownership, or snapshot semantics is immutable while managed or legacy objects exist. A configuration change never retroactively grants new semantics or ownership to an old object.
 - **DS-14:** A newly allocated volume must not expose data from a previously deleted volume or VM. Allocation confidentiality is a release gate, not an assumption inferred from thin-pool defaults.
-- **DS-15:** New shared-storage pools and guest/auxiliary LVs must not be acknowledged as successfully allocated until generic LVM autoactivation is proven disabled. An uncertain flag preserves the object and returns PARTIAL; existing legacy flags are diagnostic-only and are never silently rewritten.
+- **DS-15:** New shared-storage pools and guest/auxiliary LVs must not be acknowledged as successfully allocated until generic LVM autoactivation is proven disabled. Thin activation also re-verifies the exact pool and requested LV and refuses an unowned pool with any surviving local mapper. Existing pools are changed only by the explicit `ALL-NODES-INACTIVE` adoption/hardening transaction, which disables autoactivation for the exact pool family before publishing safety.
 
 For DS-02, ownership of a snapshot origin is not ownership proof for an LV
 that merely has the expected snapshot name. Snapshot deletion must revalidate

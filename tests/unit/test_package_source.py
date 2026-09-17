@@ -104,6 +104,28 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('$3 ~ /^....a/', doctor)
         self.assertIn("no local per-VM thin pool currently requires monitoring", doctor)
 
+    def test_compat_requires_dmeventd_only_for_exact_managed_runtime(self):
+        compat = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check"
+        ).read_text(encoding="utf-8")
+        self.assertIn("managed_thin_runtime_present", compat)
+        self.assertIn("-o vg_name,lv_name,segtype,lv_attr,lv_tags", compat)
+        self.assertIn("dmsetup info -c --noheadings -o name", compat)
+        self.assertIn("${pool//-/--}-tpool", compat)
+        self.assertIn(
+            "PASS=service:dm-event.service:not-required-no-local-managed-thin-mapper",
+            compat,
+        )
+        self.assertIn(
+            "FAIL=service:dm-event.service:inactive-with-local-managed-thin-mapper",
+            compat,
+        )
+        self.assertIn(
+            "FAIL=service:dm-event.service:runtime-evidence-unknown",
+            compat,
+        )
+
     def test_doctor_skips_disabled_storage_in_all_operational_gates(self):
         doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         self.assertIn("storage_is_disabled", doctor)
