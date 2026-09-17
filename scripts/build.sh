@@ -34,10 +34,13 @@ chmod 0755 \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize" \
     "$STAGE/usr/share/initramfs-tools/hooks/zz-pve-sharedlvmthin-lvm-prune" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web" \
     "$STAGE/usr/sbin/sharedlvmthin" \
+    "$STAGE/usr/sbin/sharedlvmthin-migrate-bridge" \
     "$STAGE/usr/sbin/sharedlvmthin-web-configure"
 
 find "$STAGE" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +

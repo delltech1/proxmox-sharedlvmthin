@@ -11,6 +11,19 @@
 - Add the Materialized Migration Bridge prototype: native online Thin-to-Thick
   Storage Move, ordinary Thick live migration, and optional online return to
   Thin with physical-capacity admission and persistent phase evidence.
+- Serialize the capacity-consuming bridge materialization phase with a
+  transaction-scoped VG admission record. A competing bridge queues rather
+  than colliding with another allocation intent; exact release is verified.
+- Fix PVE-native LeaseGuard node-scope handling for PVE's parsed membership
+  hash and qualify healthy and missing-peer-helper activation paths on three
+  nodes. Missing evidence leaves the VM stopped and never claims the pool.
+- Add the disabled Thin Relay Handoff research state machine and prove its
+  fail-closed recovery decisions. This is not a direct Thin live-migration
+  support claim.
+- Qualify an online Thin-to-Thin storage-mirror round-trip between independent
+  managed VGs with exact QMP target path, data-canary and cleanup evidence.
+- Ensure every new migration and remote-evidence helper is executable in the
+  binary package; the release test now enumerates every installed shebang.
 
 ## 0.9.0~rc5.6~tg27 (unreleased development candidate)
 

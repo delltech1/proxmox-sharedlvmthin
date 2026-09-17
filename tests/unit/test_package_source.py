@@ -199,6 +199,20 @@ class PackageSourceTests(unittest.TestCase):
         build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
         self.assertIn('dpkg-deb -Zxz --root-owner-group --build', build)
 
+    def test_build_marks_every_installed_program_executable(self):
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        programs = []
+        for directory in (
+            ROOT / "usr/sbin",
+            ROOT / "usr/libexec/pve-sharedlvmthin",
+            ROOT / "usr/share/initramfs-tools/hooks",
+        ):
+            for path in directory.iterdir():
+                if path.is_file() and path.read_bytes().startswith(b"#!"):
+                    programs.append(path.relative_to(ROOT).as_posix())
+        missing = [path for path in programs if f'$STAGE/{path}' not in build]
+        self.assertEqual(missing, [])
+
     def test_product_facing_sources_do_not_contain_slovak_or_czech_markers(self):
         product = [
             ROOT / "usr/share/pve-sharedlvmthin/web/index.html",
