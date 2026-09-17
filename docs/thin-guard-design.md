@@ -79,3 +79,17 @@ the privileged guardian requires all of these qualification gates:
 
 Until those pass, `remote-audit` remains the available activation hardening
 and ThinGuard is an experimental, non-arming prototype.
+
+## Watchdog adapter prototype
+
+`PVE::SharedLvmThinWatchdog` implements the exact current PVE multiplexer
+client contract behind an explicit real-socket opt-in. Normal tests can only
+provide an injected socket. Arming and a healthy refresh write one NUL byte.
+The magic-close byte `V` is legal only after positive proof that every guarded
+QEMU reference and mapper is absent and every owner epoch was released.
+
+After runtime uncertainty, the adapter enters an irreversible `FENCING` state:
+it sends no further refresh and rejects clean disarm even if a later sample
+looks healthy. Explicit fencing closes without `V`; unexpected destruction
+also never sends `V`. This matches watchdog-mux fail-closed semantics while
+preventing unit tests or package installation from touching the live socket.
