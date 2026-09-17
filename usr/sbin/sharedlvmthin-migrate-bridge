@@ -104,16 +104,37 @@ if [ "${1:-}" = resume ]; then
         -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
         -o GlobalKnownHostsFile=none "root@$member_ip")
     remote_cfg=$("${ssh_base[@]}" -- qm config "$vmid")
-    observed_thin=$(printf '%s\n' "$remote_cfg" | awk -v sid="$thin_store" \
-        '/^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {n++; if ($2 ~ ("^" sid ":")) good++} END {print n+0 " " good+0}')
-    [ "$observed_thin" = "$disk_count $disk_count" ] \
-        || { echo "target disk topology is not exactly all-Thin" >&2; exit 70; }
+    read -r observed_disks observed_thin observed_thick < <(
+        printf '%s\n' "$remote_cfg" | awk -v thin="$thin_store" -v thick="$thick_store" '
+            /^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {
+                n++; if ($2 ~ ("^" thin ":")) t++; if ($2 ~ ("^" thick ":")) k++
+            }
+            END {print n+0, t+0, k+0}
+        '
+    )
+    admission_output=$(
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+            inspect "$thin_store" "$tx" "$source_node"
+    )
+    if grep -qx 'BRIDGE_ADMISSION_ACTIVE=NO' <<<"$admission_output"; then
+        admission=none
+    elif grep -qx 'BRIDGE_ADMISSION_ACTIVE=YES' <<<"$admission_output" \
+        && grep -qx "BRIDGE_ADMISSION_TX=$tx" <<<"$admission_output" \
+        && grep -qx "BRIDGE_ADMISSION_NODE=$source_node" <<<"$admission_output"; then
+        admission=exact
+    else
+        admission=foreign
+    fi
+    recovery_plan=$(
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+            "$phase" target "$return_thin" "$disk_count" "$observed_thin" \
+            "$observed_thick" "$admission"
+    )
+    grep -qx 'RECOVERY_PLAN=FINALIZE_THIN' <<<"$recovery_plan" \
+        || { echo "target disk topology is not exactly finalizable Thin" >&2; exit 70; }
     "${ssh_base[@]}" -- qm status "$vmid" | grep -qx 'status: running'
     "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
     "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
-        inspect "$thin_store" "$tx" "$source_node" \
-        | grep -qx 'BRIDGE_ADMISSION_ACTIVE=NO'
     remote_digest=$(printf '%s\n' "$remote_cfg" | sha256sum | cut -d' ' -f1)
     resume_tmp="$resume_file.tmp.$$"
     now=$(date +%s)

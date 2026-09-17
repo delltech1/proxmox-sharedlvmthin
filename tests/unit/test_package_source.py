@@ -64,10 +64,16 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("sharedlvmthin-migrate-bridge inspect <vmid>", source)
         self.assertIn("sharedlvmthin-migrate-bridge resume <vmid>", source)
         self.assertIn("resume refuses unsupported phase", source)
-        self.assertIn("target disk topology is not exactly all-Thin", source)
+        self.assertIn("target disk topology is not exactly finalizable Thin", source)
         self.assertIn("BRIDGE_ADMISSION_ACTIVE=NO", source)
         self.assertIn("disk_manifest_sha256", source)
         self.assertIn("disk manifest digest mismatch", source)
+        planner = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CONTINUE_MATERIALIZE", planner)
+        self.assertIn("CONTINUE_RETURN_THIN", planner)
+        self.assertIn("VG admission belongs to another transaction", planner)
         self.assertIn("progress_percent", source)
         self.assertIn("updated_at", source)
         self.assertIn("run_progress_move", source)

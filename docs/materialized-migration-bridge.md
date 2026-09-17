@@ -118,6 +118,16 @@ The bridge-admission helper also exposes a read-only exact state inspection;
 finalization requires the VG-wide materialization admission to be absent and
 both Thin and Thick recovery checks on the target to pass.
 
+Recovery decisions are produced by a pure fail-closed planner from the saved
+phase, authoritative node, policy, exact Thin/Thick disk counts and VG admission
+state. Its only possible positive actions are `CONTINUE_MATERIALIZE`,
+`MIGRATE_THICK`, `PREPARE_RETURN_THIN`, `CONTINUE_RETURN_THIN`,
+`FINALIZE_THIN`, and `FINALIZE_THICK`. A foreign admission, unexpected storage,
+missing/duplicate disk, contradictory policy or impossible phase/node pair has
+only one result: `REFUSE`. TG31 development currently wires this planner into
+the already-qualified final Thin publication path; execution of earlier plans
+remains disabled until each action has its own crash-injection qualification.
+
 Thin pool capacity is isolated per VM. A reported `Data% >= 95` blocks
 mutations of that pool in the plugin, but does not block unrelated VM pools in
 the same VG. Doctor reports it as a scoped capacity warning.

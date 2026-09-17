@@ -1,0 +1,83 @@
+#!/usr/bin/python3
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+"""Pure fail-closed recovery planner for materialized Thin migrations."""
+
+import re
+import sys
+
+
+SOURCE_PHASES = {
+    "PREPARED", "WAITING_ADMISSION", "MATERIALIZING", "MOVE_FAILED",
+    "MATERIALIZED_THICK", "MIGRATION_UNSETTLED",
+}
+TARGET_PHASES = {
+    "MATERIALIZED_THICK", "MIGRATION_UNSETTLED", "MIGRATED_THICK",
+    "RETURN_THIN_PREPARED", "MOVE_FAILED", "RETURNED_THIN",
+    "COMPLETE_THICK",
+}
+
+
+def classify(*, phase, authority, return_thin, disk_count, thin_count,
+             thick_count, admission):
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", phase or ""):
+        raise ValueError("invalid phase")
+    if authority not in {"source", "target"}:
+        raise ValueError("authoritative VM node is neither source nor target")
+    if return_thin not in {0, 1}:
+        raise ValueError("invalid return-Thin policy")
+    if disk_count <= 0 or thin_count < 0 or thick_count < 0:
+        raise ValueError("invalid disk counts")
+    if thin_count + thick_count != disk_count:
+        raise ValueError("disk topology contains missing, foreign or duplicate storage")
+    if admission not in {"none", "exact", "foreign"}:
+        raise ValueError("invalid admission evidence")
+    if admission == "foreign":
+        raise ValueError("VG admission belongs to another transaction")
+
+    if authority == "source":
+        if phase not in SOURCE_PHASES:
+            raise ValueError("phase is incompatible with source authority")
+        if thin_count:
+            return "CONTINUE_MATERIALIZE"
+        return "MIGRATE_THICK"
+
+    if phase not in TARGET_PHASES:
+        raise ValueError("phase is incompatible with target authority")
+    if admission != "none":
+        raise ValueError("target authority requires released VG admission")
+    if thin_count == disk_count:
+        if not return_thin:
+            raise ValueError("all-Thin target contradicts keep-Thick policy")
+        return "FINALIZE_THIN"
+    if thick_count == disk_count:
+        return "PREPARE_RETURN_THIN" if return_thin else "FINALIZE_THICK"
+    if not return_thin:
+        raise ValueError("mixed target contradicts keep-Thick policy")
+    return "CONTINUE_RETURN_THIN"
+
+
+def main(argv):
+    if len(argv) != 7:
+        print(
+            "Usage: sharedlvmthin-bridge-plan <phase> <source|target> "
+            "<return-thin:0|1> <disk-count> <thin-count> <thick-count> "
+            "<none|exact|foreign>", file=sys.stderr,
+        )
+        return 64
+    try:
+        action = classify(
+            phase=argv[0], authority=argv[1], return_thin=int(argv[2]),
+            disk_count=int(argv[3]), thin_count=int(argv[4]),
+            thick_count=int(argv[5]), admission=argv[6],
+        )
+    except (ValueError, TypeError) as exc:
+        print(f"RECOVERY_PLAN=REFUSE\nREASON={exc}")
+        return 70
+    print(f"RECOVERY_PLAN={action}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
