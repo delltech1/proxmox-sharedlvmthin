@@ -56,6 +56,22 @@ it does not allocate a Thick disk or a second Thin data copy.  A separate
 Thin-to-Thin mirror remains a possible fallback, but necessarily needs
 temporary physical space for the copied allocated data.
 
+## Verified PVE primitive
+
+On the qualified PVE 9 line, a running disposable VM completed a native online
+Thin-to-Thin `qm disk move` in both directions between two independent
+SharedLvmThin VGs.  QEMU reported a completed mirror job, the active QMP block
+graph named the expected target LV, the data canary matched after the
+round-trip, both source cleanups were exact, and both storage recovery checks
+returned `HEALTHY`/`SAFE_FOR_MUTATION=YES`.
+
+This proves the copy fallback without a Thick intermediate.  It does **not**
+prove cross-node direct Thin live migration: PVE classifies a configured
+shared storage as already accessible on the target and therefore does not
+start its local-storage NBD mirror path.  The zero-copy relay still needs an
+explicit, versioned switchover integration point; it must not be simulated by
+lying about `shared` globally or by patching an installed PVE Perl module.
+
 ## Required qualification before enablement
 
 - exact QEMU/PVE 9 migration hook and QMP ordering;
