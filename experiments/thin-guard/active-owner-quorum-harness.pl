@@ -41,6 +41,7 @@ die "qualification VM is not positively running\n"
 
 my $tags = qx{/sbin/lvs --readonly --noheadings -o lv_tags $vg/$pool 2>&1};
 die "cannot read exact pool tags\n" if $? != 0;
+$tags =~ s/^\s+|\s+$//g;
 die "pool owner does not match local node\n"
     if $tags !~ /(?:^|,)pve-slt-owner-node-\Q$node\E(?:,|\s|$)/;
 die "pool has no exact owner epoch\n"

@@ -106,13 +106,43 @@ refused before opening the socket (`RC=255`), and the watchdog journal client
 count remained unchanged. This proves the destructive qualification helper
 cannot accidentally arm over an active Thin pool.
 
+## QF-04: active owner fencing before takeover
+
+The active-owner harness positively verified a running QEMU VM, the exact
+thin-pool mapper, one local owner-node tag, one 32-hex owner epoch and initial
+quorum before opening its aggregate watchdog client. Local corosync was then
+stopped. The guardian observed quorum loss and stopped refresh while QEMU and
+the persistent owner epoch still belonged to the old node. PVE watchdog expiry
+reset that node; boot identity changed from
+`4ce00d0d-4933-49bb-b9e1-07db55b090c2` to
+`26256846-4c65-4249-becc-6d9d1d3f5e75`.
+
+During the membership-offline window, the VM configuration was transferred to
+the survivor. Its first start was refused independently by the storage plugin:
+
+```text
+UNSAFE shared LVM-thin activation refused: pool ... is owned by node
+'DEV-PRXZFS03', not 'DEV-PRXZFS02'; concurrent dm-thin activation can corrupt
+metadata; live migration is unsupported
+```
+
+The exact old epoch remained intact. After the old boot was positively proven
+replaced and its exact mapper absent, the explicit
+`thin-recover-fenced-owner` operation removed only that fenced owner. Starting
+the VM on the survivor committed a new owner node and a new epoch. The survivor
+had exactly the expected mapper, the old node had no matching mapper, and
+recovery returned owner/D-state PASS, `STATE=HEALTHY` and
+`SAFE_FOR_MUTATION=YES`.
+
+Result: **PASS for active-owner quorum-loss fencing, pre-recovery takeover
+refusal and explicit post-fence takeover with a fresh epoch.**
+
 ## Evidence not yet established
 
 This test does not prove the complete runtime guard. Remaining mandatory gates
 include:
 
 - delayed/stuck QEMU stop and refusal to magic-close;
-- old-owner reset observed by a target before takeover;
 - active-I/O canary continuity and recovery after fencing;
 - multi-pool aggregate behavior and one-bad-pool fencing;
 - daemon/package upgrade and restart ordering;
