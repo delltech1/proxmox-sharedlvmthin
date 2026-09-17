@@ -15,13 +15,14 @@ use lib '/tmp';
 
 use PVE::SharedLvmThinWatchdog;
 
-my ($vmid, $vg, $pool, $confirmation, $interval) = ('', '', '', '', 2);
+my ($vmid, $vg, $pool, $confirmation, $interval, $writer_pid) = ('', '', '', '', 2, '');
 GetOptions(
     'vmid=s' => \$vmid,
     'vg=s' => \$vg,
     'pool=s' => \$pool,
     'confirm=s' => \$confirmation,
     'interval=f' => \$interval,
+    'writer-pid=s' => \$writer_pid,
 ) or die "invalid arguments\n";
 
 die "invalid VMID\n" if $vmid !~ /^[1-9][0-9]{2,8}$/;
@@ -35,9 +36,22 @@ my $node = qx{/bin/hostname};
 chomp($node);
 die "invalid local node\n" if $node !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
-my $status = qx{/usr/sbin/qm status $vmid 2>&1};
-die "qualification VM is not positively running\n"
-    if $? != 0 || $status !~ /^status:\s+running\s*$/m;
+if ($writer_pid ne '') {
+    die "invalid canary writer PID\n" if $writer_pid !~ /^[1-9][0-9]*$/;
+    die "canary writer process is not live\n" if !-d "/proc/$writer_pid";
+    open(my $cmdline, '<', "/proc/$writer_pid/cmdline")
+        or die "cannot inspect canary writer process\n";
+    local $/;
+    my $command = <$cmdline> // '';
+    close($cmdline);
+    $command =~ s/\0/ /g;
+    die "writer PID is not the Thin I/O canary\n"
+        if $command !~ /thin-io-canary\.py\s+write\b/;
+} else {
+    my $status = qx{/usr/sbin/qm status $vmid 2>&1};
+    die "qualification VM is not positively running\n"
+        if $? != 0 || $status !~ /^status:\s+running\s*$/m;
+}
 
 my $tags = qx{/sbin/lvs --readonly --noheadings -o lv_tags $vg/$pool 2>&1};
 die "cannot read exact pool tags\n" if $? != 0;

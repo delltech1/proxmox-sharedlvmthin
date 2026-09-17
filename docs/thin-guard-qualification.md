@@ -137,13 +137,40 @@ recovery returned owner/D-state PASS, `STATE=HEALTHY` and
 Result: **PASS for active-owner quorum-loss fencing, pre-recovery takeover
 refusal and explicit post-fence takeover with a fresh epoch.**
 
+## QF-05: active Thin I/O crash canary
+
+A dedicated disposable 64 MiB Thin LV and per-VM pool were created for VMID
+992799. No guest or existing volume was reused. The plugin's native activation
+path committed the exact local owner epoch and mapper.
+
+`thin-io-canary.py` alternated deterministic 4 KiB records between two slots.
+Every record contained a sequence and SHA-256, was fsynced to the shared LV,
+and only then advanced a separately fsynced local progress journal. The
+active-owner guardian verified the exact mapper, owner and live writer PID,
+then local quorum was removed. The writer continued until watchdog fencing.
+
+After reboot, the local journal reported generation 1941. The pool was freshly
+activated and both on-storage slots were independently validated. Result:
+
+```text
+CANARY_VERIFY=PASS storage=1941 journal=1941
+```
+
+No confirmed fsync generation was lost, the newest record was not torn, D-state
+count was zero and the boot identity changed. The exact canary LV and its empty
+per-VM pool were then deactivated and removed; inventory proved no leftovers.
+
+Result: **PASS for active host-side Thin I/O, quorum-loss watchdog fencing,
+durable canary recovery and exact cleanup.** This is block-layer evidence; a
+guest-filesystem/application consistency claim still requires a guest-aware
+workload and is intentionally not inferred from this test.
+
 ## Evidence not yet established
 
 This test does not prove the complete runtime guard. Remaining mandatory gates
 include:
 
 - delayed/stuck QEMU stop and refusal to magic-close;
-- active-I/O canary continuity and recovery after fencing;
 - multi-pool aggregate behavior and one-bad-pool fencing;
 - daemon/package upgrade and restart ordering;
 - hardware watchdog qualification in addition to the lab `softdog`.
