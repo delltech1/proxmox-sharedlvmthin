@@ -88,4 +88,39 @@ subtest 'read-only metadata validation requires every positive postcondition' =>
     like($bad->{reason}, qr/no repair attempted/, 'failure never requests automatic repair');
 };
 
+subtest 'LeaseGuard activation is opt-in and wholly positive' => sub {
+    my $disabled = PVE::SharedLvmThinSafety::evaluate_leaseguard_activation(
+        enabled => 0,
+    );
+    is($disabled->{status}, 'DISABLED', 'existing storage behavior is unchanged');
+    ok(!$disabled->{blocks_operation}, 'disabled LeaseGuard adds no gate');
+
+    my %positive = map { $_ => 1 } qw(
+        lease_area_identity sanlock_daemon lockspace_joined resource_held
+        owner_matches quorum storage_identity fresh_pool_runtime
+    );
+    my $pass = PVE::SharedLvmThinSafety::evaluate_leaseguard_activation(
+        enabled => 1, %positive,
+    );
+    is($pass->{status}, 'PASS', 'all positive evidence permits activation');
+    ok(!$pass->{blocks_operation}, 'positive lease evidence does not block');
+
+    for my $field (sort keys %positive) {
+        my %state = %positive;
+        $state{$field} = 0;
+        my $refused = PVE::SharedLvmThinSafety::evaluate_leaseguard_activation(
+            enabled => 1, %state,
+        );
+        is($refused->{status}, 'REFUSED', "$field failure refuses activation");
+        ok($refused->{blocks_operation}, "$field failure is fail-closed");
+    }
+
+    delete $positive{resource_held};
+    my $unknown = PVE::SharedLvmThinSafety::evaluate_leaseguard_activation(
+        enabled => 1, %positive,
+    );
+    is($unknown->{status}, 'UNKNOWN', 'missing resource evidence is unknown');
+    ok($unknown->{blocks_operation}, 'unknown lease state blocks activation');
+};
+
 done_testing();

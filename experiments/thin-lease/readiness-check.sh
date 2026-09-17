@@ -37,10 +37,19 @@ else
     fail SANLOCK_CLIENT_PRESENT
 fi
 
-if command -v wdmd >/dev/null 2>&1; then
-    pass WDMD_PRESENT
+if [ -S /run/watchdog-mux.sock ]; then
+    pass PVE_WATCHDOG_MUX_SOCKET
 else
-    fail WDMD_PRESENT
+    fail PVE_WATCHDOG_MUX_SOCKET
+fi
+
+# PVE watchdog-mux is already the host watchdog owner. Running wdmd beside it
+# would create a competing watchdog stack and is a hard refusal.
+if command -v systemctl >/dev/null 2>&1 &&
+   systemctl is-active --quiet wdmd.service; then
+    fail WDMD_NOT_ACTIVE
+else
+    pass WDMD_NOT_ACTIVE
 fi
 
 if command -v lvm >/dev/null 2>&1 &&
@@ -79,4 +88,3 @@ fi
 
 result LEASEGUARD_READINESS YES
 result REASONS none
-

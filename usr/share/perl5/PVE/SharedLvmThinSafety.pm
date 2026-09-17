@@ -312,6 +312,44 @@ sub evaluate_readonly_metadata_validation {
     };
 }
 
+sub evaluate_leaseguard_activation {
+    my (%args) = @_;
+
+    my $enabled = $args{enabled} // 0;
+    die "invalid LeaseGuard enabled flag\n" if $enabled !~ /^(?:0|1)$/;
+    return {
+        status => 'DISABLED', blocks_operation => 0,
+        reason => 'LeaseGuard is not enabled for this storage',
+    } if !$enabled;
+
+    my @required = qw(
+        lease_area_identity sanlock_daemon lockspace_joined resource_held
+        owner_matches quorum storage_identity fresh_pool_runtime
+    );
+    my @missing;
+    my @negative;
+    for my $field (@required) {
+        if (!defined($args{$field}) || $args{$field} !~ /^(?:0|1)$/) {
+            push @missing, $field;
+        } elsif (!$args{$field}) {
+            push @negative, $field;
+        }
+    }
+    return {
+        status => 'UNKNOWN', blocks_operation => 1,
+        reason => 'LeaseGuard evidence missing or malformed: ' . join(',', @missing),
+    } if @missing;
+    return {
+        status => 'REFUSED', blocks_operation => 1,
+        reason => 'LeaseGuard positive evidence failed: ' . join(',', @negative),
+    } if @negative;
+
+    return {
+        status => 'PASS', blocks_operation => 0,
+        reason => 'exclusive pool lease and all activation evidence are positive',
+    };
+}
+
 sub evaluate_metadata_health {
     my (%args) = @_;
     return { status => 'N_A', reason => 'pool inactive', blocks_operation => 0 }

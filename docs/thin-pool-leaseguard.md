@@ -142,3 +142,11 @@ the existing watchdog owner; `wdmd` must not be started alongside it. Sanlock
 is not currently installed and no lease area has been created. Therefore the
 design is feasible on the present platform, but runtime protection is not yet
 claimed. The current bridge is intentionally non-arming and simulator-only.
+
+The activation decision is implemented as a separately tested, opt-in safety
+primitive. Disabled LeaseGuard preserves existing storage behavior. When
+enabled by a future qualified backend, every lease-area identity, sanlock
+daemon, joined lockspace, exclusive resource, durable owner, quorum, storage
+identity and fresh local pool-runtime input must be explicitly positive;
+missing evidence is `UNKNOWN` and blocks activation. This primitive does not
+claim that the sanlock lifecycle backend is complete.
