@@ -15,6 +15,7 @@ use PVE::Cluster;
 use PVE::SSHInfo;
 use PVE::Tools ();
 use PVE::SharedLvmThinSafety;
+use PVE::SharedLvmThinPeerAudit qw(select_peer_nodes evaluate_peer_mapper_evidence);
 use PVE::SharedLvmThinThick qw(
     anchor_name clone_geometry decode_anchor_tags decode_generation_tags
     generation_name mapper_name object_key
@@ -2047,45 +2048,11 @@ sub _thin_configured_peer_nodes {
     my ($class, $scfg) = @_;
     PVE::Cluster::cfs_update();
     my $members = PVE::Cluster::get_members();
-    die "PVE-native LeaseGuard cannot read cluster membership\n"
-        if ref($members) ne 'HASH';
-    my $local = $class->_thin_local_node();
-    my %selected;
-    if (ref($scfg->{nodes}) eq 'HASH') {
-        # PVE's storage parser expands the node-list property to a membership
-        # hash.  Accept only positively selected nodes; never stringify the
-        # hash as "HASH(...)" and accidentally turn a healthy audit into an
-        # unusable configuration.
-        %selected = map { $_ => 1 }
-            grep { $scfg->{nodes}->{$_} } keys %{$scfg->{nodes}};
-    } elsif (defined($scfg->{nodes}) && !ref($scfg->{nodes}) && $scfg->{nodes} ne '') {
-        # Keep the raw representation for direct callers and compatibility
-        # tests, while rejecting every other reference type below.
-        %selected = map { $_ => 1 } split(/,/, $scfg->{nodes});
-    } elsif (defined($scfg->{nodes}) && ref($scfg->{nodes})) {
-        die "PVE-native LeaseGuard node scope is malformed\n";
-    } else {
-        %selected = map { $_ => 1 } keys %$members;
-    }
-    delete $selected{$local};
-    die "PVE-native LeaseGuard has no configured peer node to audit\n"
-        if !keys %selected;
-    my @peers;
-    for my $node (sort keys %selected) {
-        die "PVE-native LeaseGuard node name is invalid\n"
-            if $node !~ /^([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
-        $node = $1;
-        my $member = $members->{$node};
-        die "PVE-native LeaseGuard peer '$node' is missing from cluster membership\n"
-            if ref($member) ne 'HASH';
-        die "PVE-native LeaseGuard peer '$node' is not positively online\n"
-            if !$member->{online};
-        my $ip = $member->{ip} // '';
-        die "PVE-native LeaseGuard peer '$node' has no usable cluster address\n"
-            if $ip !~ /^([A-Fa-f0-9:.]+)$/;
-        push @peers, { node => $node, ip => $1 };
-    }
-    return \@peers;
+    return select_peer_nodes(
+        members => $members,
+        local_node => $class->_thin_local_node(),
+        nodes => $scfg->{nodes},
+    );
 }
 
 sub _thin_remote_mapper_audit_locked {
@@ -2120,17 +2087,14 @@ sub _thin_remote_mapper_audit_locked {
         die "PVE-native LeaseGuard received ambiguous evidence from '$peer->{node}'\n"
             if @stdout != 1
             || $stdout[0] !~ /^BASTRIX_REMOTE_THIN_V1\|(ABSENT|PRESENT)\|\Q$mapper\E\|\Q$expected_uuid\E$/;
-        push @evidence, { node => $peer->{node}, state => $1 };
+        push @evidence, { node => $peer->{node}, line => $stdout[0] };
     }
-    my $decision = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(
-        enabled => 1,
-        quorum => 1,
-        storage_identity => 1,
-        local_runtime_absent => 1,
-        remote_nodes => \@evidence,
+    my $decision = evaluate_peer_mapper_evidence(
+        mapper => $mapper,
+        mapper_uuid => $expected_uuid,
+        evidence => \@evidence,
     );
-    die "UNSAFE shared LVM-thin activation refused: $decision->{reason}\n"
-        if $decision->{blocks_operation};
+    die "UNSAFE shared LVM-thin activation refused: $decision->{reason}\n" if !$decision->{safe};
     return 1;
 }
 
