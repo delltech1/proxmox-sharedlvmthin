@@ -8,6 +8,24 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    def test_thin_guard_daemon_is_static_fail_closed_and_not_enabled(self):
+        daemon = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd"
+        ).read_text(encoding="utf-8")
+        unit = (
+            ROOT
+            / "lib/systemd/system/pve-sharedlvmthin-thin-guard.service"
+        ).read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        self.assertIn("allow_real_watchdog => 1", daemon)
+        self.assertIn("protected Thin runtime predates this process", daemon)
+        self.assertIn("STOP_WATCHDOG_REFRESH", daemon)
+        self.assertIn("Restart=no", unit)
+        self.assertNotIn("[Install]", unit)
+        self.assertNotIn("enable pve-sharedlvmthin-thin-guard", postinst)
+        self.assertNotIn("start pve-sharedlvmthin-thin-guard", postinst)
+
     def test_materialized_migration_bridge_uses_supported_fail_closed_path(self):
         source = (ROOT / "usr/sbin/sharedlvmthin-migrate-bridge").read_text(
             encoding="utf-8"

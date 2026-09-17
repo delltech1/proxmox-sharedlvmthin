@@ -1,0 +1,169 @@
+#!/usr/bin/perl
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+use strict;
+use warnings;
+
+use IO::Select;
+use IO::Socket::UNIX;
+use JSON::PP qw(decode_json);
+use Socket qw(SOCK_STREAM SOMAXCONN);
+use Time::HiRes qw(time);
+use PVE::Tools ();
+use PVE::SharedLvmThinGuardEngine;
+use PVE::SharedLvmThinGuardProtocol qw(decode_guard_request encode_guard_response);
+use PVE::SharedLvmThinWatchdog;
+
+die "ThinGuard daemon must run as root\n" if $> != 0;
+die "usage: $0\n" if @ARGV;
+
+my $socket_path = '/run/pve-sharedlvmthin/thin-guard.sock';
+my $inventory = '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory';
+my $stop = 0;
+$SIG{TERM} = sub { $stop = 1 };
+$SIG{INT} = sub { $stop = 1 };
+$SIG{HUP} = 'IGNORE';
+
+sub capture_json {
+    my (@argv) = @_;
+    my $out = '';
+    PVE::Tools::run_command(\@argv,
+        timeout => 30,
+        outfunc => sub { $out .= "$_[0]\n" },
+    );
+    my $doc = eval { decode_json($out) };
+    die "ThinGuard evidence helper returned invalid JSON\n"
+        if $@ || ref($doc) ne 'HASH' || !$doc->{inventory_ok};
+    return $doc;
+}
+
+my $provider = sub {
+    my (%query) = @_;
+    if ($query{op} eq 'PREPARE') {
+        return capture_json($inventory, '--prepare',
+            @query{qw(storage_id pool_uuid owner_epoch mapper_uuid)});
+    }
+    if ($query{op} eq 'RELEASE') {
+        return capture_json($inventory, '--release',
+            @query{qw(storage_id pool_uuid owner_epoch mapper_uuid)});
+    }
+    if ($query{op} eq 'OBSERVE') {
+        die "ThinGuard OBSERVE storage set is malformed\n"
+            if ref($query{storage_ids}) ne 'ARRAY' || !@{$query{storage_ids}};
+        my (@pools, $node, $quorum);
+        my %seen;
+        for my $sid (@{$query{storage_ids}}) {
+            die "ThinGuard OBSERVE storage ID is malformed\n"
+                if !defined($sid) || $sid !~ /^[A-Za-z0-9_.-]+$/ || $seen{$sid}++;
+            my $one = capture_json($inventory, '--storage-id', $sid);
+            $node //= $one->{local_node};
+            $quorum //= $one->{quorum};
+            die "ThinGuard inventory changed node or quorum within one sample\n"
+                if $node ne $one->{local_node} || $quorum != $one->{quorum};
+            push @pools, @{$one->{pools}};
+        }
+        return {inventory_ok => 1, local_node => $node, quorum => $quorum, pools => \@pools};
+    }
+    die "unsupported ThinGuard provider operation\n";
+};
+
+# A fresh daemon must never retroactively bless an existing runtime.  If the
+# previous guardian crashed, its watchdog descriptor closes without magic V
+# and the host must fence; a replacement process may not race that outcome.
+my $startup = capture_json($inventory);
+my @preexisting = grep { $_->{locally_active} } @{$startup->{pools}};
+die "ThinGuard startup refused: protected Thin runtime predates this process\n"
+    if @preexisting;
+
+my $watchdog = PVE::SharedLvmThinWatchdog->new(allow_real_watchdog => 1);
+my $engine = PVE::SharedLvmThinGuardEngine->new(
+    inventory_provider => $provider,
+    watchdog => $watchdog,
+    pending_timeout => 45,
+);
+
+mkdir('/run/pve-sharedlvmthin', 0755) if !-d '/run/pve-sharedlvmthin';
+die "ThinGuard runtime directory is not a directory\n" if !-d '/run/pve-sharedlvmthin';
+die "ThinGuard socket path already exists\n" if -e $socket_path || -S $socket_path;
+my $old_umask = umask(0077);
+my $listener = IO::Socket::UNIX->new(
+    Type => SOCK_STREAM(),
+    Local => $socket_path,
+    Listen => SOMAXCONN,
+) or die "cannot create ThinGuard control socket: $!\n";
+umask($old_umask);
+chmod(0600, $socket_path) or die "cannot protect ThinGuard control socket: $!\n";
+my $select = IO::Select->new($listener);
+
+sub respond {
+    my ($client, %response) = @_;
+    my $payload = encode_guard_response(%response);
+    my $written = syswrite($client, $payload, length($payload));
+    die "ThinGuard response write failed\n"
+        if !defined($written) || $written != length($payload);
+}
+
+while (!$stop) {
+    if ($engine->state() ne 'IDLE') {
+        my $ok = eval { $engine->observe(time()); 1 };
+        if (!$ok) {
+            warn "ThinGuard runtime observation failed: $@";
+            $watchdog->refresh({safe => 0, action => 'STOP_WATCHDOG_REFRESH'});
+            last;
+        }
+    }
+    for my $ready ($select->can_read(5)) {
+        next if $ready != $listener;
+        my $client = $listener->accept();
+        next if !defined($client);
+        my ($line, $request_id) = ('', '0' x 32);
+        my $ok = eval {
+            local $SIG{ALRM} = sub { die "ThinGuard request timeout\n" };
+            alarm(5);
+            while (length($line) <= 16384 && $line !~ /\n/) {
+                my $chunk = '';
+                my $count = sysread($client, $chunk, 4096);
+                die "ThinGuard request read failed\n" if !defined($count) || $count == 0;
+                $line .= $chunk;
+            }
+            alarm(0);
+            my $request = decode_guard_request($line);
+            $request_id = $request->{request_id};
+            my $result;
+            if ($request->{op} eq 'STATUS') {
+                my $status = $engine->status();
+                $result = {state => $status->{state}, action => 'NONE',
+                    message => "$status->{reason}; watchdog=$status->{watchdog_state}"};
+            } elsif ($request->{op} eq 'PREPARE') {
+                $result = $engine->prepare($request, time());
+                $result->{message} = 'watchdog armed before Thin activation';
+            } elsif ($request->{op} eq 'RELEASE') {
+                $result = $engine->release($request);
+                $result->{message} = 'exact Thin epoch teardown positively verified';
+            }
+            respond($client, ok => 1, request_id => $request_id,
+                state => $result->{state}, action => $result->{action},
+                message => $result->{message});
+            1;
+        };
+        alarm(0);
+        if (!$ok) {
+            my $error = $@ || 'unknown request failure';
+            $error =~ s/[\r\n]+/ /g;
+            $error = substr($error, 0, 2048);
+            eval { respond($client, ok => 0, request_id => $request_id,
+                state => $engine->state(), action => 'REFUSED', message => $error); };
+        }
+        close($client);
+    }
+}
+
+close($listener);
+unlink($socket_path);
+
+# A normal stop is safe only while idle.  Exiting while ARMED deliberately
+# closes watchdog-mux without magic V through the adapter destructor.
+die "ThinGuard daemon stopped while protecting active epochs; fencing remains armed\n"
+    if $engine->state() ne 'IDLE';
+exit 0;

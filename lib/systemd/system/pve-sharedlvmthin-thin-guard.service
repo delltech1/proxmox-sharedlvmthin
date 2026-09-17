@@ -1,0 +1,29 @@
+[Unit]
+Description=BASTRIX SharedLVM Thin runtime guardian
+Documentation=man:systemd.service(5)
+After=pve-cluster.service corosync.service watchdog-mux.service
+Requires=pve-cluster.service watchdog-mux.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/test -S /run/watchdog-mux.sock
+ExecStart=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd
+Restart=no
+RuntimeDirectory=pve-sharedlvmthin
+RuntimeDirectoryMode=0755
+UMask=0077
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictSUIDSGID=true
+
+# The unit is intentionally static and stopped until an administrator
+# explicitly enables the future runtime-guard mode.
