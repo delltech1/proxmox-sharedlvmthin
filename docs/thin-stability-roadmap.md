@@ -60,6 +60,20 @@ be implemented by merely setting `shared=0` or by reusing `sltp-<vmid>` on the
 target. Legacy pools keep their existing identity and remain supported. No
 target pool, source cleanup or ownership change may be inferred from a name.
 
+### Capacity-conserving Thin Relay Handoff
+
+The preferred research direction is now a zero-copy ownership handoff.  The
+source remains the only active dm-thin metadata owner during RAM pre-copy and
+exports a temporary QEMU/NBD relay.  At the bounded switchover the coordinator
+quiesces and flushes I/O, proves the source mapping closed (or the source
+fenced), commits ownership with compare-and-swap semantics, activates the same
+pool on the target, and pivots the target QEMU block graph to the local LV.
+
+This avoids the Thick capacity reservation, but requires deeper integration
+with the PVE/QEMU migration state machine.  It is therefore disabled until the
+fault matrix in `thin-relay-handoff.md` is qualified.  It never permits
+concurrent dm-thin activation.
+
 ### Layer 4: Optional Materialized Thick bridge
 
 Provide an orchestrated safe-live-mobility command using supported PVE
