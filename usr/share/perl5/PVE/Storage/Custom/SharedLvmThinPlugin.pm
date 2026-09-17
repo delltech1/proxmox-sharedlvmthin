@@ -2051,8 +2051,19 @@ sub _thin_configured_peer_nodes {
         if ref($members) ne 'HASH';
     my $local = $class->_thin_local_node();
     my %selected;
-    if (defined($scfg->{nodes}) && $scfg->{nodes} ne '') {
+    if (ref($scfg->{nodes}) eq 'HASH') {
+        # PVE's storage parser expands the node-list property to a membership
+        # hash.  Accept only positively selected nodes; never stringify the
+        # hash as "HASH(...)" and accidentally turn a healthy audit into an
+        # unusable configuration.
+        %selected = map { $_ => 1 }
+            grep { $scfg->{nodes}->{$_} } keys %{$scfg->{nodes}};
+    } elsif (defined($scfg->{nodes}) && !ref($scfg->{nodes}) && $scfg->{nodes} ne '') {
+        # Keep the raw representation for direct callers and compatibility
+        # tests, while rejecting every other reference type below.
         %selected = map { $_ => 1 } split(/,/, $scfg->{nodes});
+    } elsif (defined($scfg->{nodes}) && ref($scfg->{nodes})) {
+        die "PVE-native LeaseGuard node scope is malformed\n";
     } else {
         %selected = map { $_ => 1 } keys %$members;
     }

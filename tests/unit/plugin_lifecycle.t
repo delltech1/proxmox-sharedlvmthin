@@ -27,6 +27,7 @@ my $thin_release_pool_owner_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin
 my $thin_owner_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_from_tags;
 my $thin_owner_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_state_from_tags;
 my $thin_remote_mapper_audit_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked;
+my $thin_configured_peer_nodes = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_configured_peer_nodes;
 my $deactivate_new_thin_pool_after_allocation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_deactivate_new_thin_pool_after_allocation;
 my $bridge_admission_state = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission_state;
 my $bridge_admission = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission;
@@ -133,6 +134,37 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
     eval { $thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef) };
     like($@, qr/cannot prove mapper absence.*peer timeout/s,
         'unreachable peer remains UNKNOWN and blocks activation');
+};
+
+subtest 'PVE-native LeaseGuard accepts parsed PVE node-scope hashes' => sub {
+    no warnings 'redefine';
+    local *PVE::Cluster::cfs_update = sub { return 1 };
+    local *PVE::Cluster::get_members = sub {
+        return {
+            pve01 => { online => 1, ip => '192.0.2.1' },
+            pve02 => { online => 1, ip => '192.0.2.2' },
+            pve03 => { online => 1, ip => '192.0.2.3' },
+        };
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'pve01' };
+
+    my $peers = $thin_configured_peer_nodes->($class, {
+        nodes => { pve01 => 1, pve02 => 1, pve03 => 1 },
+    });
+    is_deeply($peers, [
+        { node => 'pve02', ip => '192.0.2.2' },
+        { node => 'pve03', ip => '192.0.2.3' },
+    ], 'parsed PVE node hash yields exact non-local peers');
+
+    $peers = $thin_configured_peer_nodes->($class, {
+        nodes => 'pve01,pve03',
+    });
+    is_deeply($peers, [
+        { node => 'pve03', ip => '192.0.2.3' },
+    ], 'raw node list remains supported for direct callers');
+
+    eval { $thin_configured_peer_nodes->($class, { nodes => ['pve01', 'pve02'] }) };
+    like($@, qr/node scope is malformed/, 'unexpected node-scope reference fails closed');
 };
 
 subtest 'new Thin allocation is published inactive before PVE activation' => sub {

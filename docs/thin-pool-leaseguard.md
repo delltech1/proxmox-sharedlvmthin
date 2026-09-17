@@ -9,6 +9,37 @@
 > [thin-stability-roadmap.md](thin-stability-roadmap.md). The material below is
 > retained as design evidence only.
 
+## PVE-native `remote-audit` implementation
+
+TG28 development provides an opt-in activation gate that needs no additional
+package or daemon. Before an unowned per-VM pool can be claimed, the plugin
+uses PVE cluster membership and PVE's managed cluster SSH trust to ask every
+configured online peer for the exact hidden `-tpool` mapper name and expected
+DM UUID. Every peer must return one canonical `ABSENT` record. `PRESENT`, a
+timeout, an offline/missing peer, a missing helper, malformed output or an
+identity mismatch refuses activation.
+
+The gate runs only when an inactive/unowned pool is about to be claimed. It
+does not add a userspace component to guest I/O and it does not repeatedly
+poll healthy running pools. Existing storage remains unchanged because the
+default is `disabled`:
+
+```text
+slt-thin-leaseguard disabled       # default
+slt-thin-leaseguard remote-audit   # explicit opt-in
+```
+
+Real three-node qualification proved both paths: a stopped disposable VM
+started and stopped with exact peer absence; after the evidence helper was
+temporarily made unavailable on one peer, the same start failed closed and
+left the VM stopped. Restoring the helper restored normal activation. The
+test also found and fixed handling of PVE's parsed node-scope hash; regression
+coverage now verifies both parsed and raw node-list representations.
+
+This is an activation witness, not an expiring lease and not fencing. A host
+that is unreachable but may still access the SAN remains `UNKNOWN`; the gate
+correctly refuses takeover until external fencing provides positive proof.
+
 ## Purpose
 
 The existing TG26 node/epoch tags prevent a second managed activation and
