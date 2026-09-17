@@ -54,13 +54,29 @@ Postconditions:
 Result: **PASS for deliberate client-loss self-fencing and clean post-reboot
 reactivation with inactive protected I/O.**
 
+## QF-02: guardian process crash
+
+With the same no-active-I/O preconditions, the adapter armed a real aggregate
+watchdog client and its process was terminated with uncatchable `SIGKILL`.
+There was no destructor, explicit close or opportunity to write `V`. The shell
+observed exit status 137. `watchdog-mux` recorded the failed client, disabled
+updates and the node rebooted. Boot identity changed from
+`b15b05ea-91fa-4d9d-ac2a-beca1e79f255` to
+`4a6b42a8-947c-469d-814d-b8eed83b9ec2`.
+
+After reboot, quorum was 3/3, D-state count was zero, recovery reported
+`THIN_OWNER_STATE=PASS`, `STATE=HEALTHY` and `SAFE_FOR_MUTATION=YES`. The
+qualification VM then started normally with exactly one Thin pool mapper.
+
+Result: **PASS for guardian process-crash fencing and clean recovery with
+inactive protected I/O.**
+
 ## Evidence not yet established
 
 This test does not prove the complete runtime guard. Remaining mandatory gates
 include:
 
 - loss of quorum while the aggregate guardian is refreshing;
-- guardian process crash rather than deliberate close;
 - delayed/stuck QEMU stop and refusal to magic-close;
 - old-owner reset observed by a target before takeover;
 - active-I/O canary continuity and recovery after fencing;
