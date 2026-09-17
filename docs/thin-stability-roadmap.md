@@ -27,14 +27,19 @@ TG26 must therefore continue to refuse overlapping Thin live migration.
 Keep the existing node/epoch tags, runtime mapper correlation, quorum and
 identity gates. These remain the durable audit and recovery model.
 
-### Layer 2: Thin Pool LeaseGuard
+### Layer 2: PVE-native Thin Pool LeaseGuard
 
-Add an optional exclusive disk-backed sanlock resource lease for each managed
-pool. Hold it from before the durable owner claim until after the hidden
-`-tpool` mapper is positively absent and the owner is cleared.
+The default-only implementation adds an opt-in remote kernel-mapper audit. It
+uses PVE cluster membership and the existing authenticated root SSH transport
+to require the exact hidden `-tpool` DM UUID to be absent from every configured
+peer before an unowned pool may be claimed. An offline peer, failed SSH probe,
+missing helper, malformed output or present mapper is fail-closed.
 
-LeaseGuard strengthens partitions and host-loss recovery. It does not make
-dm-thin shared-writable and does not independently enable live migration.
+LeaseGuard strengthens clean handoff detection. It does not make dm-thin
+shared-writable, does not infer fencing from an expired timer and does not
+independently enable native overlapping Thin live migration. Existing storage
+keeps `disabled` behavior until an administrator explicitly selects
+`remote-audit`.
 
 ### Layer 3: Isolated-copy Thin-to-Thin mobility
 
@@ -184,7 +189,8 @@ and migration API proposal, not in an out-of-tree monkey patch.
 ## Implementation order
 
 1. Keep TG26 behavior and claims unchanged.
-2. Qualify LeaseGuard on a dedicated disposable lease LV and nested watchdog.
+2. Qualify the opt-in PVE-native remote mapper LeaseGuard without additional
+   packages or watchdog ownership.
 3. Implement the Capacity Stability Governor as observation-only telemetry.
 4. Add transaction fingerprints and bounded metadata-snapshot validation.
 5. Prototype generation-scoped Thin pools and isolated Thin-to-Thin copying

@@ -1,0 +1,182 @@
+#!/bin/bash
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Safe live-migration bridge for per-VM dm-thin pools.  Cross-node movement
+# occurs only after every managed disk has been pivoted by PVE's supported
+# Storage Move path onto an independent Thick Generations linear LV.
+set -Eeuo pipefail
+export LC_ALL=C
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+usage() {
+    echo "Usage: sharedlvmthin-migrate-bridge <preflight|run> <vmid> <target-node> <thin-storage> <thick-storage> [--keep-thick]" >&2
+    exit 64
+}
+
+if [ "${1:-}" != --locked ]; then
+    [ "$#" -ge 2 ] || usage
+    lock_vmid=$2
+    [[ $lock_vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
+    exec flock -n -o "/run/lock/sharedlvmthin-bridge-$lock_vmid.lock" \
+        "$0" --locked "$@"
+fi
+shift
+
+[ "$#" -ge 5 ] || usage
+action=$1 vmid=$2 target=$3 thin_store=$4 thick_store=$5
+shift 5
+return_thin=1
+[ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = --keep-thick ] || usage; return_thin=0; }
+[[ $action =~ ^(preflight|run)$ ]] || usage
+[[ $vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
+[[ $target =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || usage
+[[ $thin_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || usage
+[[ $thick_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || usage
+[ "$thin_store" != "$thick_store" ] || { echo "thin and thick storage IDs must differ" >&2; exit 65; }
+
+local_node=$(hostname)
+[ "$target" != "$local_node" ] || { echo "target must differ from local node" >&2; exit 65; }
+state_dir=/var/lib/pve-sharedlvmthin/migration-bridge
+mkdir -p "$state_dir"
+
+cfg_value() {
+    local sid=$1 key=$2
+    awk -v sid="$sid" -v key="$key" '
+        $1 == "sharedlvmthin:" && $2 == sid { inside=1; next }
+        /^[^[:space:]]/ { inside=0 }
+        inside && $1 == key { print $2; found=1; exit }
+        END { if (!found) exit 1 }
+    ' /etc/pve/storage.cfg
+}
+
+cfg_optional() {
+    cfg_value "$1" "$2" 2>/dev/null || true
+}
+
+thin_vg=$(cfg_value "$thin_store" slt-vgname) || { echo "Thin storage is not SharedLvmThin" >&2; exit 65; }
+thick_vg=$(cfg_value "$thick_store" slt-vgname) || { echo "Thick storage is not SharedLvmThin" >&2; exit 65; }
+[ "$thin_vg" = "$thick_vg" ] || { echo "bridge currently requires same-VG Thin/Thick aliases" >&2; exit 65; }
+[ "$(cfg_optional "$thin_store" slt-allocation-mode)" != thick-generations ] || { echo "source alias is not Thin" >&2; exit 65; }
+[ "$(cfg_optional "$thick_store" slt-allocation-mode)" = thick-generations ] || { echo "target alias is not Thick Generations" >&2; exit 65; }
+
+status=$(qm status "$vmid" | awk '{print $2}')
+[ "$status" = running ] || { echo "bridge run requires a running VM; use native offline migration for a stopped VM" >&2; exit 65; }
+
+mapfile -t disks < <(
+    qm config "$vmid" | awk -v sid="$thin_store" '
+        /^(ide|sata|scsi|virtio)[0-9]+:/ {
+            key=$1; sub(/:$/, "", key)
+            vol=$2; sub(/,.*/, "", vol)
+            split(vol, a, ":")
+            if (a[1] == sid) print key "|" vol
+        }
+    '
+)
+[ "${#disks[@]}" -gt 0 ] || { echo "VM has no disk on source Thin storage" >&2; exit 65; }
+
+# Version 1 deliberately refuses mixed layouts.  This prevents a successful
+# bridge from being followed by a native migration failure caused by an
+# unrelated local-only disk.
+all_disk_count=$(qm config "$vmid" | awk '/^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {n++} END {print n+0}')
+[ "$all_disk_count" -eq "${#disks[@]}" ] || {
+    echo "bridge v1 requires every non-CD disk to reside on '$thin_store'" >&2
+    exit 65
+}
+
+sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+pvecm status | grep -Eq '^Quorate:[[:space:]]+Yes$'
+perl -MPVE::Cluster -e '
+    PVE::Cluster::cfs_update();
+    my ($node) = @ARGV;
+    my $m = PVE::Cluster::get_members()->{$node} // die "unknown target\n";
+    die "offline target\n" if !$m->{online};
+' "$target"
+
+total_bytes=0
+for entry in "${disks[@]}"; do
+    vol=${entry#*|}
+    path=$(pvesm path "$vol")
+    bytes=$(blockdev --getsize64 "$path")
+    [[ $bytes =~ ^[1-9][0-9]*$ ]] || { echo "cannot determine exact disk size for $vol" >&2; exit 70; }
+    total_bytes=$((total_bytes + bytes))
+done
+vg_free=$(vgs --readonly --noheadings --units b --nosuffix -o vg_free "$thin_vg" | tr -d '[:space:]')
+[[ $vg_free =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "cannot determine VG free capacity" >&2; exit 70; }
+vg_free=${vg_free%.*}
+reserve_gib=$(cfg_optional "$thick_store" slt-vg-reserve-gib); reserve_gib=${reserve_gib:-0}
+reserve_bytes=$((reserve_gib * 1024 * 1024 * 1024))
+required_bytes=$((total_bytes + reserve_bytes))
+[ "$vg_free" -ge "$required_bytes" ] || {
+    echo "insufficient physical VG capacity: free=$vg_free required=$required_bytes" >&2
+    exit 28
+}
+
+printf 'PREFLIGHT=PASS\nVMID=%s\nSOURCE_NODE=%s\nTARGET_NODE=%s\nDISKS=%s\nREQUIRED_BYTES=%s\nVG_FREE_BYTES=%s\n' \
+    "$vmid" "$local_node" "$target" "${#disks[@]}" "$required_bytes" "$vg_free"
+[ "$action" = run ] || exit 0
+
+tx=$(printf '%s' "$vmid:$local_node:$target:$(date +%s%N):$$" | sha256sum | cut -c1-32)
+state_file="$state_dir/$vmid-$tx.state"
+phase=PREPARED
+write_state() {
+    local tmp="$state_file.tmp.$$"
+    local -a config_paths=()
+    local candidate
+    for candidate in /etc/pve/nodes/*/qemu-server/"$vmid".conf; do
+        [ -f "$candidate" ] && config_paths+=("$candidate")
+    done
+    [ "${#config_paths[@]}" -eq 1 ] || {
+        echo "cannot prove one authoritative VM configuration for $vmid" >&2
+        return 70
+    }
+    umask 077
+    {
+        printf 'version=1\ntx=%s\nvmid=%s\nsource_node=%s\ntarget_node=%s\n' "$tx" "$vmid" "$local_node" "$target"
+        printf 'thin_storage=%s\nthick_storage=%s\nreturn_thin=%s\nphase=%s\n' "$thin_store" "$thick_store" "$return_thin" "$phase"
+        printf 'disk_count=%s\n' "${#disks[@]}"
+        printf 'config_sha256=%s\n' "$(sha256sum "${config_paths[0]}" | cut -d" " -f1)"
+    } >"$tmp"
+    sync -f "$tmp"
+    mv -f "$tmp" "$state_file"
+    sync -f "$state_dir"
+}
+write_state
+
+for entry in "${disks[@]}"; do
+    disk=${entry%%|*}
+    qm disk move "$vmid" "$disk" "$thick_store" --delete 1
+    qm config "$vmid" | grep -Eq "^${disk}: ${thick_store}:"
+done
+phase=MATERIALIZED_THICK
+write_state
+sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+
+qm migrate "$vmid" "$target" --online 1
+phase=MIGRATED_THICK
+write_state
+
+if [ "$return_thin" -eq 1 ]; then
+    member_ip=$(perl -MPVE::Cluster -e '
+        PVE::Cluster::cfs_update();
+        my ($node) = @ARGV;
+        my $m = PVE::Cluster::get_members()->{$node} // die "unknown target\n";
+        die "offline target\n" if !$m->{online};
+        print $m->{ip};
+    ' "$target")
+    ssh_base=(/usr/bin/ssh -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
+        -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
+        -o GlobalKnownHostsFile=none "root@$member_ip")
+    for entry in "${disks[@]}"; do
+        disk=${entry%%|*}
+        "${ssh_base[@]}" -- qm disk move "$vmid" "$disk" "$thin_store" --delete 1
+        "${ssh_base[@]}" -- qm config "$vmid" | grep -Eq "^${disk}: ${thin_store}:"
+    done
+    "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+    phase=RETURNED_THIN
+else
+    phase=COMPLETE_THICK
+fi
+write_state
+printf 'BRIDGE=PASS\nTX=%s\nFINAL_PHASE=%s\nSTATE_FILE=%s\n' "$tx" "$phase" "$state_file"

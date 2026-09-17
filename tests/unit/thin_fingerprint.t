@@ -123,4 +123,50 @@ subtest 'LeaseGuard activation is opt-in and wholly positive' => sub {
     ok($unknown->{blocks_operation}, 'unknown lease state blocks activation');
 };
 
+subtest 'PVE-native LeaseGuard requires positive absence from every peer kernel' => sub {
+    my $disabled = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(
+        enabled => 0,
+    );
+    is($disabled->{status}, 'DISABLED', 'native guard remains opt-in');
+    ok(!$disabled->{blocks_operation}, 'disabled guard preserves existing behavior');
+
+    my %base = (
+        enabled => 1, quorum => 1, storage_identity => 1,
+        local_runtime_absent => 1,
+        remote_nodes => [
+            { node => 'pve02', state => 'ABSENT' },
+            { node => 'pve03', state => 'ABSENT' },
+        ],
+    );
+    my $pass = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(%base);
+    is($pass->{status}, 'PASS', 'exact absence on every peer permits activation');
+    ok(!$pass->{blocks_operation}, 'positive peer evidence does not block');
+
+    for my $state (qw(PRESENT UNKNOWN)) {
+        my %candidate = %base;
+        $candidate{remote_nodes} = [
+            { node => 'pve02', state => $state },
+            { node => 'pve03', state => 'ABSENT' },
+        ];
+        my $result = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(%candidate);
+        is($result->{status}, $state eq 'PRESENT' ? 'REFUSED' : 'UNKNOWN',
+            "$state remote evidence fails closed");
+        ok($result->{blocks_operation}, "$state remote evidence blocks activation");
+    }
+
+    for my $field (qw(quorum storage_identity local_runtime_absent)) {
+        my %candidate = %base;
+        $candidate{$field} = 0;
+        my $result = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(%candidate);
+        is($result->{status}, 'REFUSED', "$field failure refuses activation");
+        ok($result->{blocks_operation}, "$field failure blocks activation");
+    }
+
+    my %empty = %base;
+    $empty{remote_nodes} = [];
+    my $unknown = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(%empty);
+    is($unknown->{status}, 'UNKNOWN', 'missing peer inventory is unknown');
+    ok($unknown->{blocks_operation}, 'missing peer inventory blocks');
+};
+
 done_testing();

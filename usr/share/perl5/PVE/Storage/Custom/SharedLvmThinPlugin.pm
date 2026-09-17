@@ -12,6 +12,7 @@ use Scalar::Util qw(tainted);
 use PVE::Storage::Plugin;
 use PVE::Storage::LVMPlugin;
 use PVE::Cluster;
+use PVE::SSHInfo;
 use PVE::Tools ();
 use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinThick qw(
@@ -176,6 +177,12 @@ sub properties {
             maximum => 5000,
             default => 1000,
         },
+        'slt-thin-leaseguard' => {
+            description => 'Opt-in PVE-native single-kernel activation guard. remote-audit requires positive absence of the exact thin-pool mapper on every configured peer node; any unreachable or ambiguous peer refuses activation.',
+            type => 'string',
+            enum => ['disabled', 'remote-audit'],
+            default => 'disabled',
+        },
         'slt-tg-hydration-threshold' => {
             description => 'Maximum number of Thick Generations regions copied concurrently during background hydration.',
             type => 'integer',
@@ -269,6 +276,7 @@ sub options {
         'slt-tg-hydration-timeout' => { optional => 1 },
         'slt-lock-timeout' => { optional => 1 },
         'slt-lock-yield-ms' => { optional => 1 },
+        'slt-thin-leaseguard' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
         'slt-tg-online-materialization' => { optional => 1 },
@@ -1915,8 +1923,115 @@ sub _thin_pool_tags {
     return $tags;
 }
 
-sub _thin_claim_pool_owner_locked {
+sub _thin_pool_dm_identity {
     my ($class, $vg, $pool, $device) = @_;
+    my @command = ('/sbin/lvs', '--readonly');
+    push @command, ('--devices', $device) if defined($device);
+    push @command, ('--noheadings', '--separator', '|', '-o',
+        'vg_uuid,lv_uuid', "$vg/$pool");
+    my $lines = _command_lines(
+        \@command,
+        "reading thin-pool DM identity of '$vg/$pool' failed",
+    );
+    die "thin-pool DM identity of '$vg/$pool' is ambiguous\n"
+        if @$lines != 1;
+    my ($vg_uuid, $lv_uuid) = split(/\|/, $lines->[0], 2);
+    for ($vg_uuid, $lv_uuid) {
+        $_ //= '';
+        s/^\s+|\s+$//g;
+        die "thin-pool DM identity contains an invalid UUID\n"
+            if !/^[A-Za-z0-9-]+$/;
+        s/-//g;
+    }
+    my $vg_dm = $vg;
+    my $pool_dm = $pool;
+    $vg_dm =~ s/-/--/g;
+    $pool_dm =~ s/-/--/g;
+    return ("$vg_dm-$pool_dm-tpool", "LVM-$vg_uuid$lv_uuid-tpool");
+}
+
+sub _thin_configured_peer_nodes {
+    my ($class, $scfg) = @_;
+    PVE::Cluster::cfs_update();
+    my $members = PVE::Cluster::get_members();
+    die "PVE-native LeaseGuard cannot read cluster membership\n"
+        if ref($members) ne 'HASH';
+    my $local = $class->_thin_local_node();
+    my %selected;
+    if (defined($scfg->{nodes}) && $scfg->{nodes} ne '') {
+        %selected = map { $_ => 1 } split(/,/, $scfg->{nodes});
+    } else {
+        %selected = map { $_ => 1 } keys %$members;
+    }
+    delete $selected{$local};
+    die "PVE-native LeaseGuard has no configured peer node to audit\n"
+        if !keys %selected;
+    my @peers;
+    for my $node (sort keys %selected) {
+        die "PVE-native LeaseGuard node name is invalid\n"
+            if $node !~ /^([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
+        $node = $1;
+        my $member = $members->{$node};
+        die "PVE-native LeaseGuard peer '$node' is missing from cluster membership\n"
+            if ref($member) ne 'HASH';
+        die "PVE-native LeaseGuard peer '$node' is not positively online\n"
+            if !$member->{online};
+        my $ip = $member->{ip} // '';
+        die "PVE-native LeaseGuard peer '$node' has no usable cluster address\n"
+            if $ip !~ /^([A-Fa-f0-9:.]+)$/;
+        push @peers, { node => $node, ip => $1 };
+    }
+    return \@peers;
+}
+
+sub _thin_remote_mapper_audit_locked {
+    my ($class, $scfg, $vg, $pool, $device) = @_;
+    my $mode = $scfg->{'slt-thin-leaseguard'} // 'disabled';
+    die "invalid slt-thin-leaseguard mode '$mode'\n"
+        if $mode ne 'disabled' && $mode ne 'remote-audit';
+    return 1 if $mode eq 'disabled';
+
+    my ($mapper, $expected_uuid) =
+        $class->_thin_pool_dm_identity($vg, $pool, $device);
+    my $peers = $class->_thin_configured_peer_nodes($scfg);
+    my @evidence;
+    for my $peer (@$peers) {
+        my $ssh = PVE::SSHInfo::ssh_info_to_command({
+            name => $peer->{node}, ip => $peer->{ip},
+        }, '-o', 'ConnectTimeout=5');
+        push @$ssh, '--',
+            '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence',
+            $mapper, $expected_uuid;
+        my (@stdout, @stderr);
+        eval {
+            run_command(
+                $ssh,
+                timeout => 10,
+                outfunc => sub { push @stdout, $_[0] },
+                errfunc => sub { push @stderr, $_[0] },
+            );
+        };
+        die "PVE-native LeaseGuard cannot prove mapper absence on '$peer->{node}': $@\n"
+            if $@;
+        die "PVE-native LeaseGuard received ambiguous evidence from '$peer->{node}'\n"
+            if @stdout != 1
+            || $stdout[0] !~ /^BASTRIX_REMOTE_THIN_V1\|(ABSENT|PRESENT)\|\Q$mapper\E\|\Q$expected_uuid\E$/;
+        push @evidence, { node => $peer->{node}, state => $1 };
+    }
+    my $decision = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(
+        enabled => 1,
+        quorum => 1,
+        storage_identity => 1,
+        local_runtime_absent => 1,
+        remote_nodes => \@evidence,
+    );
+    die "UNSAFE shared LVM-thin activation refused: $decision->{reason}\n"
+        if $decision->{blocks_operation};
+    return 1;
+}
+
+sub _thin_claim_pool_owner_locked {
+    my ($class, $vg, $pool, $device, $scfg) = @_;
     my $node = $class->_thin_local_node();
     my $state = _thin_owner_state_from_tags(
         $class->_thin_pool_tags($vg, $pool, $device),
@@ -1936,6 +2051,9 @@ sub _thin_claim_pool_owner_locked {
     die "UNSAFE shared LVM-thin activation refused: unowned pool '$vg/$pool' already has local runtime mappings; concurrent or automatic metadata activation is possible; run the explicit ALL-NODES-INACTIVE hardening procedure\n"
         if $runtime->{pool_active} || $runtime->{pool_mapper_active}
         || @{$runtime->{active_children}};
+
+    $class->_thin_remote_mapper_audit_locked($scfg, $vg, $pool, $device)
+        if defined($scfg);
 
     my $epoch = _new_transaction_id();
     my @claim = ('/sbin/lvchange');
@@ -2503,6 +2621,54 @@ sub _verify_allocation_reserve_postcondition {
     return 1;
 }
 
+sub _deactivate_new_thin_pool_after_allocation {
+    my ($class, $vg, $pool, $lv, $device) = @_;
+
+    # lvconvert/lvcreate intentionally activate a newly created thin pool in
+    # the allocating kernel.  At this point PVE has not attached the target to
+    # QEMU and no durable runtime owner has been claimed.  Publish an entirely
+    # inactive object so the normal activate_volume hook can claim an epoch
+    # and load a fresh metadata view.  This is essential for online Storage
+    # Move into Thin and harmless for ordinary stopped-VM allocation.
+    my @unmonitor = ('/sbin/lvchange');
+    push @unmonitor, ('--devices', $device) if defined($device);
+    push @unmonitor, ('--monitor', 'n', "$vg/$pool");
+    run_command(
+        \@unmonitor,
+        errmsg => "unregistering newly allocated thin pool '$vg/$pool' failed",
+    );
+
+    my @child_off = ('/sbin/lvchange');
+    push @child_off, ('--devices', $device) if defined($device);
+    push @child_off, ('-an', "$vg/$lv");
+    run_command(
+        \@child_off,
+        errmsg => "deactivating newly allocated thin LV '$vg/$lv' failed",
+    );
+
+    my $vg_dm = $vg;
+    my $pool_dm = $pool;
+    my $lv_dm = $lv;
+    $vg_dm =~ s/-/--/g;
+    $pool_dm =~ s/-/--/g;
+    $lv_dm =~ s/-/--/g;
+    my $pool_path = "/dev/mapper/$vg_dm-$pool_dm-tpool";
+    my $child_path = "/dev/mapper/$vg_dm-$lv_dm";
+    if (_block_device_exists($pool_path)) {
+        my @pool_off = ('/sbin/lvchange');
+        push @pool_off, ('--devices', $device) if defined($device);
+        push @pool_off, ('-an', "$vg/$pool");
+        run_command(
+            \@pool_off,
+            errmsg => "deactivating newly allocated thin pool '$vg/$pool' failed",
+        );
+    }
+
+    die "new thin allocation publication failed: '$vg/$pool' remains active\n"
+        if _block_device_exists($pool_path) || _block_device_exists($child_path);
+    return 1;
+}
+
 sub alloc_image {
     my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
     return $class->_thick_alloc_image($storeid, $scfg, $vmid, $fmt, $name, $size)
@@ -2692,6 +2858,25 @@ sub _alloc_image_locked {
         );
     }
 
+    if ($created_pool) {
+        my $device = defined($scfg->{'slt-expected-wwid'})
+            ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+            : undef;
+        my $publication_error;
+        eval {
+            $class->_deactivate_new_thin_pool_after_allocation(
+                $vg, $pool, $name, $device,
+            );
+        };
+        $publication_error = $@;
+        if ($publication_error) {
+            die _partial_allocation_error(
+                $storeid, $vmid, $name, $pool, $publication_error,
+                "new thin LV '$vg/$name' exists, but inactive publication is unproven",
+            );
+        }
+    }
+
     return $name;
 }
 
@@ -2718,7 +2903,7 @@ sub activate_volume {
         $class->_verify_owned_volume($storeid, $scfg, $volname);
         $class->_verify_autoactivation_disabled($vg, $pool, $device);
         $class->_verify_autoactivation_disabled($vg, $lv, $device);
-        $class->_thin_claim_pool_owner_locked($vg, $pool, $device);
+        $class->_thin_claim_pool_owner_locked($vg, $pool, $device, $scfg);
         my @activate = ('/sbin/lvchange');
         push @activate, ('--devices', $device) if defined($device);
         push @activate, ('-ay', '-K', "$vg/$lv");

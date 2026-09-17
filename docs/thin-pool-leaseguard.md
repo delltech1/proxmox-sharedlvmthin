@@ -1,5 +1,14 @@
 # Experimental Thin Pool LeaseGuard
 
+> **Historical research branch, not the default-only implementation.** This
+> design requires an additional sanlock userspace package and its Debian
+> post-installation enables services that conflict with the qualified PVE
+> watchdog-mux ownership model. It is therefore not installed, packaged or
+> enabled by SharedLvmThin. TG28 development instead implements the
+> `slt-thin-leaseguard remote-audit` PVE-native peer-mapper gate described in
+> [thin-stability-roadmap.md](thin-stability-roadmap.md). The material below is
+> retained as design evidence only.
+
 ## Purpose
 
 The existing TG26 node/epoch tags prevent a second managed activation and

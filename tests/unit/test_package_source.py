@@ -8,6 +8,29 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    def test_materialized_migration_bridge_uses_supported_fail_closed_path(self):
+        source = (ROOT / "usr/sbin/sharedlvmthin-migrate-bridge").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("qm disk move", source)
+        self.assertIn("qm migrate", source)
+        self.assertIn("SAFE_FOR_MUTATION=YES", source)
+        self.assertIn("insufficient physical VG capacity", source)
+        self.assertIn("MATERIALIZED_THICK", source)
+        self.assertIn("MIGRATED_THICK", source)
+        self.assertNotIn("qmp", source.lower())
+        self.assertNotIn("thin_repair", source)
+
+    def test_remote_thin_evidence_helper_is_read_only_and_exact(self):
+        source = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence"
+        ).read_text(encoding="utf-8")
+        self.assertIn("dmsetup ls --target thin-pool", source)
+        self.assertIn("dmsetup info", source)
+        for mutation in ("lvchange", "lvcreate", "lvremove", "dmsetup remove"):
+            self.assertNotIn(mutation, source)
+
     def test_publishable_sources_contain_no_lab_or_personal_identifiers(self):
         forbidden = (
             "192.168." + "50.",

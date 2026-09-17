@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — TG28 development
+
+- Add an opt-in PVE-native Thin LeaseGuard remote kernel-mapper audit using
+  exact DM UUID evidence from every configured peer; unreachable, ambiguous
+  or active peers fail closed while existing storage remains unchanged.
+- Publish newly allocated Thin targets fully inactive before the normal PVE
+  activation hook. This closes the online Thick-to-Thin Storage Move race
+  introduced by strict single-kernel ownership.
+- Add the Materialized Migration Bridge prototype: native online Thin-to-Thick
+  Storage Move, ordinary Thick live migration, and optional online return to
+  Thin with physical-capacity admission and persistent phase evidence.
+
 ## 0.9.0~rc5.6~tg27 (unreleased development candidate)
 
 - Refuse Thin activation when generic LVM autoactivation is enabled on the

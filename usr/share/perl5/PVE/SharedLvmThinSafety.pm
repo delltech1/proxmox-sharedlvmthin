@@ -350,6 +350,59 @@ sub evaluate_leaseguard_activation {
     };
 }
 
+sub evaluate_pve_native_leaseguard {
+    my (%args) = @_;
+
+    my $enabled = $args{enabled} // 0;
+    die "invalid PVE-native LeaseGuard enabled flag\n"
+        if $enabled !~ /^(?:0|1)$/;
+    return {
+        status => 'DISABLED', blocks_operation => 0,
+        reason => 'PVE-native LeaseGuard is not enabled for this storage',
+    } if !$enabled;
+
+    for my $required (qw(quorum storage_identity local_runtime_absent)) {
+        return {
+            status => 'UNKNOWN', blocks_operation => 1,
+            reason => "missing PVE-native LeaseGuard evidence $required",
+        } if !defined($args{$required}) || $args{$required} !~ /^(?:0|1)$/;
+        return {
+            status => 'REFUSED', blocks_operation => 1,
+            reason => "PVE-native LeaseGuard evidence failed: $required",
+        } if !$args{$required};
+    }
+
+    my $nodes = $args{remote_nodes};
+    return {
+        status => 'UNKNOWN', blocks_operation => 1,
+        reason => 'remote kernel-mapper evidence is unavailable',
+    } if ref($nodes) ne 'ARRAY' || !@$nodes;
+
+    my %seen;
+    for my $node (@$nodes) {
+        return {
+            status => 'UNKNOWN', blocks_operation => 1,
+            reason => 'remote kernel-mapper evidence is malformed',
+        } if ref($node) ne 'HASH'
+            || ($node->{node} // '') !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+            || ($node->{state} // '') !~ /^(?:ABSENT|PRESENT|UNKNOWN)$/
+            || $seen{$node->{node}}++;
+        return {
+            status => 'REFUSED', blocks_operation => 1,
+            reason => "remote thin-pool mapper is present on '$node->{node}'",
+        } if $node->{state} eq 'PRESENT';
+        return {
+            status => 'UNKNOWN', blocks_operation => 1,
+            reason => "remote thin-pool mapper absence is unproven on '$node->{node}'",
+        } if $node->{state} eq 'UNKNOWN';
+    }
+
+    return {
+        status => 'PASS', blocks_operation => 0,
+        reason => 'all configured peer kernels positively report the exact thin-pool mapper absent',
+    };
+}
+
 sub evaluate_metadata_health {
     my (%args) = @_;
     return { status => 'N_A', reason => 'pool inactive', blocks_operation => 0 }

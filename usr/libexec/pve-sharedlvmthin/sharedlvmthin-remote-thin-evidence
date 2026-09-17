@@ -1,0 +1,42 @@
+#!/bin/bash
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Internal, read-only peer probe used by the opt-in PVE-native LeaseGuard.
+# It deliberately performs no LVM scan or activation.  stdout is a strict,
+# single-line protocol; every operational ambiguity exits non-zero.
+set -u
+export LC_ALL=C
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+mapper="${1:-}"
+expected_uuid="${2:-}"
+case "$mapper" in
+    ''|*[!A-Za-z0-9_.+-]*) exit 64 ;;
+esac
+case "$expected_uuid" in
+    LVM-[A-Za-z0-9]*-tpool) ;;
+    *) exit 64 ;;
+esac
+
+inventory="$(dmsetup ls --target thin-pool --noheadings 2>/dev/null)" || exit 70
+present=0
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    name="${line%%[[:space:]]*}"
+    if [ "$name" = "$mapper" ]; then
+        present=$((present + 1))
+    fi
+done <<EOF
+$inventory
+EOF
+
+if [ "$present" -eq 0 ]; then
+    printf 'BASTRIX_REMOTE_THIN_V1|ABSENT|%s|%s\n' "$mapper" "$expected_uuid"
+    exit 0
+fi
+[ "$present" -eq 1 ] || exit 71
+
+observed="$(dmsetup info -c --noheadings -o uuid "$mapper" 2>/dev/null | tr -d '[:space:]')" || exit 72
+[ "$observed" = "$expected_uuid" ] || exit 73
+printf 'BASTRIX_REMOTE_THIN_V1|PRESENT|%s|%s\n' "$mapper" "$observed"

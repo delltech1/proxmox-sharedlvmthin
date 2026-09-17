@@ -26,6 +26,8 @@ my $thin_claim_pool_owner_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::
 my $thin_release_pool_owner_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked;
 my $thin_owner_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_from_tags;
 my $thin_owner_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_state_from_tags;
+my $thin_remote_mapper_audit_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked;
+my $deactivate_new_thin_pool_after_allocation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_deactivate_new_thin_pool_after_allocation;
 my $thin_adopt_owner_model = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_adopt_owner_model;
 my $record_disable_autoactivation = sub {
     my ($class, $vg, $lv) = @_;
@@ -86,6 +88,94 @@ sub reset_mocks {
 sub command_lines {
     return map { join(' ', @$_) } @commands;
 }
+
+subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' => sub {
+    my $disabled = { 'slt-thin-leaseguard' => 'disabled' };
+    ok($thin_remote_mapper_audit_locked->($class, $disabled, 'testvg', 'sltp-100', undef),
+        'disabled guard performs no peer operation');
+
+    my $guarded = { 'slt-thin-leaseguard' => 'remote-audit' };
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_dm_identity = sub {
+        return ('testvg-sltp--100-tpool', 'LVM-vguuidlvuuid-tpool');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_configured_peer_nodes = sub {
+        return [
+            { node => 'pve02', ip => '203.0.113.2' },
+            { node => 'pve03', ip => '203.0.113.3' },
+        ];
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        my ($target) = grep { /^root\@/ } @$command;
+        my ($node) = $target =~ /\.(\d+)$/;
+        $options{outfunc}->(
+            'BASTRIX_REMOTE_THIN_V1|ABSENT|testvg-sltp--100-tpool|LVM-vguuidlvuuid-tpool'
+        );
+        return;
+    };
+    ok($thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef),
+        'positive exact absence from every peer passes');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        $options{outfunc}->(
+            'BASTRIX_REMOTE_THIN_V1|PRESENT|testvg-sltp--100-tpool|LVM-vguuidlvuuid-tpool'
+        );
+        return;
+    };
+    eval { $thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef) };
+    like($@, qr/remote thin-pool mapper is present/, 'one peer mapper refuses activation');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub { die "peer timeout\n" };
+    eval { $thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef) };
+    like($@, qr/cannot prove mapper absence.*peer timeout/s,
+        'unreachable peer remains UNKNOWN and blocks activation');
+};
+
+subtest 'new Thin allocation is published inactive before PVE activation' => sub {
+    my %present = (
+        '/dev/mapper/testvg-sltp--100-tpool' => 1,
+        '/dev/mapper/testvg-vm--100--disk--0' => 1,
+    );
+    my @seen;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
+        return $present{$_[0]} // 0;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        push @seen, [@$command];
+        my $text = join(' ', @$command);
+        delete $present{'/dev/mapper/testvg-vm--100--disk--0'}
+            if $text =~ / -an testvg\/vm-100-disk-0$/;
+        delete $present{'/dev/mapper/testvg-sltp--100-tpool'}
+            if $text =~ / -an testvg\/sltp-100$/;
+        return;
+    };
+    ok($deactivate_new_thin_pool_after_allocation->(
+        $class, 'testvg', 'sltp-100', 'vm-100-disk-0', '/dev/mapper/wwid1',
+    ), 'new target reaches exact inactive postcondition');
+    is_deeply(
+        [map { join(' ', @$_) } @seen],
+        [
+            '/sbin/lvchange --devices /dev/mapper/wwid1 --monitor n testvg/sltp-100',
+            '/sbin/lvchange --devices /dev/mapper/wwid1 -an testvg/vm-100-disk-0',
+            '/sbin/lvchange --devices /dev/mapper/wwid1 -an testvg/sltp-100',
+        ],
+        'only exact device-scoped unmonitor and deactivate operations run',
+    );
+
+    $present{'/dev/mapper/testvg-sltp--100-tpool'} = 1;
+    $present{'/dev/mapper/testvg-vm--100--disk--0'} = 1;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub { return };
+    eval {
+        $deactivate_new_thin_pool_after_allocation->(
+            $class, 'testvg', 'sltp-100', 'vm-100-disk-0', '/dev/mapper/wwid1',
+        );
+    };
+    like($@, qr/remains active/, 'unproven inactive publication fails closed');
+};
 
 subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => sub {
     my @seen;
