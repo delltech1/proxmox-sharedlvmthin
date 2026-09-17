@@ -69,6 +69,9 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("BRIDGE_ADMISSION_ACTIVE=NO", source)
         self.assertIn("disk_manifest_sha256", source)
         self.assertIn("disk manifest digest mismatch", source)
+        self.assertIn("CONTINUE_MATERIALIZE", source)
+        self.assertIn("resume_progress_move", source)
+        self.assertIn("insufficient capacity to resume materialization", source)
         planner = (
             ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan"
         ).read_text(encoding="utf-8")
@@ -80,7 +83,16 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("run_progress_move", source)
         self.assertIn("PIPESTATUS[0]", source)
         self.assertIn("now - last_persist", source)
-        self.assertNotIn("qmp", source.lower())
+        self.assertIn("sharedlvmthin-qmp-path-check", source)
+        self.assertIn("RUNTIME_CONFIG_DIVERGENCE", source)
+        qmp_check = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check"
+        ).read_text(encoding="utf-8")
+        self.assertIn('qmp_command(stream, "query-block")', qmp_check)
+        self.assertIn("runtime/config path divergence", qmp_check)
+        for mutation in ("qm set", "qm disk", "lvchange", "lvremove", "dmsetup"):
+            self.assertNotIn(mutation, qmp_check)
         self.assertNotIn("thin_repair", source)
 
     def test_remote_thin_evidence_helper_is_read_only_and_exact(self):

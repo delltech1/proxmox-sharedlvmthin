@@ -73,6 +73,7 @@ if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
     thin_store=$(state_value thin_storage); thick_store=$(state_value thick_storage)
     return_thin=$(state_value return_thin); phase=$(state_value phase)
     disk_count=$(state_value disk_count); completed_disks=$(state_value completed_disks)
+    total_bytes=$(state_value total_bytes)
     [[ $version =~ ^(2|3)$ && $tx =~ ^[0-9a-f]{32}$ && $vmid = "$resume_vmid" ]] \
         || { echo "invalid bridge state identity" >&2; exit 70; }
     [[ $source_node = "$(hostname)" && $target =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
@@ -120,6 +121,52 @@ print(rows[0].get("node", ""))' "$vmid"
         echo "authoritative VM node is neither saved source nor target" >&2
         exit 70
     fi
+    if [ "$version" = 3 ]; then
+        cmp -s \
+            <(cut -d'|' -f1 "$manifest_file" | sort) \
+            <(printf '%s\n' "$authoritative_cfg" | awk '
+                /^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {
+                    key=$1; sub(/:$/, "", key); print key
+                }
+            ' | sort) \
+            || { echo "authoritative disk slots do not match saved manifest" >&2; exit 70; }
+    fi
+    # pmxcfs may be updated before QEMU completes (or rolls back) an online
+    # block job.  Recovery therefore requires the live QMP block graph to
+    # agree with every configured disk path; process argv and config alone are
+    # not authoritative.  A mismatch is deliberately manual recovery only.
+    runtime_expectations=
+    while IFS='|' read -r slot original bytes; do
+        current_vol=$(printf '%s\n' "$authoritative_cfg" | awk -v slot="$slot" '
+            $1 == slot ":" {vol=$2; sub(/,.*/, "", vol); print vol; found=1}
+            END {if (!found) exit 1}
+        ')
+        if [ "$authority" = source ]; then
+            current_path=$(pvesm path "$current_vol")
+        else
+            current_path=$("${ssh_base[@]}" -- pvesm path "$current_vol")
+        fi
+        [[ $current_path = /dev/* ]] \
+            || { echo "configured disk path is not a block device path" >&2; exit 70; }
+        runtime_expectations+="$slot|$current_path"$'\n'
+    done <"$manifest_file"
+    if [ "$authority" = source ]; then
+        if ! runtime_evidence=$(printf '%s' "$runtime_expectations" \
+            | /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check "$vmid"); then
+            printf '%s\n' "$runtime_evidence" >&2
+            echo "RUNTIME_CONFIG_DIVERGENCE: refusing automatic recovery" >&2
+            exit 70
+        fi
+    else
+        if ! runtime_evidence=$(printf '%s' "$runtime_expectations" \
+            | "${ssh_base[@]}" -- /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check "$vmid"); then
+            printf '%s\n' "$runtime_evidence" >&2
+            echo "RUNTIME_CONFIG_DIVERGENCE: refusing automatic recovery" >&2
+            exit 70
+        fi
+    fi
+    grep -qx 'RUNTIME_PATHS=PASS' <<<"$runtime_evidence" \
+        || { echo "runtime path proof is incomplete" >&2; exit 70; }
     read -r observed_disks observed_thin observed_thick < <(
         printf '%s\n' "$authoritative_cfg" | awk -v thin="$thin_store" -v thick="$thick_store" '
             /^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {
@@ -152,6 +199,196 @@ print(rows[0].get("node", ""))' "$vmid"
         printf 'DISKS=%s\nTHIN_DISKS=%s\nTHICK_DISKS=%s\nADMISSION=%s\n' \
             "$observed_disks" "$observed_thin" "$observed_thick" "$admission"
         printf '%s\n' "$recovery_plan"
+        exit 0
+    fi
+    resume_publish_state() {
+        local new_phase=$1 new_completed=$2 new_current=$3 new_progress=$4
+        local tmp="$resume_file.tmp.$$" now digest candidate
+        local -a config_paths=()
+        now=$(date +%s)
+        for candidate in /etc/pve/nodes/*/qemu-server/"$vmid".conf; do
+            [ -f "$candidate" ] && config_paths+=("$candidate")
+        done
+        [ "${#config_paths[@]}" -eq 1 ] \
+            || { echo "cannot prove one authoritative VM configuration while publishing recovery state" >&2; return 70; }
+        digest=$(sha256sum "${config_paths[0]}" | cut -d' ' -f1)
+        awk -F= -v phase="$new_phase" -v completed="$new_completed" \
+            -v current="$new_current" -v progress="$new_progress" \
+            -v now="$now" -v digest="$digest" '
+            $1 == "phase" {print "phase=" phase; next}
+            $1 == "completed_disks" {print "completed_disks=" completed; next}
+            $1 == "current_disk" {print "current_disk=" current; next}
+            $1 == "progress_percent" {print "progress_percent=" progress; next}
+            $1 == "updated_at" {print "updated_at=" now; next}
+            $1 == "config_sha256" {print "config_sha256=" digest; next}
+            {print}
+        ' "$resume_file" >"$tmp"
+        chmod 0600 "$tmp"; chown root:root "$tmp"; sync -f "$tmp"
+        mv -f "$tmp" "$resume_file"; sync -f "$resume_dir"
+    }
+    resume_progress_move() {
+        local slot=$1 destination=$2 completed=$3 execution_node=${4:-local}
+        local line observed now last_persist=0 rc
+        resume_publish_state MATERIALIZING "$completed" "$slot" 0
+        set +e
+        if [ "$execution_node" = local ]; then
+            qm disk move "$vmid" "$slot" "$destination" --delete 1 2>&1
+        else
+            "${ssh_base[@]}" -- qm disk move "$vmid" "$slot" "$destination" --delete 1 2>&1
+        fi \
+        | while IFS= read -r line; do
+            printf '%s\n' "$line"
+            if [[ $line =~ \(([0-9]+([.][0-9]+)?)%\) ]]; then
+                observed=${BASH_REMATCH[1]}; now=$(date +%s)
+                if [ $((now - last_persist)) -ge 30 ]; then
+                    resume_publish_state MATERIALIZING "$completed" "$slot" "$observed"
+                    last_persist=$now
+                fi
+            fi
+        done
+        rc=${PIPESTATUS[0]}
+        set -e
+        [ "$rc" -eq 0 ] || {
+            resume_publish_state MOVE_FAILED "$completed" "$slot" 0
+        return "$rc"
+        }
+    }
+    if grep -qx 'RECOVERY_PLAN=CONTINUE_MATERIALIZE' <<<"$recovery_plan"; then
+        [ "$version" = 3 ] && [ "$authority" = source ] \
+            || { echo "materialization resume requires v3 source evidence" >&2; exit 70; }
+        sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+            acquire "$thin_store" "$tx" "$source_node" >/dev/null
+        thin_vg=$(awk -v sid="$thin_store" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-vgname" {print $2; exit}
+        ' /etc/pve/storage.cfg)
+        reserve_gib=$(awk -v sid="$thick_store" '
+            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
+            /^[^[:space:]]/ {inside=0}
+            inside && $1 == "slt-vg-reserve-gib" {print $2; exit}
+        ' /etc/pve/storage.cfg); reserve_gib=${reserve_gib:-0}
+        [[ $thin_vg =~ ^[A-Za-z0-9+_.-]+$ && $reserve_gib =~ ^[0-9]+$ ]] \
+            || { echo "cannot prove resume VG capacity policy" >&2; exit 70; }
+        remaining_bytes=0
+        while IFS='|' read -r slot original bytes; do
+            [[ $slot =~ ^(ide|sata|scsi|virtio)[0-9]+$ \
+                && $bytes =~ ^[1-9][0-9]*$ ]] \
+                || { echo "invalid disk manifest record" >&2; exit 70; }
+            current_vol=$(printf '%s\n' "$authoritative_cfg" | awk -v slot="$slot" '
+                $1 == slot ":" {vol=$2; sub(/,.*/, "", vol); print vol; found=1}
+                END {if (!found) exit 1}
+            ')
+            current_store=${current_vol%%:*}
+            if [ "$current_store" = "$thin_store" ]; then
+                current_path=$(pvesm path "$current_vol")
+                [ "$(blockdev --getsize64 "$current_path")" = "$bytes" ] \
+                    || { echo "runtime disk size differs from manifest for $slot" >&2; exit 70; }
+                remaining_bytes=$((remaining_bytes + bytes))
+            elif [ "$current_store" != "$thick_store" ]; then
+                echo "runtime disk storage differs from recovery plan for $slot" >&2
+                exit 70
+            fi
+        done <"$manifest_file"
+        vg_free=$(vgs --readonly --noheadings --units b --nosuffix -o vg_free "$thin_vg" | tr -d '[:space:]')
+        vg_free=${vg_free%.*}
+        required_bytes=$((remaining_bytes + reserve_gib * 1024 * 1024 * 1024))
+        [[ $vg_free =~ ^[0-9]+$ && $vg_free -ge $required_bytes ]] \
+            || { echo "insufficient capacity to resume materialization" >&2; exit 28; }
+        completed_now=$observed_thick
+        while IFS='|' read -r slot original bytes; do
+            current_vol=$(qm config "$vmid" | awk -v slot="$slot" '
+                $1 == slot ":" {vol=$2; sub(/,.*/, "", vol); print vol; found=1}
+                END {if (!found) exit 1}
+            ')
+            [ "${current_vol%%:*}" = "$thin_store" ] || continue
+            resume_progress_move "$slot" "$thick_store" "$completed_now"
+            qm config "$vmid" | grep -Eq "^${slot}: ${thick_store}:"
+            completed_now=$((completed_now + 1))
+            authoritative_cfg=$(qm config "$vmid")
+            resume_publish_state MATERIALIZING "$completed_now" none 100
+        done <"$manifest_file"
+        [ "$completed_now" -eq "$disk_count" ] \
+            || { echo "materialization resume did not complete every disk" >&2; exit 70; }
+        sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+            release "$thin_store" "$tx" "$source_node" >/dev/null
+        resume_publish_state MATERIALIZED_THICK "$completed_now" none 100
+        printf 'BRIDGE_RESUME_STEP=PASS\nTX=%s\nCOMPLETED_ACTION=CONTINUE_MATERIALIZE\nNEXT_ACTION=MIGRATE_THICK\n' "$tx"
+        exit 0
+    fi
+    if grep -qx 'RECOVERY_PLAN=MIGRATE_THICK' <<<"$recovery_plan"; then
+        [ "$authority" = source ] && [ "$observed_thick" -eq "$disk_count" ] \
+            && [ "$admission" = none ] \
+            || { echo "thick migration resume evidence is incomplete" >&2; exit 70; }
+        sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        resume_publish_state MATERIALIZED_THICK "$disk_count" none 100
+        set +e
+        qm migrate "$vmid" "$target" --online 1
+        migrate_rc=$?
+        set -e
+        settled=0
+        for _ in $(seq 1 30); do
+            observed=$(pvesh get /cluster/resources --type vm --output-format json \
+                | python3 -c 'import json,sys
+vmid=int(sys.argv[1]); rows=[x for x in json.load(sys.stdin) if x.get("vmid")==vmid]
+print((rows[0].get("node", "?")+":"+rows[0].get("status", "?")) if len(rows)==1 else "AMBIGUOUS")' "$vmid")
+            [ "$observed" = "$target:running" ] && { settled=1; break; }
+            sleep 1
+        done
+        if [ "$migrate_rc" -ne 0 ] || [ "$settled" -ne 1 ]; then
+            resume_publish_state MIGRATION_UNSETTLED "$disk_count" none 100
+            echo "migration outcome is not positively proven: rc=$migrate_rc owner=$observed" >&2
+            exit 70
+        fi
+        resume_publish_state MIGRATED_THICK "$disk_count" none 100
+        next=FINALIZE_THICK
+        [ "$return_thin" -eq 1 ] && next=PREPARE_RETURN_THIN
+        printf 'BRIDGE_RESUME_STEP=PASS\nTX=%s\nCOMPLETED_ACTION=MIGRATE_THICK\nNEXT_ACTION=%s\n' "$tx" "$next"
+        exit 0
+    fi
+    if grep -Eqx 'RECOVERY_PLAN=(PREPARE_RETURN_THIN|CONTINUE_RETURN_THIN)' <<<"$recovery_plan"; then
+        [ "$authority" = target ] && [ "$return_thin" -eq 1 ] \
+            && [ "$admission" = none ] \
+            || { echo "return-to-Thin resume evidence is incomplete" >&2; exit 70; }
+        [[ $total_bytes =~ ^[1-9][0-9]*$ ]] \
+            || { echo "invalid saved aggregate disk size" >&2; exit 70; }
+        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        if grep -qx 'RECOVERY_PLAN=PREPARE_RETURN_THIN' <<<"$recovery_plan"; then
+            "${ssh_base[@]}" -- /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+                prepare "$thin_store" "$vmid" "$total_bytes" "$tx"
+            resume_publish_state RETURN_THIN_PREPARED "$disk_count" none 0
+        fi
+        completed_now=$((disk_count + observed_thin))
+        while IFS='|' read -r slot original bytes; do
+            current_vol=$("${ssh_base[@]}" -- qm config "$vmid" | awk -v slot="$slot" '
+                $1 == slot ":" {vol=$2; sub(/,.*/, "", vol); print vol; found=1}
+                END {if (!found) exit 1}
+            ')
+            [ "${current_vol%%:*}" = "$thick_store" ] || continue
+            resume_progress_move "$slot" "$thin_store" "$completed_now" remote
+            "${ssh_base[@]}" -- qm config "$vmid" | grep -Eq "^${slot}: ${thin_store}:"
+            completed_now=$((completed_now + 1))
+            resume_publish_state RETURN_THIN_PREPARED "$completed_now" none 100
+        done <"$manifest_file"
+        [ "$completed_now" -eq $((disk_count * 2)) ] \
+            || { echo "return-to-Thin resume did not complete every disk" >&2; exit 70; }
+        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        resume_publish_state RETURNED_THIN "$completed_now" none 100
+        printf 'BRIDGE_RESUME=PASS\nTX=%s\nFINAL_PHASE=RETURNED_THIN\nSTATE_FILE=%s\n' \
+            "$tx" "$resume_file"
+        exit 0
+    fi
+    if grep -qx 'RECOVERY_PLAN=FINALIZE_THICK' <<<"$recovery_plan"; then
+        [ "$authority" = target ] && [ "$return_thin" -eq 0 ] \
+            && [ "$observed_thick" -eq "$disk_count" ] \
+            || { echo "keep-Thick completion evidence is incomplete" >&2; exit 70; }
+        resume_publish_state COMPLETE_THICK "$disk_count" none 100
+        printf 'BRIDGE_RESUME=PASS\nTX=%s\nFINAL_PHASE=COMPLETE_THICK\nSTATE_FILE=%s\n' \
+            "$tx" "$resume_file"
         exit 0
     fi
     grep -qx 'RECOVERY_PLAN=FINALIZE_THIN' <<<"$recovery_plan" \

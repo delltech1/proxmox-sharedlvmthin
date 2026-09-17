@@ -91,3 +91,19 @@ an ordinary linear frontend. It does not share mutable dm-thin metadata and
 remains independently eligible for normal PVE shared-storage live migration.
 Transitional/hydrating generations retain their existing fail-closed rules and
 cannot be reconstructed on another node without exact recovery evidence.
+
+### Interrupted online disk moves
+
+An interrupted QEMU block job can briefly leave three different views of a
+disk: the durable bridge transaction, the pmxcfs VM configuration, and QEMU's
+live block graph. Process command-line arguments are not sufficient evidence,
+and pmxcfs can name the destination while QEMU is still writing the source.
+
+Recovery planning therefore performs a bounded, read-only QMP `query-block`
+probe on the authoritative running node. Every manifest slot must resolve to
+the exact canonical `/dev` path named by the current PVE configuration. Any
+missing disk, foreign path, stale destination, malformed response, unavailable
+QMP socket, or config/runtime mismatch returns
+`RUNTIME_CONFIG_DIVERGENCE` and blocks automatic mutation. An operator must
+then stop the guest and reconcile the two views from positive evidence; the
+bridge never guesses which copy is newer.

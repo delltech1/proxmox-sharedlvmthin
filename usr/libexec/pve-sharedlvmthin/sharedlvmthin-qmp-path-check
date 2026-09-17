@@ -1,0 +1,132 @@
+#!/usr/bin/python3
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+"""Read-only proof that each running QEMU disk uses its configured block path.
+
+Input is one trusted record per line: ``slot|expected-path``.  The helper talks
+directly to the local root-owned QMP socket, asks QEMU for its live block graph,
+and requires exactly one canonical host path for every requested slot.  It
+never changes QEMU, PVE configuration, LVM, or device-mapper state.
+"""
+
+import json
+import os
+import re
+import socket
+import stat
+import sys
+
+
+SLOT_RE = re.compile(r"(?:ide|sata|scsi|virtio)[0-9]+\Z")
+
+
+def die(message, code=70):
+    print(f"RUNTIME_PATHS=REFUSE\nREASON={message}")
+    raise SystemExit(code)
+
+
+def qmp_command(stream, command):
+    stream.write((json.dumps({"execute": command}) + "\r\n").encode())
+    while True:
+        line = stream.readline()
+        if not line:
+            die("QMP closed before returning evidence")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            die("QMP returned malformed JSON")
+        if "error" in message:
+            die(f"QMP {command} failed")
+        if "return" in message:
+            return message["return"]
+
+
+def canonical(path):
+    if not isinstance(path, str) or not path.startswith("/dev/"):
+        return None
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return None
+
+
+def collect_device_paths(value, result):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "filename":
+                path = canonical(child)
+                if path:
+                    result.add(path)
+            collect_device_paths(child, result)
+    elif isinstance(value, list):
+        for child in value:
+            collect_device_paths(child, result)
+
+
+def read_expected():
+    expected = {}
+    for raw in sys.stdin:
+        raw = raw.rstrip("\n")
+        fields = raw.split("|")
+        if len(fields) != 2 or not SLOT_RE.fullmatch(fields[0]):
+            die("invalid expected-path record", 64)
+        path = canonical(fields[1])
+        if not path or fields[0] in expected:
+            die("duplicate or non-device expected path", 64)
+        expected[fields[0]] = path
+    if not expected:
+        die("no expected disk paths supplied", 64)
+    return expected
+
+
+def main(argv):
+    if len(argv) != 1 or not re.fullmatch(r"[1-9][0-9]{2,8}", argv[0]):
+        die("usage: sharedlvmthin-qmp-path-check <vmid>", 64)
+    expected = read_expected()
+    qmp_path = f"/run/qemu-server/{argv[0]}.qmp"
+    try:
+        st = os.stat(qmp_path)
+    except OSError:
+        die("local QMP socket is unavailable")
+    if st.st_uid != 0 or not stat.S_ISSOCK(st.st_mode):
+        die("local QMP endpoint is not a trusted root-owned socket")
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    try:
+        sock.connect(qmp_path)
+        stream = sock.makefile("rwb", buffering=0)
+        greeting = json.loads(stream.readline())
+        if "QMP" not in greeting:
+            die("invalid QMP greeting")
+        qmp_command(stream, "qmp_capabilities")
+        devices = qmp_command(stream, "query-block")
+    except (OSError, ValueError, socket.timeout):
+        die("bounded QMP block query failed")
+    finally:
+        sock.close()
+
+    observed = {}
+    for device in devices:
+        slot = device.get("qdev")
+        if slot not in expected:
+            continue
+        paths = set()
+        collect_device_paths(device.get("inserted", {}), paths)
+        matches = {path for path in paths if path == expected[slot]}
+        if len(matches) != 1:
+            die(f"runtime/config path divergence for {slot}")
+        observed[slot] = next(iter(matches))
+
+    if set(observed) != set(expected):
+        die("runtime block graph is missing a configured disk")
+    print("RUNTIME_PATHS=PASS")
+    for slot in sorted(observed):
+        print(f"RUNTIME_SLOT={slot}")
+        print(f"RUNTIME_PATH={observed[slot]}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -3884,3 +3884,34 @@ FINAL_CODE_REGRESSION=PASS
 FINAL_CODE_REPRODUCIBLE_BUILD=PASS
 FINAL_CODE_DEB_SHA256=9bcc85efbec07fa3ad099b3bdd553b74fa99946e4e295cbedd18e8968464f2b7
 ```
+
+## TG31 interrupted block-job recovery qualification
+
+A live Thin-to-Thick move was terminated during its QEMU mirror transaction.
+The test exposed a real split between pmxcfs, a stale QEMU process argument,
+and the live QMP block graph: pmxcfs named Thick while `query-block` proved
+that guest writes still reached Thin. Both copies and the exact bridge
+admission remained preserved; Thick orphan recovery correctly refused while
+the destination was open or PVE-referenced.
+
+The guest was stopped, configuration was aligned to the QMP-proven Thin
+source, restarted, and the exact transaction admission was released. The
+unreferenced destination was removed through PVE's normal `unused` lifecycle.
+The new QMP path gate then passed the aligned topology and rejected an
+intentionally wrong expected path without mutation. Recovery resumed the same
+transaction through materialization, native live migration, and return to
+Thin. The final config and QMP graph both named Thin, no Thick transaction LV
+remained, and admission was clear.
+
+```ini
+TG31_FAULT_POINT=ONLINE_BLOCK_MIRROR_INTERRUPTED
+TG31_RUNTIME_CONFIG_DIVERGENCE_DETECTED=PASS
+TG31_QMP_POSITIVE_PATH=PASS
+TG31_QMP_NEGATIVE_PATH=REFUSED
+TG31_EXACT_ADMISSION_PRESERVED_AND_RELEASED=PASS
+TG31_RECOVERY_CONTINUE_MATERIALIZE=PASS
+TG31_RECOVERY_MIGRATE_THICK=PASS
+TG31_RECOVERY_RETURN_THIN=PASS
+TG31_FINAL_RUNTIME_CONFIG_MATCH=PASS
+TG31_THICK_LEFTOVERS=0
+```

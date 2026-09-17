@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0~rc5.10~tg31 (unreleased development candidate)
+
+- Persist and authenticate an exact per-slot disk manifest for migration
+  recovery instead of reconstructing intent from mutable VM configuration.
+- Add a pure fail-closed recovery planner and executable recovery steps for
+  interrupted materialization, Thick migration, and return to Thin.
+- Correlate bridge state and pmxcfs with QEMU's live `query-block` graph;
+  runtime/config divergence now blocks all automatic recovery.
+- Qualify a killed online mirror through safe reconciliation and a resumed
+  Thin-to-Thick-to-Thin live migration lifecycle with zero Thick leftovers.
+- Pass 197 Python tests and 691 Perl assertions.
+
 ## 0.9.0~rc5.9~tg30 (development candidate)
 
 - Make long materialized migrations observable without imposing a fixed copy

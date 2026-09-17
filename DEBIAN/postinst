@@ -30,6 +30,7 @@ chmod 0755 "$MONITOR" "$MATERIALIZER" "$THIN_GUARDD" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
 
