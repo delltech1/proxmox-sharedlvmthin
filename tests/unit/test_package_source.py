@@ -65,6 +65,27 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("one LVM thin pool per VM", control)
         self.assertIn("fully allocated Thick Generations", control)
 
+    def test_public_support_claims_separate_thin_and_materialized_thick_mobility(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        migration = (ROOT / "docs/migration.md").read_text(encoding="utf-8")
+        plan = (
+            ROOT / "docs/original-cluster-qualification-plan.md"
+        ).read_text(encoding="utf-8")
+        gate = (
+            ROOT / "docs/thick-generations-release-gate.md"
+        ).read_text(encoding="utf-8")
+        scale = (ROOT / "docs/scale-qualification.md").read_text(encoding="utf-8")
+        plugin = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Thin live migration is unsupported", migration)
+        self.assertIn("overlapping Thin live migration", readme)
+        self.assertIn("LIVE REFUSED BY DESIGN", gate)
+        self.assertIn("TG26 correction", scale)
+        self.assertNotIn("- [x] Offline and online migration between nodes.", plan)
+        self.assertIn("live migration is unsupported", plugin)
+
     def test_doctor_accepts_elastic_and_legacy_thresholds(self):
         doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text()
         self.assertIn('pass "Thin autoextend threshold = 50% (elastic early-grow policy)"', doctor)

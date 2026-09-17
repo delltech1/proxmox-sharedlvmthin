@@ -54,7 +54,9 @@ multipath, PV, VG, LV or guest state.
 - [x] Snapshot, rollback and delete snapshots in supported order.
 - [x] Full clone and linked lifecycle where supported by the Thin model.
 - [x] Snapshot-mode backup and restore to a new VMID.
-- [x] Offline and online migration between nodes.
+- [x] Offline migration between nodes. The earlier successful Thin online
+      migration observation is invalidated as a safety qualification: PVE
+      overlaps source and target activation, so TG26 refuses it by design.
 - [x] Storage move Thin to Thin and exact source cleanup.
 - [x] Verify capacity reporting: VG reservation, per-VM payload and reserved
       slack must be visible and arithmetically consistent.

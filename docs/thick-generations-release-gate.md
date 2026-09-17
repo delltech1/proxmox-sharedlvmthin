@@ -18,7 +18,9 @@ The executable order and remaining original-cluster work are defined in the
 | Cross-node recovery | Runtime reconstruction from persistent state without source-host mapper state | PASS |
 | Same-VG coexistence | Canonical lock, inventory isolation, thin and thick lifecycle, exact cleanup | PASS |
 | PVE lifecycle | Allocate, start, stop, resize, snapshot, rollback, delete and full clone | PASS |
-| Mobility | Offline/live migration, storage move and thin-to-thick/thick-to-thin conversion | PASS |
+| Thin mobility | Offline source-deactivate then target-activate handoff; overlapping live migration must fail closed | PASS; LIVE REFUSED BY DESIGN |
+| Materialized Thick mobility | Offline/live migration in independent linear steady state | PASS |
+| Storage conversion | Thin-to-thick/thick-to-thin storage move with exact destination and source-cleanup evidence | PASS |
 | Native PVE data protection | Snapshot-mode backup, restore, sparse archive and restored-guest validation | PASS |
 | Veeam HotAdd backup | Supported-UI Thin, Thick and mixed-VM backup with exact proxy cleanup | PASS |
 | Veeam cross-mode restore | Supported-UI Thin-to-Thin, Thin-to-Thick, Thick-to-Thick, Thick-to-Thin and mixed restore with data verification | PASS |
@@ -35,7 +37,7 @@ The executable order and remaining original-cluster work are defined in the
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
 | Web and installer | Dual-mode configuration, authentication, monitoring and live rendering | PASS |
 | Recovery monitoring | Live IN_PROGRESS, RECOVERY_REQUIRED and post-resume MATERIALIZED classification; scoped dmeventd requirement | PASS |
-| Regression | Python, Perl taint-mode, package content and privacy gates at accepted commit | PASS: 160 PYTHON, 244 PERL |
+| Regression | Python, Perl taint-mode, package content and privacy gates at accepted commit | PASS: 166 PYTHON CASES; 115 PERL SUBTESTS / 635 ASSERTIONS |
 
 `PASS` means the evidence is recorded in
 [`thick-generations-poc-status.md`](thick-generations-poc-status.md). A current

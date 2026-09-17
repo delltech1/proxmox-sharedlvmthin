@@ -3,6 +3,12 @@
 Scale results are evidence for the tested lab, not a certification for an
 arbitrary SAN, CPU, network, guest workload or cluster size.
 
+> **TG26 correction:** migration and HA counts below qualify materialized
+> Thick Generations unless a line explicitly says otherwise. Historical Thin
+> online-migration completion is not a safety qualification and is outside the
+> TG26 support envelope. Thin cross-node movement now requires complete source
+> deactivation before target activation.
+
 ## 2026-09-13 disposable three-node gate
 
 - mixed PVE 9 Storage API 14 and 15 cluster;
@@ -34,11 +40,12 @@ The gate found and fixed two real contention defects:
    timeout.  On the qualified releases that can expire before a legitimate
    high-object-count allocation finishes.  The plugin now applies the
    configured bounded `slt-lock-timeout` to this outer wrapper too.
-2. Thin deactivation was incorrectly serialized by the canonical shared-VG
-   mutation lock.  Deactivation, dmeventd unregister and DM teardown are
-   node-local runtime operations and do not update shared VG metadata.  They
-  now retain exact identity, ownership and mapper postconditions without
-  serializing unrelated VM migrations cluster-wide.
+2. At that historical stage, Thin deactivation was changed to avoid the
+   canonical shared-VG mutation lock because mapper teardown itself is
+   node-local. TG26 supersedes that conclusion: mapper teardown remains local,
+   but final owner release mutates shared VG metadata and therefore executes
+   under the canonical lock only after every child and hidden `-tpool` mapper
+   is positively absent.
 
 The thick allocation path was also reduced from separate post-create tag and
 autoactivation mutations to atomic creation attributes. In an isolated small

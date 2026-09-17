@@ -63,7 +63,7 @@ or hydrating generations continue to fail closed without exact signed state.
 
 ## Current qualification evidence
 
-- 165 Python cases and 115 Perl subtests (635 assertions) pass.
+- 166 Python cases and 115 Perl subtests (635 assertions) pass.
 - A 77-VM concurrent Thin runtime restored exact owner records with no
   duplicate cross-node pool mapping and no owner/runtime mismatch.
 - A live Thin migration was refused at target activation while the source VM

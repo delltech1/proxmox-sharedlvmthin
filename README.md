@@ -45,7 +45,7 @@ probably do not need this project.
 exclusively for Proxmox VE 9. TG24 introduced the Thin/Thick Generations
 architecture; TG25 hardened package-update and reboot compatibility. TG26 adds
 the fail-closed single-kernel Thin ownership protocol and intentionally removes
-Thin live migration from the supported envelope. The current tree passes 165
+Thin live migration from the supported envelope. The current tree passes 166
 Python cases and 115 Perl subtests (635 assertions), fault injection,
 two-node and three-node cluster qualification, API 14/15 installation and
 reinstallation, and a clean four-hour dual-mode endurance run on the Proxmox

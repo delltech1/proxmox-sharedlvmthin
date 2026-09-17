@@ -1,9 +1,11 @@
 # Thick Generations TG24 milestone handoff
 
-> Historical milestone record. The current compatible maintenance candidate is
-> RC5.4.1 TG25. TG25 preserves the TG24 storage and anchor formats and adds PVE
-> package-update, initramfs, reboot-recovery and runtime compatibility
-> hardening. See `RELEASE-NOTES-RC5.4.1-TG25.md` for current package identity.
+> Historical milestone record. The current unpublished development candidate
+> is RC5.5 TG26. TG26 preserves Thick Generations semantics but replaces the
+> legacy Thin activation model with persistent single-kernel ownership. Any
+> Thin live-migration success recorded below is historical evidence only and
+> is not inside the current support envelope. See
+> `RELEASE-NOTES-RC5.5-TG26.md` for current package identity.
 
 ## Candidate
 

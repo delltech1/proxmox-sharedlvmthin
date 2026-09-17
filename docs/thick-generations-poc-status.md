@@ -3,6 +3,15 @@
 This document records experimental evidence only. Thick Generations is not a
 production feature and is not included in a public release.
 
+> **TG26 safety correction:** earlier Thin live-migration and Thin HA
+> relocation successes in this chronological log prove only that the
+> operations completed in that lab. They do not prove dm-thin metadata safety:
+> PVE activates the target before the source kernel closes the pool. TG26
+> therefore refuses overlapping Thin activation and supports cross-node Thin
+> movement only after complete source deactivation. Materialized Thick
+> Generations remain independent linear LVs and retain their separate live
+> migration qualification.
+
 The concise requirement-by-requirement view is maintained in the
 [Thick Generations release gate](thick-generations-release-gate.md).
 Externally reported failure classes and their applicability are tracked in the
