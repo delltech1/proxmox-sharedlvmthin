@@ -255,7 +255,10 @@ restart.**
 
 ## QF-10: frozen-root metadata validation and fingerprint
 
-On an active exclusively owned Thin pool, the packaged candidate helper twice
+The candidate package was installed on every qualification node. All bounded
+installation preflights passed with zero failures and the installed helper
+passed its Perl syntax check. On an active exclusively owned Thin pool, the
+packaged CLI helper then twice
 reserved the kernel metadata snapshot, ran bounded
 `thin_check --metadata-snap`, released the reservation and returned
 `safe_for_mutation=true`. QEMU remained running. Pool, metadata and data UUIDs,
@@ -269,7 +272,8 @@ test owner explicitly released its reservation afterward; status returned to
 no reserved snapshot and the VM remained running.
 
 Result: **PASS for bounded frozen-root validation, deterministic checkpoint
-fingerprinting, exact release and foreign-reservation isolation.**
+fingerprinting, exact release, foreign-reservation isolation and installed
+package execution.**
 
 ## Evidence not yet established
 
