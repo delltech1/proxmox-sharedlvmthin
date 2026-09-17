@@ -36,6 +36,7 @@ chmod 0755 \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize" \
     "$STAGE/usr/share/initramfs-tools/hooks/zz-pve-sharedlvmthin-lvm-prune" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web" \

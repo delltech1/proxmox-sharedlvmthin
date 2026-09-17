@@ -1,0 +1,129 @@
+#!/usr/bin/perl
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+use strict;
+use warnings;
+
+use JSON::PP qw(decode_json encode_json);
+use PVE::Cluster;
+use PVE::INotify;
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::Storage;
+use PVE::Tools ();
+use PVE::SharedLvmThinGuardInventory qw(build_guard_inventory dm_mapper_name);
+
+$ENV{LC_ALL} = 'C';
+$ENV{PATH} = '/usr/sbin:/usr/bin:/sbin:/bin';
+
+my $requested_sid;
+if (@ARGV) {
+    die "usage: $0 [--storage-id ID]\n"
+        if @ARGV != 2 || $ARGV[0] ne '--storage-id'
+        || $ARGV[1] !~ /^([A-Za-z0-9_.-]+)$/;
+    $requested_sid = $1;
+}
+
+sub capture {
+    my (@argv) = @_;
+    my $out = '';
+    PVE::Tools::run_command(\@argv, outfunc => sub { $out .= "$_[0]\n" });
+    return $out;
+}
+
+sub fail_json {
+    my ($message) = @_;
+    $message =~ s/[\r\n]+/ /g;
+    print encode_json({
+        schema => 'BASTRIX_THIN_GUARD_INVENTORY_V1',
+        inventory_ok => 0,
+        error => $message,
+    }), "\n";
+    exit 1;
+}
+
+eval {
+    my $node = PVE::INotify::nodename();
+    my $quorum = PVE::Cluster::check_cfs_quorum(1) ? 1 : 0;
+    my $cfg = PVE::Storage::config();
+    my %storages;
+    for my $sid (sort keys %{$cfg->{ids}}) {
+        my $scfg = $cfg->{ids}->{$sid};
+        next if ($scfg->{type} // '') ne 'sharedlvmthin';
+        next if ($scfg->{'slt-allocation-mode'} // 'thin') ne 'thin';
+        next if defined($requested_sid) && $sid ne $requested_sid;
+        next if !defined($requested_sid)
+            && ($scfg->{'slt-thin-leaseguard'} // 'disabled') ne 'runtime-guard';
+        $storages{$sid} = {
+            allocation_mode => 'thin',
+            vg_name => $scfg->{'slt-vgname'},
+            vg_uuid => $scfg->{'slt-expected-vg-uuid'},
+        };
+    }
+
+    my %dm;
+    my $dm_raw = capture('/usr/sbin/dmsetup', 'info', '-c', '--noheadings',
+        '--separator', '|', '-o', 'name,uuid');
+    for my $line (split(/\n/, $dm_raw)) {
+        $line =~ s/^\s+|\s+$//g;
+        next if $line eq '';
+        my ($name, $uuid, @extra) = split(/\|/, $line, -1);
+        die "ambiguous dmsetup inventory row\n" if @extra || !defined($uuid);
+        $name =~ s/^\s+|\s+$//g;
+        $uuid =~ s/^\s+|\s+$//g;
+        die "duplicate device-mapper name '$name'\n" if exists($dm{$name});
+        $dm{$name} = $uuid;
+    }
+
+    my $lvs_raw = capture('/usr/sbin/lvs', '--readonly', '--reportformat', 'json',
+        '--units', 'b', '--nosuffix', '-o',
+        'vg_name,lv_name,lv_attr,lv_tags,lv_uuid,vg_uuid,pool_lv');
+    my $lvs_doc = decode_json($lvs_raw);
+    die "LVM returned an unexpected report shape\n"
+        if ref($lvs_doc->{report}) ne 'ARRAY' || @{$lvs_doc->{report}} != 1
+        || ref($lvs_doc->{report}->[0]->{lv}) ne 'ARRAY';
+    my @lvs = map {
+        my $row = $_;
+        +{ map { my $key = $_; $key => $row->{$key} }
+            qw(vg_name lv_name lv_attr lv_tags lv_uuid vg_uuid pool_lv) }
+    } grep {
+        my $tags = $_->{lv_tags} // '';
+        my $selected = scalar grep {
+            $tags =~ /(?:^|,)pve-slt-sid-\Q$_\E(?:,|$)/
+        } keys %storages;
+        my $enrolled = $tags =~ /(?:^|,)pve-slt-owner-epoch-[a-f0-9]{32}(?:,|$)/;
+        my $active = 0;
+        if (($_->{vg_name} // '') =~ /^[A-Za-z0-9_.+-]+$/
+            && ($_->{lv_name} // '') =~ /^sltp-\d+$/) {
+            $active = exists($dm{dm_mapper_name($_->{vg_name}, $_->{lv_name})});
+        }
+        $selected && ($enrolled || $active);
+    } @{$lvs_doc->{report}->[0]->{lv}};
+
+    my %qemu_refs;
+    for my $path (glob("/etc/pve/nodes/$node/qemu-server/*.conf")) {
+        next if $path !~ m{/([1-9][0-9]*)\.conf$};
+        my $vmid = 0 + $1;
+        next if !PVE::QemuServer::check_running($vmid, 1, $node);
+        my $conf = PVE::QemuConfig->load_config($vmid, $node);
+        PVE::QemuServer::foreach_volid($conf, sub {
+            my ($volid, $attr) = @_;
+            push @{$qemu_refs{$vmid}}, $volid if $attr->{is_attached};
+        });
+    }
+
+    my $inventory = build_guard_inventory(
+        local_node => $node,
+        quorum => $quorum,
+        storages => \%storages,
+        lvs => \@lvs,
+        dm => \%dm,
+        qemu_refs => \%qemu_refs,
+    );
+    $inventory->{inventory_ok} = 1;
+    print encode_json($inventory), "\n";
+    1;
+} or fail_json($@ || 'unknown inventory failure');
+
+exit 0;
