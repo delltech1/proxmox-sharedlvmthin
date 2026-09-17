@@ -218,12 +218,28 @@ returned to disabled guard mode.
 Result: **PASS. One ambiguous pool makes the aggregate node decision unsafe;
 another healthy active pool cannot mask it or keep watchdog refresh alive.**
 
+## QF-08: active-QEMU release refusal
+
+The packaged guardian protected one disposable VM and its exact Thin mapper.
+The non-destructive `active-release-refusal-harness.pl` derived the pool UUID
+and owner epoch from a fresh independent inventory and deliberately submitted
+a syntactically valid `RELEASE` request while both QEMU and the mapper were
+still active.
+
+The request was refused. The VM remained running, the guardian process stayed
+active and the aggregate watchdog remained protected. A subsequent normal
+PVE stop completed the ordered mapper/owner teardown, after which the guardian
+accepted release. The disposable VM, LV and pool were removed and the service
+and storage option returned to their disabled baseline.
+
+Result: **PASS. A delayed or still-running QEMU cannot cause a clean watchdog
+close merely by sending or replaying a validly shaped release request.**
+
 ## Evidence not yet established
 
 These tests do not prove the complete runtime guard. Remaining mandatory gates
 include:
 
-- delayed/stuck QEMU stop and refusal to magic-close;
 - daemon/package upgrade and restart ordering;
 - hardware watchdog qualification in addition to the lab `softdog`.
 
