@@ -156,3 +156,40 @@ No 200–500 LUN or enterprise-array scale claim is made by this gate.
 The 150-VM result is a disposable-lab concurrency and lifecycle envelope, not
 a promise that arbitrary guest memory, I/O intensity, SAN latency or HA policy
 will produce the same timings.
+
+## 2026-09-17 bounded 50-VM Thin evacuation gate
+
+A separate repeatable gate selected exactly 50 disposable Thin VMs from one
+node; six had two Thin disks. Backup proxies, Thick Generations VMs and every
+VM outside the immutable manifest were excluded. The test performed a complete
+offline handoff in both directions at up to 16-way orchestration concurrency:
+
+1. stop and complete source-side deactivation;
+2. verify that every manifest mapper is absent on the source;
+3. move the stopped PVE configurations without copying shared storage;
+4. start all 50 VMs on the target;
+5. verify 50/50 running, exact target mapper presence, exact source mapper
+   absence and a valid target owner-node plus 32-hex owner epoch for every
+   per-VM pool;
+6. repeat the sequence in reverse and restore the original placement.
+
+The first qualification-harness run imposed an incorrect 60-second outer
+process timeout while the storage itself was configured with a bounded
+`slt-lock-timeout` of 600 seconds. It interrupted six legitimate deactivations
+waiting behind the canonical VG lock. No VM configuration moved and no data or
+metadata ambiguity occurred. Every affected VM was already stopped; exact
+node-local deactivation through the PVE storage API removed only its residual
+mapper. The source then had the expected non-manifest baseline.
+
+The harness was corrected to read the configured storage lock timeout and use
+that value plus a bounded orchestration margin. The identical 50-VM stop then
+passed 50/50 at concurrency 16 without reconciliation. Both complete outward
+and return handoffs passed, with quorum retained and zero D-state tasks.
+
+This proves bounded high-contention offline Thin handoff for the tested lab.
+It does not qualify Thin live migration, an arbitrary HA policy, or large-disk
+copy duration. Disk size is largely outside the stopped shared-LUN handoff data
+path, but it is material to zeroing, backup/restore, Thin↔Thick conversion and
+Thick materialization. Those require separate progress, capacity and recovery
+evidence; small-VM orchestration results must not be represented as an 8-TB
+data-movement qualification.
