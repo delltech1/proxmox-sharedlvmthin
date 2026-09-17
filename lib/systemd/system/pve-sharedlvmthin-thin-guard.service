@@ -3,6 +3,7 @@ Description=BASTRIX SharedLVM Thin runtime guardian
 Documentation=man:systemd.service(5)
 After=pve-cluster.service corosync.service watchdog-mux.service
 Requires=pve-cluster.service watchdog-mux.service
+Before=pve-ha-lrm.service pve-guests.service
 
 [Service]
 Type=simple
@@ -25,5 +26,5 @@ RestrictRealtime=true
 LockPersonality=true
 RestrictSUIDSGID=true
 
-# The unit is intentionally static and stopped until an administrator
-# explicitly enables the future runtime-guard mode.
+[Install]
+WantedBy=multi-user.target

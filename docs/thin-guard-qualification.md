@@ -165,13 +165,41 @@ durable canary recovery and exact cleanup.** This is block-layer evidence; a
 guest-filesystem/application consistency claim still requires a guest-aware
 workload and is intentionally not inferred from this test.
 
+## QF-06: packaged runtime handshake and aggregate protection
+
+The experimental package was reinstalled successfully on every member of the
+three-node qualification cluster. The service remained static and stopped;
+package installation did not enable or start the guardian and did not restart
+running guests.
+
+On an isolated shared test VG, runtime guarding was then selected explicitly
+and the guardian was started on one node. Starting a stopped Thin VM completed
+the full admission sequence before activation: exact inventory, storage
+identity, quorum, remote mapper audit, owner epoch, watchdog registration and
+only then local thin-pool activation. Guardian status reported
+`STATE=PROTECTED` and `WATCHDOG=ARMED`. Stopping the VM removed the mapper and
+owner epoch before release; status returned to `STATE=IDLE` and
+`WATCHDOG=DISARMED`.
+
+A second disposable per-VM pool was then added. Two VMs were active
+concurrently with exact inventory reporting two pools, two active mappers and
+two matching QEMU references, protected by one aggregate watchdog client.
+Stopping the first VM left the guardian protected and armed while the other
+pool remained active. Stopping the last VM disarmed the watchdog. Both owner
+epochs and both mappers were absent afterward. The disposable VM, LV and pool
+were removed exactly, and all nodes reported the isolated test mapper absent.
+The original stopped VM configuration and storage policy were restored.
+
+Result: **PASS for the packaged activation handshake, strict teardown order
+and two-pool aggregate watchdog lifecycle.**
+
 ## Evidence not yet established
 
-This test does not prove the complete runtime guard. Remaining mandatory gates
+These tests do not prove the complete runtime guard. Remaining mandatory gates
 include:
 
 - delayed/stuck QEMU stop and refusal to magic-close;
-- multi-pool aggregate behavior and one-bad-pool fencing;
+- one-bad-pool aggregate fencing;
 - daemon/package upgrade and restart ordering;
 - hardware watchdog qualification in addition to the lab `softdog`.
 

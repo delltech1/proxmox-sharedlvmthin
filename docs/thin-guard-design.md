@@ -139,3 +139,6 @@ mapper identity drift, disappearance of a protected runtime, or deadline
 expiry irreversibly enters `FENCING` and stops watchdog refresh.  A clean
 disarm requires positive proof that QEMU, the mapper, and the persistent owner
 epoch have all been removed.
+
+The operational enrollment and two-node policy are documented in
+[`thin-runtime-guard.md`](thin-runtime-guard.md).

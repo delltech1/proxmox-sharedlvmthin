@@ -22,7 +22,8 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("protected Thin runtime predates this process", daemon)
         self.assertIn("STOP_WATCHDOG_REFRESH", daemon)
         self.assertIn("Restart=no", unit)
-        self.assertNotIn("[Install]", unit)
+        self.assertIn("[Install]", unit)
+        self.assertIn("WantedBy=multi-user.target", unit)
         self.assertNotIn("enable pve-sharedlvmthin-thin-guard", postinst)
         self.assertNotIn("start pve-sharedlvmthin-thin-guard", postinst)
 
