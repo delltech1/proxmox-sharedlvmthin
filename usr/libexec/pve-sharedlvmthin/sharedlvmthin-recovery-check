@@ -393,6 +393,17 @@ def thin_reference_health(pool_output, sid, reference_lookup,
     expected_snapshots = (
         snapshot_reference_lookup(sid) if snapshot_reference_lookup else set()
     )
+    # LVM names detached metadata copies ``<pool>_metaN`` after metadata
+    # replacement/repair workflows.  They are not part of the canonical
+    # SharedLvmThin object model and can otherwise be autoactivated on every
+    # SAN node while the original pool is absent.  Never delete or repair one
+    # here; make the unexpected recovery evidence visible and fail closed.
+    for name in sorted(rows):
+        if re.fullmatch(r"sltp-\d+_meta\d+", name):
+            failures.append(
+                f"{name} is a detached thin metadata recovery artifact; "
+                "manual identity and reference review is required"
+            )
     for name, fields in rows.items():
         match = re.fullmatch(r"sltp-(\d+)", name)
         if not match or f"pve-slt-sid-{sid}" not in fields[4].split(","):

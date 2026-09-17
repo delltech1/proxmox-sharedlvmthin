@@ -50,6 +50,12 @@ These primitives are not presented as active LeaseGuard or automatic repair.
 The watchdog model cannot open the real watchdog-mux socket and sanlock is not
 installed or enabled by the package.
 
+Compatibility qualification now correlates `dm-event.service` with exact
+local managed Thin mapper evidence. Detached public
+`sltp-<VMID>_meta<N>` recovery metadata is reported as
+`RECOVERY_REQUIRED`; TG27 deliberately performs no automatic repair or
+deletion of that evidence.
+
 ## Thick Generations
 
 No Thick Generations runtime format, anchor transition, hydration or linear

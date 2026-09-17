@@ -15,6 +15,12 @@
 - Add an observation-only predictive Capacity Stability Governor primitive.
 - Add a deliberately non-arming sanlock-to-PVE-watchdog-mux state-machine
   prototype with fake-socket tests. No watchdog or lease service is enabled.
+- Make compatibility qualification require `dm-event.service` only when an
+  exact managed Thin mapper exists locally; unreadable or contradictory
+  LVM/device-mapper evidence fails closed.
+- Detect public `sltp-<VMID>_meta<N>` detached metadata artifacts left by a
+  metadata replacement/repair workflow. They require manual review and are
+  never repaired or removed automatically.
 - Preserve all Thick Generations runtime behavior while expanding its
   mandatory regression coverage.
 

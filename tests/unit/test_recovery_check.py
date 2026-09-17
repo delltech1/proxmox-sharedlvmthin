@@ -171,6 +171,20 @@ sharedlvmthin: two
         self.assertFalse(healthy)
         self.assertIn("malformed snapshot identity", failures[0])
 
+    def test_detached_thin_metadata_recovery_artifact_fails_closed(self):
+        output = (
+            "sltp-100_meta0|-ri-a-----||||\n"
+            "sltp-106|twi-aotz--|||pve-slt-sid-test|\n"
+            "vm-106-disk-0|Vwi-a-tz--||||sltp-106"
+        )
+        healthy, pools, failures = self.checker.thin_reference_health(
+            output, "test", lambda sid, vol: ["config"], lambda sid: set()
+        )
+        self.assertFalse(healthy)
+        self.assertEqual(pools, ["sltp-106"])
+        self.assertIn("detached thin metadata recovery artifact", failures[0])
+        self.assertIn("manual identity and reference review", failures[0])
+
     def test_thin_owner_runtime_correlation_is_fail_closed(self):
         base = "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1"
         healthy, failures = self.checker.thin_owner_runtime_health(

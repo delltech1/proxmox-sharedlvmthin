@@ -46,6 +46,11 @@ The command is strictly observational. It does not activate storage, rescan
 SCSI, reload multipath, restart services, clear state, repair metadata or run
 any LVM mutation.
 
+Public LVs named `sltp-<VMID>_meta<N>` are classified as detached metadata
+recovery artifacts rather than healthy pool members. Their presence blocks
+mutation until an administrator proves their identity and references. The
+checker never removes, renames, activates or repairs them.
+
 An interrupted native PVE Thin snapshot can leave `lock: snapshot`, a snapshot
 section in `snapstate: prepare`, and only a subset of the expected snapshot
 LVs. Do not clear this state merely because the base disks remain readable.
