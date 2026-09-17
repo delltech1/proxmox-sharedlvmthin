@@ -193,3 +193,32 @@ path, but it is material to zeroing, backup/restore, Thin↔Thick conversion and
 Thick materialization. Those require separate progress, capacity and recovery
 evidence; small-VM orchestration results must not be represented as an 8-TB
 data-movement qualification.
+
+## 2026-09-17 externally fenced 10-VM Thin HA gate
+
+Ten disposable HA-managed Thin VMs were running on one PVE node when that
+entire virtual PVE host was hard-powered off from its external hypervisor.
+The two surviving nodes retained quorum and PVE HA fenced the missing owner.
+
+The first run proved the old behavior safely failed closed: all target starts
+were refused while persistent pool ownership still named the fenced node. The
+explicit recovery path then restored all ten without duplicate activation.
+This exposed an availability gap, not a metadata-safety failure.
+
+The opt-in `slt-thin-ha-takeover pve-ha` path was then qualified with
+`slt-thin-leaseguard remote-audit`. A prototype ordering defect was found:
+the old owner tag could be cleared before peer audit, making an audit failure
+safe but not automatically retryable. The transition was corrected to require
+fresh PVE HA fencing/assignment evidence and successful audit of every
+non-fenced peer before any owner-tag mutation.
+
+After the correction, all 10/10 VMs automatically reached `started` on the
+surviving node. Each pool had the exact new owner and one fresh 32-hex epoch;
+the other survivor had zero relevant mappings, both survivors had zero
+D-state tasks, and the fenced node rejoined with zero relevant mappings and
+two healthy SAN paths. Quorum returned to 3/3.
+
+This qualifies the tested opt-in HA transition and its fail-closed ordering.
+It is not a universal certification of every fencing device, HA policy, SAN or
+large-disk workload. The data path did not copy disk contents, so this test
+must not be represented as 500 GB--8 TB data-movement qualification.

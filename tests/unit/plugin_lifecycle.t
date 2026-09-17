@@ -3,9 +3,11 @@
 use strict;
 use warnings;
 use FindBin;
+use lib "$FindBin::Bin/lib";
 use lib "$FindBin::Bin/../../usr/share/perl5";
 use Test::More;
 
+require PVE::HA::Config;
 use PVE::Storage::Custom::SharedLvmThinPlugin;
 
 my @lvm_results;
@@ -28,6 +30,7 @@ my $thin_owner_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_ow
 my $thin_owner_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_state_from_tags;
 my $thin_remote_mapper_audit_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked;
 my $thin_configured_peer_nodes = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_configured_peer_nodes;
+my $thin_pve_ha_takeover_evidence = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pve_ha_takeover_evidence;
 my $deactivate_new_thin_pool_after_allocation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_deactivate_new_thin_pool_after_allocation;
 my $bridge_admission_state = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission_state;
 my $bridge_admission = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission;
@@ -162,6 +165,13 @@ subtest 'PVE-native LeaseGuard accepts parsed PVE node-scope hashes' => sub {
     is_deeply($peers, [
         { node => 'pve03', ip => '192.0.2.3' },
     ], 'raw node list remains supported for direct callers');
+
+    $peers = $thin_configured_peer_nodes->($class, {
+        nodes => { pve01 => 1, pve02 => 1, pve03 => 1 },
+    }, 'pve03');
+    is_deeply($peers, [
+        { node => 'pve02', ip => '192.0.2.2' },
+    ], 'positively fenced former owner is excluded while every online peer remains audited');
 
     eval { $thin_configured_peer_nodes->($class, { nodes => ['pve01', 'pve02'] }) };
     like($@, qr/node scope is malformed/, 'unexpected node-scope reference fails closed');
@@ -3078,6 +3088,127 @@ subtest 'thin activation claim refuses a different kernel owner without mutation
     like($@, qr/UNSAFE shared LVM-thin activation refused.*node1.*node2/s,
         'remote owner blocks the second dm-thin activation');
     is(scalar(@commands), 0, 'refusal performs no LVM mutation');
+};
+
+subtest 'PVE HA Thin takeover requires fresh exact fencing assignment evidence' => sub {
+    no warnings 'redefine';
+    local *PVE::HA::Config::read_resources_config = sub {
+        return { ids => { 'vm:900001' => { state => 'started' } } };
+    };
+    local *PVE::HA::Config::read_manager_status = sub {
+        return {
+            timestamp => time(),
+            node_status => { node1 => 'unknown', node2 => 'online' },
+            service_status => {
+                'vm:900001' => { node => 'node2', state => 'starting' },
+            },
+        };
+    };
+    ok($thin_pve_ha_takeover_evidence->($class, 'sltp-900001', 'node1', 'node2'),
+        'fresh PVE HA post-fence assignment is accepted');
+
+    local *PVE::HA::Config::read_manager_status = sub {
+        return {
+            timestamp => time(),
+            node_status => { node1 => 'unknown', node2 => 'online' },
+            service_status => {
+                'vm:900001' => { node => 'node2', state => 'started' },
+            },
+        };
+    };
+    ok($thin_pve_ha_takeover_evidence->($class, 'sltp-900001', 'node1', 'node2'),
+        'PVE HA assigned started state after fencing is accepted');
+
+    local *PVE::HA::Config::read_manager_status = sub {
+        return {
+            timestamp => time(),
+            node_status => { node1 => 'unknown', node2 => 'online' },
+            service_status => {
+                'vm:900001' => { node => 'node2', state => 'migrate' },
+            },
+        };
+    };
+    ok($thin_pve_ha_takeover_evidence->($class, 'sltp-900001', 'node1', 'node2'),
+        'PVE HA migration phase after fencing is accepted');
+
+    local *PVE::HA::Config::read_manager_status = sub {
+        return {
+            timestamp => time() - 31,
+            node_status => { node1 => 'unknown', node2 => 'online' },
+            service_status => {
+                'vm:900001' => { node => 'node2', state => 'starting' },
+            },
+        };
+    };
+    eval { $thin_pve_ha_takeover_evidence->(
+        $class, 'sltp-900001', 'node1', 'node2') };
+    like($@, qr/stale or from the future/, 'stale HA evidence fails closed');
+};
+
+subtest 'PVE HA Thin takeover clears only exact fenced epoch before a fresh claim' => sub {
+    reset_mocks();
+    my @tags = (
+        'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-' . ('a' x 32),
+        'pve-slt-owner-v1',
+        'pve-slt-owner-v1,pve-slt-owner-node-node2,pve-slt-owner-epoch-' . ('b' x 32),
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node2' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub { shift @tags };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pve_ha_takeover_evidence = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return { pool_active => 0, pool_mapper_active => 0, active_children => [] };
+    };
+    my @sequence;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked = sub {
+        push @sequence, 'audit';
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($cmd, %opts) = @_;
+        push @sequence, $cmd->[1] eq '--devices' && grep($_ eq '--deltag', @$cmd)
+            ? 'clear-owner' : 'claim-owner';
+        push @commands, $cmd;
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { 'b' x 32 };
+    my $cfg = {
+        'slt-thin-ha-takeover' => 'pve-ha',
+        'slt-thin-leaseguard' => 'remote-audit',
+    };
+    is($thin_claim_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd', $cfg,
+    ), 'b' x 32, 'fenced epoch is replaced by one fresh local epoch');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --deltag pve-slt-owner-node-node1 --deltag pve-slt-owner-epoch-' . ('a' x 32) . ' testvg/sltp-900001',
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --addtag pve-slt-owner-node-node2 --addtag pve-slt-owner-epoch-' . ('b' x 32) . ' testvg/sltp-900001',
+    ], 'takeover mutates only the exact old epoch and exact new claim');
+    is_deeply(\@sequence, [qw(audit clear-owner claim-owner)],
+        'peer absence is proved before the durable fenced-owner context is cleared');
+};
+
+subtest 'failed HA peer audit preserves the fenced-owner recovery context' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node2' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-' . ('a' x 32);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pve_ha_takeover_evidence = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked = sub {
+        die "peer evidence unavailable\n";
+    };
+    my $cfg = {
+        'slt-thin-ha-takeover' => 'pve-ha',
+        'slt-thin-leaseguard' => 'remote-audit',
+    };
+    eval {
+        $thin_claim_pool_owner_locked->(
+            $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd', $cfg);
+    };
+    like($@, qr/peer evidence unavailable/, 'failed peer audit refuses takeover');
+    is(scalar(@commands), 0,
+        'failed audit performs no LVM tag mutation and remains safely retryable');
 };
 
 subtest 'thin activation claim writes and verifies one persistent owner' => sub {

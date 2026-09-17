@@ -33,6 +33,30 @@ The command validates the exact pool, owner, identity, quorum, lock, and local
 absence of dm-thin mappings. The `<fenced-node>` argument is an explicit
 operator assertion; the plugin does not perform or infer fencing.
 
+### Opt-in PVE HA fenced-owner takeover
+
+TG29 adds an opt-in PVE HA integration for the same fenced-owner transition:
+
+```text
+slt-thin-leaseguard remote-audit
+slt-thin-ha-takeover pve-ha
+```
+
+It is disabled by default. It does not infer fencing from ping, SSH failure,
+elapsed time or Corosync membership alone. Under the canonical VG lock it
+requires fresh PVE HA manager evidence that the exact service was assigned to
+the local online node and that the former owner is in PVE's fenced/offline
+state. Every other configured peer must then positively prove absence of the
+exact mapper. Only after those checks pass is the exact former owner/epoch
+removed and a fresh local epoch claimed.
+
+Peer audit deliberately occurs before the old owner tag is removed. A failed
+or interrupted audit therefore leaves the durable recovery context intact and
+the operation safely retryable. This mode requires functional PVE HA fencing,
+quorum and identical plugin code on every participating node. It cannot make a
+non-quorate two-node cluster safe; use an external QDevice/fencing design or
+the explicit manual recovery procedure after positive fencing.
+
 ### Upgrading an existing Thin pool
 
 Pools created before the exclusive-owner format have no trustworthy initial

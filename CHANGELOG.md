@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased — TG28 development
+## Unreleased — TG29 development
+
+- Add an opt-in PVE HA fenced-owner takeover which requires fresh exact HA
+  assignment/fencing evidence plus mapper-absence evidence from every
+  non-fenced peer before changing persistent Thin ownership.
+- Make the takeover retry-safe by completing peer audit before removing the
+  former owner/epoch; audit failure now performs zero ownership mutation.
+- Qualify a 50-VM bidirectional offline Thin evacuation and an externally
+  fenced 10-VM automatic HA recovery with no duplicate mapper or D-state.
+
+## 0.9.0~rc5.7~tg28 (unreleased development candidate)
 
 - Add an opt-in PVE-native Thin LeaseGuard remote kernel-mapper audit using
   exact DM UUID evidence from every configured peer; unreachable, ambiguous

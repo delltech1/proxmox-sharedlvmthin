@@ -185,6 +185,12 @@ sub properties {
             enum => ['disabled', 'remote-audit', 'runtime-guard'],
             default => 'disabled',
         },
+        'slt-thin-ha-takeover' => {
+            description => 'Opt-in automatic Thin owner takeover only when fresh PVE HA manager state assigns the fenced service to this node. Requires remote-audit or runtime-guard.',
+            type => 'string',
+            enum => ['disabled', 'pve-ha'],
+            default => 'disabled',
+        },
         'slt-tg-hydration-threshold' => {
             description => 'Maximum number of Thick Generations regions copied concurrently during background hydration.',
             type => 'integer',
@@ -279,6 +285,7 @@ sub options {
         'slt-lock-timeout' => { optional => 1 },
         'slt-lock-yield-ms' => { optional => 1 },
         'slt-thin-leaseguard' => { optional => 1 },
+        'slt-thin-ha-takeover' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
         'slt-tg-online-materialization' => { optional => 1 },
@@ -2050,18 +2057,31 @@ sub _thin_pool_dm_identity {
 }
 
 sub _thin_configured_peer_nodes {
-    my ($class, $scfg) = @_;
+    my ($class, $scfg, $fenced_owner) = @_;
     PVE::Cluster::cfs_update();
     my $members = PVE::Cluster::get_members();
+    my $nodes = $scfg->{nodes};
+    if (defined($fenced_owner)) {
+        die "fenced Thin owner node is malformed\n"
+            if $fenced_owner !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+        if (ref($nodes) eq 'HASH') {
+            $nodes = {%$nodes};
+            delete $nodes->{$fenced_owner};
+        } elsif (defined($nodes) && !ref($nodes)) {
+            $nodes = join(',', grep { $_ ne $fenced_owner } split(/,/, $nodes));
+        } elsif (!defined($nodes)) {
+            $nodes = {map { $_ => ($_ ne $fenced_owner ? 1 : 0) } keys %$members};
+        }
+    }
     return select_peer_nodes(
         members => $members,
         local_node => $class->_thin_local_node(),
-        nodes => $scfg->{nodes},
+        nodes => $nodes,
     );
 }
 
 sub _thin_remote_mapper_audit_locked {
-    my ($class, $scfg, $vg, $pool, $device) = @_;
+    my ($class, $scfg, $vg, $pool, $device, $fenced_owner) = @_;
     my $mode = $scfg->{'slt-thin-leaseguard'} // 'disabled';
     die "invalid slt-thin-leaseguard mode '$mode'\n"
         if $mode ne 'disabled' && $mode ne 'remote-audit' && $mode ne 'runtime-guard';
@@ -2069,7 +2089,7 @@ sub _thin_remote_mapper_audit_locked {
 
     my ($mapper, $expected_uuid) =
         $class->_thin_pool_dm_identity($vg, $pool, $device);
-    my $peers = $class->_thin_configured_peer_nodes($scfg);
+    my $peers = $class->_thin_configured_peer_nodes($scfg, $fenced_owner);
     my @evidence;
     for my $peer (@$peers) {
         my $ssh = PVE::SSHInfo::ssh_info_to_command({
@@ -2112,6 +2132,35 @@ sub _thin_claim_pool_owner_locked {
     die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' predates the exclusive-owner schema; stop/deactivate it on every node and run the explicit thin-adopt-owner-model procedure\n"
         if !$state->{schema};
     my $owner = $state->{owner};
+    my $fenced_owner;
+    if (defined($owner) && $owner ne $node
+        && ($scfg->{'slt-thin-ha-takeover'} // 'disabled') eq 'pve-ha') {
+        die "automatic PVE HA Thin takeover requires remote-audit or runtime-guard\n"
+            if ($scfg->{'slt-thin-leaseguard'} // 'disabled') eq 'disabled';
+        $class->_thin_pve_ha_takeover_evidence($pool, $owner, $node);
+        $fenced_owner = $owner;
+
+        # Preserve the durable recovery context until every remaining peer has
+        # positively proved absence of the exact mapper.  Clearing the old
+        # owner first makes a failed audit non-retryable: the next invocation
+        # can no longer identify the one node which PVE has fenced.  Therefore
+        # the audit is a precondition of the tag transition, not a
+        # postcondition of it.
+        $class->_thin_remote_mapper_audit_locked(
+            $scfg, $vg, $pool, $device, $fenced_owner);
+
+        my @release = ('/sbin/lvchange');
+        push @release, ('--devices', $device) if defined($device);
+        push @release, ('--deltag', "pve-slt-owner-node-$owner",
+            '--deltag', "pve-slt-owner-epoch-$state->{epoch}", "$vg/$pool");
+        run_command(\@release,
+            errmsg => "clearing PVE HA fenced Thin owner '$owner' failed");
+        $state = _thin_owner_state_from_tags(
+            $class->_thin_pool_tags($vg, $pool, $device));
+        die "PVE HA fenced Thin owner clear postcondition failed for '$vg/$pool'\n"
+            if !$state->{schema} || defined($state->{owner}) || defined($state->{epoch});
+        $owner = undef;
+    }
     die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' is owned by node '$owner', not '$node'; concurrent dm-thin activation can corrupt metadata; live migration is unsupported\n"
         if defined($owner) && $owner ne $node;
     return $state->{epoch} if defined($owner);
@@ -2125,8 +2174,11 @@ sub _thin_claim_pool_owner_locked {
         if $runtime->{pool_active} || $runtime->{pool_mapper_active}
         || @{$runtime->{active_children}};
 
-    $class->_thin_remote_mapper_audit_locked($scfg, $vg, $pool, $device)
-        if defined($scfg);
+    # A fenced-owner takeover was audited before its durable owner tag was
+    # removed.  Ordinary unowned activation still requires the full peer set.
+    $class->_thin_remote_mapper_audit_locked(
+        $scfg, $vg, $pool, $device, undef)
+        if defined($scfg) && !defined($fenced_owner);
 
     my $epoch = _new_transaction_id();
     my @claim = ('/sbin/lvchange');
@@ -2144,6 +2196,40 @@ sub _thin_claim_pool_owner_locked {
         if !$after->{schema} || !defined($after->{owner})
         || $after->{owner} ne $node || $after->{epoch} ne $epoch;
     return $epoch;
+}
+
+sub _thin_pve_ha_takeover_evidence {
+    my ($class, $pool, $owner, $local) = @_;
+    die "PVE HA Thin takeover received an invalid pool name\n"
+        if $pool !~ /^sltp-([1-9][0-9]*)$/;
+    my $sid = "vm:$1";
+
+    require PVE::HA::Config;
+    my $resources = PVE::HA::Config::read_resources_config();
+    my $resource = $resources->{ids}->{$sid};
+    die "PVE HA Thin takeover refused: '$sid' is not HA managed\n"
+        if ref($resource) ne 'HASH';
+    my $requested = $resource->{state} // 'started';
+    die "PVE HA Thin takeover refused: '$sid' requested state is '$requested'\n"
+        if $requested ne 'started' && $requested ne 'enabled';
+
+    my $manager = PVE::HA::Config::read_manager_status();
+    die "PVE HA Thin takeover refused: manager status is unavailable\n"
+        if ref($manager) ne 'HASH';
+    my $timestamp = $manager->{timestamp};
+    die "PVE HA Thin takeover refused: manager status is stale or from the future\n"
+        if !defined($timestamp) || $timestamp !~ /^\d+$/
+        || time() - $timestamp > 30 || $timestamp - time() > 5;
+    my $service = $manager->{service_status}->{$sid};
+    my $service_node = ref($service) eq 'HASH' ? ($service->{node} // '') : '';
+    my $service_state = ref($service) eq 'HASH' ? ($service->{state} // '') : '';
+    die "PVE HA Thin takeover refused: manager did not assign '$sid' to '$local' for start (node='$service_node', state='$service_state')\n"
+        if $service_node ne $local || $service_state !~ /^(?:started|starting|migrate)$/;
+    die "PVE HA Thin takeover refused: target node '$local' is not online\n"
+        if ($manager->{node_status}->{$local} // '') ne 'online';
+    die "PVE HA Thin takeover refused: former owner '$owner' is not in the fenced/offline HA state\n"
+        if ($manager->{node_status}->{$owner} // '') !~ /^(?:unknown|fence)$/;
+    return 1;
 }
 
 sub _thin_runtime_guard_request {

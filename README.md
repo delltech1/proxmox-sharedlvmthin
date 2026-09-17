@@ -41,12 +41,13 @@ probably do not need this project.
 
 ## Release status
 
-`0.9.0~rc5.5~tg26` is the current public development pre-release, intended
-exclusively for Proxmox VE 9. TG24 introduced the Thin/Thick Generations
-architecture; TG25 hardened package-update and reboot compatibility. TG26 adds
-the fail-closed single-kernel Thin ownership protocol and intentionally removes
-Thin live migration from the supported envelope. The current tree passes 166
-Python cases and 115 Perl subtests (635 assertions), fault injection,
+`0.9.0~rc5.8~tg29` is the current development candidate, intended exclusively
+for Proxmox VE 9. TG24 introduced the Thin/Thick Generations architecture;
+TG25 hardened package-update and reboot compatibility; TG26 added the
+fail-closed single-kernel Thin ownership protocol. TG29 adds an opt-in,
+PVE-HA-fenced Thin takeover while direct overlapping Thin activation remains
+prohibited. The current tree passes 182 Python tests and 689 Perl assertions,
+fault injection,
 two-node and three-node cluster qualification, API 14/15 installation and
 reinstallation, and a clean four-hour dual-mode endurance run on the Proxmox
 VE 9.2.x release line.
@@ -62,7 +63,9 @@ operations. This is a laboratory release candidate, not validation of
 array, multipath policy, firmware or failure mode. Validate it first on
 disposable storage matching your production design.
 
-See the [TG26 release notes](docs/RELEASE-NOTES-RC5.5-TG26.md), the
+See the [TG29 release notes](docs/RELEASE-NOTES-RC5.8-TG29.md), the
+[TG28 release notes](docs/RELEASE-NOTES-RC5.7-TG28.md), the
+[TG26 release notes](docs/RELEASE-NOTES-RC5.5-TG26.md), the
 [TG25 hotfix notes](docs/RELEASE-NOTES-RC5.4.1-TG25.md) and the original
 [TG24 milestone notes](docs/RELEASE-NOTES-RC5.4-TG24.md) for the exact tested
 envelope, package identity and remaining support boundaries.
