@@ -95,6 +95,7 @@ my $listener = IO::Socket::UNIX->new(
 umask($old_umask);
 chmod(0600, $socket_path) or die "cannot protect ThinGuard control socket: $!\n";
 my $select = IO::Select->new($listener);
+my %replay;
 
 sub respond {
     my ($client, %response) = @_;
@@ -130,21 +131,30 @@ while (!$stop) {
             alarm(0);
             my $request = decode_guard_request($line);
             $request_id = $request->{request_id};
-            my $result;
-            if ($request->{op} eq 'STATUS') {
-                my $status = $engine->status();
-                $result = {state => $status->{state}, action => 'NONE',
-                    message => "$status->{reason}; watchdog=$status->{watchdog_state}"};
-            } elsif ($request->{op} eq 'PREPARE') {
-                $result = $engine->prepare($request, time());
-                $result->{message} = 'watchdog armed before Thin activation';
-            } elsif ($request->{op} eq 'RELEASE') {
-                $result = $engine->release($request);
-                $result->{message} = 'exact Thin epoch teardown positively verified';
+            if (exists($replay{$request_id})) {
+                respond($client, %{$replay{$request_id}});
+            } else {
+                die "ThinGuard replay journal is full\n" if keys(%replay) >= 4096;
+                my $result;
+                if ($request->{op} eq 'STATUS') {
+                    my $status = $engine->status();
+                    $result = {state => $status->{state}, action => 'NONE',
+                        message => "$status->{reason}; watchdog=$status->{watchdog_state}"};
+                } elsif ($request->{op} eq 'PREPARE') {
+                    $result = $engine->prepare($request, time());
+                    $result->{message} = 'watchdog armed before Thin activation';
+                } elsif ($request->{op} eq 'RELEASE') {
+                    $result = $engine->release($request);
+                    $result->{message} = 'exact Thin epoch teardown positively verified';
+                }
+                my $cached = {
+                    ok => 1, request_id => $request_id,
+                    state => $result->{state}, action => $result->{action},
+                    message => $result->{message},
+                };
+                $replay{$request_id} = $cached;
+                respond($client, %$cached);
             }
-            respond($client, ok => 1, request_id => $request_id,
-                state => $result->{state}, action => $result->{action},
-                message => $result->{message});
             1;
         };
         alarm(0);
@@ -152,8 +162,10 @@ while (!$stop) {
             my $error = $@ || 'unknown request failure';
             $error =~ s/[\r\n]+/ /g;
             $error = substr($error, 0, 2048);
-            eval { respond($client, ok => 0, request_id => $request_id,
-                state => $engine->state(), action => 'REFUSED', message => $error); };
+            my $cached = {ok => 0, request_id => $request_id,
+                state => $engine->state(), action => 'REFUSED', message => $error};
+            $replay{$request_id} //= $cached if $request_id ne ('0' x 32);
+            eval { respond($client, %{$replay{$request_id} // $cached}); };
         }
         close($client);
     }
