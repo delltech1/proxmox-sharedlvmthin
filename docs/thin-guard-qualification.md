@@ -193,13 +193,37 @@ The original stopped VM configuration and storage policy were restored.
 Result: **PASS for the packaged activation handshake, strict teardown order
 and two-pool aggregate watchdog lifecycle.**
 
+## QF-07: one bad pool fences an aggregate guardian
+
+Two disposable VMs and independent per-VM Thin pools were activated on the
+isolated test VG through the packaged runtime handshake. Both exact QEMU
+references and both thin-pool mappers were present while one aggregate
+watchdog client protected the node.
+
+The test then removed only the persistent owner-epoch tag from one pool. It
+did not modify guest data, Thin metadata or the second pool. At the next
+bounded observation the inventory helper refused the malformed owner state.
+The daemon reported that it was stopping while active epochs remained and did
+not magic-close its watchdog client. PVE watchdog expiry reset the node; the
+kernel boot identity changed.
+
+After reboot, both disposable VMs were stopped, neither test mapper was
+active, quorum was restored, `watchdog-mux` was active and no D-state task was
+present. The deliberately malformed test tag and the surviving fenced-owner
+tags were cleared only after the changed boot identity proved the previous
+kernel dead. Both disposable VMs, their LVs and their pools were then removed,
+and all cluster nodes reported the isolated mapper absent. The storage was
+returned to disabled guard mode.
+
+Result: **PASS. One ambiguous pool makes the aggregate node decision unsafe;
+another healthy active pool cannot mask it or keep watchdog refresh alive.**
+
 ## Evidence not yet established
 
 These tests do not prove the complete runtime guard. Remaining mandatory gates
 include:
 
 - delayed/stuck QEMU stop and refusal to magic-close;
-- one-bad-pool aggregate fencing;
 - daemon/package upgrade and restart ordering;
 - hardware watchdog qualification in addition to the lab `softdog`.
 
