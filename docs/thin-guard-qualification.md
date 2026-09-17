@@ -71,12 +71,46 @@ qualification VM then started normally with exactly one Thin pool mapper.
 Result: **PASS for guardian process-crash fencing and clean recovery with
 inactive protected I/O.**
 
+## QF-03: local quorum loss
+
+The destructive, non-packaged
+`experiments/thin-guard/quorum-loss-harness.pl` was armed only after proving
+the qualification VM stopped and no thin-pool target active. It used one
+aggregate real watchdog client and refreshed while `pvecm status` positively
+reported `Quorate: Yes`.
+
+Local `corosync.service` was then stopped on the guarded node. The other two
+members retained 2/3 quorum. The harness observed quorum loss and entered its
+irreversible no-refresh state while keeping the socket registered. The PVE
+multiplexer provided the authoritative timing:
+
+```text
+client (...) watchdog is about to expire
+client (...) watchdog expired - disable watchdog updates
+exit watchdog-mux with active connections
+```
+
+The node reset and boot identity changed from
+`4a6b42a8-947c-469d-814d-b8eed83b9ec2` to
+`4ce00d0d-4933-49bb-b9e1-07db55b090c2`. After boot, corosync and watchdog-mux
+were active and cluster quorum returned 3/3. No Thin mapper autoactivated,
+D-state count was zero and recovery reported healthy paths, owner state,
+`STATE=HEALTHY` and `SAFE_FOR_MUTATION=YES`. The qualification VM then started
+normally with exactly one mapper.
+
+Result: **PASS for detected local quorum loss, PVE-timed self-fencing and clean
+post-fence recovery with inactive protected I/O.**
+
+The harness was also invoked while the VM and its Thin mapper were active. It
+refused before opening the socket (`RC=255`), and the watchdog journal client
+count remained unchanged. This proves the destructive qualification helper
+cannot accidentally arm over an active Thin pool.
+
 ## Evidence not yet established
 
 This test does not prove the complete runtime guard. Remaining mandatory gates
 include:
 
-- loss of quorum while the aggregate guardian is refreshing;
 - delayed/stuck QEMU stop and refusal to magic-close;
 - old-owner reset observed by a target before takeover;
 - active-I/O canary continuity and recovery after fencing;
