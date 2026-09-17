@@ -1,0 +1,27 @@
+#!/usr/bin/perl
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+use strict;
+use warnings;
+
+use PVE::Storage;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+
+die "Usage: sharedlvmthin-bridge-admission <acquire|release> <storage-id> <transaction> <node>\n"
+    if @ARGV != 4;
+my ($action, $storeid, $tx, $node) = @ARGV;
+die "invalid action\n" if $action !~ /^(?:acquire|release)$/;
+die "invalid storage identifier\n"
+    if $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+die "invalid transaction\n" if $tx !~ /^[0-9a-f]{32}$/;
+die "invalid node\n" if $node !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+my $cfg = PVE::Storage::config();
+my $scfg = PVE::Storage::storage_config($cfg, $storeid);
+die "storage '$storeid' is not SharedLvmThin\n"
+    if ($scfg->{type} // '') ne 'sharedlvmthin';
+my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+die "migration-bridge admission must use the Thin alias\n"
+    if $class->_allocation_mode($scfg) ne 'thin';
+print $class->_bridge_admission($scfg, $storeid, $action, $tx, $node), "\n";

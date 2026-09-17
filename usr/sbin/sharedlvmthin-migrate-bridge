@@ -144,6 +144,32 @@ write_state() {
 }
 write_state
 
+phase=WAITING_ADMISSION
+write_state
+admission_deadline=$(( $(date +%s) + 900 ))
+while ! admission_output=$(
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+        acquire "$thin_store" "$tx" "$local_node" 2>&1
+); do
+    [ "$(date +%s)" -lt "$admission_deadline" ] || {
+        echo "migration-bridge admission timed out: $admission_output" >&2
+        exit 75
+    }
+    sleep 2
+done
+printf '%s\n' "$admission_output"
+phase=MATERIALIZING
+write_state
+
+# Capacity is sampled again after admission. Another completed bridge may have
+# consumed space while this transaction waited in the queue.
+vg_free=$(vgs --readonly --noheadings --units b --nosuffix -o vg_free "$thin_vg" | tr -d '[:space:]')
+vg_free=${vg_free%.*}
+[ "$vg_free" -ge "$required_bytes" ] || {
+    echo "physical VG capacity changed while waiting for admission; exact admission retained for recovery" >&2
+    exit 28
+}
+
 for entry in "${disks[@]}"; do
     disk=${entry%%|*}
     qm disk move "$vmid" "$disk" "$thick_store" --delete 1
@@ -152,8 +178,30 @@ done
 phase=MATERIALIZED_THICK
 write_state
 sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+    release "$thin_store" "$tx" "$local_node"
 
 qm migrate "$vmid" "$target" --online 1
+settled=0
+for _ in $(seq 1 30); do
+    observed=$(
+        pvesh get /cluster/resources --type vm --output-format json \
+        | python3 -c 'import json,sys
+vmid=int(sys.argv[1]); rows=[x for x in json.load(sys.stdin) if x.get("vmid")==vmid]
+print((rows[0].get("node", "?")+":"+rows[0].get("status", "?")) if len(rows)==1 else "AMBIGUOUS")' "$vmid"
+    )
+    if [ "$observed" = "$target:running" ]; then
+        settled=1
+        break
+    fi
+    sleep 1
+done
+[ "$settled" -eq 1 ] || {
+    phase=MIGRATION_UNSETTLED
+    write_state
+    echo "PVE migration task returned but target running state is unproven: $observed" >&2
+    exit 70
+}
 phase=MIGRATED_THICK
 write_state
 

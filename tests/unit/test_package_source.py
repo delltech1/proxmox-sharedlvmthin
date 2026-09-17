@@ -18,6 +18,7 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("insufficient physical VG capacity", source)
         self.assertIn("MATERIALIZED_THICK", source)
         self.assertIn("MIGRATED_THICK", source)
+        self.assertIn("sharedlvmthin-bridge-admission", source)
         self.assertNotIn("qmp", source.lower())
         self.assertNotIn("thin_repair", source)
 

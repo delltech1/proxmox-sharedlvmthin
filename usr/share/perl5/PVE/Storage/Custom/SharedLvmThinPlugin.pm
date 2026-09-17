@@ -1099,6 +1099,99 @@ sub _with_vg_lock {
     );
 }
 
+sub _bridge_admission_state {
+    my ($class, $vg, $device) = @_;
+    my @command = ('/sbin/vgs', '--readonly');
+    push @command, ('--devices', $device) if defined($device);
+    push @command, ('--noheadings', '-o', 'vg_tags', $vg);
+    my $lines = _command_lines(
+        \@command,
+        "reading migration-bridge admission state of VG '$vg' failed",
+    );
+    # PVE::Tools may suppress the whitespace-only record emitted by vgs for a
+    # VG with no tags. Zero records therefore means the canonical clean state;
+    # multiple records remain ambiguous.
+    die "migration-bridge admission state of VG '$vg' is ambiguous\n"
+        if @$lines > 1;
+    my $tags = $lines->[0] // '';
+    $tags =~ s/^\s+|\s+$//g;
+    my ($schema, @tx, @nodes);
+    for my $tag (split(/,/, $tags)) {
+        next if $tag eq '';
+        $schema++ if $tag eq 'pve-slt-bridge-v1';
+        push @tx, $1 if $tag =~ /^pve-slt-bridge-tx-([0-9a-f]{32})$/;
+        push @nodes, $1 if $tag =~ /^pve-slt-bridge-node-([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
+        die "malformed migration-bridge admission tag '$tag'\n"
+            if $tag =~ /^pve-slt-bridge-/
+            && $tag ne 'pve-slt-bridge-v1'
+            && $tag !~ /^pve-slt-bridge-(?:tx-[0-9a-f]{32}|node-[A-Za-z0-9][A-Za-z0-9_.-]*)$/;
+    }
+    die "ambiguous migration-bridge admission state on VG '$vg'\n"
+        if ($schema // 0) > 1 || @tx > 1 || @nodes > 1
+        || (($schema // 0) || @tx || @nodes) && (($schema // 0) != 1 || @tx != 1 || @nodes != 1);
+    return {
+        active => ($schema // 0) ? 1 : 0,
+        tx => $tx[0],
+        node => $nodes[0],
+    };
+}
+
+sub _bridge_admission {
+    my ($class, $scfg, $storeid, $action, $tx, $node) = @_;
+    die "invalid migration-bridge admission action\n"
+        if !defined($action) || $action !~ /^(?:acquire|release)$/;
+    die "invalid migration-bridge transaction ID\n"
+        if !defined($tx) || $tx !~ /^([0-9a-f]{32})$/;
+    $tx = $1;
+    die "invalid migration-bridge node\n"
+        if !defined($node) || $node !~ /^([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
+    $node = $1;
+    my $local = $class->_thin_local_node();
+    die "migration-bridge admission node '$node' is not local node '$local'\n"
+        if $node ne $local;
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = defined($scfg->{'slt-expected-wwid'})
+        ? "/dev/mapper/$scfg->{'slt-expected-wwid'}" : undef;
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($vg, $device);
+        my $before = $class->_bridge_admission_state($vg, $device);
+        if ($action eq 'acquire') {
+            return 'BRIDGE_ADMISSION_ALREADY_HELD'
+                if $before->{active} && $before->{tx} eq $tx && $before->{node} eq $node;
+            die "migration-bridge admission is held by node '$before->{node}' transaction '$before->{tx}'\n"
+                if $before->{active};
+            my @command = ('/sbin/vgchange');
+            push @command, ('--devices', $device) if defined($device);
+            push @command,
+                ('--addtag', 'pve-slt-bridge-v1',
+                 '--addtag', "pve-slt-bridge-tx-$tx",
+                 '--addtag', "pve-slt-bridge-node-$node", $vg);
+            run_command(\@command, errmsg => "acquiring migration-bridge admission failed");
+            my $after = $class->_bridge_admission_state($vg, $device);
+            die "migration-bridge admission acquire postcondition failed\n"
+                if !$after->{active} || $after->{tx} ne $tx || $after->{node} ne $node;
+            return 'BRIDGE_ADMISSION_ACQUIRED';
+        }
+
+        die "migration-bridge admission release refused: no admission is held\n"
+            if !$before->{active};
+        die "migration-bridge admission release refused: exact owner mismatch\n"
+            if $before->{tx} ne $tx || $before->{node} ne $node;
+        my @command = ('/sbin/vgchange');
+        push @command, ('--devices', $device) if defined($device);
+        push @command,
+            ('--deltag', 'pve-slt-bridge-v1',
+             '--deltag', "pve-slt-bridge-tx-$tx",
+             '--deltag', "pve-slt-bridge-node-$node", $vg);
+        run_command(\@command, errmsg => "releasing migration-bridge admission failed");
+        my $after = $class->_bridge_admission_state($vg, $device);
+        die "migration-bridge admission release postcondition failed\n"
+            if $after->{active};
+        return 'BRIDGE_ADMISSION_RELEASED';
+    }, $device);
+}
+
 sub _with_mutation_lock {
     my ($class, $storeid, $scfg, $code) = @_;
     my $uuid = $scfg->{'slt-expected-vg-uuid'};

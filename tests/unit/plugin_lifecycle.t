@@ -28,6 +28,8 @@ my $thin_owner_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_ow
 my $thin_owner_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_state_from_tags;
 my $thin_remote_mapper_audit_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked;
 my $deactivate_new_thin_pool_after_allocation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_deactivate_new_thin_pool_after_allocation;
+my $bridge_admission_state = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission_state;
+my $bridge_admission = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission;
 my $thin_adopt_owner_model = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_adopt_owner_model;
 my $record_disable_autoactivation = sub {
     my ($class, $vg, $lv) = @_;
@@ -175,6 +177,50 @@ subtest 'new Thin allocation is published inactive before PVE activation' => sub
         );
     };
     like($@, qr/remains active/, 'unproven inactive publication fails closed');
+};
+
+subtest 'migration bridge admission is exact, durable and transaction scoped' => sub {
+    my $tx = 'a' x 32;
+    my @state_lines = (
+        [''],
+        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve01"],
+        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve01"],
+        [''],
+    );
+    my @seen;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'pve01' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @state_lines;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command) = @_;
+        push @seen, [@$command];
+        return;
+    };
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-expected-wwid' => 'wwid1',
+    };
+    is($bridge_admission->($class, $cfg, 'thin-a', 'acquire', $tx, 'pve01'),
+        'BRIDGE_ADMISSION_ACQUIRED', 'exact bridge admission is acquired');
+    is($bridge_admission->($class, $cfg, 'thin-a', 'release', $tx, 'pve01'),
+        'BRIDGE_ADMISSION_RELEASED', 'exact bridge admission is released');
+    is(scalar(@seen), 2, 'one VG tag mutation per transition');
+    like(join(' ', @{$seen[0]}), qr/--addtag pve-slt-bridge-v1/, 'acquire publishes schema tag');
+    like(join(' ', @{$seen[1]}), qr/--deltag pve-slt-bridge-tx-$tx/, 'release removes exact transaction');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve02"];
+    };
+    my $foreign = $bridge_admission_state->($class, 'testvg', '/dev/mapper/wwid1');
+    ok($foreign->{active}, 'foreign admission is visible');
+    is($foreign->{node}, 'pve02', 'foreign owner is exact');
 };
 
 subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => sub {

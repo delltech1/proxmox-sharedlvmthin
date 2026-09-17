@@ -50,6 +50,12 @@ the disks to a newly allocated Thin pool on the destination.
 - Every disk move uses PVE's supported online Storage Move path and deletes
   its source only after PVE reports the block mirror and pivot completed.
 - Cross-node live migration starts only after every managed disk is Thick.
+- A transaction-scoped VG admission tag serializes the materialization phase
+  across the cluster. This prevents independent evacuation workers from
+  overlapping long-lived Thick allocation intents. Waiting is bounded;
+  timeout or a crashed holder leaves explicit evidence and fails closed.
+- Once materialization and its health postcondition complete, admission is
+  released. Independent Thick live migrations may then execute concurrently.
 - Multi-disk conversion is resumable, not falsely atomic. If a later disk
   fails, already converted disks and the VM configuration are preserved as a
   functional mixed state for explicit recovery; no speculative rollback is
