@@ -51,4 +51,73 @@ subtest 'exact reserve boundary is allowed deterministically' => sub {
     is($r->{free_after_bytes}, $r->{reserve_bytes}, 'boundary calculation exact');
 };
 
+subtest 'capacity governor predicts data exhaustion before the reaction horizon' => sub {
+    my $r = PVE::SharedLvmThinSafety::evaluate_capacity_stability(
+        data_free_bytes => 600, metadata_free_units => 10_000,
+        data_rate_bytes_per_second => 10, metadata_rate_units_per_second => 1,
+        extend_latency_p99_seconds => 20, lock_latency_p99_seconds => 10,
+        reaction_margin_seconds => 40,
+    );
+    is($r->{status}, 'GROW_REQUIRED', 'growth is requested before exhaustion');
+    is($r->{limiting_dimension}, 'DATA', 'data is the limiting dimension');
+    is($r->{data_runway_seconds}, 60, 'data runway is exact');
+    is($r->{safety_horizon_seconds}, 70, 'latencies and margin form the horizon');
+    ok($r->{safe}, 'decision was made from complete valid evidence');
+};
+
+subtest 'capacity governor evaluates metadata independently' => sub {
+    my $r = PVE::SharedLvmThinSafety::evaluate_capacity_stability(
+        data_free_bytes => 100_000, metadata_free_units => 50,
+        data_rate_bytes_per_second => 10, metadata_rate_units_per_second => 1,
+        extend_latency_p99_seconds => 10, lock_latency_p99_seconds => 10,
+        reaction_margin_seconds => 30,
+    );
+    is($r->{status}, 'GROW_REQUIRED', 'metadata exhaustion requests growth');
+    is($r->{limiting_dimension}, 'METADATA', 'metadata is reported as limiting');
+};
+
+subtest 'positively observed zero rate is unbounded, not guessed' => sub {
+    my $r = PVE::SharedLvmThinSafety::evaluate_capacity_stability(
+        data_free_bytes => 1, metadata_free_units => 1,
+        data_rate_bytes_per_second => 0, metadata_rate_units_per_second => 0,
+        extend_latency_p99_seconds => 10, lock_latency_p99_seconds => 10,
+        reaction_margin_seconds => 10,
+    );
+    is($r->{status}, 'STABLE', 'zero observed consumption does not trigger growth');
+    is($r->{data_runway_state}, 'UNBOUNDED', 'data is explicitly unbounded');
+    is($r->{metadata_runway_state}, 'UNBOUNDED', 'metadata is explicitly unbounded');
+    ok(!defined($r->{data_runway_seconds}), 'no artificial infinity is returned');
+};
+
+subtest 'unknown rates fail closed' => sub {
+    my $r = PVE::SharedLvmThinSafety::evaluate_capacity_stability(
+        data_free_bytes => 1000, metadata_free_units => 1000,
+        data_rate_bytes_per_second => 0, metadata_rate_units_per_second => 0,
+        extend_latency_p99_seconds => 10, lock_latency_p99_seconds => 10,
+        reaction_margin_seconds => 10, rates_known => 0,
+    );
+    is($r->{status}, 'UNKNOWN', 'unknown observations are not treated as stable');
+    ok($r->{blocks_operation}, 'unknown evidence blocks a safety-sensitive use');
+    ok(!$r->{safe}, 'unknown state never emits SAFE');
+};
+
+subtest 'invalid input and zero horizon fail closed' => sub {
+    my $bad = PVE::SharedLvmThinSafety::evaluate_capacity_stability(
+        data_free_bytes => 'broken', metadata_free_units => 1,
+        data_rate_bytes_per_second => 1, metadata_rate_units_per_second => 1,
+        extend_latency_p99_seconds => 1, lock_latency_p99_seconds => 1,
+        reaction_margin_seconds => 1,
+    );
+    is($bad->{status}, 'UNKNOWN', 'invalid numeric input is unknown');
+    ok($bad->{blocks_operation}, 'invalid numeric input blocks');
+
+    my $zero = PVE::SharedLvmThinSafety::evaluate_capacity_stability(
+        data_free_bytes => 1, metadata_free_units => 1,
+        data_rate_bytes_per_second => 1, metadata_rate_units_per_second => 1,
+        extend_latency_p99_seconds => 0, lock_latency_p99_seconds => 0,
+        reaction_margin_seconds => 0,
+    );
+    is($zero->{status}, 'UNKNOWN', 'zero safety horizon is rejected');
+};
+
 done_testing();

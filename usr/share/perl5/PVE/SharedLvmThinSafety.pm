@@ -5,6 +5,7 @@ package PVE::SharedLvmThinSafety;
 
 use strict;
 use warnings;
+use Digest::SHA qw(sha256_hex);
 
 sub evaluate_allocation_target {
     my (%args) = @_;
@@ -148,6 +149,166 @@ sub evaluate_autogrow_reserve {
         free_after_bytes => $after,
         usable_free_bytes => $usable,
         allowed => $after >= $reserve ? 1 : 0,
+    };
+}
+
+sub evaluate_capacity_stability {
+    my (%args) = @_;
+    my @required = qw(
+        data_free_bytes metadata_free_units
+        data_rate_bytes_per_second metadata_rate_units_per_second
+        extend_latency_p99_seconds lock_latency_p99_seconds reaction_margin_seconds
+    );
+
+    for my $required (@required) {
+        return {
+            status => 'UNKNOWN', safe => 0, grow_eligible => 0,
+            blocks_operation => 1, reason => "missing $required",
+        } if !defined($args{$required});
+        return {
+            status => 'UNKNOWN', safe => 0, grow_eligible => 0,
+            blocks_operation => 1, reason => "invalid $required",
+        } if $args{$required} !~ /^\d+(?:\.\d+)?$/;
+    }
+
+    my $rates_known = $args{rates_known} // 1;
+    return {
+        status => 'UNKNOWN', safe => 0, grow_eligible => 0,
+        blocks_operation => 1, reason => 'invalid rates_known',
+    } if $rates_known !~ /^(?:0|1)$/;
+    return {
+        status => 'UNKNOWN', safe => 0, grow_eligible => 0,
+        blocks_operation => 1, reason => 'allocation rates are not established',
+    } if !$rates_known;
+
+    my $horizon = 0 + $args{extend_latency_p99_seconds}
+        + $args{lock_latency_p99_seconds}
+        + $args{reaction_margin_seconds};
+    return {
+        status => 'UNKNOWN', safe => 0, grow_eligible => 0,
+        blocks_operation => 1, reason => 'safety horizon must be greater than zero',
+    } if $horizon <= 0;
+
+    my $data_rate = 0 + $args{data_rate_bytes_per_second};
+    my $metadata_rate = 0 + $args{metadata_rate_units_per_second};
+    my $data_runway = $data_rate > 0
+        ? (0 + $args{data_free_bytes}) / $data_rate
+        : undef;
+    my $metadata_runway = $metadata_rate > 0
+        ? (0 + $args{metadata_free_units}) / $metadata_rate
+        : undef;
+
+    # A positively observed zero rate means that dimension is not currently
+    # consuming runway.  It is represented as undef/UNBOUNDED instead of an
+    # invented large number so callers cannot mistake it for a measurement.
+    my $data_below = defined($data_runway) && $data_runway <= $horizon;
+    my $metadata_below = defined($metadata_runway) && $metadata_runway <= $horizon;
+    my $grow_eligible = $data_below || $metadata_below ? 1 : 0;
+    my $limiting = $data_below && $metadata_below ? 'DATA_AND_METADATA'
+        : $data_below ? 'DATA'
+        : $metadata_below ? 'METADATA'
+        : 'NONE';
+
+    return {
+        status => $grow_eligible ? 'GROW_REQUIRED' : 'STABLE',
+        safe => 1,
+        grow_eligible => $grow_eligible,
+        blocks_operation => 0,
+        reason => $grow_eligible
+            ? "predicted $limiting runway reached the safety horizon"
+            : 'predicted data and metadata runway exceed the safety horizon',
+        limiting_dimension => $limiting,
+        safety_horizon_seconds => $horizon,
+        data_runway_seconds => $data_runway,
+        metadata_runway_seconds => $metadata_runway,
+        data_runway_state => defined($data_runway) ? 'BOUNDED' : 'UNBOUNDED',
+        metadata_runway_state => defined($metadata_runway) ? 'BOUNDED' : 'UNBOUNDED',
+    };
+}
+
+sub build_thin_transaction_fingerprint {
+    my (%args) = @_;
+    my @required = qw(
+        pool_uuid metadata_uuid data_uuid transaction_id
+        owner_node owner_epoch live_table_hash dependency_hash metadata_mode
+    );
+    for my $required (@required) {
+        die "missing fingerprint field $required\n" if !defined($args{$required});
+        die "fingerprint field $required contains unsafe characters\n"
+            if $args{$required} !~ /^[A-Za-z0-9_.:+-]+$/;
+    }
+    die "invalid dm-thin transaction ID\n"
+        if $args{transaction_id} !~ /^\d+$/;
+    die "invalid owner epoch\n"
+        if $args{owner_epoch} !~ /^[0-9a-f]{32}$/;
+    die "invalid live table hash\n"
+        if $args{live_table_hash} !~ /^(?:ABSENT|[0-9a-f]{64})$/;
+    die "invalid dependency hash\n"
+        if $args{dependency_hash} !~ /^(?:ABSENT|[0-9a-f]{64})$/;
+    die "invalid metadata mode\n"
+        if $args{metadata_mode} !~ /^(?:rw|ro|unknown)$/;
+
+    my $canonical = join("\n", map { "$_=$args{$_}" } @required) . "\n";
+    return {
+        version => 1,
+        canonical => $canonical,
+        digest => sha256_hex($canonical),
+        evidence => { map { $_ => $args{$_} } @required },
+    };
+}
+
+sub compare_thin_transaction_fingerprint {
+    my ($expected, $observed) = @_;
+    return {
+        status => 'UNKNOWN', match => 0, blocks_operation => 1,
+        reason => 'expected or observed fingerprint is unavailable',
+    } if ref($expected) ne 'HASH' || ref($observed) ne 'HASH';
+    return {
+        status => 'UNKNOWN', match => 0, blocks_operation => 1,
+        reason => 'unsupported fingerprint version',
+    } if ($expected->{version} // 0) != 1 || ($observed->{version} // 0) != 1;
+    return {
+        status => 'UNKNOWN', match => 0, blocks_operation => 1,
+        reason => 'fingerprint digest is malformed',
+    } if ($expected->{digest} // '') !~ /^[0-9a-f]{64}$/
+        || ($observed->{digest} // '') !~ /^[0-9a-f]{64}$/;
+    return {
+        status => 'MISMATCH', match => 0, blocks_operation => 1,
+        reason => 'thin transaction fingerprint changed unexpectedly',
+    } if $expected->{digest} ne $observed->{digest};
+    return {
+        status => 'MATCH', match => 1, blocks_operation => 0,
+        reason => 'thin transaction fingerprint matches exact recorded evidence',
+    };
+}
+
+sub evaluate_readonly_metadata_validation {
+    my (%args) = @_;
+    for my $required (qw(snapshot_reserved thin_check_completed thin_check_ok snapshot_released)) {
+        return {
+            status => 'UNKNOWN', blocks_operation => 1,
+            reason => "missing metadata validation evidence $required",
+        } if !defined($args{$required}) || $args{$required} !~ /^(?:0|1)$/;
+    }
+    return {
+        status => 'UNKNOWN', blocks_operation => 1,
+        reason => 'reserved metadata snapshot was not positively created',
+    } if !$args{snapshot_reserved};
+    return {
+        status => 'UNKNOWN', blocks_operation => 1,
+        reason => 'bounded thin_check did not complete',
+    } if !$args{thin_check_completed};
+    return {
+        status => 'CRITICAL', blocks_operation => 1,
+        reason => 'thin_check reported invalid metadata; no repair attempted',
+    } if !$args{thin_check_ok};
+    return {
+        status => 'UNKNOWN', blocks_operation => 1,
+        reason => 'reserved metadata snapshot release is unproven',
+    } if !$args{snapshot_released};
+    return {
+        status => 'PASS', blocks_operation => 0,
+        reason => 'bounded read-only metadata validation and release completed',
     };
 }
 

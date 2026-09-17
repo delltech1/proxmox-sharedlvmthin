@@ -27,9 +27,12 @@ Losing any term must never be interpreted as permission to guess or repair.
 
 `pmxcfs` locks and LVM tags serialize control-plane decisions. A sanlock
 Paxos resource lease is arbitrated on the shared storage itself. Competing
-hosts cannot both acquire the same exclusive lease. The lockspace renewal is
-also tied to `wdmd`: if a host can no longer renew its disk lease, it must
-release the protected resource or be reset before another host can acquire it.
+hosts cannot both acquire the same exclusive lease. On PVE, `/dev/watchdog`
+is already owned by `watchdog-mux`, so starting `wdmd` as a second watchdog
+owner is not a valid integration. The qualified design runs sanlock without
+direct watchdog ownership and uses a purpose-built watchdog-mux client bridge:
+it refreshes its PVE watchdog client only while the lockspace, resource lease,
+durable owner, quorum and storage identity are all positively healthy.
 
 This can strengthen runtime ownership during network partitions and complete
 host failure. It does **not** make dm-thin metadata cluster-coherent and does
@@ -87,8 +90,13 @@ would recreate the original corruption window.
 ## Failure and watchdog rules
 
 - Lease expiry is not by itself proof that an unfenced kernel stopped I/O.
-  The sanlock/wdmd timing contract must prove the old host reset deadline has
-  passed before another host activates the pool.
+  The sanlock/watchdog-mux integration must prove the old host reset deadline
+  has passed before another host activates the pool.
+- The bridge may send watchdog-mux magic close (`V`) only after it positively
+  stopped all protected QEMU I/O and removed the local pool mapping. If that
+  cannot be proven, it stops refreshing and allows watchdog fencing.
+- Once lease health becomes uncertain, the bridge is monotonic: it cannot
+  resume refreshes from a later transient PASS without a new activation.
 - All participating hosts must use the same validated watchdog and I/O timeout
   policy. Custom values are detected and checked; they are never overwritten.
 - A missing watchdog, disabled sanlock recovery, mismatched host ID, lease I/O
@@ -115,8 +123,10 @@ guest write, allocation or discard.
 2. Create a disposable lease LV with an explicit operator command and record
    its LV UUID, WWID, size and offsets.
 3. Test raw sanlock contention with no LVM pool or VM involved.
-4. Test watchdog expiry on disposable nested PVE nodes and prove the old node
-   resets before the new lease holder is allowed to activate.
+4. Qualify the watchdog-mux bridge first with a fake UNIX socket. Then test
+   watchdog expiry on an empty disposable nested PVE node with verified
+   external power control, and prove the old node resets before the new lease
+   holder is allowed to activate.
 5. Wrap one disposable thin pool, then test clean start/stop, process crash,
    node power loss, quorum loss, SAN path loss and return.
 6. Prove that target preparation during Thin live migration is refused without
@@ -127,7 +137,8 @@ guest write, allocation or discard.
 ## Current result
 
 The qualified PVE 9 nodes expose watchdog devices, use LVM built with sanlock
-and DLM support, and provide a sanlock package candidate. Sanlock is not
-currently installed and no lease area has been created. Therefore the design
-is feasible on the present platform, but runtime protection is not yet claimed.
-
+and DLM support, and provide a sanlock package candidate. PVE watchdog-mux is
+the existing watchdog owner; `wdmd` must not be started alongside it. Sanlock
+is not currently installed and no lease area has been created. Therefore the
+design is feasible on the present platform, but runtime protection is not yet
+claimed. The current bridge is intentionally non-arming and simulator-only.

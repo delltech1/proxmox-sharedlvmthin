@@ -36,7 +36,26 @@ pool. Hold it from before the durable owner claim until after the hidden
 LeaseGuard strengthens partitions and host-loss recovery. It does not make
 dm-thin shared-writable and does not independently enable live migration.
 
-### Layer 3: Materialized Migration Bridge
+### Layer 3: Isolated-copy Thin-to-Thin mobility
+
+The primary Thin mobility design keeps both endpoints Thin but never opens the
+same thin-pool metadata in two kernels. The source and target are separate,
+generation-scoped per-VM pools with independent metadata LVs:
+
+```text
+source owner: thin pool generation A
+target owner: newly allocated thin pool generation B
+PVE/QEMU managed mirror A -> B
+bounded cutover with positive source-close and target-open proof
+retain generation A until the whole transaction is committed
+```
+
+This requires an explicit pool-generation identity in volume tags and cannot
+be implemented by merely setting `shared=0` or by reusing `sltp-<vmid>` on the
+target. Legacy pools keep their existing identity and remain supported. No
+target pool, source cleanup or ownership change may be inferred from a name.
+
+### Layer 4: Optional Materialized Thick bridge
 
 Provide an orchestrated safe-live-mobility command using supported PVE
 operations rather than private QMP calls:
@@ -51,7 +70,7 @@ optional online PVE drive mirror: Thick -> new target-owned Thin pool
 prove target-only owner, data canaries and cleanup
 ```
 
-The bridge exchanges temporary capacity and copy time for safety. Cross-node
+The optional bridge exchanges temporary capacity and copy time for safety. Cross-node
 movement occurs only while the disk is independent linear storage. It can be
 implemented as an external orchestrator over supported PVE API tasks, leaving
 the storage plugin fail-closed if any task or postcondition is ambiguous.
@@ -168,9 +187,10 @@ and migration API proposal, not in an out-of-tree monkey patch.
 2. Qualify LeaseGuard on a dedicated disposable lease LV and nested watchdog.
 3. Implement the Capacity Stability Governor as observation-only telemetry.
 4. Add transaction fingerprints and bounded metadata-snapshot validation.
-5. Prototype Materialized Migration Bridge with one disposable single-disk
-   VM, then multi-disk rollback and crash matrices.
-6. Only after the bridge proves atomic PVE task and QEMU pivot postconditions,
-   expose it as an explicitly selected mobility operation.
-7. Draft the exclusive-handoff API proposal for upstream PVE.
-
+5. Prototype generation-scoped Thin pools and isolated Thin-to-Thin copying
+   without changing legacy pool identity or enabling overlapping activation.
+6. Prototype the optional Materialized Migration Bridge with one disposable
+   single-disk VM, then multi-disk rollback and crash matrices.
+7. Expose neither path until PVE task, QEMU pivot, source-close and multi-disk
+   atomicity postconditions are positively proven.
+8. Draft the exclusive-handoff API proposal for upstream PVE.
