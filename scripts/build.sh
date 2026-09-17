@@ -25,6 +25,7 @@ find "$STAGE" -depth -type d -name '__pycache__' -exec rmdir {} +
 find "$STAGE" -type d -exec chmod 0755 {} +
 find "$STAGE" -type f -exec chmod 0644 {} +
 chmod 0755 \
+    "$STAGE/DEBIAN/preinst" \
     "$STAGE/DEBIAN/postinst" \
     "$STAGE/DEBIAN/postrm" \
     "$STAGE/DEBIAN/prerm" \

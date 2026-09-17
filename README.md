@@ -24,7 +24,10 @@ from VMware is not a requirement:
   ordinary linear steady-state device and temporary `dm-clone` transitions.
 
 Both modes integrate through the standard Proxmox Storage API and support
-snapshots, rollback, resize, backup, Storage Move and live migration. The
+snapshots, rollback, resize, backup and Storage Move. Materialized Thick
+Generations support normal shared-storage live migration. Thin mode requires
+an offline deactivate-then-activate handoff; overlapping Thin live migration
+is intentionally refused because dm-thin metadata is not cluster-coherent. The
 implementation uses standard Proxmox orchestration and Linux LVM,
 device-mapper and multipath components—without proprietary SAN integration,
 third-party kernel modules or an external locking service.
@@ -38,17 +41,18 @@ probably do not need this project.
 
 ## Release status
 
-`0.9.0~rc5.4.1~tg25` is a maintenance hotfix for the TG24 dual-mode laboratory
-release candidate, intended exclusively for Proxmox VE 9. TG24 introduced the
-Thin/Thick Generations architecture; TG25 keeps its on-disk formats unchanged
-and hardens PVE package-update, reboot recovery and runtime compatibility
-qualification. It passes 163 Python and 244 Perl tests, fault injection,
+`0.9.0~rc5.5~tg26` is the current unpublished development candidate, intended
+exclusively for Proxmox VE 9. TG24 introduced the Thin/Thick Generations
+architecture; TG25 hardened package-update and reboot compatibility. TG26 adds
+the fail-closed single-kernel Thin ownership protocol and intentionally removes
+Thin live migration from the supported envelope. The current tree passes 165
+Python cases and 115 Perl subtests (635 assertions), fault injection,
 two-node and three-node cluster qualification, API 14/15 installation and
 reinstallation, and a clean four-hour dual-mode endurance run on the Proxmox
 VE 9.2.x release line.
 
 The TG24 disposable multi-node qualification ran 150 Thin and 150 Thick VMs
-concurrently and covered bounded parallel migration, native HA relocation,
+concurrently and covered bounded parallel Thick migration, native HA relocation,
 snapshot/rollback, Thin-to-Thick and Thick-to-Thin storage moves, backup and
 restore, rolling API 14/15 installation, exact cleanup and endurance testing.
 TG25 additionally qualifies a full PVE package upgrade and reboot followed by
@@ -116,13 +120,38 @@ space in the shared VG. SharedLvmThin favors isolation and deterministic
 lifecycle behavior over the maximum space elasticity of one large thin pool
 shared by many VMs.
 
+## Thin single-owner boundary
+
+Per-VM pools contain the failure domain but do not make dm-thin metadata safe
+for concurrent activation by two kernels. Cluster locks protect administrative
+LVM mutations; guest allocation, COW and discard updates occur inside the
+kernel after QEMU opens the disk.
+
+Every managed Thin pool therefore has a versioned persistent owner consisting
+of one PVE node plus a fresh activation epoch. A second node cannot activate it
+until the first node has closed every child and the public and hidden pool
+mappings are positively absent. Thin live migration is
+unsupported and fails closed. Offline movement is supported through an exact
+deactivate-then-activate handoff. A stale owner after host loss requires proven
+external fencing and the explicit recovery procedure in
+[migration.md](docs/migration.md).
+
+Pools created by an older release do not have this ownership schema and are
+never guessed to be unowned. Upgrade requires an explicit all-nodes-inactive,
+one-time adoption step. The package refuses to install over a locally active
+legacy pool. See the migration guide before upgrading an existing Thin setup.
+
+Materialized Thick Generations are different: their steady-state frontend is
+an ordinary linear mapping to a fully allocated independent LV, so this
+dm-thin ownership restriction does not apply.
+
 ## Install a release package
 
 Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install './pve-sharedlvmthin_0.9.0.rc5.4.1.tg25_all.deb'
+apt install './pve-sharedlvmthin_0.9.0.rc5.5.tg26_all.deb'
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -183,10 +212,15 @@ See [data-safety invariants](docs/data-safety-invariants.md) and
 
 ## Qualification summary
 
-The TG24 milestone and TG25 maintenance candidate have exercised both modes through allocation,
-online and offline lifecycle operations, snapshot/rollback, resize, live
-migration, cross-node reconstruction, Thin-to-Thick and Thick-to-Thin Storage
-Move, native PVE backup/restore, and exact cleanup. Veeam qualification covered
+The TG24 milestone and TG25 maintenance candidate exercised both modes through allocation,
+online and offline lifecycle operations, snapshot/rollback and resize. TG26 is
+the fail-closed single-kernel Thin-ownership development candidate and remains
+unqualified until its complete disposable-lab release gate passes. Earlier
+Thin live-migration success is retained only as historical evidence and is not
+a safety claim; current Thin activation fails closed before cross-node overlap.
+The qualification also covered materialized Thick live migration, cross-node
+reconstruction, Thin-to-Thick and Thick-to-Thin Storage Move, native PVE
+backup/restore, and exact cleanup. Veeam qualification covered
 HotAdd backup of Thin, Thick and mixed guests plus supported-console restores
 to Thin, Thick and mixed single-target layouts with block-hash verification.
 Veeam replication was not available in the installed edition and is not

@@ -171,6 +171,39 @@ sharedlvmthin: two
         self.assertFalse(healthy)
         self.assertIn("malformed snapshot identity", failures[0])
 
+    def test_thin_owner_runtime_correlation_is_fail_closed(self):
+        base = "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1"
+        healthy, failures = self.checker.thin_owner_runtime_health(
+            base, "test", "test-vg", node="node1", path_exists=lambda path: False,
+        )
+        self.assertTrue(healthy)
+        self.assertEqual(failures, [])
+
+        local = base + (
+            ",pve-slt-owner-node-node1,"
+            "pve-slt-owner-epoch-0123456789abcdef0123456789abcdef"
+        )
+        expected_mapper = "/dev/mapper/test--vg-sltp--100-tpool"
+        healthy, failures = self.checker.thin_owner_runtime_health(
+            local, "test", "test-vg", node="node1",
+            path_exists=lambda path: path == expected_mapper,
+        )
+        self.assertTrue(healthy)
+        self.assertEqual(failures, [])
+
+        healthy, failures = self.checker.thin_owner_runtime_health(
+            local, "test", "test-vg", node="node1", path_exists=lambda path: False,
+        )
+        self.assertFalse(healthy)
+        self.assertIn("activation outcome is ambiguous", failures[0])
+
+        foreign = local.replace("owner-node-node1", "owner-node-node2")
+        healthy, failures = self.checker.thin_owner_runtime_health(
+            foreign, "test", "test-vg", node="node1", path_exists=lambda path: True,
+        )
+        self.assertFalse(healthy)
+        self.assertIn("local tpool mapper", failures[0])
+
     def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
                  allocation_mode="thin", lvs_output=None, referenced=True):
         cfg = {
@@ -191,7 +224,7 @@ sharedlvmthin: two
                 out = f"pv-uuid|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
                 out = lvs_output or (
-                    "sltp-100|twi-aotz--|||pve-slt-sid-test|\n"
+                    "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1|\n"
                     "vm-100-disk-0|Vwi-a-tz--||||sltp-100"
                 )
             elif command[0].endswith("pvesm"):
@@ -207,7 +240,10 @@ sharedlvmthin: two
              mock.patch.object(self.checker, "settled_dstate_evidence", return_value=(dstate, [], ["x"] if dstate == "UNKNOWN" else [], transient)), \
              mock.patch.object(self.checker, "pve_reference_files", return_value=["ref"] if referenced else []), \
              mock.patch.object(self.checker, "pve_snapshot_references", return_value=set()), \
-             mock.patch.object(self.checker.os.path, "exists", return_value=True), \
+             mock.patch.object(
+                 self.checker.os.path, "exists",
+                 side_effect=lambda path: not str(path).startswith("/dev/mapper/"),
+             ), \
              redirect_stdout(StringIO()) as output:
             rc = self.checker.main(["test"])
         return rc, output.getvalue()
@@ -222,6 +258,17 @@ sharedlvmthin: two
         rc, output = self.run_main(actual_wwid="3600ffff")
         self.assertEqual(rc, 2)
         self.assertIn("WWID_MATCH=FAIL", output)
+        self.assertIn("SAFE_FOR_MUTATION=NO", output)
+
+    def test_legacy_thin_owner_schema_fails_closed(self):
+        lvs_output = (
+            "sltp-100|twi-aotz--|||pve-slt-sid-test|\n"
+            "vm-100-disk-0|Vwi-a-tz--||||sltp-100"
+        )
+        rc, output = self.run_main(lvs_output=lvs_output)
+        self.assertEqual(rc, 2)
+        self.assertIn("THIN_OWNER_STATE=FAIL", output)
+        self.assertIn("lacks one exact owner schema", output)
         self.assertIn("SAFE_FOR_MUTATION=NO", output)
 
     def test_unreferenced_owned_thin_disk_fails_closed(self):

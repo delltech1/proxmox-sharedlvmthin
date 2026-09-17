@@ -546,6 +546,15 @@ def pools(vg, sid):
             "size_bytes": size_bytes,
             "attr": fields[2],
             "tags": tags,
+            "owner_schema": tags.count("pve-slt-owner-v1") == 1,
+            "owner_nodes": [
+                tag[len("pve-slt-owner-node-"):]
+                for tag in tags if tag.startswith("pve-slt-owner-node-")
+            ],
+            "owner_epochs": [
+                tag[len("pve-slt-owner-epoch-"):]
+                for tag in tags if tag.startswith("pve-slt-owner-epoch-")
+            ],
             "owned": expected_tag in fields[3].split(","),
             "monitor": fields[4] or None,
             "data_percent": data_percent,
@@ -1376,6 +1385,28 @@ for storage in parse_storage_cfg():
                         f"{pool_reason}; mutations disabled, no repair attempted",
                     )
                 if pool.get("owned"):
+                    owner_nodes = pool.get("owner_nodes") or []
+                    owner_epochs = pool.get("owner_epochs") or []
+                    owner_valid = (
+                        pool.get("owner_schema")
+                        and len(owner_nodes) <= 1
+                        and len(owner_epochs) <= 1
+                        and len(owner_nodes) == len(owner_epochs)
+                        and all(re.fullmatch(
+                            r"[A-Za-z0-9][A-Za-z0-9_.-]*", value
+                        ) for value in owner_nodes)
+                        and all(re.fullmatch(
+                            r"[0-9a-f]{32}", value
+                        ) for value in owner_epochs)
+                    )
+                    check(
+                        f"thin_owner:{sid}:{pool.get('name')}",
+                        "PASS" if owner_valid else "FAIL",
+                        f"{sid}: {pool.get('name')}: "
+                        + (f"exclusive owner schema valid; owner={owner_nodes[0] if owner_nodes else 'none'}"
+                           if owner_valid else
+                           "exclusive owner schema missing, torn or ambiguous; activation and mutation blocked"),
+                    )
                     full_status, full_reason = evaluate_thin_full_policy(
                         pool.get("when_full"),
                         doc["thin_pool_runtime"]["no_space_timeout_seconds"],

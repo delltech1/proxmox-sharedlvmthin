@@ -56,7 +56,29 @@ adding a global D-state gate to ordinary plugin mutations.
 The checker never performs activation, SCSI rescan, multipath/dmeventd/PVE
 restart, dm-thin reset, cleanup, initialization or metadata repair.
 
-## DS-17 — Canonical same-VG mutation lock
+## DS-17 — Single-kernel Thin-pool ownership
+
+A managed read-write Thin pool must never be active in more than one kernel.
+Quorum, VM ownership, disabled autoactivation, and cluster serialization of
+LVM commands do not make dm-thin runtime metadata cluster-coherent.
+
+Before activating any Thin volume, the plugin requires a persistent owner
+schema and claims a per-pool `node + epoch` pair under the canonical cluster/VG
+lock. A pool without that schema is a legacy/unknown state and requires an
+explicit all-nodes-inactive adoption procedure. An owner belonging to another
+node is a hard refusal; it is never stolen, timed out, or inferred stale. The
+exact node and epoch are released only after the last local child, public pool
+and hidden `-tpool` mapper are positively absent. Consequently, normal PVE Thin live migration,
+which prepares storage on the target before the source closes it, must fail
+closed. Offline deactivate-then-activate handoff remains the supported
+mobility model.
+
+After a host failure, an owner may be cleared only through the explicit
+`thin-recover-fenced-owner` command after external fencing has positively made
+the named former owner unable to access the LUN. The plugin never guesses or
+automatically clears a stale owner.
+
+## DS-18 — Canonical same-VG mutation lock
 
 Every metadata mutation against the same pinned VG UUID uses the same
 canonical cluster lock, independent of storage ID or thin/Thick Generations
@@ -69,7 +91,7 @@ The same VG must not be exposed concurrently through a native PVE `lvm` or
 The canonical thin/thick pair must also use the same PVE node scope; a
 half-visible pair is rejected before activation or mutation.
 
-## DS-18 — Thick lifecycle LVM commands are device-scoped
+## DS-19 — Thick lifecycle LVM commands are device-scoped
 
 Every Thick Generations LVM inventory and mutation used by allocation,
 activation, deactivation, resize, snapshot transition, snapshot deletion, and
@@ -77,7 +99,7 @@ recovery is restricted to the exact pinned multipath mapper with per-command
 `--devices`. Failure to establish that scope is a hard refusal. The plugin does
 not change the host-wide LVM devices file or scanning configuration.
 
-## DS-19 — Same-VG capacity is never fabricated
+## DS-20 — Same-VG capacity is never fabricated
 
 When the canonical thin and Thick Generations aliases expose one physical VG,
 each storage status reports that same physical VG truthfully. Administrators

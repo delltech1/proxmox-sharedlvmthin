@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.0~rc5.5~tg26 (development candidate)
+
+- Enforce the dm-thin single-kernel invariant with a persistent, versioned
+  per-pool owner record containing the exact PVE node and a fresh activation
+  epoch. A foreign, malformed, torn, or legacy owner state fails closed before
+  activation.
+- Refuse normal overlapping PVE live migration for Thin volumes. Supported
+  cross-node Thin mobility is an offline deactivate-then-activate handoff;
+  materialized Thick Generations retain their independent linear-LV mobility.
+- Release Thin ownership only after the last child, public pool, and hidden
+  `-tpool` mapper are positively absent. A host-loss owner can be cleared only
+  by an explicit administrator command after external fencing.
+- Add an explicit all-nodes-inactive adoption path for pre-TG26 Thin pools.
+  Package installation refuses a locally active legacy pool, and neither
+  activation nor allocation silently adopts old metadata.
+- Extend Doctor and recovery-check with owner-schema and torn-state gates.
+  These checks classify and refuse; they never infer fencing or repair dm-thin
+  metadata.
+- Correlate every persistent local Thin owner with the exact hidden local
+  `-tpool` mapper. Durable-claim/activation crash windows are now reported as
+  recovery-required instead of looking healthy.
+
 ## 0.9.0~rc5.4~tg24 (2026-09-13)
 
 - Separate the bounded installation preflight from the complete per-volume

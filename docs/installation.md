@@ -261,9 +261,16 @@ Upgrade one node at a time:
    Thick anchor recovery gate.
 3. Verify the package checksum and confirm that the target release explicitly
    supports the installed anchor schema and PVE Storage API.
-4. Install the package on one node. Do not restart QEMU, LVM, multipath or the
+4. When upgrading from a release without Thin exclusive ownership, stop every
+   Thin guest first and positively verify that each affected pool and hidden
+   `-tpool` mapper is absent on every node. The package pre-install gate refuses
+   a locally active legacy pool. After all nodes have the new package, run the
+   one-time `thin-adopt-owner-model` procedure documented in
+   [migration.md](migration.md) for every legacy per-VM pool. Never add the
+   schema tag manually.
+5. Install the package on one node. Do not restart QEMU, LVM, multipath or the
    SAN merely because the plugin package changed.
-5. Verify the installed version, PVE services, Doctor, recovery checks, running
+6. Verify the installed version, PVE services, Doctor, recovery checks, running
    VM state and guest I/O before continuing to the next node.
 
 Never assume that an arbitrary downgrade is safe. A release that removes
@@ -271,13 +278,21 @@ support for an existing configuration property or persistent Thick Generations
 anchor schema requires an explicit downgrade procedure. If compatibility
 cannot be positively proven, stop mutations and keep the current package.
 
+Do not downgrade TG26 to a pre-TG26 package while any managed Thin pool exists.
+Older code does not enforce the persistent node/epoch owner protocol. This is
+not reliably preventable from the currently installed package: if its `prerm`
+refuses, Debian `dpkg` may deliberately retry with the incoming older package's
+maintainer script. An explicit administrator-forced downgrade can therefore
+bypass a local refusal. Treat cluster-wide TG26-or-newer consistency as an
+operational invariant, not as a promise made by `dpkg`.
+
 `upgrade-check` is advisory and read-only: it never installs a package,
 deactivates storage, changes an anchor or repairs a failed gate. It is not run
 automatically by `dpkg`, because blocking package replacement can also prevent
 installation of a recovery or security fix. The administrator remains in
 control of the maintenance transaction.
 
-## RC5 to RC4 rollback
+## Legacy RC5 to RC4 rollback (not valid after TG26 adoption)
 
 RC4 does not know the RC5-only identity and reserve properties. Before installing
 RC4, record their exact values and remove them through `pvesm set <storage>

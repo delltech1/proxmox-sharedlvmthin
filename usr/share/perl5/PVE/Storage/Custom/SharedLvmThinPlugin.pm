@@ -1846,6 +1846,141 @@ sub _verify_pool_health {
     return 1;
 }
 
+sub _thin_local_node {
+    require PVE::INotify;
+    my $node = PVE::INotify::nodename();
+    die "cannot determine local PVE node for shared thin-pool ownership\n"
+        if !defined($node) || $node !~ /^([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
+    return $1;
+}
+
+use constant THIN_OWNER_SCHEMA_TAG => 'pve-slt-owner-v1';
+
+sub _thin_owner_state_from_tags {
+    my ($tags) = @_;
+    $tags //= '';
+    my (@owners, @epochs);
+    my $schema = 0;
+    for my $tag (split(/,/, $tags)) {
+        next if $tag eq '';
+        if ($tag eq THIN_OWNER_SCHEMA_TAG) {
+            $schema++;
+            next;
+        }
+        if ($tag =~ /^pve-slt-owner-node-([A-Za-z0-9][A-Za-z0-9_.-]*)$/) {
+            push @owners, $1;
+            next;
+        }
+        if ($tag =~ /^pve-slt-owner-epoch-([0-9a-f]{32})$/) {
+            push @epochs, $1;
+            next;
+        }
+        die "malformed shared thin-pool owner tag '$tag'\n"
+            if $tag =~ /^pve-slt-owner-/;
+    }
+    die "ambiguous shared thin-pool ownership: duplicate schema or owner tags found\n"
+        if $schema > 1 || @owners > 1 || @epochs > 1;
+    die "ambiguous shared thin-pool ownership: owner node and epoch must exist together\n"
+        if @owners != @epochs;
+    return {
+        schema => $schema ? 1 : 0,
+        owner => $owners[0],
+        epoch => $epochs[0],
+    };
+}
+
+sub _thin_owner_from_tags {
+    return _thin_owner_state_from_tags($_[0])->{owner};
+}
+
+sub _thin_pool_tags {
+    my ($class, $vg, $pool, $device) = @_;
+    my @command = ('/sbin/lvs', '--readonly');
+    push @command, ('--devices', $device) if defined($device);
+    push @command, ('--noheadings', '--separator', '|', '-o', 'lv_name,lv_tags',
+        "$vg/$pool");
+    my $lines = _command_lines(
+        \@command,
+        "reading shared thin-pool ownership of '$vg/$pool' failed",
+    );
+    die "shared thin-pool ownership of '$vg/$pool' is ambiguous\n"
+        if @$lines != 1;
+    my ($name, $tags) = split(/\|/, $lines->[0], 2);
+    for ($name, $tags) {
+        $_ //= '';
+        s/^\s+|\s+$//g;
+    }
+    die "shared thin-pool ownership query returned unexpected object '$name'\n"
+        if $name ne $pool;
+    return $tags;
+}
+
+sub _thin_claim_pool_owner_locked {
+    my ($class, $vg, $pool, $device) = @_;
+    my $node = $class->_thin_local_node();
+    my $state = _thin_owner_state_from_tags(
+        $class->_thin_pool_tags($vg, $pool, $device),
+    );
+    die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' predates the exclusive-owner schema; stop/deactivate it on every node and run the explicit thin-adopt-owner-model procedure\n"
+        if !$state->{schema};
+    my $owner = $state->{owner};
+    die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' is owned by node '$owner', not '$node'; concurrent dm-thin activation can corrupt metadata; live migration is unsupported\n"
+        if defined($owner) && $owner ne $node;
+    return 1 if defined($owner);
+
+    my $epoch = _new_transaction_id();
+    my @claim = ('/sbin/lvchange');
+    push @claim, ('--devices', $device) if defined($device);
+    push @claim, ('--addtag', "pve-slt-owner-node-$node",
+        '--addtag', "pve-slt-owner-epoch-$epoch", "$vg/$pool");
+    run_command(
+        \@claim,
+        errmsg => "claiming exclusive shared thin-pool ownership of '$vg/$pool' failed",
+    );
+    my $after = _thin_owner_state_from_tags(
+        $class->_thin_pool_tags($vg, $pool, $device),
+    );
+    die "shared thin-pool ownership claim postcondition failed for '$vg/$pool'\n"
+        if !$after->{schema} || !defined($after->{owner})
+        || $after->{owner} ne $node || $after->{epoch} ne $epoch;
+    return 1;
+}
+
+sub _thin_release_pool_owner_locked {
+    my ($class, $vg, $pool, $device, $foreign_cleanup_ok) = @_;
+    my $node = $class->_thin_local_node();
+    my $state = _thin_owner_state_from_tags(
+        $class->_thin_pool_tags($vg, $pool, $device),
+    );
+    # Idempotent teardown of an already-inactive legacy pool is safe and is
+    # needed by PVE's failed-start cleanup path.  This never authorizes a new
+    # activation: the claim path still requires the schema positively.
+    return 1 if !$state->{schema}
+        && !defined($state->{owner}) && !defined($state->{epoch});
+    die "refusing to release shared thin-pool ownership of '$vg/$pool': owner schema is absent\n"
+        if !$state->{schema};
+    my $owner = $state->{owner};
+    return 1 if $foreign_cleanup_ok && defined($owner) && $owner ne $node;
+    die "refusing to release shared thin-pool ownership of '$vg/$pool': owner is '$owner', local node is '$node'\n"
+        if defined($owner) && $owner ne $node;
+    return 1 if !defined($owner);
+
+    my @release = ('/sbin/lvchange');
+    push @release, ('--devices', $device) if defined($device);
+    push @release, ('--deltag', "pve-slt-owner-node-$node",
+        '--deltag', "pve-slt-owner-epoch-$state->{epoch}", "$vg/$pool");
+    run_command(
+        \@release,
+        errmsg => "releasing exclusive shared thin-pool ownership of '$vg/$pool' failed",
+    );
+    my $after = _thin_owner_state_from_tags(
+        $class->_thin_pool_tags($vg, $pool, $device),
+    );
+    die "shared thin-pool ownership release postcondition failed for '$vg/$pool'\n"
+        if !$after->{schema} || defined($after->{owner}) || defined($after->{epoch});
+    return 1;
+}
+
 sub _forced_single_node_quorum_from_evidence {
     my ($configured_nodes, $online_nodes, $expected_votes, $qdevice_configured) = @_;
     return 0 if !defined($configured_nodes) || !defined($online_nodes) || !defined($expected_votes);
@@ -2447,7 +2582,8 @@ sub _alloc_image_locked {
             );
 
             run_command(
-                ['/sbin/lvchange', '--addtag', $sid_tag, "$vg/$pool"],
+                ['/sbin/lvchange', '--addtag', $sid_tag,
+                    '--addtag', THIN_OWNER_SCHEMA_TAG, "$vg/$pool"],
                 errmsg => "tagging thin pool '$vg/$pool' failed",
             );
 
@@ -2478,6 +2614,10 @@ sub _alloc_image_locked {
         die "existing pool '$vg/$pool' does not belong to storage '$storeid'\n"
             if !defined($pool_info->{tags})
             || $pool_info->{tags} !~ /(?:^|,)\Q$sid_tag\E(?:,|$)/;
+
+        my $owner_state = _thin_owner_state_from_tags($pool_info->{tags});
+        die "existing pool '$vg/$pool' predates the exclusive-owner schema; allocation is blocked until explicit offline adoption\n"
+            if !$owner_state->{schema};
 
         my @owned_disks = grep {
             /^vm-\Q$vmid\E-disk-\d+$/
@@ -2553,13 +2693,30 @@ sub activate_volume {
 
     my $vg = $scfg->{'slt-vgname'};
     my $lv = $snapname ? "snap_${volname}_${snapname}" : $volname;
+    my (undef, undef, $vmid) = $class->parse_volname($volname);
+    my $pool = "sltp-$vmid";
+    my $device = defined($scfg->{'slt-expected-wwid'})
+        ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+        : undef;
 
-    run_command(
-        ['/sbin/lvchange', '-ay', '-K', "$vg/$lv"],
-        errmsg => "activating shared thin LV '$vg/$lv' failed",
-    );
-
-    return 1;
+    # A dm-thin pool is a single-kernel metadata domain.  PVE shared-storage
+    # live migration explicitly activates the target before the source closes,
+    # so a normal cluster operation lock is not sufficient: ownership must
+    # persist for the complete lifetime of the active pool.  Claim the pool
+    # under the canonical VG lock before local activation.  A different
+    # owner's tag is never stolen or inferred stale here.
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        $class->_verify_owned_volume($storeid, $scfg, $volname);
+        $class->_thin_claim_pool_owner_locked($vg, $pool, $device);
+        my @activate = ('/sbin/lvchange');
+        push @activate, ('--devices', $device) if defined($device);
+        push @activate, ('-ay', '-K', "$vg/$lv");
+        run_command(
+            \@activate,
+            errmsg => "activating exclusively-owned shared thin LV '$vg/$lv' failed; owner preserved for explicit recovery",
+        );
+        return 1;
+    });
 }
 
 sub _thin_pool_runtime_state {
@@ -2617,6 +2774,15 @@ sub deactivate_volume {
     return $class->_thick_deactivate_volume($storeid, $scfg, $volname, $snapname, $cache)
         if $class->_allocation_mode($scfg) eq 'thick-generations';
 
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_deactivate_thin_volume_locked(
+            $storeid, $scfg, $volname, $snapname, $cache,
+        );
+    });
+}
+
+sub _deactivate_thin_volume_locked {
+    my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     my $vg = $scfg->{'slt-vgname'};
     my $lv = $snapname ? "snap_${volname}_${snapname}" : $volname;
     my (undef, undef, $vmid) = $class->parse_volname($volname);
@@ -2692,6 +2858,13 @@ sub deactivate_volume {
         if $after->{pool_mapper_active};
     die "thin-pool deactivation postcondition failed: active children remain in '$vg/$pool'\n"
         if @{$after->{active_children}};
+
+    # PVE invokes target-side deactivate cleanup after a failed start/live
+    # migration.  If the exact local runtime is already absent and the
+    # persistent owner belongs to another node, cleanup is complete locally.
+    # Never turn that cleanup callback into an attempt to release or rewrite
+    # the remote owner's evidence.
+    $class->_thin_release_pool_owner_locked($vg, $pool, $device, 1);
     return 1;
 }
 
@@ -3579,6 +3752,104 @@ sub _thin_recover_orphan {
         die "thin orphan recovery refused: PVE still references '$storeid:$volname' in "
             . join(', ', @$references) . "\n" if @$references;
         return $class->_free_image_locked($storeid, $scfg, $volname, 0);
+    });
+}
+
+sub _thin_recover_fenced_owner {
+    my ($class, $scfg, $storeid, $volname, $fenced_node) = @_;
+    die "fenced Thin owner recovery is unavailable for Thick Generations storage\n"
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
+    die "fenced Thin owner node is invalid\n"
+        if !defined($fenced_node)
+        || $fenced_node !~ /^([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
+    $fenced_node = $1;
+    my $local = $class->_thin_local_node();
+    die "refusing fenced-owner recovery for local node '$local'; this command is only for an externally fenced former owner\n"
+        if $fenced_node eq $local;
+    my (undef, undef, $vmid) = $class->parse_volname($volname);
+    my $vg = $scfg->{'slt-vgname'};
+    my $pool = "sltp-$vmid";
+    my $device = defined($scfg->{'slt-expected-wwid'})
+        ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+        : undef;
+
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        $class->_verify_owned_volume($storeid, $scfg, $volname);
+        my $owner_state = _thin_owner_state_from_tags(
+            $class->_thin_pool_tags($vg, $pool, $device),
+        );
+        die "fenced-owner recovery refused: '$vg/$pool' has no owner schema\n"
+            if !$owner_state->{schema};
+        my $owner = $owner_state->{owner};
+        die "fenced-owner recovery refused: '$vg/$pool' has no persistent owner\n"
+            if !defined($owner);
+        die "fenced-owner recovery refused: expected owner '$fenced_node', found '$owner'\n"
+            if $owner ne $fenced_node;
+
+        # This proves only that the recovery node has no local instance.  The
+        # command name and exact fenced-node argument are an explicit operator
+        # assertion that external PVE/STONITH fencing has already made the old
+        # kernel unable to access the LUN.  The plugin never guesses that fact.
+        my $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
+        die "fenced-owner recovery refused: local thin-pool runtime state is active\n"
+            if $state->{pool_active} || $state->{pool_mapper_active}
+            || @{$state->{active_children}};
+
+        my @release = ('/sbin/lvchange');
+        push @release, ('--devices', $device) if defined($device);
+        push @release, ('--deltag', "pve-slt-owner-node-$fenced_node",
+            '--deltag', "pve-slt-owner-epoch-$owner_state->{epoch}", "$vg/$pool");
+        run_command(
+            \@release,
+            errmsg => "clearing explicitly fenced shared thin-pool owner '$fenced_node' failed",
+        );
+        my $after = _thin_owner_state_from_tags(
+            $class->_thin_pool_tags($vg, $pool, $device),
+        );
+        die "fenced-owner recovery postcondition failed for '$vg/$pool'\n"
+            if !$after->{schema} || defined($after->{owner}) || defined($after->{epoch});
+        return 'FENCED_THIN_OWNER_CLEARED';
+    });
+}
+
+sub _thin_adopt_owner_model {
+    my ($class, $scfg, $storeid, $volname, $confirmation) = @_;
+    die "Thin owner-model adoption is unavailable for Thick Generations storage\n"
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
+    die "owner-model adoption requires the exact confirmation ALL-NODES-INACTIVE\n"
+        if !defined($confirmation) || $confirmation ne 'ALL-NODES-INACTIVE';
+    my (undef, undef, $vmid) = $class->parse_volname($volname);
+    my $vg = $scfg->{'slt-vgname'};
+    my $pool = "sltp-$vmid";
+    my $device = defined($scfg->{'slt-expected-wwid'})
+        ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+        : undef;
+
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        $class->_verify_owned_volume($storeid, $scfg, $volname);
+        my $owner = _thin_owner_state_from_tags(
+            $class->_thin_pool_tags($vg, $pool, $device),
+        );
+        die "owner-model adoption refused: '$vg/$pool' already has the schema\n"
+            if $owner->{schema};
+        die "owner-model adoption refused: legacy/ambiguous owner tags exist\n"
+            if defined($owner->{owner}) || defined($owner->{epoch});
+        my $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
+        die "owner-model adoption refused: local thin-pool runtime state is active\n"
+            if $state->{pool_active} || $state->{pool_mapper_active}
+            || @{$state->{active_children}};
+
+        my @adopt = ('/sbin/lvchange');
+        push @adopt, ('--devices', $device) if defined($device);
+        push @adopt, ('--addtag', THIN_OWNER_SCHEMA_TAG, "$vg/$pool");
+        run_command(\@adopt,
+            errmsg => "adopting exclusive-owner schema for '$vg/$pool' failed");
+        my $after = _thin_owner_state_from_tags(
+            $class->_thin_pool_tags($vg, $pool, $device),
+        );
+        die "owner-model adoption postcondition failed for '$vg/$pool'\n"
+            if !$after->{schema} || defined($after->{owner}) || defined($after->{epoch});
+        return 'THIN_OWNER_MODEL_ADOPTED';
     });
 }
 

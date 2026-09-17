@@ -22,6 +22,11 @@ my $verify_same_vg_alias_configuration = \&PVE::Storage::Custom::SharedLvmThinPl
 my $cluster_lock_storage = \&PVE::Storage::Custom::SharedLvmThinPlugin::cluster_lock_storage;
 my $disable_and_verify_autoactivation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation;
 my $verify_autoactivation_disabled = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled;
+my $thin_claim_pool_owner_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_claim_pool_owner_locked;
+my $thin_release_pool_owner_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked;
+my $thin_owner_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_from_tags;
+my $thin_owner_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_state_from_tags;
+my $thin_adopt_owner_model = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_adopt_owner_model;
 my $record_disable_autoactivation = sub {
     my ($class, $vg, $lv) = @_;
     PVE::Storage::Custom::SharedLvmThinPlugin::run_command([
@@ -61,6 +66,8 @@ local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_pool_health = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_claim_pool_owner_locked = sub { return 1; };
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration = sub { return 1; };
 
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
@@ -765,13 +772,13 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test',
+            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } }, { testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test',
+            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } });
@@ -791,13 +798,13 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test',
+            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } }, { testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test',
+            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } });
@@ -820,13 +827,13 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test',
+            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } }, { testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test',
+            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } });
@@ -880,7 +887,7 @@ subtest 'new VM allocation creates, converts, tags and uses one pool' => sub {
         { testvg => {
             'sltp-900001' => {
                 lv_type => 't',
-                tags => 'pve-slt-sid-sharedthin-test',
+                tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
         } },
     );
@@ -907,7 +914,7 @@ subtest 'proportional allocation creates physical burst headroom under reserve g
     @lvm_results = (
         { testvg => {} },
         { testvg => {
-            'sltp-900001' => { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' },
+            'sltp-900001' => { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' },
         } },
     );
     no warnings 'redefine';
@@ -932,7 +939,7 @@ subtest 'multi-disk proportional allocation pre-grows from live usage' => sub {
         'slt-initial-pool-percent' => 50,
         'slt-vg-reserve-gib' => 10,
     };
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
     my $disk = { pool_lv => 'sltp-999900' };
     @lvm_results = (
         { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
@@ -967,7 +974,7 @@ subtest 'inactive pool allocation never repeats headroom growth' => sub {
         'slt-burst-headroom-gib' => 16,
         'slt-vg-reserve-gib' => 10,
     };
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
     my $disk = { pool_lv => 'sltp-999900' };
     @lvm_results = (
         { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
@@ -1031,7 +1038,7 @@ subtest 'uncertain allocation pre-grow is never retried or shrunk' => sub {
             'slt-initial-pool-percent' => 50,
             'slt-vg-reserve-gib' => 10,
         };
-        my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+        my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
         my $disk = { pool_lv => 'sltp-999900' };
         @lvm_results = (
             { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
@@ -1151,7 +1158,7 @@ subtest 'autoactivation failure preserves allocated guest LV as partial' => sub 
         { testvg => {} },
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
         } },
     );
@@ -1239,7 +1246,7 @@ subtest 'VMID reuse rejects stale owned pool and stale snapshots without mutatio
         reset_mocks();
         @lvm_results = ({ testvg => {
             'sltp-999900' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             %{$case->[1]},
         } });
@@ -1278,13 +1285,13 @@ subtest 'VMID reuse allows adding a disk only to an actively owned pool' => sub 
     @lvm_results = (
         { testvg => {
             'sltp-999900' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             'vm-999900-disk-0' => { pool_lv => 'sltp-999900' },
         } },
         { testvg => {
             'sltp-999900' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             'vm-999900-disk-0' => { pool_lv => 'sltp-999900' },
         } },
@@ -1301,7 +1308,7 @@ subtest 'VMID reuse allows adding a disk only to an actively owned pool' => sub 
 subtest 'clean VMID reuse completes two full lifecycles with zero artifacts' => sub {
     reset_mocks();
     my $pool = {
-        lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+        lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
     };
     my $disk = { pool_lv => 'sltp-999900' };
     my $snap = { pool_lv => 'sltp-999900' };
@@ -1354,7 +1361,7 @@ subtest 'failed thin LV allocation preserves the newly-created pool' => sub {
         { testvg => {
             'sltp-900001' => {
                 lv_type => 't',
-                tags => 'pve-slt-sid-sharedthin-test',
+                tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
         } },
     );
@@ -1400,19 +1407,19 @@ subtest 'free removes disk snapshots, disk and tagged empty pool' => sub {
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
         } },
         { testvg => {
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
         } },
         { testvg => {
             'sltp-900001' => {
                 lv_type => 't',
-                tags => 'pve-slt-sid-sharedthin-test',
+                tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
         } },
     );
@@ -1462,7 +1469,7 @@ subtest 'free refuses a volume that is not in the expected pool' => sub {
     @lvm_results = ({ testvg => {
         'vm-900001-disk-0' => { pool_lv => 'foreign-pool' },
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
     } });
     my $ok = eval {
@@ -1481,7 +1488,7 @@ subtest 'free refuses ambiguous snapshot flags before cleanup mutation' => sub {
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1527,7 +1534,7 @@ subtest 'free refuses a pool tagged for another storage' => sub {
 
 subtest 'one-of-many disk deletion preserves the shared per-VM pool' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -1552,7 +1559,7 @@ subtest 'one-of-many disk deletion preserves the shared per-VM pool' => sub {
 
 subtest 'unexpected LV reference prevents empty-pool cleanup' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -1573,7 +1580,7 @@ subtest 'unexpected LV reference prevents empty-pool cleanup' => sub {
 
 subtest 'VG loss after disk delete is UNAVAILABLE and never triggers pool cleanup' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -1598,7 +1605,7 @@ subtest 'VG loss after disk delete is UNAVAILABLE and never triggers pool cleanu
 
 subtest 'disk delete failure never broadens cleanup scope' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -1622,7 +1629,7 @@ subtest 'disk delete failure never broadens cleanup scope' => sub {
 
 subtest 'pool cleanup failure is reported without retry' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -1681,7 +1688,7 @@ subtest 'rollback materializes replacement before removing current disk' => sub 
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1708,7 +1715,7 @@ subtest 'rollback preparation failure leaves current disk untouched' => sub {
         = $record_disable_autoactivation;
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1729,7 +1736,7 @@ subtest 'rollback rejects noncanonical snapshot before any mutation' => sub {
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1763,7 +1770,7 @@ subtest 'rollback failure after replacement creation preserves both objects' => 
         = $record_disable_autoactivation;
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1790,7 +1797,7 @@ subtest 'rollback origin-delete failure preserves origin and replacement' => sub
         = $record_disable_autoactivation;
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1817,7 +1824,7 @@ subtest 'rollback postcondition failure performs no destructive recovery' => sub
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1848,7 +1855,7 @@ subtest 'rollback final autoactivation uncertainty preserves restored origin' =>
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -1877,7 +1884,7 @@ subtest 'rollback rename failure preserves replacement for recovery' => sub {
         = $record_disable_autoactivation;
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test',
+            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -2865,6 +2872,204 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
     ], 'callback only enables hydration before returning');
 };
 
+subtest 'thin owner tag parser rejects ambiguity and malformed ownership' => sub {
+    is($thin_owner_from_tags->('pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef'),
+        'node1', 'one exact owner is decoded');
+    eval { $thin_owner_from_tags->('pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-node-node2,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef') };
+    like($@, qr/duplicate schema or owner tags/, 'two owners are always ambiguous');
+    eval { $thin_owner_from_tags->('pve-slt-owner-') };
+    like($@, qr/malformed/, 'malformed owner evidence fails closed');
+    eval { $thin_owner_from_tags->('pve-slt-owner-v1,pve-slt-owner-node-node1') };
+    like($@, qr/node and epoch must exist together/, 'torn owner state fails closed');
+};
+
+subtest 'legacy thin pool is never interpreted as safely unowned' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-sid-test';
+    };
+    eval { $thin_claim_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
+    ) };
+    like($@, qr/predates the exclusive-owner schema/, 'legacy pool requires explicit offline adoption');
+    is(scalar(@commands), 0, 'legacy refusal performs zero mutation');
+};
+
+subtest 'thin activation claim refuses a different kernel owner without mutation' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node2' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef';
+    };
+    eval { $thin_claim_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
+    ) };
+    like($@, qr/UNSAFE shared LVM-thin activation refused.*node1.*node2/s,
+        'remote owner blocks the second dm-thin activation');
+    is(scalar(@commands), 0, 'refusal performs no LVM mutation');
+};
+
+subtest 'thin activation claim writes and verifies one persistent owner' => sub {
+    reset_mocks();
+    my @tags = (
+        'pve-slt-sid-test,pve-slt-owner-v1',
+        'pve-slt-sid-test,pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return shift @tags;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub {
+        return '0123456789abcdef0123456789abcdef';
+    };
+    ok($thin_claim_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
+    ), 'unowned pool is claimed');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --addtag pve-slt-owner-node-node1 --addtag pve-slt-owner-epoch-0123456789abcdef0123456789abcdef testvg/sltp-900001',
+    ], 'claim is device-scoped, versioned and epoch-bound');
+};
+
+subtest 'thin activation failure preserves the claimed owner for explicit recovery' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1,
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my ($claims, $releases) = (0, 0);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_mutation_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_claim_pool_owner_locked = sub {
+        $claims++;
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked = sub {
+        $releases++;
+        return 1;
+    };
+    $command_failure = qr{/sbin/lvchange .* -ay -K};
+
+    eval {
+        $class->activate_volume(
+            'shared-test', $cfg, 'vm-900001-disk-0', undef, undef,
+        );
+    };
+    like($@, qr/lvchange/, 'activation error is returned unchanged');
+    is($claims, 1, 'persistent ownership is claimed before local activation');
+    is($releases, 0,
+        'an ambiguous activation failure never speculatively releases ownership');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -ay -K testvg/vm-900001-disk-0',
+    ], 'only the exact device-scoped activation was attempted');
+};
+
+subtest 'thin claim postcondition failure never guesses a compensating release' => sub {
+    reset_mocks();
+    my @tags = (
+        'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+        'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub {
+        '0123456789abcdef0123456789abcdef'
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return shift @tags;
+    };
+
+    eval {
+        $thin_claim_pool_owner_locked->(
+            $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
+        );
+    };
+    like($@, qr/ownership claim postcondition failed/,
+        'unproven claim is classified as ambiguous');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --addtag pve-slt-owner-node-node1 --addtag pve-slt-owner-epoch-0123456789abcdef0123456789abcdef testvg/sltp-900001',
+    ], 'the ambiguous result is preserved for evidence-based recovery');
+};
+
+subtest 'thin owner release is exact and postcondition verified' => sub {
+    reset_mocks();
+    my @tags = (
+        'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+        'pve-slt-owner-v1',
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return shift @tags;
+    };
+    ok($thin_release_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
+    ), 'local owner is released');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd --deltag pve-slt-owner-node-node1 --deltag pve-slt-owner-epoch-0123456789abcdef0123456789abcdef testvg/sltp-900001',
+    ], 'release removes only the exact local owner and epoch');
+};
+
+subtest 'inactive legacy teardown is idempotent but never claims ownership' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-sid-test';
+    };
+    ok($thin_release_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd',
+    ), 'already-inactive legacy pool needs no owner mutation during cleanup');
+    is(scalar(@commands), 0, 'legacy cleanup writes no metadata');
+};
+
+subtest 'failed target cleanup preserves a foreign owner without error' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node2' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef';
+    };
+    ok($thin_release_pool_owner_locked->(
+        $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd', 1,
+    ), 'target cleanup accepts exact local absence while retaining remote evidence');
+    is(scalar(@commands), 0, 'foreign owner and epoch are never rewritten by cleanup');
+};
+
+subtest 'thin owner-model adoption is explicit, offline and postcondition verified' => sub {
+    reset_mocks();
+    my @tags = ('pve-slt-sid-sharedthin-test', 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1');
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return shift @tags;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return { pool_active => 0, pool_mapper_active => 0, active_children => [] };
+    };
+    is($thin_adopt_owner_model->(
+        $class, $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'ALL-NODES-INACTIVE',
+    ), 'THIN_OWNER_MODEL_ADOPTED', 'explicit inactive legacy pool adoption succeeds');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --addtag pve-slt-owner-v1 testvg/sltp-900001',
+    ], 'adoption adds only the persistent schema marker');
+
+    reset_mocks();
+    eval { $thin_adopt_owner_model->(
+        $class, $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'YES',
+    ) };
+    like($@, qr/exact confirmation ALL-NODES-INACTIVE/,
+        'casual confirmation cannot enter the adoption path');
+    is(scalar(@commands), 0, 'invalid confirmation performs zero mutation');
+};
+
 subtest 'thin runtime state trusts exact local DM nodes over shared LVM activity flags' => sub {
     reset_mocks();
     no warnings 'redefine';
@@ -2888,7 +3093,7 @@ subtest 'thin runtime state trusts exact local DM nodes over shared LVM activity
         'exact local guest mapper wins even when shared lv_attr reports inactive');
 };
 
-subtest 'thin deactivate removes an idle monitored pool without a shared mutation lock' => sub {
+subtest 'thin deactivate releases an idle pool under the shared mutation lock' => sub {
     reset_mocks();
     my $cfg = {
         shared => 1,
@@ -2905,8 +3110,9 @@ subtest 'thin deactivate removes an idle monitored pool without a shared mutatio
     my $locked = 0;
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_;
         $locked++;
-        die "node-local teardown must not acquire the shared VG mutation lock\n";
+        return $code->();
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
@@ -2918,7 +3124,7 @@ subtest 'thin deactivate removes an idle monitored pool without a shared mutatio
     ok($class->deactivate_volume(
         'shared-test', $cfg, 'vm-900001-disk-0', undef, undef,
     ), 'last thin child deactivation succeeds');
-    is($locked, 0, 'thin deactivation does not serialize unrelated VM teardown cluster-wide');
+    is($locked, 1, 'thin deactivation serializes mapper teardown and owner release');
     is_deeply([command_lines()], [
         '/sbin/lvchange --devices /dev/mapper/3600abcd --monitor n testvg/sltp-900001',
         '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/vm-900001-disk-0',
@@ -2997,6 +3203,7 @@ subtest 'thin deactivate waits for the exact deferred child before pool teardown
 
 subtest 'thin deactivate fails closed when the pool remains active' => sub {
     reset_mocks();
+    my $releases = 0;
     my $cfg = {
         shared => 1,
         'slt-vgname' => 'testvg',
@@ -3020,12 +3227,17 @@ subtest 'thin deactivate fails closed when the pool remains active' => sub {
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
         return shift @states;
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked = sub {
+        $releases++;
+        return 1;
+    };
 
     eval { $class->deactivate_volume(
         'shared-test', $cfg, 'vm-900001-disk-0', undef, undef,
     ) };
     like($@, qr/remains active/, 'ambiguous postcondition is rejected');
     is(scalar(@commands), 3, 'failure does not broaden into cleanup or retry');
+    is($releases, 0, 'ownership is never released while the exact pool mapper remains active');
 };
 
 subtest 'published hydration remains activatable and a stop preserves worker dependencies' => sub {

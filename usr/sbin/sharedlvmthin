@@ -1430,6 +1430,24 @@ case "${1:-doctor}" in
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
             --recover-thin-orphan "$2" "$3"
         ;;
+    thin-recover-fenced-owner)
+        if [ "$#" -ne 4 ]; then
+            echo "Usage: sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>" >&2
+            exit 64
+        fi
+        echo "WARNING: continue only after external fencing positively proves that '$4' cannot access the shared LUN." >&2
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-fenced-thin-owner "$2" "$3" "$4"
+        ;;
+    thin-adopt-owner-model)
+        if [ "$#" -ne 4 ] || [ "$4" != "ALL-NODES-INACTIVE" ]; then
+            echo "Usage: sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE" >&2
+            exit 64
+        fi
+        echo "WARNING: this is an explicit assertion that the pool is deactivated on every cluster node." >&2
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --adopt-thin-owner-model "$2" "$3" "$4"
+        ;;
     version|--version|-V)
         echo "sharedlvmthin doctor $VERSION"
         ;;
@@ -1448,6 +1466,8 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin thick-recover-orphan-alloc <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-orphan-tree <storage-id> <volume>"
         echo "  sharedlvmthin thin-recover-orphan <storage-id> <volume>"
+        echo "  sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>"
+        echo "  sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE"
         echo "  sharedlvmthin version"
         exit 64
         ;;

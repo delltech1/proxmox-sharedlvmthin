@@ -12,6 +12,7 @@ import sys
 import time
 import hashlib
 import glob
+import platform
 
 
 PROBE_TIMEOUT = 10
@@ -20,6 +21,56 @@ FORBIDDEN = {
     "pvcreate", "vgcreate", "lvcreate", "lvremove", "vgremove", "pvremove",
     "wipefs", "thin_repair", "vgcfgrestore", "lvchange", "multipathd",
 }
+
+
+def dm_escape(value):
+    """Encode one LVM VG/LV component exactly as device-mapper exposes it."""
+    return value.replace("-", "--")
+
+
+def thin_owner_runtime_health(lvs_output, storage_id, vg_name, node=None,
+                              path_exists=os.path.exists):
+    """Correlate persistent ownership with this kernel's exact thin-pool map.
+
+    A remote owner with no local map is healthy.  A local map without the
+    local node+epoch owner, or a local owner without its map, is recovery
+    required.  This deliberately makes claim/activation crash windows visible
+    without ever attempting an automatic repair or owner transfer.
+    """
+    node = node or platform.node()
+    failures = []
+    for line in lvs_output.splitlines():
+        fields = [x.strip() for x in line.split("|")]
+        if (len(fields) < 5 or not re.fullmatch(r"sltp-\d+", fields[0])
+                or f"pve-slt-sid-{storage_id}" not in fields[4].split(",")):
+            continue
+        pool = fields[0]
+        tags = fields[4].split(",")
+        owners = [
+            tag[len("pve-slt-owner-node-"):]
+            for tag in tags if tag.startswith("pve-slt-owner-node-")
+        ]
+        epochs = [
+            tag[len("pve-slt-owner-epoch-"):]
+            for tag in tags if tag.startswith("pve-slt-owner-epoch-")
+        ]
+        mapper = (
+            f"/dev/mapper/{dm_escape(vg_name)}-{dm_escape(pool)}-tpool"
+        )
+        local_map = path_exists(mapper)
+        exact_owner = len(owners) == 1 and len(epochs) == 1
+        owner = owners[0] if exact_owner else None
+        if local_map and owner != node:
+            failures.append(
+                f"{pool} has a local tpool mapper but persistent owner is "
+                f"{owner or 'absent/ambiguous'}, not {node}"
+            )
+        if not local_map and owner == node:
+            failures.append(
+                f"{pool} is persistently owned by {node} but its local tpool "
+                "mapper is absent; activation outcome is ambiguous"
+            )
+    return not failures, failures
 
 
 def storage_config(storage_id, path="/etc/pve/storage.cfg"):
@@ -484,7 +535,9 @@ def main(argv=None):
 
     if allocation_mode == "thick-generations":
         results["THIN_REFERENCES_HEALTHY"] = "PASS"
+        results["THIN_OWNER_STATE"] = "PASS"
         details.append("thin reference gate is not applicable")
+        details.append("thin owner gate is not applicable")
     else:
         thin_ok, thin_pools, thin_failures = thin_reference_health(
             evidence.get("POOL", {}).get("out", ""), sid, pve_reference_files,
@@ -493,6 +546,34 @@ def main(argv=None):
         results["THIN_REFERENCES_HEALTHY"] = "PASS" if thin_ok else "FAIL"
         details.append(f"owned_thin_pools={len(thin_pools)}")
         details.extend(f"recovery-required: {item}" for item in thin_failures)
+        owner_failures = []
+        for line in evidence.get("POOL", {}).get("out", "").splitlines():
+            fields = [x.strip() for x in line.split("|")]
+            if (len(fields) < 5 or not re.fullmatch(r"sltp-\d+", fields[0])
+                    or f"pve-slt-sid-{sid}" not in fields[4].split(",")):
+                continue
+            tags = fields[4].split(",")
+            schema = tags.count("pve-slt-owner-v1")
+            owners = [x for x in tags if x.startswith("pve-slt-owner-node-")]
+            epochs = [x for x in tags if x.startswith("pve-slt-owner-epoch-")]
+            valid_owner = all(re.fullmatch(
+                r"pve-slt-owner-node-[A-Za-z0-9][A-Za-z0-9_.-]*", x
+            ) for x in owners)
+            valid_epoch = all(re.fullmatch(
+                r"pve-slt-owner-epoch-[0-9a-f]{32}", x
+            ) for x in epochs)
+            if (schema != 1 or len(owners) > 1 or len(epochs) > 1
+                    or len(owners) != len(epochs)
+                    or not valid_owner or not valid_epoch):
+                owner_failures.append(
+                    f"{fields[0]} lacks one exact owner schema or has torn/ambiguous owner evidence"
+                )
+        _, runtime_failures = thin_owner_runtime_health(
+            evidence.get("POOL", {}).get("out", ""), sid, vg,
+        )
+        owner_failures.extend(runtime_failures)
+        results["THIN_OWNER_STATE"] = "PASS" if not owner_failures else "FAIL"
+        details.extend(f"recovery-required: {item}" for item in owner_failures)
 
     pve_out = evidence.get("PVE", {}).get("out", "")
     results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
@@ -531,6 +612,7 @@ def main(argv=None):
 
     ordered = ["PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
                "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "THIN_REFERENCES_HEALTHY",
+               "THIN_OWNER_STATE",
                "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",
                "PVE_STORAGE_HEALTH", "QUORUM"]
     safe = all(results.get(name) == "PASS" for name in ordered)

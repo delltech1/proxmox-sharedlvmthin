@@ -14,6 +14,8 @@ my $recover_partial_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-partial-alloc';
 my $recover_orphan_alloc = @ARGV == 3 && $ARGV[0] eq '--recover-orphan-alloc';
 my $recover_orphan_tree = @ARGV == 3 && $ARGV[0] eq '--recover-orphan-tree';
 my $recover_thin_orphan = @ARGV == 3 && $ARGV[0] eq '--recover-thin-orphan';
+my $recover_fenced_thin_owner = @ARGV == 4 && $ARGV[0] eq '--recover-fenced-thin-owner';
+my $adopt_thin_owner_model = @ARGV == 4 && $ARGV[0] eq '--adopt-thin-owner-model';
 die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <operation> <transaction>\n"
     . "       sharedlvmthin-thick-materialize --resume <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-delete <storage-id> <volume>\n"
@@ -22,12 +24,16 @@ die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <op
     . "       sharedlvmthin-thick-materialize --recover-orphan-alloc <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-orphan-tree <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-thin-orphan <storage-id> <volume>\n"
+    . "       sharedlvmthin-thick-materialize --recover-fenced-thin-owner <storage-id> <volume> <fenced-node>\n"
+    . "       sharedlvmthin-thick-materialize --adopt-thin-owner-model <storage-id> <volume> ALL-NODES-INACTIVE\n"
     if !$derive && !$recover_delete && !$recover_empty_alloc && !$recover_partial_alloc
-    && !$recover_orphan_alloc && !$recover_orphan_tree && !$recover_thin_orphan && @ARGV != 5;
+    && !$recover_orphan_alloc && !$recover_orphan_tree && !$recover_thin_orphan
+    && !$recover_fenced_thin_owner && !$adopt_thin_owner_model && @ARGV != 5;
 
 my ($storeid, $volname, $snapshot, $operation, $transaction) =
     ($derive || $recover_delete || $recover_empty_alloc || $recover_partial_alloc
-        || $recover_orphan_alloc || $recover_orphan_tree || $recover_thin_orphan)
+        || $recover_orphan_alloc || $recover_orphan_tree || $recover_thin_orphan
+        || $recover_fenced_thin_owner || $adopt_thin_owner_model)
         ? ($ARGV[1], $ARGV[2], undef, undef, undef)
         : @ARGV;
 die "invalid storage identifier\n"
@@ -41,6 +47,31 @@ die "storage '$storeid' is not SharedLvmThin\n"
     if ($scfg->{type} // '') ne 'sharedlvmthin';
 
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+if ($adopt_thin_owner_model) {
+    die "storage '$storeid' is configured for Thick Generations\n"
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
+    my $confirmation = $ARGV[3];
+    print "THIN_OWNER_MODEL_ADOPTION_START storage=$storeid volume=$volname\n";
+    my $result = $class->_thin_adopt_owner_model(
+        $scfg, $storeid, $volname, $confirmation,
+    );
+    print "$result storage=$storeid volume=$volname\n";
+    exit 0;
+}
+if ($recover_fenced_thin_owner) {
+    die "storage '$storeid' is configured for Thick Generations\n"
+        if $class->_allocation_mode($scfg) eq 'thick-generations';
+    my $fenced_node = $ARGV[3];
+    die "invalid fenced node name\n"
+        if !defined($fenced_node)
+        || $fenced_node !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+    print "FENCED_THIN_OWNER_RECOVERY_START storage=$storeid volume=$volname fenced_node=$fenced_node\n";
+    my $result = $class->_thin_recover_fenced_owner(
+        $scfg, $storeid, $volname, $fenced_node,
+    );
+    print "$result storage=$storeid volume=$volname fenced_node=$fenced_node\n";
+    exit 0;
+}
 if ($recover_thin_orphan) {
     die "storage '$storeid' is configured for Thick Generations\n"
         if $class->_allocation_mode($scfg) eq 'thick-generations';

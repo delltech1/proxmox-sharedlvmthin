@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+# P0 upgrade fence for the exclusive Thin owner schema.  A legacy pool that
+# is locally active may have been activated before persistent ownership was
+# recorded.  Installing the new runtime over that state would leave a window
+# in which another node could claim the pool as unowned.  Refuse the package
+# transaction before unpacking; the administrator must first stop/deactivate
+# the affected Thin guests on this node.
+if command -v lvs >/dev/null 2>&1 && command -v dmsetup >/dev/null 2>&1; then
+    ACTIVE_DM=$(dmsetup info -c --noheadings -o name 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+    LEGACY_ACTIVE=''
+    while IFS='|' read -r VG LV TAGS SEGTYPE; do
+        VG=$(printf '%s' "$VG" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        LV=$(printf '%s' "$LV" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        TAGS=$(printf '%s' "$TAGS" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        SEGTYPE=$(printf '%s' "$SEGTYPE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ "$SEGTYPE" = "thin-pool" ] || continue
+        case ",$TAGS," in *,pve-slt-sid-*,*) ;; *) continue ;; esac
+        case ",$TAGS," in *,pve-slt-owner-v1,*) continue ;; esac
+        VG_DM=$(printf '%s' "$VG" | sed 's/-/--/g')
+        LV_DM=$(printf '%s' "$LV" | sed 's/-/--/g')
+        MAPPER="${VG_DM}-${LV_DM}-tpool"
+        if printf '%s\n' "$ACTIVE_DM" | grep -Fxq "$MAPPER"; then
+            LEGACY_ACTIVE="${LEGACY_ACTIVE}${VG}/${LV} (${MAPPER})\n"
+        fi
+    done <<EOF
+$(lvs --readonly --noheadings --separator '|' -o vg_name,lv_name,lv_tags,segtype 2>/dev/null || true)
+EOF
+
+    if [ -n "$LEGACY_ACTIVE" ]; then
+        echo "ERROR: SharedLvmThin upgrade refused: active legacy Thin pool(s) lack" >&2
+        echo "the persistent exclusive-owner schema:" >&2
+        printf '%b' "$LEGACY_ACTIVE" >&2
+        echo "Stop/deactivate the affected Thin guests on this node, verify the" >&2
+        echo "pool is inactive on every node, reinstall the package, then run:" >&2
+        echo "  sharedlvmthin thin-adopt-owner-model <storage> <volume> ALL-NODES-INACTIVE" >&2
+        exit 1
+    fi
+fi
+
+exit 0
