@@ -8,10 +8,10 @@ use warnings;
 use PVE::Storage;
 use PVE::Storage::Custom::SharedLvmThinPlugin;
 
-die "Usage: sharedlvmthin-bridge-admission <acquire|release> <storage-id> <transaction> <node>\n"
+die "Usage: sharedlvmthin-bridge-admission <acquire|release|inspect> <storage-id> <transaction> <node>\n"
     if @ARGV != 4;
 my ($action, $storeid, $tx, $node) = @ARGV;
-die "invalid action\n" if $action !~ /^(?:acquire|release)$/;
+die "invalid action\n" if $action !~ /^(?:acquire|release|inspect)$/;
 die "invalid storage identifier\n"
     if $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 die "invalid transaction\n" if $tx !~ /^[0-9a-f]{32}$/;
@@ -24,4 +24,14 @@ die "storage '$storeid' is not SharedLvmThin\n"
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
 die "migration-bridge admission must use the Thin alias\n"
     if $class->_allocation_mode($scfg) ne 'thin';
+if ($action eq 'inspect') {
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = defined($scfg->{'slt-expected-wwid'})
+        ? "/dev/mapper/$scfg->{'slt-expected-wwid'}" : undef;
+    my $state = $class->_bridge_admission_state($vg, $device);
+    print "BRIDGE_ADMISSION_ACTIVE=", ($state->{active} ? 'YES' : 'NO'), "\n";
+    print "BRIDGE_ADMISSION_TX=", ($state->{tx} // 'none'), "\n";
+    print "BRIDGE_ADMISSION_NODE=", ($state->{node} // 'none'), "\n";
+    exit 0;
+}
 print $class->_bridge_admission($scfg, $storeid, $action, $tx, $node), "\n";

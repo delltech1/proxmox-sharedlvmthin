@@ -97,6 +97,12 @@ timestamps. Read it without taking the mutation lock:
 sharedlvmthin-migrate-bridge inspect <vmid>
 ```
 
+New transactions use state schema v3. Beside the state file, the bridge writes
+a mode-0600 immutable disk manifest containing every slot, original volume ID
+and exact virtual byte size. Its SHA-256 digest is committed into the state
+record. Recovery refuses a missing, duplicated, modified or count-mismatched
+manifest before contacting another node.
+
 If the copy back to Thin completed but the final health check or state publish
 was interrupted, TG30 can finalize only after proving the saved transaction,
 source/target identity, online target, running VM, exact all-Thin disk topology,
@@ -108,6 +114,9 @@ sharedlvmthin-migrate-bridge resume <vmid>
 
 All earlier or mixed phases are deliberately refused. `resume` never guesses,
 deletes storage, retries an ambiguous copy, or rewrites VM configuration.
+The bridge-admission helper also exposes a read-only exact state inspection;
+finalization requires the VG-wide materialization admission to be absent and
+both Thin and Thick recovery checks on the target to pass.
 
 Thin pool capacity is isolated per VM. A reported `Data% >= 95` blocks
 mutations of that pool in the plugin, but does not block unrelated VM pools in

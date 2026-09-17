@@ -31,7 +31,7 @@ if [ "${1:-}" = inspect ]; then
     mode=$(stat -c %a "$latest")
     [ "$mode" = 600 ] || { echo "untrusted bridge state mode: $mode" >&2; exit 70; }
     awk -F= '
-        $1 ~ /^(version|tx|vmid|source_node|target_node|thin_storage|thick_storage|return_thin|phase|disk_count|completed_disks|current_disk|progress_percent|total_bytes|started_at|updated_at|config_sha256)$/ {
+        $1 ~ /^(version|tx|vmid|source_node|target_node|thin_storage|thick_storage|return_thin|phase|disk_count|completed_disks|current_disk|progress_percent|total_bytes|started_at|updated_at|config_sha256|disk_manifest_sha256)$/ {
             print toupper($1) "=" substr($0, index($0, "=") + 1)
         }
     ' "$latest"
@@ -71,7 +71,7 @@ if [ "${1:-}" = resume ]; then
     thin_store=$(state_value thin_storage); thick_store=$(state_value thick_storage)
     return_thin=$(state_value return_thin); phase=$(state_value phase)
     disk_count=$(state_value disk_count); completed_disks=$(state_value completed_disks)
-    [[ $version = 2 && $tx =~ ^[0-9a-f]{32}$ && $vmid = "$resume_vmid" ]] \
+    [[ $version =~ ^(2|3)$ && $tx =~ ^[0-9a-f]{32}$ && $vmid = "$resume_vmid" ]] \
         || { echo "invalid bridge state identity" >&2; exit 70; }
     [[ $source_node = "$(hostname)" && $target =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
         && $thin_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
@@ -82,6 +82,19 @@ if [ "${1:-}" = resume ]; then
     [[ $disk_count =~ ^[1-9][0-9]*$ && $completed_disks =~ ^[0-9]+$ \
         && $completed_disks -ge $((disk_count * 2)) ]] \
         || { echo "return-to-Thin completion evidence is incomplete" >&2; exit 70; }
+    if [ "$version" = 3 ]; then
+        manifest_digest=$(state_value disk_manifest_sha256)
+        manifest_file="$resume_dir/$vmid-$tx.manifest"
+        [[ $manifest_digest =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "invalid disk manifest digest" >&2; exit 70; }
+        [ -f "$manifest_file" ] && [ "$(stat -c %u "$manifest_file")" -eq 0 ] \
+            && [ "$(stat -c %a "$manifest_file")" = 600 ] \
+            || { echo "trusted disk manifest is unavailable" >&2; exit 70; }
+        [ "$(sha256sum "$manifest_file" | cut -d' ' -f1)" = "$manifest_digest" ] \
+            || { echo "disk manifest digest mismatch" >&2; exit 70; }
+        [ "$(wc -l <"$manifest_file")" -eq "$disk_count" ] \
+            || { echo "disk manifest count mismatch" >&2; exit 70; }
+    fi
     member_ip=$(perl -MPVE::Cluster -e '
         PVE::Cluster::cfs_update(); my ($node) = @ARGV;
         my $m = PVE::Cluster::get_members()->{$node} // die "unknown target\n";
@@ -97,6 +110,10 @@ if [ "${1:-}" = resume ]; then
         || { echo "target disk topology is not exactly all-Thin" >&2; exit 70; }
     "${ssh_base[@]}" -- qm status "$vmid" | grep -qx 'status: running'
     "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+    "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+        inspect "$thin_store" "$tx" "$source_node" \
+        | grep -qx 'BRIDGE_ADMISSION_ACTIVE=NO'
     remote_digest=$(printf '%s\n' "$remote_cfg" | sha256sum | cut -d' ' -f1)
     resume_tmp="$resume_file.tmp.$$"
     now=$(date +%s)
@@ -209,6 +226,25 @@ printf 'PREFLIGHT=PASS\nVMID=%s\nSOURCE_NODE=%s\nTARGET_NODE=%s\nDISKS=%s\nREQUI
 
 tx=$(printf '%s' "$vmid:$local_node:$target:$(date +%s%N):$$" | sha256sum | cut -c1-32)
 state_file="$state_dir/$vmid-$tx.state"
+manifest_file="$state_dir/$vmid-$tx.manifest"
+manifest_tmp="$manifest_file.tmp.$$"
+umask 077
+: >"$manifest_tmp"
+for entry in "${disks[@]}"; do
+    disk=${entry%%|*}
+    vol=${entry#*|}
+    path=$(pvesm path "$vol")
+    bytes=$(blockdev --getsize64 "$path")
+    [[ $disk =~ ^(ide|sata|scsi|virtio)[0-9]+$ \
+        && $vol =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*:vm-[0-9]+-disk-[0-9]+$ \
+        && $bytes =~ ^[1-9][0-9]*$ ]] \
+        || { echo "cannot persist canonical disk manifest" >&2; exit 70; }
+    printf '%s|%s|%s\n' "$disk" "$vol" "$bytes" >>"$manifest_tmp"
+done
+sync -f "$manifest_tmp"
+mv -f "$manifest_tmp" "$manifest_file"
+sync -f "$state_dir"
+disk_manifest_sha256=$(sha256sum "$manifest_file" | cut -d' ' -f1)
 phase=PREPARED
 started_at=$(date +%s)
 updated_at=$started_at
@@ -229,13 +265,14 @@ write_state() {
     umask 077
     updated_at=$(date +%s)
     {
-        printf 'version=2\ntx=%s\nvmid=%s\nsource_node=%s\ntarget_node=%s\n' "$tx" "$vmid" "$local_node" "$target"
+        printf 'version=3\ntx=%s\nvmid=%s\nsource_node=%s\ntarget_node=%s\n' "$tx" "$vmid" "$local_node" "$target"
         printf 'thin_storage=%s\nthick_storage=%s\nreturn_thin=%s\nphase=%s\n' "$thin_store" "$thick_store" "$return_thin" "$phase"
         printf 'disk_count=%s\ncompleted_disks=%s\ncurrent_disk=%s\nprogress_percent=%s\n' \
             "${#disks[@]}" "$completed_disks" "$current_disk" "$progress_percent"
         printf 'total_bytes=%s\nstarted_at=%s\nupdated_at=%s\n' \
             "$total_bytes" "$started_at" "$updated_at"
         printf 'config_sha256=%s\n' "$(sha256sum "${config_paths[0]}" | cut -d" " -f1)"
+        printf 'disk_manifest_sha256=%s\n' "$disk_manifest_sha256"
     } >"$tmp"
     sync -f "$tmp"
     mv -f "$tmp" "$state_file"
