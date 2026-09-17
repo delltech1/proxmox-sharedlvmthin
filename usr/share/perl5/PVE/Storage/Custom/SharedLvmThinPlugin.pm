@@ -16,6 +16,7 @@ use PVE::SSHInfo;
 use PVE::Tools ();
 use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinPeerAudit qw(select_peer_nodes evaluate_peer_mapper_evidence);
+use PVE::SharedLvmThinGuardClient;
 use PVE::SharedLvmThinThick qw(
     anchor_name clone_geometry decode_anchor_tags decode_generation_tags
     generation_name mapper_name object_key
@@ -179,9 +180,9 @@ sub properties {
             default => 1000,
         },
         'slt-thin-leaseguard' => {
-            description => 'Opt-in PVE-native single-kernel activation guard. remote-audit requires positive absence of the exact thin-pool mapper on every configured peer node; any unreachable or ambiguous peer refuses activation.',
+            description => 'Opt-in PVE-native single-kernel activation guard. remote-audit proves peer mapper absence; runtime-guard additionally requires the static ThinGuard daemon to arm watchdog-mux before activation.',
             type => 'string',
-            enum => ['disabled', 'remote-audit'],
+            enum => ['disabled', 'remote-audit', 'runtime-guard'],
             default => 'disabled',
         },
         'slt-tg-hydration-threshold' => {
@@ -2037,11 +2038,15 @@ sub _thin_pool_dm_identity {
             if !/^[A-Za-z0-9-]+$/;
         s/-//g;
     }
+    # Restore the canonical LVM representation for the guardian inventory.
+    my (undef, $raw_lv_uuid) = split(/\|/, $lines->[0], 2);
+    $raw_lv_uuid //= '';
+    $raw_lv_uuid =~ s/^\s+|\s+$//g;
     my $vg_dm = $vg;
     my $pool_dm = $pool;
     $vg_dm =~ s/-/--/g;
     $pool_dm =~ s/-/--/g;
-    return ("$vg_dm-$pool_dm-tpool", "LVM-$vg_uuid$lv_uuid-tpool");
+    return ("$vg_dm-$pool_dm-tpool", "LVM-$vg_uuid$lv_uuid-tpool", $raw_lv_uuid);
 }
 
 sub _thin_configured_peer_nodes {
@@ -2059,7 +2064,7 @@ sub _thin_remote_mapper_audit_locked {
     my ($class, $scfg, $vg, $pool, $device) = @_;
     my $mode = $scfg->{'slt-thin-leaseguard'} // 'disabled';
     die "invalid slt-thin-leaseguard mode '$mode'\n"
-        if $mode ne 'disabled' && $mode ne 'remote-audit';
+        if $mode ne 'disabled' && $mode ne 'remote-audit' && $mode ne 'runtime-guard';
     return 1 if $mode eq 'disabled';
 
     my ($mapper, $expected_uuid) =
@@ -2109,7 +2114,7 @@ sub _thin_claim_pool_owner_locked {
     my $owner = $state->{owner};
     die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' is owned by node '$owner', not '$node'; concurrent dm-thin activation can corrupt metadata; live migration is unsupported\n"
         if defined($owner) && $owner ne $node;
-    return 1 if defined($owner);
+    return $state->{epoch} if defined($owner);
 
     # An unowned pool must also be absent from this kernel.  Generic LVM
     # autoactivation or a leaked dmeventd mapping can otherwise load the same
@@ -2138,7 +2143,22 @@ sub _thin_claim_pool_owner_locked {
     die "shared thin-pool ownership claim postcondition failed for '$vg/$pool'\n"
         if !$after->{schema} || !defined($after->{owner})
         || $after->{owner} ne $node || $after->{epoch} ne $epoch;
-    return 1;
+    return $epoch;
+}
+
+sub _thin_runtime_guard_request {
+    my ($class, $scfg, $op, %request) = @_;
+    return 1 if ($scfg->{'slt-thin-leaseguard'} // 'disabled') ne 'runtime-guard';
+    my $client = PVE::SharedLvmThinGuardClient->new(allow_real_socket => 1);
+    my $action = $op eq 'PREPARE' ? 'ACK_PREPARED'
+        : $op eq 'RELEASE' ? ['CLEAN_DISARM', 'REFRESH_WATCHDOG']
+        : die "invalid ThinGuard operation\n";
+    return $client->request({
+        version => 1,
+        op => $op,
+        request_id => _new_transaction_id(),
+        %request,
+    }, $action);
 }
 
 sub _thin_release_pool_owner_locked {
@@ -2971,7 +2991,29 @@ sub activate_volume {
         $class->_verify_owned_volume($storeid, $scfg, $volname);
         $class->_verify_autoactivation_disabled($vg, $pool, $device);
         $class->_verify_autoactivation_disabled($vg, $lv, $device);
-        $class->_thin_claim_pool_owner_locked($vg, $pool, $device, $scfg);
+        my $runtime_before = {pool_mapper_active => 0};
+        $runtime_before = $class->_thin_pool_runtime_state($vg, $pool, $device)
+            if ($scfg->{'slt-thin-leaseguard'} // 'disabled') eq 'runtime-guard';
+        my $epoch = $class->_thin_claim_pool_owner_locked($vg, $pool, $device, $scfg);
+        if (($scfg->{'slt-thin-leaseguard'} // 'disabled') eq 'runtime-guard'
+            && !$runtime_before->{pool_mapper_active}) {
+            my (undef, $mapper_uuid, $pool_uuid) =
+                $class->_thin_pool_dm_identity($vg, $pool, $device);
+            eval {
+                $class->_thin_runtime_guard_request($scfg, 'PREPARE',
+                    storage_id => $storeid,
+                    pool_uuid => $pool_uuid,
+                    owner_epoch => $epoch,
+                    mapper_uuid => $mapper_uuid,
+                );
+            };
+            if (my $guard_error = $@) {
+                # No local mapper exists yet. Releasing the just-created owner
+                # epoch is therefore a bounded rollback, not storage repair.
+                $class->_thin_release_pool_owner_locked($vg, $pool, $device, 0);
+                die "ThinGuard refused activation before lvchange: $guard_error";
+            }
+        }
         my @activate = ('/sbin/lvchange');
         push @activate, ('--devices', $device) if defined($device);
         push @activate, ('-ay', '-K', "$vg/$lv");
@@ -3088,6 +3130,15 @@ sub _deactivate_thin_volume_locked {
     $class->_verify_storage_identity($storeid, $scfg, $device);
     $class->_verify_owned_volume($storeid, $scfg, $volname);
 
+    my $guard_owner;
+    my $guard_pool_uuid;
+    if (($scfg->{'slt-thin-leaseguard'} // 'disabled') eq 'runtime-guard') {
+        $guard_owner = _thin_owner_state_from_tags(
+            $class->_thin_pool_tags($vg, $pool, $device));
+        (undef, undef, $guard_pool_uuid) =
+            $class->_thin_pool_dm_identity($vg, $pool, $device);
+    }
+
     my $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
     my @other_children = grep { $_ ne $lv } @{$state->{active_children}};
 
@@ -3154,6 +3205,13 @@ sub _deactivate_thin_volume_locked {
     # Never turn that cleanup callback into an attempt to release or rewrite
     # the remote owner's evidence.
     $class->_thin_release_pool_owner_locked($vg, $pool, $device, 1);
+    if (defined($guard_owner) && defined($guard_owner->{owner})
+        && $guard_owner->{owner} eq $class->_thin_local_node()) {
+        $class->_thin_runtime_guard_request($scfg, 'RELEASE',
+            pool_uuid => $guard_pool_uuid,
+            owner_epoch => $guard_owner->{epoch},
+        );
+    }
     return 1;
 }
 

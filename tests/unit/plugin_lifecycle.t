@@ -3143,6 +3143,110 @@ subtest 'thin activation failure preserves the claimed owner for explicit recove
     ], 'only the exact device-scoped activation was attempted');
 };
 
+subtest 'runtime guard acknowledges watchdog before first local activation' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-thin-leaseguard' => 'runtime-guard',
+    };
+    my @events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_owned_volume = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_mutation_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return {pool_active => 0, pool_mapper_active => 0, active_children => []};
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_claim_pool_owner_locked = sub {
+        push @events, 'CLAIM';
+        return 'a' x 32;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_dm_identity = sub {
+        return ('testvg-sltp--900001-tpool', 'LVM-abcdef-tpool', 'pool-uuid');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_runtime_guard_request = sub {
+        my (undef, undef, $op, %request) = @_;
+        push @events, $op;
+        is($request{owner_epoch}, 'a' x 32, 'exact claimed epoch is sent');
+        is($request{pool_uuid}, 'pool-uuid', 'exact pool UUID is sent');
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command) = @_;
+        push @events, 'ACTIVATE' if grep { $_ eq '-ay' } @$command;
+    };
+    ok($class->activate_volume('shared-test', $cfg, 'vm-900001-disk-0', undef, undef),
+        'guarded activation succeeds');
+    is_deeply(\@events, ['CLAIM', 'PREPARE', 'ACTIVATE'],
+        'watchdog admission precedes lvchange activation');
+
+    @events = ();
+    my $releases = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_runtime_guard_request = sub {
+        push @events, 'PREPARE';
+        die "guardian unavailable\n";
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked = sub {
+        $releases++;
+        push @events, 'RELEASE_OWNER';
+        return 1;
+    };
+    eval { $class->activate_volume(
+        'shared-test', $cfg, 'vm-900001-disk-0', undef, undef) };
+    like($@, qr/ThinGuard refused activation before lvchange/, 'missing guardian refuses activation');
+    is($releases, 1, 'inactive owner claim is rolled back exactly once');
+    ok(!grep { $_ eq 'ACTIVATE' } @events, 'lvchange activation never runs after refusal');
+};
+
+subtest 'runtime guard releases daemon only after exact mapper teardown and owner release' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-thin-leaseguard' => 'runtime-guard',
+    };
+    my @events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_owned_volume = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-' . ('a' x 32);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_dm_identity = sub {
+        return ('testvg-sltp--900001-tpool', 'LVM-abcdef-tpool', 'pool-uuid');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return {pool_active => 0, pool_mapper_active => 0, active_children => []};
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked = sub {
+        push @events, 'OWNER_RELEASED';
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_runtime_guard_request = sub {
+        my (undef, undef, $op, %request) = @_;
+        push @events, $op;
+        is($request{pool_uuid}, 'pool-uuid', 'release uses exact pool UUID');
+        is($request{owner_epoch}, 'a' x 32, 'release uses original owner epoch');
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command) = @_;
+        push @events, 'LV_DEACTIVATED' if grep { $_ eq '-an' } @$command;
+    };
+    ok($class->_deactivate_thin_volume_locked(
+        'shared-test', $cfg, 'vm-900001-disk-0', undef, undef),
+        'guarded teardown succeeds');
+    is_deeply(\@events, ['LV_DEACTIVATED', 'OWNER_RELEASED', 'RELEASE'],
+        'daemon release follows mapper teardown and persistent owner release');
+};
+
 subtest 'thin claim postcondition failure never guesses a compensating release' => sub {
     reset_mocks();
     my @tags = (

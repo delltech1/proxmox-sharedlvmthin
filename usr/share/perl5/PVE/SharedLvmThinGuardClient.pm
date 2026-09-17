@@ -31,8 +31,10 @@ sub _connect {
 sub request {
     my ($self, $request, $expected_action) = @_;
     die "ThinGuard client request must be a hash\n" if ref($request) ne 'HASH';
+    my @expected = ref($expected_action) eq 'ARRAY' ? @$expected_action : ($expected_action);
     die "ThinGuard expected action is malformed\n"
-        if !defined($expected_action) || $expected_action !~ /^[A-Z_]+$/;
+        if !@expected || grep { !defined($_) || $_ !~ /^[A-Z_]+$/ } @expected;
+    my %expected_action = map { $_ => 1 } @expected;
     my $payload = JSON::PP->new->canonical(1)->encode({version => 1, %$request}) . "\n";
     die "ThinGuard client request exceeds protocol limit\n" if length($payload) > 16384;
     my $response = '';
@@ -76,8 +78,8 @@ sub request {
     die "ThinGuard response request ID mismatch\n"
         if ($decoded->{request_id} // '') ne ($request->{request_id} // '');
     die "ThinGuard daemon refused request: $decoded->{message}\n" if !$decoded->{ok};
-    die "ThinGuard daemon returned action '$decoded->{action}', expected '$expected_action'\n"
-        if ($decoded->{action} // '') ne $expected_action;
+    die "ThinGuard daemon returned unexpected action '$decoded->{action}'\n"
+        if !$expected_action{$decoded->{action} // ''};
     return $decoded;
 }
 
