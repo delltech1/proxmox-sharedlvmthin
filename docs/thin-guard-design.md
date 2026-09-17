@@ -55,6 +55,27 @@ The two independent metadata domains may safely coexist during copying. QEMU
 pivots authority once. This consumes temporary Thin capacity but avoids the
 fully allocated Thick bridge and avoids an unsupported shared dm-thin runtime.
 
+## Two-node and larger clusters
+
+ThinGuard does not require three PVE compute nodes for normal operation. A
+two-node cluster without QDevice is classified `SUPPORTED_GUARDED` while both
+members are online and quorate. Thin and Thick lifecycle operations and
+planned movement remain available, with a prominent `NO_THIRD_VOTE` warning.
+
+If one member disappears, the survivor cannot distinguish a dead peer from a
+network partition by itself. Automatic takeover is therefore blocked. A
+manual takeover becomes eligible only after both positive external-fencing
+evidence and restored PVE quorum. Merely forcing expected votes is not treated
+as fencing evidence. Two nodes with a functioning QDevice follow the normal
+quorate fenced path.
+
+The classifier has no lab-sized node-count constant. Runtime watchdog use is
+one aggregate client per node and local evaluation is proportional to locally
+active pools. Peer absence auditing is proportional to configured cluster
+members. Actual support remains bounded by the PVE/Corosync deployment and the
+release qualification envelope; the project does not claim literally
+unlimited nodes.
+
 ## Why the layers are separate
 
 - ThinGuard protects steady-state ownership and failover.

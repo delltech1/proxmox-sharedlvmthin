@@ -9,7 +9,7 @@ use Exporter qw(import);
 
 our @EXPORT_OK = qw(
     evaluate_guard_activation evaluate_guard_runtime evaluate_guard_handoff
-    evaluate_guard_node
+    evaluate_guard_node evaluate_guard_topology
 );
 
 sub _decision {
@@ -138,6 +138,56 @@ sub evaluate_guard_node {
         @{$e{pools}}
             ? 'all active Thin authority epochs are positively verified'
             : 'no active Thin pools; watchdog client may close cleanly');
+}
+
+# Topology policy is separate from per-pool authority. Two-node clusters are
+# supported for normal and planned operation, but without a third vote they
+# cannot safely infer which side of a partition may take over. An explicit
+# external fence plus restored quorum can authorize a manual takeover.
+sub evaluate_guard_topology {
+    my (%e) = @_;
+    for my $name (qw(configured_nodes online_nodes)) {
+        return _decision(0, 'RECOVERY_REQUIRED', 'NONE', "invalid topology field: $name")
+            if !defined($e{$name}) || $e{$name} !~ /^\d+$/;
+    }
+    return _decision(0, 'UNSUPPORTED', 'NONE', 'a cluster requires at least two configured nodes')
+        if $e{configured_nodes} < 2;
+    return _decision(0, 'RECOVERY_REQUIRED', 'NONE', 'online node count exceeds configured topology')
+        if $e{online_nodes} > $e{configured_nodes};
+    for my $name (qw(quorum qdevice external_fence)) {
+        my $value = _bool(\%e, $name);
+        return _decision(0, 'RECOVERY_REQUIRED', 'NONE', "missing or malformed topology field: $name")
+            if !defined($value);
+    }
+
+    if ($e{configured_nodes} == 2 && !$e{qdevice}) {
+        if ($e{online_nodes} == 2 && $e{quorum}) {
+            my $result = _decision(1, 'SUPPORTED_GUARDED', 'ALLOW_PLANNED_OPERATIONS',
+                'two-node cluster is healthy; automatic single-survivor failover is unavailable without a third vote');
+            $result->{automatic_failover} = 0;
+            $result->{warning} = 'NO_THIRD_VOTE';
+            return $result;
+        }
+        if ($e{online_nodes} == 1 && $e{quorum} && $e{external_fence}) {
+            my $result = _decision(1, 'MANUAL_FENCED_TAKEOVER', 'ALLOW_EXPLICIT_TAKEOVER',
+                'single survivor has restored quorum and positive external fencing evidence');
+            $result->{automatic_failover} = 0;
+            $result->{warning} = 'OPERATOR_FENCING_ASSERTION_REQUIRED';
+            return $result;
+        }
+        my $result = _decision(0, 'RECOVERY_REQUIRED', 'NONE',
+            'two-node survivor lacks a third vote or positive external-fence plus restored-quorum evidence');
+        $result->{automatic_failover} = 0;
+        $result->{warning} = 'NO_THIRD_VOTE';
+        return $result;
+    }
+
+    return _decision(0, 'RECOVERY_REQUIRED', 'NONE', 'cluster quorum is not positively proven')
+        if !$e{quorum};
+    my $result = _decision(1, 'SUPPORTED', 'ALLOW_FENCED_OPERATIONS',
+        'cluster topology has positive quorum; per-pool fencing evidence remains mandatory');
+    $result->{automatic_failover} = 1;
+    return $result;
 }
 
 # Planned handoff deliberately has a no-authority gap.  It never permits the

@@ -8,7 +8,7 @@ use lib "$FindBin::Bin/../../usr/share/perl5";
 
 use PVE::SharedLvmThinGuard qw(
     evaluate_guard_activation evaluate_guard_runtime evaluate_guard_handoff
-    evaluate_guard_node
+    evaluate_guard_node evaluate_guard_topology
 );
 
 sub admission {
@@ -95,6 +95,43 @@ for my $mask (0 .. (2 ** @runtime_fields) - 1) {
         "runtime truth table mask $mask is fail-closed");
 }
 is($refresh_states, 1, 'exactly one of 256 runtime evidence states may refresh');
+
+$r = evaluate_guard_topology(
+    configured_nodes => 2, online_nodes => 2, quorum => 1,
+    qdevice => 0, external_fence => 0,
+);
+is($r->{state}, 'SUPPORTED_GUARDED', 'healthy two-node cluster without qdevice is supported');
+ok(!$r->{automatic_failover}, 'two-node no-qdevice mode does not claim automatic failover');
+$r = evaluate_guard_topology(
+    configured_nodes => 2, online_nodes => 1, quorum => 0,
+    qdevice => 0, external_fence => 0,
+);
+is($r->{state}, 'RECOVERY_REQUIRED', 'unquorate two-node survivor fails closed');
+$r = evaluate_guard_topology(
+    configured_nodes => 2, online_nodes => 1, quorum => 1,
+    qdevice => 0, external_fence => 0,
+);
+ok(!$r->{safe}, 'forced quorum alone cannot prove peer fencing');
+$r = evaluate_guard_topology(
+    configured_nodes => 2, online_nodes => 1, quorum => 1,
+    qdevice => 0, external_fence => 1,
+);
+is($r->{state}, 'MANUAL_FENCED_TAKEOVER', 'external fence plus restored quorum permits explicit takeover');
+$r = evaluate_guard_topology(
+    configured_nodes => 2, online_nodes => 1, quorum => 1,
+    qdevice => 1, external_fence => 0,
+);
+ok($r->{safe} && $r->{automatic_failover}, 'two nodes plus qdevice follows quorate fenced path');
+$r = evaluate_guard_topology(
+    configured_nodes => 32, online_nodes => 17, quorum => 1,
+    qdevice => 0, external_fence => 0,
+);
+ok($r->{safe}, 'large quorate topology is not hard-coded to the lab node count');
+$r = evaluate_guard_topology(
+    configured_nodes => 500, online_nodes => 251, quorum => 1,
+    qdevice => 0, external_fence => 0,
+);
+ok($r->{safe}, 'classifier has no arbitrary small-cluster ceiling');
 
 sub handoff {
     return (
