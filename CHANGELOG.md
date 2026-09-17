@@ -10,6 +10,8 @@
   runtime/config divergence now blocks all automatic recovery.
 - Qualify a killed online mirror through safe reconciliation and a resumed
   Thin-to-Thick-to-Thin live migration lifecycle with zero Thick leftovers.
+- Prevent noninteractive SSH probes from consuming the remaining disk manifest;
+  qualify interruption and exact continuation between two VM disks.
 - Pass 197 Python tests and 691 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)

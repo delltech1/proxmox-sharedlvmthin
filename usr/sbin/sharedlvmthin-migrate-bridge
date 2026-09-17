@@ -101,7 +101,12 @@ if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
         my $m = PVE::Cluster::get_members()->{$node} // die "unknown target\n";
         die "offline target\n" if !$m->{online}; print $m->{ip};
     ' "$target")
-    ssh_base=(/usr/bin/ssh -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
+    ssh_stream_base=(/usr/bin/ssh -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
+        -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
+        -o GlobalKnownHostsFile=none "root@$member_ip")
+    # Ordinary remote probes must never inherit the manifest loop's stdin.
+    # Only the explicit QMP evidence pipeline uses ssh_stream_base.
+    ssh_base=(/usr/bin/ssh -n -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
         -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
         -o GlobalKnownHostsFile=none "root@$member_ip")
     observed_owner=$(
@@ -159,7 +164,7 @@ print(rows[0].get("node", ""))' "$vmid"
         fi
     else
         if ! runtime_evidence=$(printf '%s' "$runtime_expectations" \
-            | "${ssh_base[@]}" -- /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check "$vmid"); then
+            | "${ssh_stream_base[@]}" -- /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check "$vmid"); then
             printf '%s\n' "$runtime_evidence" >&2
             echo "RUNTIME_CONFIG_DIVERGENCE: refusing automatic recovery" >&2
             exit 70
@@ -674,7 +679,7 @@ if [ "$return_thin" -eq 1 ]; then
         die "offline target\n" if !$m->{online};
         print $m->{ip};
     ' "$target")
-    ssh_base=(/usr/bin/ssh -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
+    ssh_base=(/usr/bin/ssh -n -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
         -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
         -o GlobalKnownHostsFile=none "root@$member_ip")
     # A fast full-copy can outrun asynchronous thin-pool autogrow. Prepare the

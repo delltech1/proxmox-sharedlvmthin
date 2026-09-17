@@ -16,6 +16,9 @@ It is not yet the recommended public package.
 - Resume actions cover materialization, native Thick live migration, return to
   Thin, and exact finalization. Long copies publish progress without imposing
   a fixed timeout on large healthy disks.
+- Remote probes use stdin-null SSH sessions so a command executed inside a
+  manifest loop cannot consume later disk records. The sole streaming SSH
+  session is the explicit QMP expectation pipeline.
 
 ## Qualification completed
 
@@ -26,6 +29,13 @@ destination was open or referenced. After stopped-guest reconciliation, the
 same transaction resumed through materialization, live migration, and return
 to Thin. Final QMP/config topology matched, admission was clear, and no Thick
 transaction LV remained.
+
+A two-disk VM was then interrupted during the second Thin-to-Thick mirror.
+The first slot remained Thick, the second remained Thin, state became
+`MOVE_FAILED`, and the planner selected `CONTINUE_MATERIALIZE`. Recovery copied
+only the remaining slot, completed the native live migration, and returned
+both slots to Thin. This test also exposed and fixed SSH consuming the second
+manifest line during remote return recovery.
 
 The current source passes 197 Python tests and 691 Perl assertions. Broader
 multi-disk, repeated crash-point, large-disk, and concurrent recovery

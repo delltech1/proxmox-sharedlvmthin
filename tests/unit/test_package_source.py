@@ -85,6 +85,8 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("now - last_persist", source)
         self.assertIn("sharedlvmthin-qmp-path-check", source)
         self.assertIn("RUNTIME_CONFIG_DIVERGENCE", source)
+        self.assertIn("ssh_stream_base", source)
+        self.assertIn("ssh_base=(/usr/bin/ssh -n", source)
         qmp_check = (
             ROOT
             / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check"

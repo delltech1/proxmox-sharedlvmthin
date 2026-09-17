@@ -3915,3 +3915,23 @@ TG31_RECOVERY_RETURN_THIN=PASS
 TG31_FINAL_RUNTIME_CONFIG_MATCH=PASS
 TG31_THICK_LEFTOVERS=0
 ```
+
+The same recovery path was exercised with two disks. The second
+Thin-to-Thick QEMU mirror was terminated after the first slot had committed.
+The exact mixed topology remained usable and was classified as resumable only
+after QMP agreed with pmxcfs for both slots. Resume skipped the completed disk,
+materialized the remaining disk, migrated the VM, and returned both disks to
+Thin. A remote-SSH stdin consumption defect found during this test was fixed;
+the repeated continuation completed all four per-slot transition steps.
+
+```ini
+TG31_MULTIDISK_SLOTS=2
+TG31_INTERRUPT_POINT=SECOND_DISK_MIRROR
+TG31_MIXED_TOPOLOGY_PLAN=CONTINUE_MATERIALIZE
+TG31_COMPLETED_SLOT_REPLAYED=NO
+TG31_REMAINING_SLOT_RECOVERED=YES
+TG31_REMOTE_MANIFEST_STDIN_FIX=PASS
+TG31_MULTIDISK_FINAL_PHASE=RETURNED_THIN
+TG31_MULTIDISK_COMPLETED_DISKS=4
+TG31_MULTIDISK_THICK_LEFTOVERS=0
+```
