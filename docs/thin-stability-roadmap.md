@@ -214,3 +214,28 @@ and migration API proposal, not in an out-of-tree monkey patch.
 7. Expose neither path until PVE task, QEMU pivot, source-close and multi-disk
    atomicity postconditions are positively proven.
 8. Draft the exclusive-handoff API proposal for upstream PVE.
+
+## TG28 development result: ThinGuard and Thin Generation Mobility
+
+The first implementation slice now exists as two pure, packageable decision
+engines:
+
+- `PVE::SharedLvmThinGuard` implements quorum-fenced activation admission,
+  irreversible runtime uncertainty, aggregate node-watchdog decisions and a
+  strict no-overlap planned handoff.
+- `PVE::SharedLvmThinMobility` implements generation names, canonical
+  fingerprints and the source-to-target authority state machine for native
+  QEMU mirroring between independent per-VM thin metadata domains.
+
+The node guard deliberately uses one aggregate watchdog client, not one client
+per VM. The qualified PVE watchdog multiplexer has a finite client table; a
+per-pool design would fail at scale. One uncertain locally active pool blocks
+the aggregate refresh and therefore cannot be hidden by healthy sibling pools.
+
+The current exhaustive unit qualification covers all 256 Boolean combinations
+of runtime authority evidence. Exactly one combination permits a watchdog
+refresh. The combined source tree currently passes 177 Python and 588 Perl
+tests and builds a content-validated DEB. This is a development result, not a
+production enablement claim: the privileged guardian remains unarmed until a
+disposable node proves real watchdog expiry, fencing order and post-reboot
+takeover.
