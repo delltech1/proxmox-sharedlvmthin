@@ -82,7 +82,20 @@ package's maintainer scripts when a currently installed `prerm` refuses an
 upgrade, so TG26 does not claim that it can technically prevent an explicit
 administrator-forced downgrade. Keep TG26 or newer on every node.
 
-Real external host fencing remains a release gate. Forced downgrade was tested
-and is explicitly outside the support envelope because pre-TG26 code cannot
-enforce the owner protocol. TG26 is therefore still a development candidate,
-not a production recommendation.
+Real external host fencing has now passed on the disposable two-disk VM 992600.
+The owning PVE03 virtual host was powered off from its external ESXi hypervisor.
+The surviving cluster remained quorate, had no local pool mapping, and refused
+target start while the durable owner still named PVE03. Only after positive
+hypervisor fencing was the exact former owner cleared. PVE02 then activated
+the pool with a fresh epoch, started the VM and reproduced the pre-fault 4 KiB
+canary SHA-256 exactly. After PVE03 rejoined, all three nodes reported
+`HEALTHY`, `SAFE_FOR_MUTATION=YES`, no relevant D-state and no test-pool map.
+
+Forced downgrade was tested and is explicitly outside the support envelope
+because pre-TG26 code cannot enforce the owner protocol. TG26 remains a
+development candidate rather than a production recommendation while physical
+SAN/HBA qualification and the documented platform-specific gates remain open.
+
+An additional experimental design, `thin-pool-leaseguard.md`, investigates a
+per-pool disk-backed sanlock lease coupled to watchdog fencing. It may harden
+runtime ownership further, but is not enabled or claimed by TG26.
