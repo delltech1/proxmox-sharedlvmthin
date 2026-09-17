@@ -1448,6 +1448,14 @@ case "${1:-doctor}" in
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
             --adopt-thin-owner-model "$2" "$3" "$4"
         ;;
+    thin-metadata-check)
+        if [ "$#" -ne 3 ]; then
+            echo "Usage: sharedlvmthin thin-metadata-check <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+            "$2" "$3"
+        ;;
     version|--version|-V)
         echo "sharedlvmthin doctor $VERSION"
         ;;
@@ -1468,6 +1476,7 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin thin-recover-orphan <storage-id> <volume>"
         echo "  sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>"
         echo "  sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE"
+        echo "  sharedlvmthin thin-metadata-check <storage-id> <volume>"
         echo "  sharedlvmthin version"
         exit 64
         ;;

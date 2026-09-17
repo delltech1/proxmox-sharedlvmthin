@@ -56,6 +56,13 @@ adding a global D-state gate to ordinary plugin mutations.
 The checker never performs activation, SCSI rescan, multipath/dmeventd/PVE
 restart, dm-thin reset, cleanup, initialization or metadata repair.
 
+The explicit `thin-metadata-check` command provides the stronger frozen-root
+metadata gate when the pool is active and exclusively owned. It reserves the
+kernel metadata snapshot under the canonical lock, runs bounded read-only
+`thin_check --metadata-snap`, releases only its own reservation, and emits an
+exact transaction fingerprint. It is never run implicitly in the guest I/O
+path and never repairs metadata.
+
 ## DS-17 — Single-kernel Thin-pool ownership
 
 A managed read-write Thin pool must never be active in more than one kernel.

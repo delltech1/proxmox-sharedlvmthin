@@ -8,6 +8,27 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
+        helper = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check"
+        ).read_text(encoding="utf-8")
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertIn("reserve_metadata_snap", helper)
+        self.assertIn("release_metadata_snap", helper)
+        self.assertIn("--metadata-snap", helper)
+        self.assertIn("--kill-after=5", helper)
+        self.assertIn("_with_mutation_lock", helper)
+        self.assertIn("--devices", helper)
+        self.assertNotIn("thin_repair", helper)
+        self.assertNotIn("--auto-repair", helper)
+        self.assertNotIn("--clear-needs-check-flag", helper)
+        self.assertIn("sharedlvmthin-thin-metadata-check", build)
+        self.assertIn("sharedlvmthin-thin-metadata-check", postinst)
+        self.assertIn("thin-metadata-check", cli)
+
     def test_thin_guard_daemon_is_static_fail_closed_and_not_enabled(self):
         daemon = (
             ROOT

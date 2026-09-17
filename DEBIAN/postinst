@@ -26,6 +26,7 @@ python3 -m py_compile "$HEALTH"
 python3 -m py_compile "$WEB"
 
 chmod 0755 "$MONITOR" "$MATERIALIZER" "$THIN_GUARDD" "$HEALTH" "$WEB" \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \

@@ -1,0 +1,187 @@
+#!/usr/bin/perl
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+use strict;
+use warnings;
+
+use Digest::SHA qw(sha256_hex);
+use JSON::PP ();
+use PVE::Storage;
+use PVE::SharedLvmThinSafety;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+
+die "Usage: sharedlvmthin-thin-metadata-check <storage-id> <volume>\n"
+    if @ARGV != 2;
+my ($storeid, $volname) = @ARGV;
+die "invalid storage identifier\n"
+    if $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+die "invalid Thin volume name\n"
+    if $volname !~ /^(?:vm|base)-\d+-disk-\d+$/;
+
+my $cfg = PVE::Storage::config();
+my $scfg = PVE::Storage::storage_config($cfg, $storeid);
+die "storage '$storeid' is not SharedLvmThin\n"
+    if ($scfg->{type} // '') ne 'sharedlvmthin';
+die "storage '$storeid' is configured for Thick Generations\n"
+    if ($scfg->{'slt-allocation-mode'} // 'thin') eq 'thick-generations';
+
+my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+my (undef, undef, $vmid) = $class->parse_volname($volname);
+my $vg = $scfg->{'slt-vgname'};
+my $pool = "sltp-$vmid";
+my $device = defined($scfg->{'slt-expected-wwid'})
+    ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+    : undef;
+
+sub command_lines {
+    my ($command, $message) = @_;
+    return PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines(
+        $command, $message,
+    );
+}
+
+my $result = $class->_with_mutation_lock($storeid, $scfg, sub {
+    $class->_verify_owned_volume($storeid, $scfg, $volname);
+    my $runtime = $class->_thin_pool_runtime_state($vg, $pool, $device);
+    die "metadata validation requires the exact local thin-pool mapper active\n"
+        if !$runtime->{pool_mapper_active};
+    my $mapper = $runtime->{pool_mapper};
+    die "invalid exact thin-pool mapper name\n"
+        if $mapper !~ /^([A-Za-z0-9_.+-]+)$/;
+    $mapper = $1;
+
+    my $tags = $class->_thin_pool_tags($vg, $pool, $device);
+    my $owner = PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_state_from_tags($tags);
+    die "metadata validation requires an exact persistent owner epoch\n"
+        if !$owner->{schema} || !defined($owner->{owner}) || !defined($owner->{epoch});
+
+    my @lvs = ('/sbin/lvs', '--readonly');
+    push @lvs, ('--devices', $device) if defined($device);
+    push @lvs, ('--noheadings', '--separator', '|', '-o',
+        'lv_name,lv_uuid', "$vg/$pool", "$vg/${pool}_tmeta", "$vg/${pool}_tdata");
+    my $lv_lines = command_lines(\@lvs, "reading exact Thin component UUIDs failed");
+    die "expected exactly three Thin component UUIDs\n" if @$lv_lines != 3;
+    my %uuid;
+    for my $line (@$lv_lines) {
+        my ($name, $value) = split(/\|/, $line, 2);
+        for ($name, $value) { $_ //= ''; s/^\s+|\s+$//g; }
+        $name =~ s/^\[|\]$//g;
+        die "malformed Thin component identity\n"
+            if $name !~ /^[A-Za-z0-9_.+-]+$/ || $value !~ /^[A-Za-z0-9-]+$/
+            || exists($uuid{$name});
+        $uuid{$name} = $value;
+    }
+    for my $required ($pool, "${pool}_tmeta", "${pool}_tdata") {
+        die "missing Thin component '$required'\n" if !defined($uuid{$required});
+    }
+
+    my $table = command_lines(
+        ['/sbin/dmsetup', 'table', $mapper],
+        "reading exact Thin pool table failed",
+    );
+    my $status = command_lines(
+        ['/sbin/dmsetup', 'status', '--noflush', $mapper],
+        "reading exact Thin pool status failed",
+    );
+    my $deps = command_lines(
+        ['/sbin/dmsetup', 'deps', '--noheadings', '-o', 'devname', $mapper],
+        "reading exact Thin pool dependencies failed",
+    );
+    die "Thin mapper table, status or dependencies are ambiguous\n"
+        if @$table != 1 || @$status != 1 || @$deps != 1;
+
+    my @table_fields = split(/\s+/, $table->[0]);
+    die "unexpected Thin mapper table\n"
+        if @table_fields < 6 || $table_fields[2] ne 'thin-pool'
+        || $table_fields[3] !~ /^(\d+):(\d+)$/;
+    my $metadata_devno = "$1:$2";
+    open(my $name_fh, '<', "/sys/dev/block/$metadata_devno/dm/name")
+        or die "cannot resolve exact Thin metadata mapper: $!\n";
+    my $metadata_mapper = <$name_fh>;
+    close($name_fh);
+    chomp($metadata_mapper //= '');
+    die "invalid Thin metadata mapper name\n"
+        if $metadata_mapper !~ /^([A-Za-z0-9_.+-]+)$/;
+    $metadata_mapper = $1;
+    my $metadata_path = "/dev/mapper/$metadata_mapper";
+    die "Thin metadata mapper is not a block device\n" if !-b $metadata_path;
+
+    my @status_fields = split(/\s+/, $status->[0]);
+    die "unexpected Thin mapper status\n"
+        if @status_fields < 7 || $status_fields[2] ne 'thin-pool'
+        || $status_fields[3] !~ /^(\d+)$/;
+    my $transaction_id = $1;
+    my $has_ro = scalar(grep { $_ eq 'ro' } @status_fields);
+    my $has_rw = scalar(grep { $_ eq 'rw' } @status_fields);
+    my $metadata_mode = $has_ro ? 'ro' : $has_rw ? 'rw' : 'unknown';
+
+    my $fingerprint = PVE::SharedLvmThinSafety::build_thin_transaction_fingerprint(
+        pool_uuid => $uuid{$pool},
+        metadata_uuid => $uuid{"${pool}_tmeta"},
+        data_uuid => $uuid{"${pool}_tdata"},
+        transaction_id => $transaction_id,
+        owner_node => $owner->{owner},
+        owner_epoch => $owner->{epoch},
+        live_table_hash => sha256_hex(join("\n", @$table) . "\n"),
+        dependency_hash => sha256_hex(join("\n", @$deps) . "\n"),
+        metadata_mode => $metadata_mode,
+    );
+
+    my ($reserved, $completed, $check_ok, $released) = (0, 0, 0, 0);
+    my $check_error = '';
+    eval {
+        PVE::Storage::Custom::SharedLvmThinPlugin::run_command(
+            ['/sbin/dmsetup', 'message', $mapper, '0', 'reserve_metadata_snap'],
+            errmsg => "reserving Thin metadata snapshot failed",
+        );
+        $reserved = 1;
+        eval {
+            PVE::Storage::Custom::SharedLvmThinPlugin::run_command([
+                '/usr/bin/timeout', '--foreground', '--kill-after=5', '60',
+                '/usr/sbin/thin_check', '--metadata-snap', '--quiet', $metadata_path,
+            ], errmsg => 'bounded read-only thin_check failed');
+            $completed = 1;
+            $check_ok = 1;
+        };
+        $check_error = $@ if $@;
+    };
+    $check_error = $@ if $@ && !$check_error;
+
+    if ($reserved) {
+        my $release_ok = eval {
+            PVE::Storage::Custom::SharedLvmThinPlugin::run_command(
+                ['/sbin/dmsetup', 'message', $mapper, '0', 'release_metadata_snap'],
+                errmsg => "releasing Thin metadata snapshot failed",
+            );
+            1;
+        };
+        $released = $release_ok ? 1 : 0;
+        $check_error .= $@ if !$release_ok;
+    }
+    $completed = 0 if $check_error =~ /(?:exit code 124|timed? out|timeout)/i;
+    $completed = 1 if $reserved && !$completed && $check_error ne ''
+        && $check_error !~ /(?:exit code 124|timed? out|timeout)/i;
+
+    my $validation = PVE::SharedLvmThinSafety::evaluate_readonly_metadata_validation(
+        snapshot_reserved => $reserved,
+        thin_check_completed => $completed,
+        thin_check_ok => $check_ok,
+        snapshot_released => $released,
+    );
+    return {
+        schema => 'BASTRIX_THIN_METADATA_EVIDENCE_V1',
+        storage_id => $storeid,
+        volume => $volname,
+        pool => $pool,
+        mapper => $mapper,
+        metadata_mapper => $metadata_mapper,
+        fingerprint => $fingerprint,
+        validation => $validation,
+        safe_for_mutation => $validation->{blocks_operation} ? JSON::PP::false : JSON::PP::true,
+        error => $check_error,
+    };
+});
+
+print JSON::PP->new->canonical(1)->pretty(1)->encode($result);
+exit($result->{safe_for_mutation} ? 0 : 1);
