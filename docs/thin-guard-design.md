@@ -130,3 +130,12 @@ failover authority: a one-node survivor needs restored quorum and positive
 external fencing evidence before an explicit takeover.  Clusters with more
 nodes use the same per-pool authority rules and one aggregate watchdog client
 per node, so the design has no per-VM watchdog-client ceiling.
+
+The runtime state machine has a bounded `ARMED_PENDING` phase.  The aggregate
+watchdog must already be armed before local LVM activation is acknowledged;
+the exact mapper and an attached QEMU volume reference must then appear before
+the deadline.  Only that transition enters `PROTECTED`.  Quorum loss, owner or
+mapper identity drift, disappearance of a protected runtime, or deadline
+expiry irreversibly enters `FENCING` and stops watchdog refresh.  A clean
+disarm requires positive proof that QEMU, the mapper, and the persistent owner
+epoch have all been removed.
