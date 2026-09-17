@@ -41,7 +41,7 @@ probably do not need this project.
 
 ## Release status
 
-`0.9.0~rc5.5~tg26` is the current unpublished development candidate, intended
+`0.9.0~rc5.5~tg26` is the current public development pre-release, intended
 exclusively for Proxmox VE 9. TG24 introduced the Thin/Thick Generations
 architecture; TG25 hardened package-update and reboot compatibility. TG26 adds
 the fail-closed single-kernel Thin ownership protocol and intentionally removes
@@ -62,7 +62,8 @@ operations. This is a laboratory release candidate, not validation of
 array, multipath policy, firmware or failure mode. Validate it first on
 disposable storage matching your production design.
 
-See the [TG25 hotfix notes](docs/RELEASE-NOTES-RC5.4.1-TG25.md) and the original
+See the [TG26 release notes](docs/RELEASE-NOTES-RC5.5-TG26.md), the
+[TG25 hotfix notes](docs/RELEASE-NOTES-RC5.4.1-TG25.md) and the original
 [TG24 milestone notes](docs/RELEASE-NOTES-RC5.4-TG24.md) for the exact tested
 envelope, package identity and remaining support boundaries.
 
@@ -214,8 +215,11 @@ See [data-safety invariants](docs/data-safety-invariants.md) and
 
 The TG24 milestone and TG25 maintenance candidate exercised both modes through allocation,
 online and offline lifecycle operations, snapshot/rollback and resize. TG26 is
-the fail-closed single-kernel Thin-ownership development candidate and remains
-unqualified until its complete disposable-lab release gate passes. Earlier
+the fail-closed single-kernel Thin-ownership development pre-release. Its
+disposable-lab gate, including real external owner-host fencing, survivor
+refusal, explicit recovery, fresh epoch and exact data canary, has passed. It
+is not universal production certification; representative physical SAN/HBA
+qualification and local acceptance remain required. Earlier
 Thin live-migration success is retained only as historical evidence and is not
 a safety claim; current Thin activation fails closed before cross-node overlap.
 The qualification also covered materialized Thick live migration, cross-node

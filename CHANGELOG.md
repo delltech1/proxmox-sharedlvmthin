@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0~rc5.5~tg26 (development candidate)
+## 0.9.0~rc5.5~tg26 (2026-09-17, development pre-release)
 
 - Enforce the dm-thin single-kernel invariant with a persistent, versioned
   per-pool owner record containing the exact PVE node and a fresh activation
