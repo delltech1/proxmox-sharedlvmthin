@@ -23,6 +23,8 @@ sub new {
         inventory_provider => $args{inventory_provider},
         watchdog => $args{watchdog},
         state => $state,
+        storage_by_pool => {},
+        mapper_by_pool => {},
     }, $class);
 }
 
@@ -49,7 +51,11 @@ sub _inventory {
 sub prepare {
     my ($self, $request, $now) = @_;
     die "guardian PREPARE request is malformed\n" if ref($request) ne 'HASH';
-    my $inventory = $self->_inventory(op => 'PREPARE', storage_id => $request->{storage_id});
+    my $inventory = $self->_inventory(
+        op => 'PREPARE', storage_id => $request->{storage_id},
+        pool_uuid => $request->{pool_uuid}, owner_epoch => $request->{owner_epoch},
+        mapper_uuid => $request->{mapper_uuid},
+    );
     my @matches = grep {
         ($_->{pool_uuid} // '') eq ($request->{pool_uuid} // '')
     } @{$inventory->{pools} // []};
@@ -65,7 +71,14 @@ sub prepare {
     my $admission_evidence = $inventory->{admission};
     die "guardian PREPARE lacks independently collected admission evidence\n"
         if ref($admission_evidence) ne 'HASH';
-    my $decision = evaluate_guard_activation(%$admission_evidence);
+    my %admission = (%$admission_evidence,
+        # The daemon process owns both this state and the watchdog descriptor.
+        # A crash drops the descriptor without magic close and fences the host;
+        # a new process may not inherit or reconstruct an active epoch.
+        journal_integrity => $self->{state}->state() ne 'FENCING' ? 1 : 0,
+        watchdog_armed => 1,
+    );
+    my $decision = evaluate_guard_activation(%admission);
     die "guardian PREPARE refused: $decision->{reason}\n" if !$decision->{safe};
 
     my $result = $self->{state}->prepare(
@@ -81,12 +94,15 @@ sub prepare {
     } elsif ($self->{watchdog}->state() ne 'ARMED') {
         die "guardian watchdog is not in an armable state\n";
     }
+    $self->{storage_by_pool}->{$pool->{pool_uuid}} = $request->{storage_id};
+    $self->{mapper_by_pool}->{$pool->{pool_uuid}} = $pool->{mapper_uuid};
     return $result;
 }
 
 sub observe {
     my ($self, $now) = @_;
-    my $inventory = $self->_inventory(op => 'OBSERVE');
+    my %storage = map { $_ => 1 } values %{$self->{storage_by_pool}};
+    my $inventory = $self->_inventory(op => 'OBSERVE', storage_ids => [sort keys %storage]);
     my $decision = $self->{state}->observe(
         now => $now,
         quorum => $inventory->{quorum},
@@ -105,9 +121,14 @@ sub observe {
 sub release {
     my ($self, $request) = @_;
     die "guardian RELEASE request is malformed\n" if ref($request) ne 'HASH';
+    my $storage_id = $self->{storage_by_pool}->{$request->{pool_uuid}}
+        or die "guardian RELEASE has no storage binding for pool\n";
+    my $mapper_uuid = $self->{mapper_by_pool}->{$request->{pool_uuid}}
+        or die "guardian RELEASE has no mapper binding for pool\n";
     my $inventory = $self->_inventory(
         op => 'RELEASE', pool_uuid => $request->{pool_uuid},
-        owner_epoch => $request->{owner_epoch},
+        owner_epoch => $request->{owner_epoch}, storage_id => $storage_id,
+        mapper_uuid => $mapper_uuid,
     );
     my $proof = $inventory->{release_proof};
     die "guardian RELEASE lacks independently collected teardown proof\n"
@@ -122,6 +143,8 @@ sub release {
             all_qemu_absent => 1, all_mappers_absent => 1, owner_epochs_released => 1,
         );
     }
+    delete $self->{storage_by_pool}->{$request->{pool_uuid}};
+    delete $self->{mapper_by_pool}->{$request->{pool_uuid}};
     return $decision;
 }
 

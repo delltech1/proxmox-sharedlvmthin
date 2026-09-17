@@ -10,15 +10,39 @@ use PVE::Cluster;
 use PVE::INotify;
 use PVE::QemuConfig;
 use PVE::QemuServer;
+use PVE::SSHInfo;
 use PVE::Storage;
 use PVE::Tools ();
 use PVE::SharedLvmThinGuardInventory qw(build_guard_inventory dm_mapper_name);
+use PVE::SharedLvmThinPeerAudit qw(select_peer_nodes evaluate_peer_mapper_evidence);
 
 $ENV{LC_ALL} = 'C';
 $ENV{PATH} = '/usr/sbin:/usr/bin:/sbin:/bin';
 
-my $requested_sid;
-if (@ARGV) {
+my ($requested_sid, $prepare, $release);
+if (@ARGV && $ARGV[0] eq '--prepare') {
+    die "usage: $0 --prepare ID POOL_UUID OWNER_EPOCH MAPPER_UUID\n"
+        if @ARGV != 5
+        || $ARGV[1] !~ /^([A-Za-z0-9_.-]+)$/
+        || $ARGV[2] !~ /^([A-Za-z0-9-]+)$/
+        || $ARGV[3] !~ /^([a-f0-9]{32})$/
+        || $ARGV[4] !~ /^(LVM-[A-Za-z0-9]+-tpool)$/;
+    $requested_sid = $ARGV[1];
+    $prepare = {
+        pool_uuid => $ARGV[2], owner_epoch => $ARGV[3], mapper_uuid => $ARGV[4],
+    };
+} elsif (@ARGV && $ARGV[0] eq '--release') {
+    die "usage: $0 --release ID POOL_UUID OWNER_EPOCH MAPPER_UUID\n"
+        if @ARGV != 5
+        || $ARGV[1] !~ /^[A-Za-z0-9_.-]+$/
+        || $ARGV[2] !~ /^[A-Za-z0-9-]+$/
+        || $ARGV[3] !~ /^[a-f0-9]{32}$/
+        || $ARGV[4] !~ /^LVM-[A-Za-z0-9]+-tpool$/;
+    $requested_sid = $ARGV[1];
+    $release = {
+        pool_uuid => $ARGV[2], owner_epoch => $ARGV[3], mapper_uuid => $ARGV[4],
+    };
+} elsif (@ARGV) {
     die "usage: $0 [--storage-id ID]\n"
         if @ARGV != 2 || $ARGV[0] ne '--storage-id'
         || $ARGV[1] !~ /^([A-Za-z0-9_.-]+)$/;
@@ -83,11 +107,12 @@ eval {
     die "LVM returned an unexpected report shape\n"
         if ref($lvs_doc->{report}) ne 'ARRAY' || @{$lvs_doc->{report}} != 1
         || ref($lvs_doc->{report}->[0]->{lv}) ne 'ARRAY';
-    my @lvs = map {
+    my @all_lvs = map {
         my $row = $_;
         +{ map { my $key = $_; $key => $row->{$key} }
             qw(vg_name lv_name lv_attr lv_tags lv_uuid vg_uuid pool_lv) }
-    } grep {
+    } @{$lvs_doc->{report}->[0]->{lv}};
+    my @lvs = grep {
         my $tags = $_->{lv_tags} // '';
         my $selected = scalar grep {
             $tags =~ /(?:^|,)pve-slt-sid-\Q$_\E(?:,|$)/
@@ -99,7 +124,7 @@ eval {
             $active = exists($dm{dm_mapper_name($_->{vg_name}, $_->{lv_name})});
         }
         $selected && ($enrolled || $active);
-    } @{$lvs_doc->{report}->[0]->{lv}};
+    } @all_lvs;
 
     my %qemu_refs;
     for my $path (glob("/etc/pve/nodes/$node/qemu-server/*.conf")) {
@@ -121,6 +146,101 @@ eval {
         dm => \%dm,
         qemu_refs => \%qemu_refs,
     );
+    if (defined($release)) {
+        my @raw = grep { ($_->{lv_uuid} // '') eq $release->{pool_uuid} } @all_lvs;
+        die "release inventory requires exactly one pool UUID\n" if @raw != 1;
+        my $row = $raw[0];
+        my ($vmid_text) = ($row->{lv_name} // '') =~ /^sltp-(\d+)$/;
+        die "release inventory object is not a managed Thin pool\n"
+            if !defined($vmid_text) || ($row->{lv_attr} // '') !~ /^t/;
+        my $vmid = 0 + $vmid_text;
+        my %tag = map { $_ => 1 } grep { $_ ne '' } split(/,/, $row->{lv_tags} // '');
+        die "release pool storage identity mismatch\n"
+            if !$tag{"pve-slt-sid-$requested_sid"} || !$tag{'pve-slt-owner-v1'};
+        my @owner = grep { /^pve-slt-owner-(?:node|epoch)-/ } keys %tag;
+        my $mapper = dm_mapper_name($row->{vg_name}, $row->{lv_name});
+        my $derived_uuid = PVE::SharedLvmThinGuardInventory::dm_pool_uuid(
+            $row->{vg_uuid}, $row->{lv_uuid});
+        die "release mapper UUID mismatch\n" if $derived_uuid ne $release->{mapper_uuid};
+        my $qemu_absent = !grep {
+            /^\Q$requested_sid:vm-$vmid-disk-\E\d+$/
+        } @{$qemu_refs{$vmid} // []};
+        $inventory->{release_proof} = {
+            qemu_absent => $qemu_absent ? 1 : 0,
+            mapper_absent => exists($dm{$mapper}) ? 0 : 1,
+            owner_released => @owner ? 0 : 1,
+        };
+    }
+    if (defined($prepare)) {
+        my @pool = grep {
+            $_->{pool_uuid} eq $prepare->{pool_uuid}
+        } @{$inventory->{pools}};
+        die "prepare inventory requires exactly one pool UUID\n" if @pool != 1;
+        my $pool = $pool[0];
+        die "prepare owner epoch mismatch\n"
+            if $pool->{owner_epoch} ne $prepare->{owner_epoch};
+        die "prepare mapper UUID mismatch\n"
+            if $pool->{mapper_uuid} ne $prepare->{mapper_uuid};
+
+        my $scfg = $cfg->{ids}->{$requested_sid};
+        my $wwid = $scfg->{'slt-expected-wwid'} // '';
+        my $device = $wwid ne '' ? "/dev/mapper/$wwid" : undef;
+        my @scope = defined($device) ? ('--devices', $device) : ();
+        my $vg_identity = capture('/usr/sbin/vgs', '--readonly', @scope,
+            '--noheadings', '-o', 'vg_uuid', $scfg->{'slt-vgname'});
+        $vg_identity =~ s/^\s+|\s+$//g;
+        my $storage_identity = $vg_identity ne ''
+            && lc($vg_identity) eq lc($scfg->{'slt-expected-vg-uuid'} // $vg_identity);
+        my $pv_identity = capture('/usr/sbin/pvs', '--readonly', @scope,
+            '--noheadings', '--separator', '|', '-o', 'pv_uuid,pv_name',
+            '--select', "vg_name=$scfg->{'slt-vgname'}");
+        my @pv_rows = grep { $_ ne '' } map { s/^\s+|\s+$//gr } split(/\n/, $pv_identity);
+        $storage_identity = 0 if @pv_rows != 1;
+        if (@pv_rows == 1) {
+            my ($pv_uuid, $pv_name, @extra) = split(/\|/, $pv_rows[0], -1);
+            for ($pv_uuid, $pv_name) { $_ //= ''; s/^\s+|\s+$//g; }
+            $storage_identity = 0 if @extra
+                || (defined($scfg->{'slt-expected-pv-uuid'})
+                    && lc($pv_uuid) ne lc($scfg->{'slt-expected-pv-uuid'}));
+            $storage_identity = 0 if $wwid ne '' && $pv_name ne "/dev/mapper/$wwid";
+        }
+
+        PVE::Cluster::cfs_update();
+        my $peers = select_peer_nodes(
+            members => PVE::Cluster::get_members(), local_node => $node,
+            nodes => $scfg->{nodes},
+        );
+        my @peer_evidence;
+        for my $peer (@$peers) {
+            my $ssh = PVE::SSHInfo::ssh_info_to_command({
+                name => $peer->{node}, ip => $peer->{ip},
+            }, '-o', 'ConnectTimeout=5');
+            push @$ssh, '--',
+                '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence',
+                $pool->{mapper_name}, $pool->{mapper_uuid};
+            my (@stdout, @stderr);
+            PVE::Tools::run_command($ssh, timeout => 10,
+                outfunc => sub { push @stdout, $_[0] },
+                errfunc => sub { push @stderr, $_[0] });
+            die "peer '$peer->{node}' returned non-canonical evidence\n" if @stdout != 1;
+            push @peer_evidence, {node => $peer->{node}, line => $stdout[0]};
+        }
+        my $peer_decision = evaluate_peer_mapper_evidence(
+            mapper => $pool->{mapper_name}, mapper_uuid => $pool->{mapper_uuid},
+            evidence => \@peer_evidence,
+        );
+        $inventory->{admission} = {
+            quorum => $quorum,
+            storage_identity => $storage_identity ? 1 : 0,
+            local_runtime_absent => $pool->{locally_active} ? 0 : 1,
+            remote_runtime_absent => $peer_decision->{safe} ? 1 : 0,
+            watchdog_available => -S '/run/watchdog-mux.sock' ? 1 : 0,
+            owner_epoch_exact => $pool->{owner_node} eq $node
+                && $pool->{owner_epoch} eq $prepare->{owner_epoch} ? 1 : 0,
+            predecessor_fenced => 0,
+            predecessor => 'self', requested_owner => 'self',
+        };
+    }
     $inventory->{inventory_ok} = 1;
     print encode_json($inventory), "\n";
     1;
