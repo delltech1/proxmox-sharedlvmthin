@@ -1,0 +1,176 @@
+# Thin stability and mobility research roadmap
+
+## Verified PVE 9 lifecycle boundary
+
+The installed PVE 9 migration path starts the target VM with
+`qm start --migratedfrom`. Inside `vm_start_nolock`, PVE calls
+`PVE::Storage::activate_volumes()` before constructing and starting the
+incoming QEMU process. The public storage hints currently describe the guest
+OS and whether a plugin may deactivate a volume; they do not provide an
+exclusive source-closed cutover callback.
+
+Consequences:
+
+- waiting in target `activate_volume()` for the source owner to disappear
+  deadlocks normal shared-storage live migration;
+- activating immediately violates the single-kernel dm-thin invariant;
+- a pre-start hook runs before target volume activation, but the source must
+  remain active for memory migration, so it cannot safely transfer ownership;
+- a storage plugin alone cannot reorder the QEMU migration switchover.
+
+TG26 must therefore continue to refuse overlapping Thin live migration.
+
+## Recommended architecture
+
+### Layer 1: TG26 deterministic ownership
+
+Keep the existing node/epoch tags, runtime mapper correlation, quorum and
+identity gates. These remain the durable audit and recovery model.
+
+### Layer 2: Thin Pool LeaseGuard
+
+Add an optional exclusive disk-backed sanlock resource lease for each managed
+pool. Hold it from before the durable owner claim until after the hidden
+`-tpool` mapper is positively absent and the owner is cleared.
+
+LeaseGuard strengthens partitions and host-loss recovery. It does not make
+dm-thin shared-writable and does not independently enable live migration.
+
+### Layer 3: Materialized Migration Bridge
+
+Provide an orchestrated safe-live-mobility command using supported PVE
+operations rather than private QMP calls:
+
+```text
+preflight capacity, quorum, identity, owner and recovery state
+online PVE drive mirror: Thin -> independent materialized Thick LV
+prove QEMU pivot and source release
+prove Thick HEAD is one ordinary linear dependency
+native PVE shared-storage live migration of the materialized Thick disk
+optional online PVE drive mirror: Thick -> new target-owned Thin pool
+prove target-only owner, data canaries and cleanup
+```
+
+The bridge exchanges temporary capacity and copy time for safety. Cross-node
+movement occurs only while the disk is independent linear storage. It can be
+implemented as an external orchestrator over supported PVE API tasks, leaving
+the storage plugin fail-closed if any task or postcondition is ambiguous.
+
+For a multi-disk VM, all disks must reach the materialized state before VM
+migration begins. A failure never converts only the remaining subset or
+deletes a source volume whose QEMU pivot was not positively observed.
+
+## Capacity Stability Governor
+
+Static percentages are insufficient when workloads and pool sizes differ.
+Add a read-mostly governor that evaluates both percentage and time-to-full:
+
+```text
+data_runway_seconds = free_data_bytes / bounded_peak_allocation_rate
+meta_runway_seconds = free_metadata_blocks / bounded_peak_metadata_rate
+safety_horizon = observed_extend_latency_p99
+               + cluster_lock_latency_p99
+               + configured_reaction_margin
+```
+
+Growth becomes eligible before either runway falls below the safety horizon.
+The rates use bounded EWMA plus a recent peak, persist no guest data and reset
+conservatively after restart. Kernel low-water events remain a trigger, but a
+periodic reconciliation catches the documented case in which no new edge
+event is emitted.
+
+Required safeguards:
+
+- exact per-pool and VG free-space reservation under the canonical lock;
+- metadata and data evaluated independently;
+- no overcommit assumption when multiple pools request growth concurrently;
+- maximum extension size and minimum retained VG reserve;
+- `error_if_no_space` versus queue policy reported explicitly, never silently
+  rewritten;
+- growth refusal while ownership, paths, quorum or recovery state is unknown.
+
+## Transaction fingerprint
+
+Before activation and after every ownership transfer, record and compare:
+
+- pool LV UUID, metadata LV UUID and data LV UUID;
+- dm-thin transaction ID and `needs_check`/metadata mode;
+- exact table hash and dependency device numbers;
+- owner node, owner epoch and optional LeaseGuard generation.
+
+The transaction ID is not a distributed lock. It is an additional stale-view
+detector. A regression, unexpected change while no legitimate owner existed,
+or mismatch between the durable fingerprint and freshly activated target
+causes `RECOVERY_REQUIRED`.
+
+## Read-only metadata validation
+
+Use the dm-thin reserved metadata snapshot mechanism only through a bounded,
+qualified helper, then run `thin_check` against that frozen root. Never parse
+or repair live metadata directly. A timeout, unsupported tool version or
+failure to release the reserved metadata snapshot is `UNKNOWN`/blocked, not a
+PASS and not an automatic repair request.
+
+This is a diagnostic and release gate, not a per-I/O operation.
+
+## Adaptive pool geometry for new pools
+
+Chunk size is immutable after pool creation. New-pool policy may choose from a
+small qualified set using disk size and declared workload profile:
+
+- snapshot-heavy: smaller chunks to reduce COW amplification;
+- capacity/sequential-heavy: larger chunks to reduce metadata and allocation
+  overhead;
+- balanced: the qualified default.
+
+The selected chunk size and calculated metadata headroom become immutable
+volume metadata and are displayed by Doctor. Existing pools are never silently
+converted. Metadata remains bounded by the kernel/LVM supported maximum.
+
+## Mechanisms deliberately rejected
+
+- Whole-LUN SCSI persistent reservation as a per-VM lock: all pools share the
+  LUN, so exclusive reservation would block unrelated owners.
+- Shared activation through lvmlockd: LVM explicitly prohibits shared
+  activation for thin, cache, RAID, mirror and snapshot LV types.
+- Read-only second dm-thin instance followed by an in-place RW switch: it can
+  retain a stale in-memory metadata view and still lacks a supported PVE
+  source-closed callback.
+- A suspended or error target presented to incoming QEMU without lifecycle
+  support: target startup may issue block operations and can hang or fail.
+- Automatic `thin_repair`, multipath restart, SCSI rescan or ownership
+  guessing: these destroy evidence or broaden the failure domain.
+- A custom kernel target in the current release: it creates a kernel ABI,
+  packaging and long-term maintenance burden before userspace options are
+  exhausted.
+
+## Upstream opportunity
+
+A clean future PVE extension would expose an exclusive-storage handoff class:
+
+```text
+prepare target without opening mutable backend
+pause source and drain block I/O
+source plugin deactivate and prove mapper absence
+transfer versioned lease
+target plugin activate freshly
+attach/reopen target backend
+resume target
+```
+
+QEMU already exposes pause-before-switchover and block graph reopen/mirror
+primitives, but PVE must orchestrate them. This belongs in an upstream storage
+and migration API proposal, not in an out-of-tree monkey patch.
+
+## Implementation order
+
+1. Keep TG26 behavior and claims unchanged.
+2. Qualify LeaseGuard on a dedicated disposable lease LV and nested watchdog.
+3. Implement the Capacity Stability Governor as observation-only telemetry.
+4. Add transaction fingerprints and bounded metadata-snapshot validation.
+5. Prototype Materialized Migration Bridge with one disposable single-disk
+   VM, then multi-disk rollback and crash matrices.
+6. Only after the bridge proves atomic PVE task and QEMU pivot postconditions,
+   expose it as an explicitly selected mobility operation.
+7. Draft the exclusive-handoff API proposal for upstream PVE.
+
