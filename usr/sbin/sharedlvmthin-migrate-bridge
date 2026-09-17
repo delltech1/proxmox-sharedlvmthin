@@ -11,8 +11,33 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 usage() {
     echo "Usage: sharedlvmthin-migrate-bridge <preflight|run> <vmid> <target-node> <thin-storage> <thick-storage> [--keep-thick]" >&2
+    echo "       sharedlvmthin-migrate-bridge inspect <vmid>" >&2
+    echo "       sharedlvmthin-migrate-bridge resume <vmid>" >&2
     exit 64
 }
+
+# Inspection is intentionally outside the per-VM mutation lock. It reads one
+# root-owned mode-0600 state file and must remain observable while the writer
+# holds the lock for a multi-hour copy.
+if [ "${1:-}" = inspect ]; then
+    [ "$#" -eq 2 ] || usage
+    inspect_vmid=$2
+    [[ $inspect_vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
+    inspect_dir=/var/lib/pve-sharedlvmthin/migration-bridge
+    latest=$(find "$inspect_dir" -maxdepth 1 -type f -name "$inspect_vmid-*.state" \
+        -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 {print $2}')
+    [ -n "$latest" ] || { echo "BRIDGE_STATE=ABSENT"; exit 2; }
+    [ "$(stat -c %u "$latest")" -eq 0 ] || { echo "untrusted bridge state owner" >&2; exit 70; }
+    mode=$(stat -c %a "$latest")
+    [ "$mode" = 600 ] || { echo "untrusted bridge state mode: $mode" >&2; exit 70; }
+    awk -F= '
+        $1 ~ /^(version|tx|vmid|source_node|target_node|thin_storage|thick_storage|return_thin|phase|disk_count|completed_disks|current_disk|progress_percent|total_bytes|started_at|updated_at|config_sha256)$/ {
+            print toupper($1) "=" substr($0, index($0, "=") + 1)
+        }
+    ' "$latest"
+    printf 'STATE_FILE=%s\n' "$latest"
+    exit 0
+fi
 
 if [ "${1:-}" != --locked ]; then
     [ "$#" -ge 2 ] || usage
@@ -22,6 +47,71 @@ if [ "${1:-}" != --locked ]; then
         "$0" --locked "$@"
 fi
 shift
+
+# Resume is deliberately evidence-scoped. The first supported recovery point
+# is a completed return-to-Thin copy whose final health check or state publish
+# was interrupted. Earlier/mixed phases remain fail-closed; they are not
+# guessed into completion.
+if [ "${1:-}" = resume ]; then
+    [ "$#" -eq 2 ] || usage
+    resume_vmid=$2
+    [[ $resume_vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
+    resume_dir=/var/lib/pve-sharedlvmthin/migration-bridge
+    resume_file=$(find "$resume_dir" -maxdepth 1 -type f -name "$resume_vmid-*.state" \
+        -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 {print $2}')
+    [ -n "$resume_file" ] || { echo "no bridge state for VM $resume_vmid" >&2; exit 2; }
+    [ "$(stat -c %u "$resume_file")" -eq 0 ] && [ "$(stat -c %a "$resume_file")" = 600 ] \
+        || { echo "untrusted bridge state" >&2; exit 70; }
+    state_value() {
+        local key=$1
+        awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); n++} END {if (n != 1) exit 1}' "$resume_file"
+    }
+    version=$(state_value version); tx=$(state_value tx); vmid=$(state_value vmid)
+    source_node=$(state_value source_node); target=$(state_value target_node)
+    thin_store=$(state_value thin_storage); thick_store=$(state_value thick_storage)
+    return_thin=$(state_value return_thin); phase=$(state_value phase)
+    disk_count=$(state_value disk_count); completed_disks=$(state_value completed_disks)
+    [[ $version = 2 && $tx =~ ^[0-9a-f]{32}$ && $vmid = "$resume_vmid" ]] \
+        || { echo "invalid bridge state identity" >&2; exit 70; }
+    [[ $source_node = "$(hostname)" && $target =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
+        && $thin_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
+        && $thick_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+        || { echo "bridge state node/storage identity mismatch" >&2; exit 70; }
+    [ "$return_thin" = 1 ] && [ "$phase" = RETURN_THIN_PREPARED ] \
+        || { echo "resume refuses unsupported phase '$phase'" >&2; exit 70; }
+    [[ $disk_count =~ ^[1-9][0-9]*$ && $completed_disks =~ ^[0-9]+$ \
+        && $completed_disks -ge $((disk_count * 2)) ]] \
+        || { echo "return-to-Thin completion evidence is incomplete" >&2; exit 70; }
+    member_ip=$(perl -MPVE::Cluster -e '
+        PVE::Cluster::cfs_update(); my ($node) = @ARGV;
+        my $m = PVE::Cluster::get_members()->{$node} // die "unknown target\n";
+        die "offline target\n" if !$m->{online}; print $m->{ip};
+    ' "$target")
+    ssh_base=(/usr/bin/ssh -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
+        -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
+        -o GlobalKnownHostsFile=none "root@$member_ip")
+    remote_cfg=$("${ssh_base[@]}" -- qm config "$vmid")
+    observed_thin=$(printf '%s\n' "$remote_cfg" | awk -v sid="$thin_store" \
+        '/^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {n++; if ($2 ~ ("^" sid ":")) good++} END {print n+0 " " good+0}')
+    [ "$observed_thin" = "$disk_count $disk_count" ] \
+        || { echo "target disk topology is not exactly all-Thin" >&2; exit 70; }
+    "${ssh_base[@]}" -- qm status "$vmid" | grep -qx 'status: running'
+    "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+    remote_digest=$(printf '%s\n' "$remote_cfg" | sha256sum | cut -d' ' -f1)
+    resume_tmp="$resume_file.tmp.$$"
+    now=$(date +%s)
+    awk -F= -v now="$now" -v digest="$remote_digest" '
+        $1 == "phase" {print "phase=RETURNED_THIN"; next}
+        $1 == "updated_at" {print "updated_at=" now; next}
+        $1 == "config_sha256" {print "config_sha256=" digest; next}
+        {print}
+    ' "$resume_file" >"$resume_tmp"
+    chmod 0600 "$resume_tmp"; chown root:root "$resume_tmp"; sync -f "$resume_tmp"
+    mv -f "$resume_tmp" "$resume_file"; sync -f "$resume_dir"
+    printf 'BRIDGE_RESUME=PASS\nTX=%s\nFINAL_PHASE=RETURNED_THIN\nSTATE_FILE=%s\n' \
+        "$tx" "$resume_file"
+    exit 0
+fi
 
 [ "$#" -ge 5 ] || usage
 action=$1 vmid=$2 target=$3 thin_store=$4 thick_store=$5
@@ -120,6 +210,11 @@ printf 'PREFLIGHT=PASS\nVMID=%s\nSOURCE_NODE=%s\nTARGET_NODE=%s\nDISKS=%s\nREQUI
 tx=$(printf '%s' "$vmid:$local_node:$target:$(date +%s%N):$$" | sha256sum | cut -c1-32)
 state_file="$state_dir/$vmid-$tx.state"
 phase=PREPARED
+started_at=$(date +%s)
+updated_at=$started_at
+completed_disks=0
+current_disk=none
+progress_percent=0
 write_state() {
     local tmp="$state_file.tmp.$$"
     local -a config_paths=()
@@ -132,10 +227,14 @@ write_state() {
         return 70
     }
     umask 077
+    updated_at=$(date +%s)
     {
-        printf 'version=1\ntx=%s\nvmid=%s\nsource_node=%s\ntarget_node=%s\n' "$tx" "$vmid" "$local_node" "$target"
+        printf 'version=2\ntx=%s\nvmid=%s\nsource_node=%s\ntarget_node=%s\n' "$tx" "$vmid" "$local_node" "$target"
         printf 'thin_storage=%s\nthick_storage=%s\nreturn_thin=%s\nphase=%s\n' "$thin_store" "$thick_store" "$return_thin" "$phase"
-        printf 'disk_count=%s\n' "${#disks[@]}"
+        printf 'disk_count=%s\ncompleted_disks=%s\ncurrent_disk=%s\nprogress_percent=%s\n' \
+            "${#disks[@]}" "$completed_disks" "$current_disk" "$progress_percent"
+        printf 'total_bytes=%s\nstarted_at=%s\nupdated_at=%s\n' \
+            "$total_bytes" "$started_at" "$updated_at"
         printf 'config_sha256=%s\n' "$(sha256sum "${config_paths[0]}" | cut -d" " -f1)"
     } >"$tmp"
     sync -f "$tmp"
@@ -143,6 +242,46 @@ write_state() {
     sync -f "$state_dir"
 }
 write_state
+
+# PVE emits monotonic block-mirror percentages. Persist a throttled heartbeat
+# without imposing a wall-clock limit on large disks: silence is observable,
+# but a slow healthy 8-TB copy is not killed merely for taking hours.
+run_progress_move() {
+    local disk=$1 destination=$2 execution_node=$3
+    local rc line now last_persist=0 observed
+    current_disk=$disk
+    progress_percent=0
+    write_state
+    set +e
+    if [ "$execution_node" = local ]; then
+        qm disk move "$vmid" "$disk" "$destination" --delete 1 2>&1
+    else
+        "${ssh_base[@]}" -- qm disk move "$vmid" "$disk" "$destination" --delete 1 2>&1
+    fi | while IFS= read -r line; do
+        printf '%s\n' "$line"
+        if [[ $line =~ \(([0-9]+([.][0-9]+)?)%\) ]]; then
+            observed=${BASH_REMATCH[1]}
+            now=$(date +%s)
+            if [ "$observed" != "$progress_percent" ] && [ $((now - last_persist)) -ge 30 ]; then
+                progress_percent=$observed
+                updated_at=$now
+                write_state
+                last_persist=$now
+            fi
+        fi
+    done
+    rc=${PIPESTATUS[0]}
+    set -e
+    [ "$rc" -eq 0 ] || {
+        phase=MOVE_FAILED
+        write_state
+        return "$rc"
+    }
+    completed_disks=$((completed_disks + 1))
+    progress_percent=100
+    current_disk=none
+    write_state
+}
 
 phase=WAITING_ADMISSION
 write_state
@@ -172,7 +311,7 @@ vg_free=${vg_free%.*}
 
 for entry in "${disks[@]}"; do
     disk=${entry%%|*}
-    qm disk move "$vmid" "$disk" "$thick_store" --delete 1
+    run_progress_move "$disk" "$thick_store" local
     qm config "$vmid" | grep -Eq "^${disk}: ${thick_store}:"
 done
 phase=MATERIALIZED_THICK
@@ -216,9 +355,17 @@ if [ "$return_thin" -eq 1 ]; then
     ssh_base=(/usr/bin/ssh -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
         -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
         -o GlobalKnownHostsFile=none "root@$member_ip")
+    # A fast full-copy can outrun asynchronous thin-pool autogrow. Prepare the
+    # exact per-VM pool at the sum of all virtual disk sizes before QEMU writes
+    # its first block. Capacity/reserve admission and inactive publication are
+    # performed by the plugin under the canonical VG lock.
+    "${ssh_base[@]}" -- /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+        prepare "$thin_store" "$vmid" "$total_bytes" "$tx"
+    phase=RETURN_THIN_PREPARED
+    write_state
     for entry in "${disks[@]}"; do
         disk=${entry%%|*}
-        "${ssh_base[@]}" -- qm disk move "$vmid" "$disk" "$thin_store" --delete 1
+        run_progress_move "$disk" "$thin_store" remote
         "${ssh_base[@]}" -- qm config "$vmid" | grep -Eq "^${disk}: ${thin_store}:"
     done
     "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'

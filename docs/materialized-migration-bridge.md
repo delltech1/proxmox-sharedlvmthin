@@ -74,3 +74,41 @@ The current bridge is a development candidate. Qualification must cover
 multi-disk guests, concurrent evacuation, interrupted Storage Move, target
 loss, capacity exhaustion and host loss at every recorded phase before it is
 presented as production-ready.
+## TG30 progress, capacity and recovery hardening
+
+TG30 remains a development candidate: validate it on disposable storage before
+production use.
+
+The bridge temporarily materializes every per-VM Thin disk as an independent
+Thick Generations LV, performs the ordinary PVE online migration, and optionally
+copies the disks back into a per-VM Thin pool on the target. It never activates
+the same dm-thin metadata on two kernels.
+
+Before the return copy, TG30 creates the exact target pool under the canonical
+VG lock. Its reservation is the aggregate virtual disk size plus configured
+burst headroom (one GiB by default). This prevents a fast full-copy from
+outrunning asynchronous autogrow.
+
+Long copies have no arbitrary wall-clock timeout. The root-owned transaction
+state records the active disk, monotonic PVE mirror progress, byte count and
+timestamps. Read it without taking the mutation lock:
+
+```bash
+sharedlvmthin-migrate-bridge inspect <vmid>
+```
+
+If the copy back to Thin completed but the final health check or state publish
+was interrupted, TG30 can finalize only after proving the saved transaction,
+source/target identity, online target, running VM, exact all-Thin disk topology,
+completed disk count and a positive target recovery check:
+
+```bash
+sharedlvmthin-migrate-bridge resume <vmid>
+```
+
+All earlier or mixed phases are deliberately refused. `resume` never guesses,
+deletes storage, retries an ambiguous copy, or rewrites VM configuration.
+
+Thin pool capacity is isolated per VM. A reported `Data% >= 95` blocks
+mutations of that pool in the plugin, but does not block unrelated VM pools in
+the same VG. Doctor reports it as a scoped capacity warning.

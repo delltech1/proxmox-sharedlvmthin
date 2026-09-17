@@ -482,7 +482,7 @@ def main(argv=None):
         ("PV", ["/sbin/pvs", "--readonly", "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
-        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv", vg]),
+        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent", vg]),
         ("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]),
     ]
     evidence = {}
@@ -516,6 +516,7 @@ def main(argv=None):
 
     pool_ok = True
     owned_count = 0
+    capacity_warnings = []
     for line in evidence.get("POOL", {}).get("out", "").splitlines():
         fields = [x.strip() for x in line.split("|")]
         if len(fields) < 5 or not re.fullmatch(r"sltp-\d+", fields[0]):
@@ -525,10 +526,29 @@ def main(argv=None):
         owned_count += 1
         attr, health, check_needed = fields[1:4]
         canonical = bool(re.fullmatch(r"twi-[-a][o-]t[z-]--", attr))
-        pool_ok = canonical and (not health or health.lower() == "ok") and check_needed.lower() not in {"1", "yes", "check_needed"}
+        data_percent = fields[6] if len(fields) >= 7 else ""
+        # An inactive shared thin pool legitimately has no live Data% value.
+        # Absence is not evidence of fullness; activation/allocation performs
+        # its own exact health/capacity checks. A reported numeric value at or
+        # above the critical boundary is, however, positive unsafe evidence.
+        capacity_safe = (not data_percent) or (
+            bool(re.fullmatch(r"\d+(?:\.\d+)?", data_percent))
+            and float(data_percent) < 95.0
+        )
+        pool_ok = (canonical
+                   and (not health or health.lower() == "ok")
+                   and check_needed.lower() not in {"1", "yes", "check_needed"})
+        if not capacity_safe:
+            capacity_warnings.append(
+                f"{fields[0]} Data% is {data_percent or 'malformed'}"
+            )
         if not pool_ok:
             break
     results["POOL_FLAGS_HEALTHY"] = "PASS" if pool_ok else "FAIL"
+    for warning in capacity_warnings:
+        details.append(
+            f"capacity-warning: {warning}; mutations of that pool require a reported value below 95%"
+        )
     if owned_count == 0:
         details.append("no owned thin pool currently exists; pool-health gate is not applicable")
 

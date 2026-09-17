@@ -41,10 +41,10 @@ probably do not need this project.
 
 ## Release status
 
-`0.9.0~rc5.8~tg29` is the current development candidate, intended exclusively
+`0.9.0~rc5.9~tg30` is the current development candidate, intended exclusively
 for Proxmox VE 9. TG24 introduced the Thin/Thick Generations architecture;
 TG25 hardened package-update and reboot compatibility; TG26 added the
-fail-closed single-kernel Thin ownership protocol. TG29 adds an opt-in,
+fail-closed single-kernel Thin ownership protocol. TG29 added an opt-in,
 PVE-HA-fenced Thin takeover while direct overlapping Thin activation remains
 prohibited. The current tree passes 182 Python tests and 689 Perl assertions,
 fault injection,
@@ -63,7 +63,11 @@ operations. This is a laboratory release candidate, not validation of
 array, multipath policy, firmware or failure mode. Validate it first on
 disposable storage matching your production design.
 
-See the [TG29 release notes](docs/RELEASE-NOTES-RC5.8-TG29.md), the
+TG30 hardens the online Thin migration bridge with observable progress,
+pre-sized return-to-Thin pools, a per-pool 95% mutation gate, and exact
+evidence-based finalization after an interrupted final health check.
+
+See the [TG30 release notes](docs/RELEASE-NOTES-RC5.9-TG30.md), the
 [TG28 release notes](docs/RELEASE-NOTES-RC5.7-TG28.md), the
 [TG26 release notes](docs/RELEASE-NOTES-RC5.5-TG26.md), the
 [TG25 hotfix notes](docs/RELEASE-NOTES-RC5.4.1-TG25.md) and the original

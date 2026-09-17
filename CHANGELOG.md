@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased — TG29 development
+## 0.9.0~rc5.9~tg30 (development candidate)
+
+- Make long materialized migrations observable without imposing a fixed copy
+  timeout, and persist transaction-scoped progress evidence.
+- Pre-size the target per-VM Thin pool for the complete return copy plus burst
+  headroom so fast imports cannot outrun asynchronous autogrow.
+- Recognize both public empty-pool and hidden `-tpool` runtime mapper forms.
+- Add exact, fail-closed finalization of an interrupted completed return-to-Thin
+  transaction and a per-pool 95% capacity mutation gate.
+- Qualify a running Thin → Thick → online migration → Thin round trip in both
+  cluster directions; current source passes 691 Perl and 185 Python tests.
+
+## 0.9.0~rc5.8~tg29
 
 - Add an opt-in PVE HA fenced-owner takeover which requires fresh exact HA
   assignment/fencing evidence plus mapper-absence evidence from every

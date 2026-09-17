@@ -35,6 +35,7 @@ my $deactivate_new_thin_pool_after_allocation = \&PVE::Storage::Custom::SharedLv
 my $bridge_admission_state = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission_state;
 my $bridge_admission = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission;
 my $thin_adopt_owner_model = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_adopt_owner_model;
+my $thin_import_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_import_state_from_tags;
 my $record_disable_autoactivation = sub {
     my ($class, $vg, $lv) = @_;
     PVE::Storage::Custom::SharedLvmThinPlugin::run_command([
@@ -369,11 +370,14 @@ subtest 'thick allocation zeroing offloads safely and has a complete fallback' =
 
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
     for my $case (
-        ['twi-aotz--||', 1, 'healthy'],
-        ['twi-cotz--|needs_check|check_needed', 0, 'needs_check'],
-        ['twi-aotzM-||', 0, 'metadata read-only'],
-        ['twi-aotz--||yes', 0, 'explicit check-needed field'],
-        ['unexpected||', 0, 'unexpected attributes'],
+        ['twi-aotz--|||20.00', 1, 'healthy'],
+        ['twi-aotz--|||', 1, 'inactive Data percent unavailable'],
+        ['twi-aotz--|||95.00', 0, 'critical data capacity'],
+        ['twi-aotz--|||garbage', 0, 'malformed data capacity'],
+        ['twi-cotz--|needs_check|check_needed|20.00', 0, 'needs_check'],
+        ['twi-aotzM-|||20.00', 0, 'metadata read-only'],
+        ['twi-aotz--||yes|20.00', 0, 'explicit check-needed field'],
+        ['unexpected|||20.00', 0, 'unexpected attributes'],
     ) {
         my ($line, $allowed, $name) = @$case;
         no warnings 'redefine';
@@ -3526,6 +3530,44 @@ subtest 'thin runtime state trusts exact local DM nodes over shared LVM activity
     ok($state->{pool_mapper_active}, 'hidden local tpool mapper is detected');
     is_deeply($state->{active_children}, ['vm-900001-disk-0'],
         'exact local guest mapper wins even when shared lv_attr reports inactive');
+};
+
+subtest 'empty prepared thin pool public mapper is detected' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return ['sltp-900001|twi-XXtz--|'];
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
+        my ($path) = @_;
+        return $path eq '/dev/mapper/testvg-sltp--900001';
+    };
+    my $state = $class->_thin_pool_runtime_state(
+        'testvg', 'sltp-900001', '/dev/mapper/3600abcd');
+    ok($state->{pool_mapper_active}, 'public empty-pool mapper is local runtime evidence');
+    ok($state->{public_pool_mapper_active}, 'public mapper form is reported exactly');
+    ok(!$state->{hidden_pool_mapper_active}, 'hidden tpool form remains absent');
+};
+
+subtest 'thin import tags are complete and unambiguous or fail closed' => sub {
+    my $tx = '0123456789abcdef0123456789abcdef';
+    my $state = $thin_import_state_from_tags->(
+        "pve-slt-import-v1,pve-slt-import-tx-$tx,pve-slt-import-bytes-2147483648");
+    is_deeply($state, { active => 1, tx => $tx, bytes => 2147483648 },
+        'one complete import transaction is accepted');
+    is_deeply($thin_import_state_from_tags->('pve-slt-owner-v1'),
+        { active => 0, tx => undef, bytes => undef },
+        'absence of import tags is canonical inactive state');
+    eval { $thin_import_state_from_tags->('pve-slt-import-v1') };
+    like($@, qr/ambiguous Thin import preparation tags/,
+        'torn import tag set fails closed');
+    eval { $thin_import_state_from_tags->(
+        "pve-slt-import-v1,pve-slt-import-tx-$tx,pve-slt-import-tx-$tx,pve-slt-import-bytes-1") };
+    like($@, qr/ambiguous Thin import preparation tags/,
+        'duplicate transaction evidence fails closed');
+    eval { $thin_import_state_from_tags->('pve-slt-import-garbage') };
+    like($@, qr/malformed Thin import preparation tag/,
+        'malformed import evidence fails closed');
 };
 
 subtest 'thin deactivate releases an idle pool under the shared mutation lock' => sub {

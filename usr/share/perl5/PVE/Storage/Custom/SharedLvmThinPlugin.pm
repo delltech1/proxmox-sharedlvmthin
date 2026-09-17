@@ -1935,14 +1935,14 @@ sub _verify_pool_health {
     my $lines = _command_lines(
         [
             '/sbin/lvs', '--noheadings', '--separator', '|',
-            '-o', 'lv_attr,lv_health_status,lv_check_needed', "$vg/$pool",
+            '-o', 'lv_attr,lv_health_status,lv_check_needed,data_percent', "$vg/$pool",
         ],
         "reading thin-pool health of '$vg/$pool' failed",
     );
     die "CRITICAL: thin-pool health of '$vg/$pool' is ambiguous; mutations disabled; manual recovery required\n"
         if @$lines != 1;
-    my ($attr, $health, $check_needed) = split(/\|/, $lines->[0], 3);
-    for ($attr, $health, $check_needed) {
+    my ($attr, $health, $check_needed, $data_percent) = split(/\|/, $lines->[0], 4);
+    for ($attr, $health, $check_needed, $data_percent) {
         $_ //= '';
         s/^\s+|\s+$//g;
     }
@@ -1953,6 +1953,10 @@ sub _verify_pool_health {
     );
     die "CRITICAL: '$vg/$pool': $decision->{reason}; mutations disabled; data preserved; manual recovery required\n"
         if $decision->{blocks_operation};
+    die "CRITICAL: '$vg/$pool' Data% is malformed; mutations disabled until capacity can be proven\n"
+        if $data_percent ne '' && $data_percent !~ /^\d+(?:\.\d+)?$/;
+    die "CRITICAL: '$vg/$pool' Data% is $data_percent; mutations disabled below the 5% free-space safety boundary\n"
+        if $data_percent ne '' && $data_percent >= 95;
     return 1;
 }
 
@@ -2636,6 +2640,125 @@ sub _allocation_metadata_overhead_bytes {
     return $overhead;
 }
 
+sub _thin_import_state_from_tags {
+    my ($tags) = @_;
+    my ($schema, @tx, @bytes);
+    for my $tag (split(/,/, $tags // '')) {
+        $schema++ if $tag eq 'pve-slt-import-v1';
+        push @tx, $1 if $tag =~ /^pve-slt-import-tx-([0-9a-f]{32})$/;
+        push @bytes, $1 if $tag =~ /^pve-slt-import-bytes-([1-9][0-9]*)$/;
+        die "malformed Thin import preparation tag '$tag'\n"
+            if $tag =~ /^pve-slt-import-/
+            && $tag ne 'pve-slt-import-v1'
+            && $tag !~ /^pve-slt-import-(?:tx-[0-9a-f]{32}|bytes-[1-9][0-9]*)$/;
+    }
+    die "ambiguous Thin import preparation tags\n"
+        if ($schema // 0) > 1 || @tx > 1 || @bytes > 1
+        || ((($schema // 0) || @tx || @bytes)
+            && (($schema // 0) != 1 || @tx != 1 || @bytes != 1));
+    return {
+        active => ($schema // 0) ? 1 : 0,
+        tx => $tx[0],
+        bytes => defined($bytes[0]) ? int($bytes[0]) : undef,
+    };
+}
+
+sub _thin_prepare_import_pool {
+    my ($class, $scfg, $storeid, $vmid, $required_bytes, $tx) = @_;
+    die "Thin import preparation is unavailable for Thick Generations storage\n"
+        if $class->_allocation_mode($scfg) ne 'thin';
+    die "invalid Thin import VMID\n"
+        if !defined($vmid) || $vmid !~ /^([1-9][0-9]{2,8})$/;
+    $vmid = int($1);
+    die "invalid Thin import byte requirement\n"
+        if !defined($required_bytes) || $required_bytes !~ /^([1-9][0-9]*)$/;
+    $required_bytes = int($1);
+    die "invalid Thin import transaction\n"
+        if !defined($tx) || $tx !~ /^([0-9a-f]{32})$/;
+    $tx = $1;
+
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        $class->_verify_mutation_quorum($storeid, $scfg);
+        $class->_verify_storage_identity($storeid, $scfg);
+        my $vg = $scfg->{'slt-vgname'};
+        my $pool = "sltp-$vmid";
+        my $device = defined($scfg->{'slt-expected-wwid'})
+            ? "/dev/mapper/$scfg->{'slt-expected-wwid'}" : undef;
+        my $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        die "Thin import preparation refused: '$vg/$pool' already exists\n"
+            if $lvs->{$vg} && $lvs->{$vg}->{$pool};
+        die "Thin import preparation refused: VMID $vmid already has Thin objects\n"
+            if $lvs->{$vg} && grep { /^vm-\Q$vmid\E-(?:disk|state|fleece)-/ }
+                keys %{$lvs->{$vg}};
+
+        my %full = (%$scfg,
+            'slt-initial-pool-mode' => 'full',
+            # Import admission is based on the exact aggregate virtual size;
+            # do not inherit a legacy 16-GiB bootstrap floor for a smaller VM.
+            'slt-initial-pool-size' => 1,
+        );
+        my $gib = 1024 * 1024 * 1024;
+        my $burst_bytes = ($scfg->{'slt-burst-headroom-gib'} // 1) * $gib;
+        my $admitted_bytes = $required_bytes + $burst_bytes;
+        die "Thin import admitted byte count overflow\n"
+            if $admitted_bytes <= $required_bytes;
+        my $size_kib = int(($admitted_bytes + 1023) / 1024);
+        my $plan = $class->_allocation_headroom_plan(
+            $storeid, \%full, $pool, $size_kib, 0);
+        my $pool_size_kib = int(($plan->{target_bytes} + 1023) / 1024);
+        my $created = 0;
+        eval {
+            my @create = ('/sbin/lvcreate');
+            push @create, ('--devices', $device) if defined($device);
+            push @create, ('--yes', '--wipesignatures', 'y', '-L',
+                "${pool_size_kib}K", '-n', $pool, $vg);
+            run_command(\@create,
+                errmsg => "creating prepared Thin import pool '$vg/$pool' failed");
+            $created = 1;
+            my @convert = ('/sbin/lvconvert');
+            push @convert, ('--devices', $device) if defined($device);
+            push @convert, ('-y', '--type', 'thin-pool', "$vg/$pool");
+            run_command(\@convert,
+                errmsg => "converting prepared Thin import pool '$vg/$pool' failed");
+            my @tag = ('/sbin/lvchange');
+            push @tag, ('--devices', $device) if defined($device);
+            push @tag, ('--addtag', "pve-slt-sid-$storeid",
+                '--addtag', THIN_OWNER_SCHEMA_TAG,
+                '--addtag', 'pve-slt-import-v1',
+                '--addtag', "pve-slt-import-tx-$tx",
+                '--addtag', "pve-slt-import-bytes-$required_bytes", "$vg/$pool");
+            run_command(\@tag,
+                errmsg => "tagging prepared Thin import pool '$vg/$pool' failed");
+            $class->_disable_and_verify_autoactivation($vg, $pool);
+            $class->_verify_allocation_reserve_postcondition($storeid, \%full, $pool);
+            my $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
+            if ($state->{pool_active} || $state->{pool_mapper_active}
+                || @{$state->{active_children}}) {
+                my @unmonitor = ('/sbin/lvchange');
+                push @unmonitor, ('--devices', $device) if defined($device);
+                push @unmonitor, ('--monitor', 'n', "$vg/$pool");
+                run_command(\@unmonitor,
+                    errmsg => "unmonitoring prepared Thin import pool '$vg/$pool' failed");
+                my @off = ('/sbin/lvchange');
+                push @off, ('--devices', $device) if defined($device);
+                push @off, ('-an', "$vg/$pool");
+                run_command(\@off,
+                    errmsg => "deactivating prepared Thin import pool '$vg/$pool' failed");
+                $state = $class->_thin_pool_runtime_state($vg, $pool, $device);
+            }
+            die "prepared Thin import pool '$vg/$pool' remains active\n"
+                if $state->{pool_active} || $state->{pool_mapper_active}
+                || @{$state->{active_children}};
+        };
+        my $error = $@;
+        die _partial_allocation_error(
+            $storeid, $vmid, "prepared-import-$tx", $pool, $error,
+            $created ? "prepared pool '$vg/$pool' may exist" : 'no created pool was confirmed')
+            if $error;
+        return 'THIN_IMPORT_POOL_PREPARED';
+    });
+}
+
 sub _allocation_headroom_plan {
     my ($class, $storeid, $scfg, $pool, $size_kib, $pool_exists) = @_;
     my $mode = $scfg->{'slt-initial-pool-mode'} // 'fixed';
@@ -2890,6 +3013,7 @@ sub _alloc_image_locked {
 
     my $created_pool = 0;
     my $sid_tag = "pve-slt-sid-$storeid";
+    my $import_state = { active => 0 };
 
     die "refusing auxiliary allocation '$vg/$name': owned VM pool '$vg/$pool' does not exist\n"
         if !$pool_exists && $is_auxiliary;
@@ -2967,6 +3091,7 @@ sub _alloc_image_locked {
         my $owner_state = _thin_owner_state_from_tags($pool_info->{tags});
         die "existing pool '$vg/$pool' predates the exclusive-owner schema; allocation is blocked until explicit offline adoption\n"
             if !$owner_state->{schema};
+        $import_state = _thin_import_state_from_tags($pool_info->{tags});
 
         my @owned_disks = grep {
             /^vm-\Q$vmid\E-disk-\d+$/
@@ -2980,7 +3105,9 @@ sub _alloc_image_locked {
         die "VMID reuse requires recovery review: owned pool '$vg/$pool' exists without an active owned disk"
             . (@stale_snapshots ? " and contains stale snapshots" : '')
             . "; automatic adoption is disabled\n"
-            if !@owned_disks;
+            if !@owned_disks && !$import_state->{active};
+        die "prepared Thin import pool '$vg/$pool' may allocate only a guest disk\n"
+            if $import_state->{active} && !$is_guest_disk;
     }
 
     $class->_verify_pool_health($vg, $pool);
@@ -3032,7 +3159,7 @@ sub _alloc_image_locked {
         );
     }
 
-    if ($created_pool) {
+    if ($created_pool || $import_state->{active}) {
         my $device = defined($scfg->{'slt-expected-wwid'})
             ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
             : undef;
@@ -3049,6 +3176,24 @@ sub _alloc_image_locked {
                 "new thin LV '$vg/$name' exists, but inactive publication is unproven",
             );
         }
+    }
+
+    # The prepared-import evidence is removed only after the first guest LV is
+    # durably present and the complete pool/child mapping has been published
+    # inactive. A crash before this point therefore remains classifiable.
+    if ($import_state->{active}) {
+        my $device = defined($scfg->{'slt-expected-wwid'})
+            ? "/dev/mapper/$scfg->{'slt-expected-wwid'}" : undef;
+        my @clear = ('/sbin/lvchange');
+        push @clear, ('--devices', $device) if defined($device);
+        push @clear, ('--deltag', 'pve-slt-import-v1',
+            '--deltag', "pve-slt-import-tx-$import_state->{tx}",
+            '--deltag', "pve-slt-import-bytes-$import_state->{bytes}", "$vg/$pool");
+        run_command(\@clear,
+            errmsg => "clearing prepared Thin import state on '$vg/$pool' failed");
+        my $after = $class->_thin_pool_tags($vg, $pool, $device);
+        die "prepared Thin import state clear postcondition failed for '$vg/$pool'\n"
+            if _thin_import_state_from_tags($after)->{active};
     }
 
     return $name;
@@ -3150,13 +3295,19 @@ sub _thin_pool_runtime_state {
 
     my $pool_dm = $pool;
     $pool_dm =~ s/-/--/g;
-    my $pool_mapper = "$vg_dm-$pool_dm-tpool";
-    my $pool_mapper_active = _block_device_exists("/dev/mapper/$pool_mapper") ? 1 : 0;
+    my $public_pool_mapper = "$vg_dm-$pool_dm";
+    my $hidden_pool_mapper = "$vg_dm-$pool_dm-tpool";
+    my $public_active = _block_device_exists("/dev/mapper/$public_pool_mapper") ? 1 : 0;
+    my $hidden_active = _block_device_exists("/dev/mapper/$hidden_pool_mapper") ? 1 : 0;
+    my $pool_mapper_active = $public_active || $hidden_active ? 1 : 0;
+    my $pool_mapper = $hidden_active ? $hidden_pool_mapper : $public_pool_mapper;
 
     return {
         pool_active => $pool_mapper_active,
         pool_mapper => $pool_mapper,
         pool_mapper_active => $pool_mapper_active,
+        public_pool_mapper_active => $public_active,
+        hidden_pool_mapper_active => $hidden_active,
         active_children => \@active_children,
     };
 }

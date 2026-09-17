@@ -1,0 +1,27 @@
+#!/usr/bin/perl
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+
+use strict;
+use warnings;
+
+use PVE::Storage;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+
+die "Usage: sharedlvmthin-thin-import prepare <storage-id> <vmid> <bytes> <transaction>\n"
+    if @ARGV != 5;
+my ($action, $storeid, $vmid, $bytes, $tx) = @ARGV;
+die "invalid action\n" if $action ne 'prepare';
+die "invalid storage identifier\n"
+    if $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+die "invalid VMID\n" if $vmid !~ /^[1-9][0-9]{2,8}$/;
+die "invalid byte requirement\n" if $bytes !~ /^[1-9][0-9]*$/;
+die "invalid transaction\n" if $tx !~ /^[0-9a-f]{32}$/;
+
+my $cfg = PVE::Storage::config();
+my $scfg = PVE::Storage::storage_config($cfg, $storeid);
+die "storage '$storeid' is not SharedLvmThin\n"
+    if ($scfg->{type} // '') ne 'sharedlvmthin';
+my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+print $class->_thin_prepare_import_pool(
+    $scfg, $storeid, int($vmid), int($bytes), $tx), "\n";

@@ -35,6 +35,7 @@ chmod 0755 \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd" \

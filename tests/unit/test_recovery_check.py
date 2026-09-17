@@ -238,8 +238,8 @@ sharedlvmthin: two
                 out = f"pv-uuid|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
                 out = lvs_output or (
-                    "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1|\n"
-                    "vm-100-disk-0|Vwi-a-tz--||||sltp-100"
+                    "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1||20.00\n"
+                    "vm-100-disk-0|Vwi-a-tz--||||sltp-100|"
                 )
             elif command[0].endswith("pvesm"):
                 out = "test sharedlvmthin active 1 1 0 0%"
@@ -267,6 +267,32 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("STATE=HEALTHY", output)
         self.assertIn("SAFE_FOR_MUTATION=YES", output)
+
+    def test_nearly_full_thin_pool_is_scoped_capacity_warning(self):
+        rc, output = self.run_main(lvs_output=(
+            "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1||100.00\n"
+            "vm-100-disk-0|Vwi-a-tz--||||sltp-100|"
+        ))
+        self.assertEqual(rc, 0)
+        self.assertIn("POOL_FLAGS_HEALTHY=PASS", output)
+        self.assertIn("SAFE_FOR_MUTATION=YES", output)
+        self.assertIn("capacity-warning: sltp-100 Data% is 100.00", output)
+
+    def test_thin_pool_below_capacity_gate_passes(self):
+        rc, output = self.run_main(lvs_output=(
+            "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1||94.99\n"
+            "vm-100-disk-0|Vwi-a-tz--||||sltp-100|"
+        ))
+        self.assertEqual(rc, 0)
+        self.assertIn("POOL_FLAGS_HEALTHY=PASS", output)
+
+    def test_inactive_thin_pool_without_live_data_percent_is_not_full_evidence(self):
+        rc, output = self.run_main(lvs_output=(
+            "sltp-100|twi---tz--|||pve-slt-sid-test,pve-slt-owner-v1||\n"
+            "vm-100-disk-0|Vwi---tz--||||sltp-100|"
+        ))
+        self.assertEqual(rc, 0)
+        self.assertIn("POOL_FLAGS_HEALTHY=PASS", output)
 
     def test_identity_mismatch_fails_closed(self):
         rc, output = self.run_main(actual_wwid="3600ffff")
