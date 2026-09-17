@@ -37,6 +37,19 @@ pvesm set <storage-id> --slt-thin-leaseguard runtime-guard
 The package installation never enables or starts the daemon and never changes
 an existing storage to this mode.
 
+## Package upgrades
+
+An upgrade deliberately does not restart an active guardian. Its running
+process retains the admitted epochs and watchdog connection while the package
+refreshes the storage plugin used by new PVE workers. This avoids asking a new
+process to reconstruct or bless already-active mappings.
+
+After the package transaction, drain every runtime-guard pool from that node
+through normal PVE migration or stop operations. Positively verify that no
+protected mapper remains and that the guardian is `IDLE`, then restart the
+service so it loads the new executable. Starting a fresh guardian over an
+existing protected mapper is intentionally refused.
+
 ## Activation transaction
 
 ```text

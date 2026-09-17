@@ -235,12 +235,29 @@ and storage option returned to their disabled baseline.
 Result: **PASS. A delayed or still-running QEMU cannot cause a clean watchdog
 close merely by sending or replaying a validly shaped release request.**
 
+## QF-09: package upgrade and guardian restart ordering
+
+With one disposable VM protected and its exact Thin mapper active, the final
+candidate package was installed over the existing package. Installation
+syntax checks and the bounded Doctor completed successfully. The package did
+not restart or replace the running guardian process: its PID remained exact,
+the VM remained running and the mapper remained protected throughout the
+transaction.
+
+The VM was then stopped through PVE. Only after QEMU, mapper and owner epoch
+were absent was the idle guardian explicitly restarted. Its PID changed and
+the new process became active. The disposable VM, LV and pool were removed and
+the service and storage policy returned to their disabled baseline.
+
+Result: **PASS. Package upgrade preserves the guardian that owns active
+watchdog epochs; the new executable is adopted only after an explicit drained
+restart.**
+
 ## Evidence not yet established
 
 These tests do not prove the complete runtime guard. Remaining mandatory gates
 include:
 
-- daemon/package upgrade and restart ordering;
 - hardware watchdog qualification in addition to the lab `softdog`.
 
 Production arming remains disabled until those gates pass.

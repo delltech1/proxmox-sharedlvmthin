@@ -26,6 +26,8 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("WantedBy=multi-user.target", unit)
         self.assertNotIn("enable pve-sharedlvmthin-thin-guard", postinst)
         self.assertNotIn("start pve-sharedlvmthin-thin-guard", postinst)
+        self.assertNotIn('restart "$THIN_GUARD_SERVICE"', postinst)
+        self.assertIn("Active ThinGuard preserved without restart", postinst)
 
     def test_materialized_migration_bridge_uses_supported_fail_closed_path(self):
         source = (ROOT / "usr/sbin/sharedlvmthin-migrate-bridge").read_text(

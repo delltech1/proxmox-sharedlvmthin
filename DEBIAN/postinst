@@ -9,6 +9,7 @@ HEALTH=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json
 WEB=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web
 CONF=/etc/pve-sharedlvmthin/web.conf
 SERVICE=pve-sharedlvmthin-web.service
+THIN_GUARD_SERVICE=pve-sharedlvmthin-thin-guard.service
 LVMLOCAL=/etc/lvm/lvmlocal.conf
 STATE_DIR=/var/lib/pve-sharedlvmthin
 LVM_BEGIN='# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW'
@@ -60,6 +61,14 @@ EOF
 fi
 
 systemctl daemon-reload
+
+# Never restart an armed runtime guardian during a package transaction. Its
+# in-memory epoch/watchdog bindings remain authoritative until every protected
+# mapper has completed normal PVE teardown.
+if systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
+    echo "Active ThinGuard preserved without restart during package upgrade."
+    echo "Drain protected VMs, verify the guardian is IDLE, then restart $THIN_GUARD_SERVICE."
+fi
 
 # Long-running PVE workers cache the storage-plugin registry. Installing or
 # upgrading the module on disk is not sufficient: an already-running HA LRM
