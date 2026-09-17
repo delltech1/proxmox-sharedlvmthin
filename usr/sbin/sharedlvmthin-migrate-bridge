@@ -12,6 +12,7 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 usage() {
     echo "Usage: sharedlvmthin-migrate-bridge <preflight|run> <vmid> <target-node> <thin-storage> <thick-storage> [--keep-thick]" >&2
     echo "       sharedlvmthin-migrate-bridge inspect <vmid>" >&2
+    echo "       sharedlvmthin-migrate-bridge plan <vmid>" >&2
     echo "       sharedlvmthin-migrate-bridge resume <vmid>" >&2
     exit 64
 }
@@ -52,8 +53,9 @@ shift
 # is a completed return-to-Thin copy whose final health check or state publish
 # was interrupted. Earlier/mixed phases remain fail-closed; they are not
 # guessed into completion.
-if [ "${1:-}" = resume ]; then
+if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
     [ "$#" -eq 2 ] || usage
+    bridge_action=$1
     resume_vmid=$2
     [[ $resume_vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
     resume_dir=/var/lib/pve-sharedlvmthin/migration-bridge
@@ -77,11 +79,9 @@ if [ "${1:-}" = resume ]; then
         && $thin_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
         && $thick_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
         || { echo "bridge state node/storage identity mismatch" >&2; exit 70; }
-    [ "$return_thin" = 1 ] && [ "$phase" = RETURN_THIN_PREPARED ] \
-        || { echo "resume refuses unsupported phase '$phase'" >&2; exit 70; }
-    [[ $disk_count =~ ^[1-9][0-9]*$ && $completed_disks =~ ^[0-9]+$ \
-        && $completed_disks -ge $((disk_count * 2)) ]] \
-        || { echo "return-to-Thin completion evidence is incomplete" >&2; exit 70; }
+    [[ $return_thin =~ ^[01]$ && $disk_count =~ ^[1-9][0-9]*$ \
+        && $completed_disks =~ ^[0-9]+$ ]] \
+        || { echo "invalid bridge policy or disk counters" >&2; exit 70; }
     if [ "$version" = 3 ]; then
         manifest_digest=$(state_value disk_manifest_sha256)
         manifest_file="$resume_dir/$vmid-$tx.manifest"
@@ -103,9 +103,25 @@ if [ "${1:-}" = resume ]; then
     ssh_base=(/usr/bin/ssh -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
         -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
         -o GlobalKnownHostsFile=none "root@$member_ip")
-    remote_cfg=$("${ssh_base[@]}" -- qm config "$vmid")
+    observed_owner=$(
+        pvesh get /cluster/resources --type vm --output-format json \
+        | python3 -c 'import json,sys
+vmid=int(sys.argv[1]); rows=[r for r in json.load(sys.stdin) if r.get("vmid")==vmid]
+if len(rows)!=1 or rows[0].get("status")!="running": raise SystemExit(70)
+print(rows[0].get("node", ""))' "$vmid"
+    )
+    if [ "$observed_owner" = "$source_node" ]; then
+        authority=source
+        authoritative_cfg=$(qm config "$vmid")
+    elif [ "$observed_owner" = "$target" ]; then
+        authority=target
+        authoritative_cfg=$("${ssh_base[@]}" -- qm config "$vmid")
+    else
+        echo "authoritative VM node is neither saved source nor target" >&2
+        exit 70
+    fi
     read -r observed_disks observed_thin observed_thick < <(
-        printf '%s\n' "$remote_cfg" | awk -v thin="$thin_store" -v thick="$thick_store" '
+        printf '%s\n' "$authoritative_cfg" | awk -v thin="$thin_store" -v thick="$thick_store" '
             /^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {
                 n++; if ($2 ~ ("^" thin ":")) t++; if ($2 ~ ("^" thick ":")) k++
             }
@@ -127,15 +143,26 @@ if [ "${1:-}" = resume ]; then
     fi
     recovery_plan=$(
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
-            "$phase" target "$return_thin" "$disk_count" "$observed_thin" \
+            "$phase" "$authority" "$return_thin" "$disk_count" "$observed_thin" \
             "$observed_thick" "$admission"
     )
+    if [ "$bridge_action" = plan ]; then
+        printf 'BRIDGE_PLAN=PASS\nTX=%s\nPHASE=%s\nAUTHORITY=%s\n' \
+            "$tx" "$phase" "$authority"
+        printf 'DISKS=%s\nTHIN_DISKS=%s\nTHICK_DISKS=%s\nADMISSION=%s\n' \
+            "$observed_disks" "$observed_thin" "$observed_thick" "$admission"
+        printf '%s\n' "$recovery_plan"
+        exit 0
+    fi
     grep -qx 'RECOVERY_PLAN=FINALIZE_THIN' <<<"$recovery_plan" \
         || { echo "target disk topology is not exactly finalizable Thin" >&2; exit 70; }
+    [ "$authority" = target ] && [ "$return_thin" = 1 ] \
+        && [ "$completed_disks" -ge $((disk_count * 2)) ] \
+        || { echo "return-to-Thin completion evidence is incomplete" >&2; exit 70; }
     "${ssh_base[@]}" -- qm status "$vmid" | grep -qx 'status: running'
     "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
     "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-    remote_digest=$(printf '%s\n' "$remote_cfg" | sha256sum | cut -d' ' -f1)
+    remote_digest=$(printf '%s\n' "$authoritative_cfg" | sha256sum | cut -d' ' -f1)
     resume_tmp="$resume_file.tmp.$$"
     now=$(date +%s)
     awk -F= -v now="$now" -v digest="$remote_digest" '
