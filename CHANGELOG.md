@@ -33,6 +33,10 @@
   the exact pool so known used data is at or below 94%. This prevents a large
   disk with small absolute headroom from completing immediately behind the
   95% mutation-safety gate.
+- Allow exact node-local Thin mapper teardown under capacity pressure while
+  retaining mandatory storage identity, ownership and metadata-health checks;
+  a stopped VM can now release runtime ownership even when Data% blocks every
+  capacity-consuming mutation.
 - Pass 197 Python tests and 696 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)

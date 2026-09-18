@@ -1919,7 +1919,7 @@ sub _verify_storage_identity {
 }
 
 sub _verify_owned_volume {
-    my ($class, $storeid, $scfg, $volname) = @_;
+    my ($class, $storeid, $scfg, $volname, %options) = @_;
     my $vg = $scfg->{'slt-vgname'};
     my (undef, undef, $vmid) = $class->parse_volname($volname);
     my $pool = "sltp-$vmid";
@@ -1932,7 +1932,7 @@ sub _verify_owned_volume {
     die "refusing to mutate '$vg/$volname': ownership pool '$pool' is missing\n" if !$pool_info;
     die "refusing to mutate '$vg/$volname': '$pool' is not a thin pool\n"
         if !defined($pool_info->{lv_type}) || $pool_info->{lv_type} ne 't';
-    $class->_verify_pool_health($vg, $pool);
+    $class->_verify_pool_health($vg, $pool, %options);
     my $tags = $pool_info->{tags} // '';
     die "refusing to mutate '$vg/$volname': pool ownership is not positively proven for storage '$storeid'\n"
         if $tags !~ /(?:^|,)\Q$expected_tag\E(?:,|$)/;
@@ -1943,7 +1943,7 @@ sub _verify_owned_volume {
 }
 
 sub _verify_pool_health {
-    my ($class, $vg, $pool) = @_;
+    my ($class, $vg, $pool, %options) = @_;
     my $lines = _command_lines(
         [
             '/sbin/lvs', '--noheadings', '--separator', '|',
@@ -1968,7 +1968,8 @@ sub _verify_pool_health {
     die "CRITICAL: '$vg/$pool' Data% is malformed; mutations disabled until capacity can be proven\n"
         if $data_percent ne '' && $data_percent !~ /^\d+(?:\.\d+)?$/;
     die "CRITICAL: '$vg/$pool' Data% is $data_percent; mutations disabled below the 5% free-space safety boundary\n"
-        if $data_percent ne '' && $data_percent >= 95;
+        if !$options{allow_capacity_teardown}
+        && $data_percent ne '' && $data_percent >= 95;
     return 1;
 }
 
@@ -3381,7 +3382,13 @@ sub _deactivate_thin_volume_locked {
     # the VM operation lock; exact mapper names plus the pinned device and
     # ownership checks scope this cleanup to one VM pool on this node.
     $class->_verify_storage_identity($storeid, $scfg, $device);
-    $class->_verify_owned_volume($storeid, $scfg, $volname);
+    # Capacity pressure must never prevent node-local mapper teardown after a
+    # guest has stopped.  Only the Data% admission rule is relaxed here;
+    # metadata health, exact ownership and storage identity remain mandatory.
+    $class->_verify_owned_volume(
+        $storeid, $scfg, $volname,
+        allow_capacity_teardown => 1,
+    );
 
     my $guard_owner;
     my $guard_pool_uuid;

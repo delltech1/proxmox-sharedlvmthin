@@ -392,6 +392,15 @@ subtest 'thin-pool health gate blocks mutation before repair or mutation command
         is($ok ? 1 : 0, $allowed, "$name decision");
         like($@, qr/mutations disabled|^$/, "$name reports fail-closed state");
     }
+    {
+        no warnings 'redefine';
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+            return ['twi-aotz--|||97.96'];
+        };
+        ok($verify_pool_health->(
+            $class, 'testvg', 'sltp-900001', allow_capacity_teardown => 1,
+        ), 'capacity pressure permits exact runtime teardown');
+    }
     is(scalar(@commands), 0, 'health failures executed zero LVM mutation or repair commands');
 };
 

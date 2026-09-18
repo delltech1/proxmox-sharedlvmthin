@@ -336,3 +336,11 @@ This does not promise that arbitrary future guest writes fit without growth;
 it prevents a completed managed operation from knowingly returning a pool
 which its own next mutation gate must refuse. Reserve, identity, ownership,
 quorum and metadata-health checks remain unchanged and fail closed.
+
+The same physical round trip exposed a separate teardown boundary. The legacy
+95% gate was shared by all owned-volume verification, so a clean guest stop at
+Data%=97.96 stopped QEMU but refused the subsequent local mapper deactivation.
+That preserved data but unnecessarily retained runtime ownership. Teardown now
+relaxes only the capacity admission rule. Exact storage identity, pool/volume
+ownership, metadata health and mapper postconditions remain mandatory; create,
+start, resize, snapshot, delete and other mutations remain capacity-blocked.
