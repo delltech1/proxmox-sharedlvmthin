@@ -72,6 +72,9 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("CONTINUE_MATERIALIZE", source)
         self.assertIn("resume_progress_move", source)
         self.assertIn("insufficient capacity to resume materialization", source)
+        self.assertIn("slt-bridge-admission-timeout", source)
+        self.assertIn("admission_poll_seconds", source)
+        self.assertIn("admission_last_heartbeat", source)
         planner = (
             ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan"
         ).read_text(encoding="utf-8")

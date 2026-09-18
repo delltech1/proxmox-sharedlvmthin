@@ -19,6 +19,8 @@ It is not yet the recommended public package.
 - Remote probes use stdin-null SSH sessions so a command executed inside a
   manifest loop cannot consume later disk records. The sole streaming SSH
   session is the explicit QMP expectation pipeline.
+- Migration admission waiting is site-configurable, bounded, observable, and
+  uses desynchronized backoff instead of a fixed 15-minute busy-poll window.
 
 ## Qualification completed
 
@@ -40,3 +42,9 @@ manifest line during remote return recovery.
 The current source passes 197 Python tests and 691 Perl assertions. Broader
 multi-disk, repeated crash-point, large-disk, and concurrent recovery
 qualification remains required before a public release.
+
+A real VG admission race with 50 concurrent contenders was also qualified.
+While an exact holder existed, 0/50 contenders acquired admission. After its
+exact release, a simultaneous 50-way race produced exactly one winner; the
+other 49 failed closed against the winner's durable transaction tag. Exact
+winner release restored an empty admission state.

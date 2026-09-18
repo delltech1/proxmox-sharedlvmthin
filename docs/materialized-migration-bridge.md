@@ -56,6 +56,14 @@ the disks to a newly allocated Thin pool on the destination.
   timeout or a crashed holder leaves explicit evidence and fails closed.
 - Once materialization and its health postcondition complete, admission is
   released. Independent Thick live migrations may then execute concurrently.
+
+Admission waiting is configured with `slt-bridge-admission-timeout` (default
+86400 seconds, accepted range 60..604800). The wait does not hold PVE's
+cluster storage lock. Each waiter persists a 30-second state heartbeat and
+uses transaction-desynchronized polling which backs off to at most one probe
+per 15 seconds. Expiry preserves `WAITING_ADMISSION`, performs no storage
+mutation, and remains explicitly resumable after the foreign transaction has
+cleared. Same-VG Thin and Thick aliases must configure the same value.
 - Multi-disk conversion is resumable, not falsely atomic. If a later disk
   fails, already converted disks and the VM configuration are preserved as a
   functional mixed state for explicit recovery; no speculative rollback is

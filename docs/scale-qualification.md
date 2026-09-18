@@ -222,3 +222,18 @@ This qualifies the tested opt-in HA transition and its fail-closed ordering.
 It is not a universal certification of every fencing device, HA policy, SAN or
 large-disk workload. The data path did not copy disk contents, so this test
 must not be represented as 500 GB--8 TB data-movement qualification.
+
+## 2026-09-18 migration-admission contention gate
+
+The VG-wide materialization admission was exercised with 50 simultaneous
+contenders. With one exact holder already committed, 0/50 contenders acquired
+the admission and the holder identity remained unchanged. After exact release,
+a fresh 50-way race produced exactly one durable winner; 49 contenders refused
+the foreign transaction. Releasing the recorded winner restored an empty
+admission state. No VM or volume lifecycle mutation was part of this gate.
+
+TG31 also replaces a fixed admission wait with a site-configurable bounded
+policy, 30-second persistent waiter heartbeats, and transaction-desynchronized
+polling which backs off to 15 seconds. This bounds observation load during a
+large evacuation without interpreting a timeout as evidence that a holder
+stopped or that its mutation failed.

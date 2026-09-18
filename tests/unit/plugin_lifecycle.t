@@ -275,6 +275,12 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
     my $yield_property = $class->properties()->{'slt-lock-yield-ms'};
     is($yield_property->{minimum}, 0, 'cooperative yield can be explicitly disabled');
     is($yield_property->{maximum}, 5000, 'cooperative yield remains tightly bounded');
+    my $bridge_property = $class->properties()->{'slt-bridge-admission-timeout'};
+    is($bridge_property->{minimum}, 60, 'bridge admission wait remains bounded below');
+    is($bridge_property->{maximum}, 604800,
+        'large materialization queues can select a bounded multi-day wait');
+    is($bridge_property->{default}, 86400,
+        'default bridge admission covers a measured long-copy maintenance window');
     require PVE::Storage;
     no warnings 'redefine';
     local *PVE::Storage::config = sub {
@@ -2258,6 +2264,9 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
         ['cooperative yield mismatch',
             { %$thick, 'slt-lock-yield-ms' => 2000 },
             qr/same cooperative lock yield/],
+        ['bridge admission timeout mismatch',
+            { %$thick, 'slt-bridge-admission-timeout' => 7200 },
+            qr/same migration-bridge admission timeout/],
         ['node scope mismatch',
             { %$thick, nodes => 'node-a' },
             qr/same PVE node scope/],

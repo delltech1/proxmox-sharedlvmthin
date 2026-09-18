@@ -612,16 +612,32 @@ run_progress_move() {
 
 phase=WAITING_ADMISSION
 write_state
-admission_deadline=$(( $(date +%s) + 900 ))
+admission_timeout=$(cfg_optional "$thin_store" slt-bridge-admission-timeout)
+admission_timeout=${admission_timeout:-86400}
+[[ $admission_timeout =~ ^[0-9]+$ \
+    && $admission_timeout -ge 60 && $admission_timeout -le 604800 ]] \
+    || { echo "invalid migration-bridge admission timeout policy" >&2; exit 70; }
+admission_deadline=$(( $(date +%s) + admission_timeout ))
+admission_last_heartbeat=0
+# Desynchronize a large worker set, then back off to a bounded 15-second probe
+# interval. Fifty queued evacuations therefore do not become a vgs poll storm.
+admission_poll_seconds=$((2 + 16#${tx:0:2} % 3))
 while ! admission_output=$(
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
         acquire "$thin_store" "$tx" "$local_node" 2>&1
 ); do
-    [ "$(date +%s)" -lt "$admission_deadline" ] || {
+    admission_now=$(date +%s)
+    [ "$admission_now" -lt "$admission_deadline" ] || {
         echo "migration-bridge admission timed out: $admission_output" >&2
         exit 75
     }
-    sleep 2
+    if [ $((admission_now - admission_last_heartbeat)) -ge 30 ]; then
+        write_state
+        admission_last_heartbeat=$admission_now
+    fi
+    sleep "$admission_poll_seconds"
+    [ "$admission_poll_seconds" -ge 15 ] \
+        || admission_poll_seconds=$((admission_poll_seconds + 1))
 done
 printf '%s\n' "$admission_output"
 phase=MATERIALIZING

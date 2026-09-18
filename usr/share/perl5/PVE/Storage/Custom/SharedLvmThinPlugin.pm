@@ -179,6 +179,13 @@ sub properties {
             maximum => 5000,
             default => 1000,
         },
+        'slt-bridge-admission-timeout' => {
+            description => 'Bounded wait in seconds for the VG-wide materialized-migration admission. Waiting is observable and uses adaptive polling; expiry performs no storage mutation.',
+            type => 'integer',
+            minimum => 60,
+            maximum => 604800,
+            default => 86400,
+        },
         'slt-thin-leaseguard' => {
             description => 'Opt-in PVE-native single-kernel activation guard. remote-audit proves peer mapper absence; runtime-guard additionally requires the static ThinGuard daemon to arm watchdog-mux before activation.',
             type => 'string',
@@ -284,6 +291,7 @@ sub options {
         'slt-tg-hydration-timeout' => { optional => 1 },
         'slt-lock-timeout' => { optional => 1 },
         'slt-lock-yield-ms' => { optional => 1 },
+        'slt-bridge-admission-timeout' => { optional => 1 },
         'slt-thin-leaseguard' => { optional => 1 },
         'slt-thin-ha-takeover' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
@@ -1047,6 +1055,7 @@ sub _verify_same_vg_alias_configuration {
     my %minimum_paths;
     my %lock_timeout;
     my %lock_yield;
+    my %bridge_timeout;
     my %node_scope;
     for my $alias (@aliases) {
         my $candidate = $ids->{$alias};
@@ -1069,6 +1078,7 @@ sub _verify_same_vg_alias_configuration {
         $minimum_paths{$candidate->{'slt-expected-min-paths'} // ''} = 1;
         $lock_timeout{$candidate->{'slt-lock-timeout'} // 30} = 1;
         $lock_yield{$candidate->{'slt-lock-yield-ms'} // 1000} = 1;
+        $bridge_timeout{$candidate->{'slt-bridge-admission-timeout'} // 86400} = 1;
         $node_scope{_canonical_node_scope($candidate->{nodes})} = 1;
     }
     die "shared VG '$vg' requires exactly one thin and one thick-generations alias\n"
@@ -1085,6 +1095,8 @@ sub _verify_same_vg_alias_configuration {
         if keys(%lock_timeout) != 1;
     die "same-VG aliases must use the same cooperative lock yield\n"
         if keys(%lock_yield) != 1;
+    die "same-VG aliases must use the same migration-bridge admission timeout\n"
+        if keys(%bridge_timeout) != 1;
     die "same-VG aliases must use the same PVE node scope\n"
         if keys(%node_scope) != 1;
     return 1;
