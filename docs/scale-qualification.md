@@ -258,3 +258,21 @@ the exact VM disk, per-VM pool and VM configuration. VG free space returned
 exactly to the recorded pre-test value of 154,853,703,680 bytes. No 500-GiB to
 8-TiB physical-copy, hydration-duration or failure-recovery claim follows from
 this control-plane gate.
+
+## 2026-09-18 hidden-tpool autogrow correction
+
+The large-size gate exposed an independent live defect on VM 990100. Its
+1-GiB elastic pool reached Data%=100 while dmeventd was receiving events. The
+monitor rejected those events because `lvs` marked the public pool LV inactive,
+even though the exact hidden `-tpool` mapper was active and open. This is a
+normal LVM runtime representation when an active thin child depends on the
+hidden target; public-LV activity alone was therefore not authoritative.
+
+The monitor now reuses the plugin's exact public/hidden mapper inventory after
+quorum, identity, alias-topology and ownership validation under the canonical
+VG lock. A missing exact mapper still fails closed. With the corrected package
+installed, the same live event grew only `sltp-990100` from 1 GiB to 2 GiB and
+Data% fell from 100.00 to 50.00. A subsequent full storage recovery check
+reported all 150 owned pools healthy, `STATE=HEALTHY`, and
+`SAFE_FOR_MUTATION=YES`. All three nodes returned zero D-state tasks and clean
+`dpkg -V` results.

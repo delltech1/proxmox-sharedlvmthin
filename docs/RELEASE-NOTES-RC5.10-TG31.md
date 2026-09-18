@@ -61,3 +61,9 @@ The monitor previously trusted only the public LV activity attribute and
 refused a valid event. TG31 now reuses the plugin's exact public/hidden mapper
 inventory; no exact mapper still fails closed, while the authoritative hidden
 target permits the cluster-locked, identity-checked growth path.
+
+The live reproducer started with a 1-GiB pool at Data%=100. The corrected
+monitor extended only that exact pool to 2 GiB, reducing Data% to 50.00. The
+postcondition was a fully healthy recovery check over 150 owned pools with
+`SAFE_FOR_MUTATION=YES`; all three nodes had zero D-state tasks and clean
+package verification.
