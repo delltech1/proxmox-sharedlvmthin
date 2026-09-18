@@ -3,7 +3,7 @@
 ## Authoritative state
 
 - Branch: `experimental/thin-stability`
-- Qualified source commit before this handover note: `81dbad0`
+- Qualified source commit before this handover note: `b5ff694`
 - Package: `pve-sharedlvmthin_0.9.0~rc5.10~tg31_all.deb`
 - SHA-256: `e17b34b215f19d24da68735d848af09c904f6a2d23c6bf63c48cbc804f7969f4`
 - Unit qualification: 198 Python tests and 697 Perl assertions
