@@ -344,3 +344,38 @@ That preserved data but unnecessarily retained runtime ownership. Teardown now
 relaxes only the capacity admission rule. Exact storage identity, pool/volume
 ownership, metadata health and mapper postconditions remain mandatory; create,
 start, resize, snapshot, delete and other mutations remain capacity-blocked.
+
+## 2026-09-18 48-GiB physical Thin--Thick--Thin round trip
+
+A disposable 48-GiB Thin disk was fully written with deterministic data. Its
+pre-transition whole-device SHA-256 was:
+
+```text
+acb838d39b42634ac37feb5aecf2f17aeff18d35892a5d53666645370bbdc9f5
+```
+
+The materialized migration bridge copied the running disk from Thin to an
+independent Thick generation in 37 minutes 50 seconds. Native PVE live
+migration then moved the running Thick VM to the second node in 12 seconds,
+reporting 42 ms downtime. The bridge copied the complete disk back to Thin in
+28 minutes 43 seconds and ended in `RETURNED_THIN`. The final whole-device
+SHA-256 was byte-identical to the value above.
+
+The old Thin source was removed only after the first mirror completed. The
+temporary Thick generation and anchor were removed only after return-to-Thin
+completed. No transaction-scoped Thick LV remained. The legacy package had
+prepared a 49-GiB return pool, which completed at Data%=97.96 and reproduced
+the capacity/teardown boundaries described above. With the corrected package,
+one guarded monitor decision grew only that exact pool to 52 GiB, Data% became
+92.31, the VM started, stopped and released every exact Thin mapper normally.
+
+Normal PVE destruction removed both disposable VM families and their pools.
+VG free space differed from the pre-test value by nine 4-MiB extents because
+LVM permanently enlarged the shared VG's global `lvol0_pmspare` from the
+largest thin-pool metadata requirement. This is neither a transaction leftover
+nor VM-owned capacity and was deliberately not shrunk or removed. All three
+nodes ended with zero D-state tasks; the final recovery check found 150 owned
+Thin pools, `STATE=HEALTHY` and `SAFE_FOR_MUTATION=YES`.
+
+This is physical qualification at 48 GiB, not a claim that 500-GiB--8-TiB
+physical copy duration or every SAN failure mode has been qualified.

@@ -37,6 +37,10 @@
   retaining mandatory storage identity, ownership and metadata-health checks;
   a stopped VM can now release runtime ownership even when Data% blocks every
   capacity-consuming mutation.
+- Qualify a fully written 48-GiB Thin disk through online Thin-to-Thick
+  materialization, native Thick live migration, return to Thin and whole-disk
+  SHA-256 equality; verify exact temporary Thick cleanup and corrected
+  capacity-safe grow/start/stop teardown on the destination.
 - Pass 197 Python tests and 696 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
