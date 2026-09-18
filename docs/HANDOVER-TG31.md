@@ -3,10 +3,10 @@
 ## Authoritative state
 
 - Branch: `experimental/thin-stability`
-- Qualified source commit before this handover note: `c80fff5`
+- Qualified source commit before this handover update: `484afcd`
 - Package: `pve-sharedlvmthin_0.9.0~rc5.10~tg31_all.deb`
-- SHA-256: `27a31d49a667088999e6d7af688b4c06c16cffaaf00457056d26c0bfa4d0f0fe`
-- Unit qualification: 198 Python tests and 698 Perl assertions
+- SHA-256: `a8d2d13613a15ed81a2ab9a34e2d83e153731ec846c4c0d240069621f2c2627f`
+- Unit qualification: 198 Python tests and 699 Perl assertions
 - The DEB was built twice from one clean Git archive with identical SHA-256.
 - The exact DEB is installed on all three lab PVE nodes; `dpkg -V` is clean,
   required PVE services are active, and the final compatibility run reported
