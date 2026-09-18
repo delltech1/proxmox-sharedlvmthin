@@ -2,6 +2,14 @@
 
 ## 0.9.0~rc5.10~tg31 (unreleased development candidate)
 
+- Discover a Thick Generations frontend from authoritative kernel DM inventory,
+  not only its udev-created `/dev/mapper` node.  Source cleanup after live
+  migration now removes an exact zero-open frontend before deactivating its
+  backing generation LVs, while duplicate names or a mismatched DM UUID fail
+  closed.
+- Use the same single authoritative kernel DM inventory when classifying Thin
+  public pool, hidden `-tpool`, and child mappings.  Udev device-node absence
+  is no longer interpreted as kernel-mapper absence in this ownership gate.
 - Persist and authenticate an exact per-slot disk manifest for migration
   recovery instead of reconstructing intent from mutable VM configuration.
 - Add a pure fail-closed recovery planner and executable recovery steps for
@@ -54,7 +62,7 @@
   time and durable progress-update age. The 90-second freshness hint never
   kills work, declares failure, invents an ETA or authorizes recovery; malformed,
   duplicate or future timestamp evidence fails inspection closed.
-- Pass 198 Python tests and 698 Perl assertions.
+- Pass 198 Python tests and 699 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
 

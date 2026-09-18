@@ -1,4 +1,4 @@
-# SharedLvmThin 0.9.0~rc5.3.1 release notes
+# SharedLvmThin `0.9.0~rc5.3.1` release notes
 
 RC5.3.1 is a diagnostic correctness patch for RC5.3. The Doctor now reports
 the qualified 50% elastic early-grow threshold as healthy while continuing to

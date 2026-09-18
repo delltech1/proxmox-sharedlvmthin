@@ -1,10 +1,17 @@
-# BASTRIX SharedLVM 0.9.0~rc5.10~tg31 development notes
+# BASTRIX SharedLVM `0.9.0~rc5.10~tg31` development notes
 
 TG31 is an unreleased development candidate for disposable-lab qualification.
 It is not yet the recommended public package.
 
 ## Recovery hardening
 
+- Thick frontend presence is now established from the kernel DM inventory.
+  A transiently absent udev node can no longer make source migration cleanup
+  skip an existing mapping; the exact mapper name and `SLT-TG2-*` UUID must
+  match before the zero-open mapping is removed.
+- Thin runtime ownership classification now consumes the same canonical DM
+  inventory for public pool, hidden `-tpool`, and child mappings instead of
+  treating `/dev/mapper` node presence as authoritative runtime proof.
 - Bridge state schema v3 commits a root-owned mode-0600 disk manifest and its
   SHA-256 digest before the first storage move.
 - A pure planner classifies only evidence-complete recovery states and refuses
@@ -39,7 +46,7 @@ only the remaining slot, completed the native live migration, and returned
 both slots to Thin. This test also exposed and fixed SSH consuming the second
 manifest line during remote return recovery.
 
-The current source passes 197 Python tests and 694 Perl assertions. Broader
+The current source passes 198 Python tests and 699 Perl assertions. Broader
 multi-disk, repeated crash-point, large-disk, and concurrent recovery
 qualification remains required before a public release.
 

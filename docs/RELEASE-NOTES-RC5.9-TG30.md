@@ -1,4 +1,4 @@
-# BASTRIX SharedLVM 0.9.0~rc5.9~tg30 release notes
+# BASTRIX SharedLVM `0.9.0~rc5.9~tg30` release notes
 
 TG30 is a development candidate for disposable-lab qualification. It is not a
 declaration of production readiness.

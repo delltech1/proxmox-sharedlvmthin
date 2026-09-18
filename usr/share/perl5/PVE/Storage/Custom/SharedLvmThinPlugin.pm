@@ -558,6 +558,45 @@ sub _thick_verify_frontend {
     return 1;
 }
 
+sub _thick_frontend_present {
+    my ($class, $scfg, $volname) = @_;
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    my $expected_uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+    # `/dev/mapper/$mapper` is a udev-created userspace node, not the
+    # authoritative kernel mapping.  During PVE migration cleanup udev may
+    # remove that node before the source deactivate callback while the exact
+    # zero-open DM device still exists.  Inventory kernel DM state directly so
+    # the dependency is removed before lvchange -an reaches the backing LV.
+    my $inventory = _dm_kernel_inventory();
+    return 0 if !exists($inventory->{$mapper});
+    die "thick-generations frontend '$mapper' kernel UUID mismatch\n"
+        if $inventory->{$mapper} ne $expected_uuid;
+    return 1;
+}
+
+sub _dm_kernel_inventory {
+    my $lines = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '--separator', '|',
+            '-o', 'name,uuid'],
+        'reading authoritative kernel device-mapper inventory failed',
+    );
+    my $inventory = {};
+    for my $line (@$lines) {
+        my ($name, $uuid) = split(/\|/, $line, 2);
+        for ($name, $uuid) {
+            $_ //= '';
+            s/^\s+|\s+$//g;
+        }
+        die "kernel device-mapper inventory contains a malformed row\n"
+            if $name eq '' || $uuid eq '';
+        die "kernel device-mapper inventory contains duplicate name '$name'\n"
+            if exists($inventory->{$name});
+        $inventory->{$name} = $uuid;
+    }
+    return $inventory;
+}
+
 sub _thick_source_mapper_name {
     my ($class, $scfg, $volname, $generation) = @_;
     return mapper_name($class->_thick_namespace($scfg), $volname)
@@ -822,7 +861,7 @@ sub _thick_activate_volume {
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
-    if (_block_device_exists("/dev/mapper/$mapper")) {
+    if ($class->_thick_frontend_present($scfg, $volname)) {
         if ($state->{phase} eq 'MATERIALIZED') {
             $class->_thick_verify_frontend($scfg, $volname, $state->{head});
         } else {
@@ -878,7 +917,7 @@ sub _thick_deactivate_volume {
         $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
     my $vg = $scfg->{'slt-vgname'};
     my $mapper = mapper_name($class->_thick_namespace($scfg), $volname);
-    if (_block_device_exists("/dev/mapper/$mapper")) {
+    if ($class->_thick_frontend_present($scfg, $volname)) {
         if ($state->{phase} eq 'MATERIALIZED') {
             $class->_thick_verify_frontend($scfg, $volname, $state->{head});
         } else {
@@ -3318,6 +3357,7 @@ sub _thin_pool_runtime_state {
         "reading runtime state of thin pool '$vg/$pool' failed",
     );
 
+    my $dm_inventory = _dm_kernel_inventory();
     my $vg_dm = $vg;
     $vg_dm =~ s/-/--/g;
     my ($pool_found, @active_children);
@@ -3338,7 +3378,7 @@ sub _thin_pool_runtime_state {
             my $name_dm = $name;
             $name_dm =~ s/-/--/g;
             push @active_children, $name
-                if _block_device_exists("/dev/mapper/$vg_dm-$name_dm");
+                if exists($dm_inventory->{"$vg_dm-$name_dm"});
         }
     }
     die "runtime thin-pool inventory is missing '$vg/$pool'\n"
@@ -3348,8 +3388,8 @@ sub _thin_pool_runtime_state {
     $pool_dm =~ s/-/--/g;
     my $public_pool_mapper = "$vg_dm-$pool_dm";
     my $hidden_pool_mapper = "$vg_dm-$pool_dm-tpool";
-    my $public_active = _block_device_exists("/dev/mapper/$public_pool_mapper") ? 1 : 0;
-    my $hidden_active = _block_device_exists("/dev/mapper/$hidden_pool_mapper") ? 1 : 0;
+    my $public_active = exists($dm_inventory->{$public_pool_mapper}) ? 1 : 0;
+    my $hidden_active = exists($dm_inventory->{$hidden_pool_mapper}) ? 1 : 0;
     my $pool_mapper_active = $public_active || $hidden_active ? 1 : 0;
     my $pool_mapper = $hidden_active ? $hidden_pool_mapper : $public_pool_mapper;
 

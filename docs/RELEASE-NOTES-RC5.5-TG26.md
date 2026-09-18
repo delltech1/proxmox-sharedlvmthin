@@ -1,4 +1,4 @@
-# SharedLvmThin 0.9.0~rc5.5~tg26 release notes
+# SharedLvmThin `0.9.0~rc5.5~tg26` release notes
 
 ## Status
 

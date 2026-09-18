@@ -1,4 +1,4 @@
-# SharedLvmThin 0.9.0~rc5.2 release notes
+# SharedLvmThin `0.9.0~rc5.2` release notes
 
 Build date: 2026-09-07
 

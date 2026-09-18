@@ -14,6 +14,21 @@
 
 ## Live results added in this cycle
 
+- A 100-GiB Thick test disk completed native live migration and a stopped
+  Thick-to-Thin move. The first live migration exposed a source cleanup race:
+  udev had removed `/dev/mapper/<frontend>` while the zero-open kernel DM
+  mapping still depended on the generation LV. Runtime discovery now uses the
+  authoritative kernel DM inventory and exact UUID; the retry completed cleanly
+  and removed the source mapping. The exact sampled 8-GiB SHA-256 before and
+  after the fixed migration/mode move was
+  `ebfb4ef19ae410f190327b5ebd312711263bc7579970e87d9c1e2d84e06b3c25`.
+  Only the 100-GiB virtual geometry and sampled payload are claimed; this was
+  not a fully written 100-GiB test.
+- Thin runtime ownership discovery now also inventories public pool, hidden
+  `-tpool`, and child mappings directly from kernel DM state. A missing udev
+  node is no longer absence evidence for these gates.
+- PVE01 completed a controlled reboot/rejoin with quorum, required services,
+  zero D-state and 42 compatibility PASS / 0 FAIL before its VM was returned.
 - 50-way stale dmeventd event contention: 50/50 completed under the configured
   bounded lock policy, no unintended `lvextend`, no timeout and no D-state.
 - 8-TiB Thin control-plane lifecycle: create, PVE attach, +1-GiB resize and

@@ -3083,6 +3083,7 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
     my (@scheduled, $waited, $scoped);
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
@@ -3116,6 +3117,43 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
             PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
             ' 0 enable_hydration',
     ], 'callback only enables hydration before returning');
+};
+
+subtest 'thick deactivate removes kernel mapper even when its udev node vanished' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $state = { phase => 'MATERIALIZED', head => 'head-lv' };
+    my $verified = 0;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {} };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, {}, 'anchor-lv');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
+        $verified++; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 0 };
+
+    ok($class->deactivate_volume(
+        'thick-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ), 'kernel-only zero-open frontend is removed before backing LVs');
+    is($verified, 2, 'exact frontend is verified before and after close observation');
+    is_deeply([command_lines()], [
+        '/sbin/dmsetup remove --retry sltg-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0'),
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/anchor-lv testvg/head-lv',
+    ], 'cleanup order removes the DM dependency before lvchange');
 };
 
 subtest 'thin owner tag parser rejects ambiguity and malformed ownership' => sub {
@@ -3583,11 +3621,11 @@ subtest 'thin runtime state trusts exact local DM nodes over shared LVM activity
             'vm-900001-disk-1|Vwi-XXtz--|sltp-900001',
         ];
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
-        my ($path) = @_;
-        return 1 if $path eq '/dev/mapper/testvg-sltp--900001-tpool';
-        return 1 if $path eq '/dev/mapper/testvg-vm--900001--disk--0';
-        return 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub {
+        return {
+            'testvg-sltp--900001-tpool' => 'LVM-pool',
+            'testvg-vm--900001--disk--0' => 'LVM-disk0',
+        };
     };
 
     my $state = $class->_thin_pool_runtime_state('testvg', 'sltp-900001', '/dev/mapper/3600abcd');
@@ -3602,9 +3640,8 @@ subtest 'empty prepared thin pool public mapper is detected' => sub {
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
         return ['sltp-900001|twi-XXtz--|'];
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub {
-        my ($path) = @_;
-        return $path eq '/dev/mapper/testvg-sltp--900001';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub {
+        return { 'testvg-sltp--900001' => 'LVM-pool' };
     };
     my $state = $class->_thin_pool_runtime_state(
         'testvg', 'sltp-900001', '/dev/mapper/3600abcd');
@@ -3804,7 +3841,7 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
         return ($state, {}, 'anchor');
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_published_transition_frontend = sub {
         $verified++; return 1;
     };

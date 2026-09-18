@@ -1,4 +1,4 @@
-# BASTRIX SharedLVM 0.9.0~rc5.7~tg28 release notes
+# BASTRIX SharedLVM `0.9.0~rc5.7~tg28` release notes
 
 ## Status
 

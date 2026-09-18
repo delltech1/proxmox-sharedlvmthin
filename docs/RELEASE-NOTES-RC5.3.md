@@ -1,4 +1,4 @@
-# SharedLvmThin 0.9.0~rc5.3 release notes
+# SharedLvmThin `0.9.0~rc5.3` release notes
 
 RC5.3 removes the misleading older-storage-API warning on qualified PVE 9
 hosts. The plugin now advertises API 14 on a Storage API 14 host and API 15 on
