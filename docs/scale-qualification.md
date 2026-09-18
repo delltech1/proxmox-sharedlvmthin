@@ -296,3 +296,24 @@ completed 50/50 workers in approximately 146 seconds. All 50 decisions were
 stale/coalesced, zero `lvextend` operations occurred, and every selected pool
 size remained byte-identical. The final full recovery check reported 150 owned
 pools, `STATE=HEALTHY`, `SAFE_FOR_MUTATION=YES`, and zero D-state tasks.
+
+## 2026-09-18 rapid out-of-data transition
+
+While preparing a fully allocated 48-GiB data-movement workload, a fresh
+1-GiB elastic pool crossed from a 66% dmeventd event to 100% before the monitor
+could complete its serialized grow. The kernel exposed the exact hidden target
+as `out_of_data_space,queue_if_no_space`; the writer received controlled
+`ENOSPC`, metadata remained writable, and no unrelated pool changed. Manual
+identity/quorum verification followed by an exact pool extension cleared the
+capacity flag without repair and preserved the written prefix.
+
+This identified a policy deadlock: ordinary mutations must fail closed at
+Data%=100, but the guarded autogrow path must be able to perform the sole
+capacity mutation that resolves the state. The safety classifier now requires
+an explicit `allow_out_of_data` context used only by the monitor. Even there,
+quorum, identity, same-VG topology, owner tags, exact public/hidden mapper
+inventory, current Data% and protected reserve are positively revalidated
+under the canonical lock. Every metadata-health failure still blocks, and a
+reserve conflict executes zero mutations. A separate fast 1-GiB live write
+with the candidate monitor completed successfully while the exact pool grew
+from 1 GiB to 2 GiB and settled at Data%=50.

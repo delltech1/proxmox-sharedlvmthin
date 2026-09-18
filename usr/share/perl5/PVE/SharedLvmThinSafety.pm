@@ -454,6 +454,12 @@ sub evaluate_pool_health {
     } if substr($attr, 4, 1) eq 'c'
         || (defined($check_needed) && $check_needed =~ /^(?:1|yes|check_needed)$/i);
 
+    my $out_of_data = substr($attr, 8, 1) eq 'D' ? 1 : 0;
+    return {
+        status => 'CRITICAL', blocks_operation => 1,
+        reason => 'thin-pool data space is exhausted',
+    } if $out_of_data && !$args{allow_out_of_data};
+
     return {
         status => 'CRITICAL', blocks_operation => 1,
         reason => 'thin-pool metadata is read-only',
@@ -462,7 +468,8 @@ sub evaluate_pool_health {
     return {
         status => 'CRITICAL', blocks_operation => 1,
         reason => "unexpected thin-pool attributes '$attr'",
-    } if $attr !~ /^twi-[-a][o-]t[z-]--$/;
+    } if $attr !~ /^twi-[-a][o-]t[z-]--$/
+        && !($out_of_data && $attr =~ /^twi-[-a][o-]t[z-]D-$/);
 
     $health //= '';
     $health =~ s/^\s+|\s+$//g;
@@ -472,8 +479,11 @@ sub evaluate_pool_health {
     } if $health ne '' && lc($health) ne 'ok';
 
     return {
-        status => 'HEALTHY', blocks_operation => 0,
-        reason => 'thin-pool attributes and metadata state are writable',
+        status => $out_of_data ? 'RECOVERABLE_CAPACITY' : 'HEALTHY',
+        blocks_operation => 0,
+        reason => $out_of_data
+            ? 'thin-pool data space is exhausted; only guarded capacity growth is permitted'
+            : 'thin-pool attributes and metadata state are writable',
     };
 }
 

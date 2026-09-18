@@ -87,6 +87,7 @@ subtest 'thin-pool health flags fail closed without repair semantics' => sub {
         ['twi-aotzM-', '', '', 1, 'metadata read-only'],
         ['twi-aotz--', 'needs_check', '', 1, 'health status'],
         ['twi-aotz--', '', 'yes', 1, 'explicit check-needed field'],
+        ['twi---tzD-', '', '', 1, 'out-of-data default fail-closed'],
         ['unexpected', '', '', 1, 'unexpected attributes'],
         [undef, undef, undef, 1, 'unavailable attributes'],
     ) {
@@ -99,6 +100,17 @@ subtest 'thin-pool health flags fail closed without repair semantics' => sub {
         is($result->{blocks_operation}, $blocked, "$name block policy");
         is($result->{status}, $blocked ? ($attr ? 'CRITICAL' : 'UNKNOWN') : 'HEALTHY', "$name status");
     }
+
+    my $capacity_recovery = PVE::SharedLvmThinSafety::evaluate_pool_health(
+        lv_attr => 'twi---tzD-',
+        health_status => '',
+        check_needed => '',
+        allow_out_of_data => 1,
+    );
+    is($capacity_recovery->{status}, 'RECOVERABLE_CAPACITY',
+        'explicit autogrow context classifies exhausted data capacity');
+    ok(!$capacity_recovery->{blocks_operation},
+        'explicit autogrow context permits only its guarded grow path');
 };
 
 done_testing();

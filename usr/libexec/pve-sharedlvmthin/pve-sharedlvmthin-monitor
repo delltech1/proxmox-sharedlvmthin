@@ -160,6 +160,12 @@ if ($pool =~ /^sltp-\d+$/) {
                     lv_attr => $locked_attr,
                     health_status => $locked_health,
                     check_needed => $locked_check_needed,
+                    # Capacity exhaustion is the sole unhealthy state this
+                    # program may resolve.  Quorum, identity, ownership,
+                    # exact mapper topology and reserve are still proven
+                    # before the one permitted lvextend.  Every other caller
+                    # keeps the default fail-closed policy.
+                    allow_out_of_data => 1,
                 );
                 die "CRITICAL: '$vg/$pool': $pool_health->{reason}; autogrow disabled; no repair attempted\n"
                     if $pool_health->{blocks_operation};

@@ -39,7 +39,7 @@ only the remaining slot, completed the native live migration, and returned
 both slots to Thin. This test also exposed and fixed SSH consuming the second
 manifest line during remote return recovery.
 
-The current source passes 197 Python tests and 693 Perl assertions. Broader
+The current source passes 197 Python tests and 694 Perl assertions. Broader
 multi-disk, repeated crash-point, large-disk, and concurrent recovery
 qualification remains required before a public release.
 
@@ -76,3 +76,13 @@ acquiring the lock. Repeating the identical 16-way-concurrency workload with
 the configured 600-second policy completed 50/50 events, produced 50/50
 stale/coalesced decisions, changed zero pool sizes, and left recovery healthy
 with zero D-state tasks.
+
+A fast full-allocation workload also demonstrated that a 1-GiB elastic pool
+can cross from the first dmeventd threshold to kernel `out_of_data_space`
+before its serialized grow completes. Ordinary plugin mutations continue to
+classify that state as recovery-required. The narrowly scoped monitor may now
+classify only the exact `D` capacity flag as recoverable, after proving quorum,
+storage identity, pool ownership and exact mapper topology. It still applies
+the protected VG reserve before issuing one `lvextend`; metadata read-only,
+check-needed, foreign, ambiguous and reserve-conflict states remain blocked and
+no repair/reset action exists.

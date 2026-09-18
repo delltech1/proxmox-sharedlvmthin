@@ -76,6 +76,7 @@ sub run_case {
             $case{locked_tag} // 'pve-slt-sid-sharedthin-test',
             $case{needs_check} ? 'twi-cotz--'
                 : $case{metadata_readonly} ? 'twi-aotzM-'
+                : $case{out_of_data} ? 'twi---tzD-'
                 : ($case{inactive} || $case{public_attr_inactive})
                     ? 'twi---tz--' : 'twi-aotz--',
             $case{health_status} // '',
@@ -128,6 +129,19 @@ subtest 'healthy event performs one cluster-locked growth' => sub {
         join('\n', @{$r->{commands}}), qr/lvchange|setautoactivation/,
         'dmeventd/autogrow never changes the autoactivation policy',
     );
+};
+
+subtest 'capacity exhaustion permits only guarded exact autogrow' => sub {
+    my $r = run_case(out_of_data => 1, data_percent => 100);
+    is($r->{rc}, 0, 'out-of-data event enters guarded recovery path');
+    is($r->{extend_calls}, 1, 'exactly one reserve-checked lvextend is issued');
+    unlike($r->{stderr}, qr/autogrow disabled|repair/, 'no metadata repair path is used');
+
+    my $blocked = run_case(out_of_data => 1, data_percent => 100, vg_free => 105);
+    is($blocked->{rc}, 1, 'capacity recovery still respects protected VG reserve');
+    is($blocked->{extend_calls}, 0, 'reserve conflict performs zero mutation');
+    like($blocked->{stderr}, qr/CRITICAL: refusing autogrow/,
+        'reserve refusal remains explicit and fail-closed');
 };
 
 subtest 'autogrow shares the configured bounded lock backlog policy' => sub {

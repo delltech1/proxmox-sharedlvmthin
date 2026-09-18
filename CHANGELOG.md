@@ -24,7 +24,11 @@
 - Make dmeventd autogrow use the storage's bounded `slt-lock-timeout` policy
   and revalidate that policy under the lock instead of using a fixed 30-second
   wait; qualify 50/50 concurrent stale events without mutation or timeout.
-- Pass 197 Python tests and 693 Perl assertions.
+- Permit only the autogrow monitor to classify an exact out-of-data Thin pool
+  as recoverable capacity, while every ordinary mutation remains fail-closed;
+  quorum, identity, ownership, mapper and protected-reserve gates still run
+  before the sole permitted `lvextend` and no repair action is introduced.
+- Pass 197 Python tests and 694 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
 
