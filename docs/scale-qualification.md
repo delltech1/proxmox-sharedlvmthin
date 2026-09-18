@@ -276,3 +276,23 @@ Data% fell from 100.00 to 50.00. A subsequent full storage recovery check
 reported all 150 owned pools healthy, `STATE=HEALTHY`, and
 `SAFE_FOR_MUTATION=YES`. All three nodes returned zero D-state tasks and clean
 `dpkg -V` results.
+
+## 2026-09-18 50-way dmeventd lock-backlog gate
+
+Fifty exact active pools below the growth threshold were selected on one node.
+The test delivered synthetic stale dmeventd notifications at concurrency 16;
+the monitor still re-read authoritative live Data% and was not permitted to
+mutate a pool from the supplied event percentage alone.
+
+With the original fixed 30-second monitor lock timeout, 42/50 workers completed
+and 8/50 failed safely on canonical VG lock timeout. All 50 pool sizes remained
+unchanged. This established a real availability/backlog limit without metadata
+ambiguity or speculative retry.
+
+The monitor was changed to use the storage's already bounded
+`slt-lock-timeout` policy and to reject a policy change observed after lock
+acquisition. With the configured 600-second value, the identical workload
+completed 50/50 workers in approximately 146 seconds. All 50 decisions were
+stale/coalesced, zero `lvextend` operations occurred, and every selected pool
+size remained byte-identical. The final full recovery check reported 150 owned
+pools, `STATE=HEALTHY`, `SAFE_FOR_MUTATION=YES`, and zero D-state tasks.

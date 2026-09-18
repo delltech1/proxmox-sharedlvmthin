@@ -113,9 +113,13 @@ if ($pool =~ /^sltp-\d+$/) {
         }
         print STDERR "SharedLvmThin: locking canonical domain '$lockid'\n";
 
+        my $lock_timeout = $initial_scfg->{'slt-lock-timeout'} // 30;
+        die "invalid storage lock timeout for '$storeid'\n"
+            if $lock_timeout !~ /^\d+$/ || $lock_timeout < 10 || $lock_timeout > 86400;
+
         PVE::Cluster::cfs_lock_storage(
             $lockid,
-            30,
+            $lock_timeout,
             sub {
                 my $cfg = PVE::Storage::config();
                 my $scfg = PVE::Storage::storage_config($cfg, $storeid);
@@ -132,6 +136,9 @@ if ($pool =~ /^sltp-\d+$/) {
                 }
                 die "storage '$storeid' canonical mutation lock changed while waiting\n"
                     if $locked_lockid ne $lockid;
+                my $locked_timeout = $scfg->{'slt-lock-timeout'} // 30;
+                die "storage '$storeid' lock timeout policy changed while waiting\n"
+                    if $locked_timeout != $lock_timeout;
 
                 PVE::Storage::Custom::SharedLvmThinPlugin->_verify_mutation_quorum(
                     $storeid, $scfg,

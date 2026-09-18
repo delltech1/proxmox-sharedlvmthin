@@ -21,7 +21,10 @@
 - Fix dmeventd autogrow activity detection: an exact active hidden `-tpool`
   mapper is authoritative even when LVM reports the public pool LV inactive.
   This prevents valid growth events from being refused until Data%=100.
-- Pass 197 Python tests and 692 Perl assertions.
+- Make dmeventd autogrow use the storage's bounded `slt-lock-timeout` policy
+  and revalidate that policy under the lock instead of using a fixed 30-second
+  wait; qualify 50/50 concurrent stale events without mutation or timeout.
+- Pass 197 Python tests and 693 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
 

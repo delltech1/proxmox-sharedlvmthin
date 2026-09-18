@@ -14,6 +14,7 @@ sub run_case {
     my @commands;
     my @reads;
     my @locks;
+    my @lock_timeouts;
     my $stderr = '';
     my $post_reads = 0;
     my $gib = 1024 * 1024 * 1024;
@@ -34,6 +35,8 @@ sub run_case {
                 'slt-initial-pool-mode' => 'elastic',
                 'slt-burst-headroom-gib' => 64,
             ) : ()),
+            (defined($case{lock_timeout})
+                ? ('slt-lock-timeout' => $case{lock_timeout}) : ()),
         };
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub {
@@ -59,6 +62,7 @@ sub run_case {
     local *PVE::Cluster::cfs_lock_storage = sub {
         my ($storeid, $timeout, $code) = @_;
         push @locks, $storeid;
+        push @lock_timeouts, $timeout;
         die "storage lock unavailable\n" if $case{lock_fail};
         return $code->();
     };
@@ -109,6 +113,7 @@ sub run_case {
         commands => \@commands,
         reads => \@reads,
         locks => \@locks,
+        lock_timeouts => \@lock_timeouts,
     };
 }
 
@@ -123,6 +128,14 @@ subtest 'healthy event performs one cluster-locked growth' => sub {
         join('\n', @{$r->{commands}}), qr/lvchange|setautoactivation/,
         'dmeventd/autogrow never changes the autoactivation policy',
     );
+};
+
+subtest 'autogrow shares the configured bounded lock backlog policy' => sub {
+    my $r = run_case(lock_timeout => 600);
+    is($r->{rc}, 0, 'event succeeded with configured backlog window');
+    is_deeply($r->{lock_timeouts}, [600],
+        'dmeventd monitor uses the storage lock timeout instead of fixed 30 seconds');
+    is($r->{extend_calls}, 1, 'event still grows exactly once');
 };
 
 subtest 'hidden tpool mapper is authoritative when public LV looks inactive' => sub {

@@ -39,7 +39,7 @@ only the remaining slot, completed the native live migration, and returned
 both slots to Thin. This test also exposed and fixed SSH consuming the second
 manifest line during remote return recovery.
 
-The current source passes 197 Python tests and 692 Perl assertions. Broader
+The current source passes 197 Python tests and 693 Perl assertions. Broader
 multi-disk, repeated crash-point, large-disk, and concurrent recovery
 qualification remains required before a public release.
 
@@ -67,3 +67,12 @@ monitor extended only that exact pool to 2 GiB, reducing Data% to 50.00. The
 postcondition was a fully healthy recovery check over 150 owned pools with
 `SAFE_FOR_MUTATION=YES`; all three nodes had zero D-state tasks and clean
 package verification.
+
+A 50-way live stale-event storm then exposed the monitor's separate fixed
+30-second lock wait: 42 workers completed and 8 failed safely with lock request
+timeouts; no pool size changed. The monitor now uses the same validated
+`slt-lock-timeout` configured for the storage and revalidates that policy after
+acquiring the lock. Repeating the identical 16-way-concurrency workload with
+the configured 600-second policy completed 50/50 events, produced 50/50
+stale/coalesced decisions, changed zero pool sizes, and left recovery healthy
+with zero D-state tasks.
