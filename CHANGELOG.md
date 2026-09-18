@@ -15,6 +15,9 @@
 - Replace the bridge's fixed 15-minute admission wait with a configurable,
   bounded policy, persistent heartbeats, and desynchronized bounded backoff;
   qualify exact single-winner behavior with 50 concurrent contenders.
+- Qualify a disposable 8-TiB Thin control-plane create, PVE attach, +1-GiB
+  resize and exact cleanup cycle with byte-exact VG free-space restoration;
+  retain the explicit boundary that this is not an 8-TiB physical-copy test.
 - Pass 197 Python tests and 691 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)

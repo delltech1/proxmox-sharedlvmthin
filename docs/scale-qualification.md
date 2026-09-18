@@ -237,3 +237,24 @@ policy, 30-second persistent waiter heartbeats, and transaction-desynchronized
 polling which backs off to 15 seconds. This bounds observation load during a
 large evacuation without interpreting a timeout as evidence that a holder
 stopped or that its mutation failed.
+
+## 2026-09-18 8-TiB Thin control-plane lifecycle gate
+
+A disposable Thin volume was allocated at 8 TiB on `slt-scale-thin`, attached
+to an exact stopped PVE VM configuration, and resized through `qm resize` by
+1 GiB. The resulting block-device size was exactly 8,797,166,764,032 bytes and
+the PVE configuration reported `size=8193G`. The per-VM pool remained a 1-GiB
+elastic pool with zero allocated data; this gate therefore exercised large
+integer handling, PVE/plugin lifecycle integration and metadata operations,
+not an 8-TiB data copy or performance workload.
+
+Before the PVE VM configuration was created, the deliberately unreferenced
+volume was classified `THIN_REFERENCES_HEALTHY=FAIL`,
+`STATE=RECOVERY_REQUIRED`, and `SAFE_FOR_MUTATION=NO`. This is the expected
+fail-closed orphan behavior rather than a successful health result.
+
+Normal `qm destroy --purge 1 --destroy-unreferenced-disks 1` cleanup removed
+the exact VM disk, per-VM pool and VM configuration. VG free space returned
+exactly to the recorded pre-test value of 154,853,703,680 bytes. No 500-GiB to
+8-TiB physical-copy, hydration-duration or failure-recovery claim follows from
+this control-plane gate.

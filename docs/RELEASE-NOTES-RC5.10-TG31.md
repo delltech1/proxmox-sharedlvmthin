@@ -48,3 +48,9 @@ While an exact holder existed, 0/50 contenders acquired admission. After its
 exact release, a simultaneous 50-way race produced exactly one winner; the
 other 49 failed closed against the winner's durable transaction tag. Exact
 winner release restored an empty admission state.
+
+An additional disposable control-plane gate created an 8-TiB Thin disk,
+attached it to an exact stopped VM configuration, resized it by 1 GiB and
+removed the VM, disk and per-VM pool through the normal PVE lifecycle. VG free
+space returned exactly to baseline. This validates large-size arithmetic and
+lifecycle wiring only; it is not an 8-TiB data-movement qualification.
