@@ -10,6 +10,19 @@ use PVE::SharedLvmThinSafety;
 
 my $gib = 1024 * 1024 * 1024;
 
+subtest 'elastic target preserves mutation safety at large utilization' => sub {
+    my $target = PVE::SharedLvmThinSafety::evaluate_allocation_target(
+        mode => 'elastic', fixed_gib => 1, headroom_gib => 1,
+        requested_kib => 48 * 1024 * 1024,
+        used_bytes => 48 * $gib,
+        current_pool_bytes => 49 * $gib,
+    );
+    cmp_ok($target->{target_bytes}, '>=', int((48 * $gib * 100 + 93) / 94),
+        'large elastic pool keeps Data% at or below 94%');
+    cmp_ok($target->{target_bytes}, '>', 49 * $gib,
+        'absolute one-GiB headroom cannot leave a large pool mutation-blocked');
+};
+
 sub target {
     return PVE::SharedLvmThinSafety::evaluate_allocation_target(@_);
 }

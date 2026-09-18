@@ -317,3 +317,22 @@ under the canonical lock. Every metadata-health failure still blocks, and a
 reserve conflict executes zero mutations. A separate fast 1-GiB live write
 with the candidate monitor completed successfully while the exact pool grew
 from 1 GiB to 2 GiB and settled at Data%=50.
+
+## 2026-09-18 capacity-relative elastic headroom
+
+The physical 48-GiB workload exposed a large-volume boundary in the original
+elastic policy. Absolute burst headroom alone could leave 48 GiB of allocated
+data in a 49--50 GiB pool, so the otherwise healthy pool immediately met the
+95% mutation-safety refusal threshold. This was safe but operationally stuck.
+
+Elastic headroom is now a lower bound. Allocation, dmeventd autogrow and the
+Thick-to-Thin import path also compute the minimum exact pool size needed to
+keep known used data at or below 94%, using overflow-bounded integer arithmetic.
+The final target is the larger of that capacity-relative value and configured
+absolute burst headroom. It is then rounded upward to the normal allocation
+unit. The 48-GiB/one-GiB case therefore targets 52 GiB rather than 49 GiB.
+
+This does not promise that arbitrary future guest writes fit without growth;
+it prevents a completed managed operation from knowingly returning a pool
+which its own next mutation gate must refuse. Reserve, identity, ownership,
+quorum and metadata-health checks remain unchanged and fail closed.

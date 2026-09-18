@@ -28,7 +28,12 @@
   as recoverable capacity, while every ordinary mutation remains fail-closed;
   quorum, identity, ownership, mapper and protected-reserve gates still run
   before the sole permitted `lvextend` and no repair action is introduced.
-- Pass 197 Python tests and 694 Perl assertions.
+- Treat configured elastic burst headroom as a minimum, not a sufficient final
+  target: autogrow, allocation planning and Thick-to-Thin import now also size
+  the exact pool so known used data is at or below 94%. This prevents a large
+  disk with small absolute headroom from completing immediately behind the
+  95% mutation-safety gate.
+- Pass 197 Python tests and 696 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
 

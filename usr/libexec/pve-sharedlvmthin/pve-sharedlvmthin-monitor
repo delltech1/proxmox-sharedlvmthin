@@ -229,6 +229,10 @@ if ($pool =~ /^sltp-\d+$/) {
                         if $headroom_gib !~ /^\d+$/ || $headroom_gib < 1;
                     my $used = int(($pool_size * $current_data_percent + 99) / 100);
                     my $raw_target = $used + $headroom_gib * $gib;
+                    my $capacity_safe = PVE::SharedLvmThinSafety::minimum_pool_bytes_for_used(
+                        used_bytes => $used,
+                    );
+                    $raw_target = $capacity_safe if $capacity_safe > $raw_target;
                     $expected_target = int(($raw_target + $gib - 1) / $gib) * $gib;
                     if ($expected_target <= $pool_size) {
                         print STDERR "SharedLvmThin: '$vg/$pool' already has configured absolute headroom; no growth\n";

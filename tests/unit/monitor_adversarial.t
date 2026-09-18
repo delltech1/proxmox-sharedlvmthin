@@ -33,7 +33,7 @@ sub run_case {
             ($case{pinned} ? ('slt-expected-vg-uuid' => 'same-vg-uuid') : ()),
             ($case{elastic} ? (
                 'slt-initial-pool-mode' => 'elastic',
-                'slt-burst-headroom-gib' => 64,
+                'slt-burst-headroom-gib' => $case{headroom_gib} // 64,
             ) : ()),
             (defined($case{lock_timeout})
                 ? ('slt-lock-timeout' => $case{lock_timeout}) : ()),
@@ -176,6 +176,18 @@ subtest 'elastic event grows to used plus absolute headroom' => sub {
     is($r->{extend_calls}, 1, 'elastic event issued exactly one grow');
     like(join('\n', @{$r->{commands}}), qr/lvextend -L 159987531776B testvg\/sltp-900001/,
         'target is rounded used plus 64 GiB, independent of virtual disk size');
+};
+
+subtest 'elastic event cannot finish above the mutation safety boundary' => sub {
+    my $r = run_case(
+        elastic => 1, headroom_gib => 1,
+        pool_size => 50, data_percent => 96,
+    );
+    is($r->{rc}, 0, 'large nearly-full elastic event succeeded');
+    is($r->{extend_calls}, 1, 'large event issued one exact grow');
+    like(join('\n', @{$r->{commands}}),
+        qr/lvextend -L 55834574848B testvg\/sltp-900001/,
+        'target rounds to 52 GiB so 48 GiB used remains below 95%');
 };
 
 subtest 'thin-pool health failures disable autogrow without repair' => sub {

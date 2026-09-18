@@ -7,6 +7,26 @@ use strict;
 use warnings;
 use Digest::SHA qw(sha256_hex);
 
+sub minimum_pool_bytes_for_used {
+    my (%args) = @_;
+    my $used = $args{used_bytes};
+    my $maximum_percent = $args{maximum_data_percent} // 94;
+    die "invalid used_bytes\n"
+        if !defined($used) || $used !~ /^\d+$/;
+    die "invalid maximum_data_percent\n"
+        if $maximum_percent !~ /^\d+$/ || $maximum_percent < 1
+        || $maximum_percent > 94;
+
+    # Avoid multiplying a multi-EiB byte count by 100 before division.
+    my $whole = int($used / $maximum_percent);
+    my $remainder = $used % $maximum_percent;
+    my $target = $whole * 100
+        + int(($remainder * 100 + $maximum_percent - 1) / $maximum_percent);
+    die "capacity-safe allocation target exceeds signed 64-bit arithmetic\n"
+        if $target > 9_000_000_000_000_000_000;
+    return $target;
+}
+
 sub evaluate_allocation_target {
     my (%args) = @_;
     for my $required (qw(mode fixed_gib requested_kib used_bytes current_pool_bytes)) {
@@ -69,6 +89,10 @@ sub evaluate_allocation_target {
         my $bootstrap = $gib;
         $headroom = $bootstrap if $headroom < $bootstrap;
         $target = $args{used_bytes} + $headroom;
+        my $capacity_safe = minimum_pool_bytes_for_used(
+            used_bytes => $args{used_bytes},
+        );
+        $target = $capacity_safe if $capacity_safe > $target;
     } else {
         my $headroom = $requested;
         $headroom = $fixed

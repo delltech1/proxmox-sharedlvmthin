@@ -2712,6 +2712,10 @@ sub _thin_prepare_import_pool {
         my $gib = 1024 * 1024 * 1024;
         my $burst_bytes = ($scfg->{'slt-burst-headroom-gib'} // 1) * $gib;
         my $admitted_bytes = $required_bytes + $burst_bytes;
+        my $capacity_safe = PVE::SharedLvmThinSafety::minimum_pool_bytes_for_used(
+            used_bytes => $required_bytes,
+        );
+        $admitted_bytes = $capacity_safe if $capacity_safe > $admitted_bytes;
         die "Thin import admitted byte count overflow\n"
             if $admitted_bytes <= $required_bytes;
         my $size_kib = int(($admitted_bytes + 1023) / 1024);
