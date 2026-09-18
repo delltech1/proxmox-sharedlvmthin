@@ -20,7 +20,7 @@ full target claim is not. `OPEN` means no current evidence supports the claim.
 | 500-GiB disk suitability | PARTIAL | Exact integer/capacity-floor regression and generic control-plane paths | Fully written 500-GiB Thin--Thick--Thin copy with whole-device hashes |
 | 8-TiB disk suitability | PARTIAL | Exact 8-TiB create/attach/resize/cleanup plus integer/capacity-floor regression | Fully written 8-TiB movement, interruption and duration evidence |
 | Thin--Thick--Thin lifecycle | PASS at 48 GiB | Fully written 48-GiB round trip, native Thick live migration and identical whole-device SHA-256 | Larger physical payload and path-loss transition |
-| Single-path operation | PASS for existing Thin/Thick workload gates | Repeated iSCSI single-path and mixed-mode evidence in the Thick status ledger | Final TG31 bridge copy under one-path loss remains PARTIAL |
+| Single-path operation | PASS for bounded 8-GiB bridge materialization gate | One of two exact iSCSI sessions was removed during active Thin-to-Thick copy; progress continued on the surviving path and the exact session restored to 2/2 | Physical FC and larger-payload repetition remain open |
 | Total path loss | fail-closed plugin behavior PASS; data-path recovery is external | Recovery gate refuses ambiguous/D-state state and never treats restored path count as health | Kernel D-state, SAN cache, multipath timer and guest-write completion are infrastructure responsibilities |
 | Reproducible source/package/evidence | PASS | Clean Git history, reproducible DEB SHA, full tests, handover archive and release-boundary documentation | Regenerate for every published commit |
 

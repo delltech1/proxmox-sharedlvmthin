@@ -28,6 +28,11 @@
   as recoverable capacity, while every ordinary mutation remains fail-closed;
   quorum, identity, ownership, mapper and protected-reserve gates still run
   before the sole permitted `lvextend` and no repair action is introduced.
+- Restore native-import pre-growth when `lvs --readonly` omits Data% for an
+  active hidden `-tpool`: exact runtime topology is proven first and only the
+  pinned active pool is queried. Existing active-pool admission also keeps the
+  complete promised burst below 94% instead of sizing to an exact 100%-full
+  target and relying on asynchronous autogrow.
 - Treat configured elastic burst headroom as a minimum, not a sufficient final
   target: autogrow, allocation planning and Thick-to-Thin import now also size
   the exact pool so known used data is at or below 94%. This prevents a large
@@ -49,7 +54,7 @@
   time and durable progress-update age. The 90-second freshness hint never
   kills work, declares failure, invents an ETA or authorizes recovery; malformed,
   duplicate or future timestamp evidence fails inspection closed.
-- Pass 197 Python tests and 697 Perl assertions.
+- Pass 198 Python tests and 698 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
 

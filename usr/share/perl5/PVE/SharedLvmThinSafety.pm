@@ -89,6 +89,18 @@ sub evaluate_allocation_target {
         my $bootstrap = $gib;
         $headroom = $bootstrap if $headroom < $bootstrap;
         $target = $args{used_bytes} + $headroom;
+        # A burst guarantee must not size the physical pool to the exact
+        # number of bytes that may be written.  Hitting 100% queues guest I/O
+        # before dmeventd/our monitor can extend the pool.  Keep the complete
+        # admitted burst below the same hard 94% ceiling used by runtime
+        # capacity checks, including fast native imports that can otherwise
+        # outrun the monitor.
+        if ($args{guard_projected_write}) {
+            my $projected_safe = minimum_pool_bytes_for_used(
+                used_bytes => $target,
+            );
+            $target = $projected_safe if $projected_safe > $target;
+        }
         my $capacity_safe = minimum_pool_bytes_for_used(
             used_bytes => $args{used_bytes},
         );
@@ -98,6 +110,12 @@ sub evaluate_allocation_target {
         $headroom = $fixed
             if $args{current_pool_bytes} == 0 && $headroom < $fixed;
         $target = $args{used_bytes} + $headroom;
+        # `full` promises that the complete requested allocation can be
+        # physically written at admission time.  Preserve operating margin;
+        # an exact used+requested target would instead promise a 100%-full
+        # thin pool and transiently queue I/O.
+        $target = minimum_pool_bytes_for_used(used_bytes => $target)
+            if $args{guard_projected_write};
     }
 
     if (defined($args{max_gib})) {
@@ -497,10 +515,12 @@ sub evaluate_pool_health {
 
     $health //= '';
     $health =~ s/^\s+|\s+$//g;
+    my $recoverable_health = $out_of_data && $args{allow_out_of_data}
+        && lc($health) eq 'out_of_data';
     return {
         status => 'CRITICAL', blocks_operation => 1,
         reason => "thin-pool health status is '$health'",
-    } if $health ne '' && lc($health) ne 'ok';
+    } if $health ne '' && lc($health) ne 'ok' && !$recoverable_health;
 
     return {
         status => $out_of_data ? 'RECOVERABLE_CAPACITY' : 'HEALTHY',

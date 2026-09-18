@@ -102,3 +102,17 @@ storage identity, pool ownership and exact mapper topology. It still applies
 the protected VG reserve before issuing one `lvextend`; metadata read-only,
 check-needed, foreign, ambiguous and reserve-conflict states remain blocked and
 no repair/reset action exists.
+
+A native 8-GiB import exposed a separate admission race: `lvs --readonly`
+omitted Data% for the active hidden thin-pool mapper, so allocation did not
+pre-grow and the copy briefly reached `out_of_data`. TG31 now proves the exact
+hidden mapper before issuing a normal device-scoped status read, and sizes the
+complete admitted burst below 94%. Repeating the same import completed with
+the pool at 80%, no low-water/out-of-data kernel event, and byte-identical
+source/destination SHA-256.
+
+The same two-disk VM then entered the materialized migration bridge. During
+the non-zero 8-GiB Thin-to-Thick mirror, one exact iSCSI session was logged
+out. Multipath retained one healthy path, durable bridge progress continued,
+and the exact session was restored to 2/2 before completion. This qualifies a
+bounded virtual-iSCSI one-path transition; it is not physical-FC evidence.

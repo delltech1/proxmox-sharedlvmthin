@@ -111,6 +111,26 @@ subtest 'thin-pool health flags fail closed without repair semantics' => sub {
         'explicit autogrow context classifies exhausted data capacity');
     ok(!$capacity_recovery->{blocks_operation},
         'explicit autogrow context permits only its guarded grow path');
+
+    my $real_lvm_capacity_recovery = PVE::SharedLvmThinSafety::evaluate_pool_health(
+        lv_attr => 'twi---tzD-',
+        health_status => 'out_of_data',
+        check_needed => '',
+        allow_out_of_data => 1,
+    );
+    is($real_lvm_capacity_recovery->{status}, 'RECOVERABLE_CAPACITY',
+        'explicit autogrow accepts the exact LVM out_of_data health string');
+    ok(!$real_lvm_capacity_recovery->{blocks_operation},
+        'exact LVM out_of_data health remains limited to guarded recovery');
+
+    my $foreign_health = PVE::SharedLvmThinSafety::evaluate_pool_health(
+        lv_attr => 'twi---tzD-',
+        health_status => 'needs_check',
+        check_needed => '',
+        allow_out_of_data => 1,
+    );
+    ok($foreign_health->{blocks_operation},
+        'guarded recovery still refuses any non-capacity health status');
 };
 
 done_testing();

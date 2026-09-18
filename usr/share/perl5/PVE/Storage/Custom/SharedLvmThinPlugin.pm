@@ -2819,6 +2819,36 @@ sub _allocation_headroom_plan {
             "reading allocation state of '$vg/$pool' failed", 2, 1,
         );
         $current_pool = int($pool_size);
+        if (!defined($data_percent)) {
+            # `lvs --readonly` intentionally avoids consulting live
+            # device-mapper state.  For an exactly identified active hidden
+            # -tpool it can therefore omit Data% even though the pool is
+            # owned and in use.  This used to disable pre-growth during a
+            # native PVE import and allowed a fast copy to outrun dmeventd.
+            # Reuse the same exact runtime topology proof as the monitor,
+            # then perform a normal read-only query (no metadata mutation)
+            # scoped to the pinned device.  Never activate an inactive pool
+            # merely to obtain an estimate.
+            my $device = defined($scfg->{'slt-expected-wwid'})
+                ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+                : undef;
+            my $runtime = $class->_thin_pool_runtime_state(
+                $vg, $pool, $device,
+            );
+            if ($runtime->{pool_mapper_active}) {
+                my @live = (
+                    '/sbin/lvs', '--noheadings', '--units', 'b', '--nosuffix',
+                    '--separator', '|', '-o', 'lv_size,data_percent',
+                );
+                push @live, ('--devices', $device) if defined($device);
+                push @live, "$vg/$pool";
+                ($pool_size, $data_percent) = _allocation_numeric_fields(
+                    \@live,
+                    "reading active allocation state of '$vg/$pool' failed", 2, 1,
+                );
+                $current_pool = int($pool_size);
+            }
+        }
         if (defined($data_percent)) {
             $used = int(($current_pool * $data_percent + 99) / 100);
         } else {
@@ -2841,6 +2871,10 @@ sub _allocation_headroom_plan {
         used_bytes => $used,
         current_pool_bytes => $current_pool,
         usage_known => $usage_known,
+        # Existing active pools may receive an immediate full-speed native
+        # import after allocation.  Keep the admitted write below the hard
+        # data ceiling instead of relying on asynchronous autogrow.
+        guard_projected_write => ($pool_exists && $usage_known) ? 1 : 0,
     );
     $target_args{percent} = $percent if $mode eq 'proportional';
     $target_args{headroom_gib} = $headroom if $mode eq 'elastic';

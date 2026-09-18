@@ -1186,6 +1186,9 @@ subtest 'inactive pool allocation never repeats headroom growth' => sub {
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_numeric_fields = sub {
         return @{shift @numeric};
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return { pool_mapper_active => 0, pool_active => 0, active_children => [] };
+    };
     my $warning = '';
     local $SIG{__WARN__} = sub { $warning .= shift };
     my $name = $class->alloc_image(
@@ -1197,6 +1200,49 @@ subtest 'inactive pool allocation never repeats headroom growth' => sub {
     is(scalar(grep { /lvextend/ } @lines), 0, 'inactive pool is not grown from unknown usage');
     like($warning, qr/automatic pre-growth disabled until usage is known/, 'operator sees the downgraded guarantee');
     is(scalar(@numeric), 0, 'capacity and reserve checks remain bounded');
+};
+
+subtest 'active hidden pool mapper enables exact import pre-growth' => sub {
+    reset_mocks();
+    my $policy = {
+        %$scfg,
+        'slt-initial-pool-mode' => 'elastic',
+        'slt-burst-headroom-gib' => 16,
+        'slt-vg-reserve-gib' => 10,
+    };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $disk = { pool_lv => 'sltp-999900' };
+    @lvm_results = (
+        { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
+        { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
+    );
+    my $safe_target = PVE::SharedLvmThinSafety::minimum_pool_bytes_for_used(
+        used_bytes => 8 * 1024**3,
+    );
+    my @numeric = (
+        [400 * 1024**3, 300 * 1024**3, 4 * 1024**2],
+        [5 * 1024**3, undef],
+        [5 * 1024**3, 0],
+        [$safe_target],
+        [400 * 1024**3, 297 * 1024**3],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_numeric_fields = sub {
+        return @{shift @numeric};
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return { pool_mapper_active => 1, pool_active => 0, active_children => [] };
+    };
+    my $name = $class->alloc_image(
+        'sharedthin-test', $policy, 999900, 'raw',
+        'vm-999900-disk-1', 8 * 1024 * 1024,
+    );
+    is($name, 'vm-999900-disk-1', 'native import allocation completed');
+    my @lines = command_lines();
+    my $safe_target_kib = int(($safe_target + 1023) / 1024);
+    like($lines[0], qr{^/sbin/lvextend -L \Q${safe_target_kib}K\E testvg/sltp-999900$},
+        'active hidden mapper pre-grows the admitted write below 94 percent');
+    is(scalar(@numeric), 0, 'active and postcondition capacity reads are bounded');
 };
 
 subtest 'allocation reserve rejection runs zero mutations' => sub {
