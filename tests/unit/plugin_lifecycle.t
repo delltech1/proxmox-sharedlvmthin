@@ -94,6 +94,9 @@ local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disable
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_claim_pool_owner_locked = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration = sub { return 1; };
+# Unit tests must not depend on a PVE host's PVE::INotify module. Individual
+# owner/peer scenarios override this deterministic local identity as needed.
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'testnode'; };
 
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
 my $scfg = {
