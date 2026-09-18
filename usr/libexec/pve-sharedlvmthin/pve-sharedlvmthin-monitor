@@ -156,8 +156,21 @@ if ($pool =~ /^sltp-\d+$/) {
                 );
                 die "CRITICAL: '$vg/$pool': $pool_health->{reason}; autogrow disabled; no repair attempted\n"
                     if $pool_health->{blocks_operation};
-                die "pool '$vg/$pool' is inactive; refusing autogrow\n"
-                    if ($locked_attr // '') !~ /^t...a/;
+                # With an active thin child LVM commonly reports the public
+                # pool LV as inactive while the authoritative hidden -tpool
+                # device-mapper target is open.  dmeventd itself observes that
+                # target.  Requiring the public `a` attribute therefore drops
+                # valid growth events and can let a live pool reach 100%.
+                # Reuse the plugin's exact public/hidden mapper inventory and
+                # never infer activity from the event alone.
+                my $device = defined($scfg->{'slt-expected-wwid'})
+                    ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
+                    : undef;
+                my $runtime = PVE::Storage::Custom::SharedLvmThinPlugin->_thin_pool_runtime_state(
+                    $vg, $pool, $device,
+                );
+                die "pool '$vg/$pool' has no exact active public or hidden mapper; refusing autogrow\n"
+                    if !$runtime->{pool_mapper_active};
 
                 my ($current_data_percent) = read_fields(
                     ['/sbin/lvs', '--noheadings', '-o', 'data_percent', "$vg/$pool"],

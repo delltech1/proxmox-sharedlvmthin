@@ -39,7 +39,7 @@ only the remaining slot, completed the native live migration, and returned
 both slots to Thin. This test also exposed and fixed SSH consuming the second
 manifest line during remote return recovery.
 
-The current source passes 197 Python tests and 691 Perl assertions. Broader
+The current source passes 197 Python tests and 692 Perl assertions. Broader
 multi-disk, repeated crash-point, large-disk, and concurrent recovery
 qualification remains required before a public release.
 
@@ -54,3 +54,10 @@ attached it to an exact stopped VM configuration, resized it by 1 GiB and
 removed the VM, disk and per-VM pool through the normal PVE lifecycle. VG free
 space returned exactly to baseline. This validates large-size arithmetic and
 lifecycle wiring only; it is not an 8-TiB data-movement qualification.
+
+Live qualification also exposed an autogrow defect: dmeventd observed the
+active hidden `-tpool` target while `lvs` reported the public pool LV inactive.
+The monitor previously trusted only the public LV activity attribute and
+refused a valid event. TG31 now reuses the plugin's exact public/hidden mapper
+inventory; no exact mapper still fails closed, while the authoritative hidden
+target permits the cluster-locked, identity-checked growth path.

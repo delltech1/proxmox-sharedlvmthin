@@ -18,7 +18,10 @@
 - Qualify a disposable 8-TiB Thin control-plane create, PVE attach, +1-GiB
   resize and exact cleanup cycle with byte-exact VG free-space restoration;
   retain the explicit boundary that this is not an 8-TiB physical-copy test.
-- Pass 197 Python tests and 691 Perl assertions.
+- Fix dmeventd autogrow activity detection: an exact active hidden `-tpool`
+  mapper is authoritative even when LVM reports the public pool LV inactive.
+  This prevents valid growth events from being refused until Data%=100.
+- Pass 197 Python tests and 692 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
 

@@ -48,6 +48,14 @@ sub run_case {
         die "alias mismatch\n" if $case{alias_fail};
         return 1;
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_runtime_state = sub {
+        return {
+            pool_mapper_active => $case{inactive} ? 0 : 1,
+            public_pool_mapper_active => $case{public_attr_inactive} ? 0 : 1,
+            hidden_pool_mapper_active => $case{public_attr_inactive} ? 1 : 0,
+            active_children => ['vm-900001-disk-0'],
+        };
+    };
     local *PVE::Cluster::cfs_lock_storage = sub {
         my ($storeid, $timeout, $code) = @_;
         push @locks, $storeid;
@@ -64,7 +72,8 @@ sub run_case {
             $case{locked_tag} // 'pve-slt-sid-sharedthin-test',
             $case{needs_check} ? 'twi-cotz--'
                 : $case{metadata_readonly} ? 'twi-aotzM-'
-                : $case{inactive} ? 'twi---tz--' : 'twi-aotz--',
+                : ($case{inactive} || $case{public_attr_inactive})
+                    ? 'twi---tz--' : 'twi-aotz--',
             $case{health_status} // '',
             $case{check_needed} // '',
         ) if $line =~ /lv_tags,lv_attr/;
@@ -114,6 +123,14 @@ subtest 'healthy event performs one cluster-locked growth' => sub {
         join('\n', @{$r->{commands}}), qr/lvchange|setautoactivation/,
         'dmeventd/autogrow never changes the autoactivation policy',
     );
+};
+
+subtest 'hidden tpool mapper is authoritative when public LV looks inactive' => sub {
+    my $r = run_case(public_attr_inactive => 1, inactive => 0);
+    is($r->{rc}, 0, 'active hidden tpool is accepted');
+    is($r->{extend_calls}, 1, 'valid dmeventd event grows exactly once');
+    unlike($r->{stderr}, qr/no exact active public or hidden mapper/,
+        'public LV attribute is not mistaken for runtime inactivity');
 };
 
 subtest 'pinned thin autogrow uses the canonical VG mutation lock' => sub {
@@ -198,7 +215,8 @@ subtest 'inactive, foreign, and stale events never grow' => sub {
     my $inactive = run_case(inactive => 1);
     is($inactive->{rc}, 1, 'inactive pool refused');
     is($inactive->{extend_calls}, 0, 'inactive pool zero growth');
-    like($inactive->{stderr}, qr/inactive/, 'inactive reason reported');
+    like($inactive->{stderr}, qr/no exact active public or hidden mapper/,
+        'inactive mapper reason reported');
 
     my $foreign = run_case(locked_tag => 'pve-slt-sid-other-storage');
     is($foreign->{rc}, 1, 'ownership change refused');
