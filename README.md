@@ -114,7 +114,9 @@ Read [storage requirements](docs/storage-requirements.md),
 [critical recovery guidance](docs/critical-storage-recovery.md), and the
 [allocation-mode guide](docs/allocation-modes.md) first. Measured concurrency
 limits and the 300-VM dual-mode lab evidence are recorded in
-[scale qualification](docs/scale-qualification.md).
+[scale qualification](docs/scale-qualification.md). The stricter
+[TG31 objective matrix](docs/QUALIFICATION-MATRIX-TG31.md) separates direct
+PASS evidence from partial and still-open enterprise claims.
 
 ## Per-VM thin-pool trade-off
 

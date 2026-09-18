@@ -55,6 +55,9 @@
 
 ## Recommended next work
 
+Use `docs/QUALIFICATION-MATRIX-TG31.md` as the claim boundary and ordered test
+backlog; do not promote a PARTIAL row from indirect evidence.
+
 1. Repeat the physical round trip at a larger practical size when lab time and
    SAN throughput permit, retaining whole-device hashes.
 2. Repeat under one-path loss at bounded transition points.
