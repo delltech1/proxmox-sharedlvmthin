@@ -1,5 +1,21 @@
 # Changelog
 
+## `0.9.0~rc5.10~tg31+fix1` (hotfix pre-release)
+
+- Wait outside the canonical VG lock when a decoded Thick DM_CUTOVER or
+  DM_PIVOT intent temporarily blocks a same-VG Thin mutation. Revalidate
+  quorum, storage identity and intent on every acquisition; use an absolute
+  monotonic admission budget (`slt-mutation-admission-timeout`, default 600 s).
+  Never replay an entered callback, clear an intent, or retry arbitrary errors.
+- Preserve optional empty UUIDs of unrelated kernel DM mappings. Exact Thick
+  frontend UUID checks and duplicate/malformed inventory rejection remain.
+- Admit offline Thin rollback through the same exclusive owner/ThinGuard
+  activation path before creating its replacement LV. On success, normally
+  deactivate the snapshot and restored head before releasing pool ownership;
+  on partial failure preserve ownership and data for explicit recovery.
+- Add regression tests for wait/clear, abandoned intent timeout, transaction
+  churn, lost identity/quorum, lock errors, partial callbacks and UUID-less maps.
+
 ## 0.9.0~rc5.10~tg31 (unreleased development candidate)
 
 - Discover a Thick Generations frontend from authoritative kernel DM inventory,

@@ -5,6 +5,10 @@ dedicated LVM VG**. It does not turn local disks into shared storage and it
 does not configure a SAN. Complete the storage preparation below before
 installing or registering the plugin.
 
+For the TG31+fix1 candidate's same-VG Thin/Thick waiting behavior and the
+`slt-mutation-admission-timeout` setting, see [mutation admission](mutation-admission.md).
+This does not replace the rolling-update checks below.
+
 ## 1. Prepare the SAN and hosts
 
 The storage/SAN administrator must first:

@@ -9,6 +9,7 @@ use warnings;
 use Digest::SHA qw(sha256_hex);
 use JSON::PP qw(decode_json);
 use Scalar::Util qw(tainted);
+use Time::HiRes ();
 use PVE::Storage::Plugin;
 use PVE::Storage::LVMPlugin;
 use PVE::Cluster;
@@ -179,6 +180,13 @@ sub properties {
             maximum => 5000,
             default => 1000,
         },
+        'slt-mutation-admission-timeout' => {
+            description => 'Bounded admission wait for an existing Thick DM transition on the same VG. Polls outside the VG lock; never retries a mutation or clears an intent. Does not alter HA watchdog timeouts.',
+            type => 'integer',
+            minimum => 10,
+            maximum => 86400,
+            default => 600,
+        },
         'slt-bridge-admission-timeout' => {
             description => 'Bounded wait in seconds for the VG-wide materialized-migration admission. Waiting is observable and uses adaptive polling; expiry performs no storage mutation.',
             type => 'integer',
@@ -291,6 +299,7 @@ sub options {
         'slt-tg-hydration-timeout' => { optional => 1 },
         'slt-lock-timeout' => { optional => 1 },
         'slt-lock-yield-ms' => { optional => 1 },
+        'slt-mutation-admission-timeout' => { optional => 1 },
         'slt-bridge-admission-timeout' => { optional => 1 },
         'slt-thin-leaseguard' => { optional => 1 },
         'slt-thin-ha-takeover' => { optional => 1 },
@@ -583,15 +592,20 @@ sub _dm_kernel_inventory {
     );
     my $inventory = {};
     for my $line (@$lines) {
+        die "kernel device-mapper inventory contains a malformed row\n"
+            if $line !~ /^[^|]+\|[^|]*$/;
         my ($name, $uuid) = split(/\|/, $line, 2);
         for ($name, $uuid) {
             $_ //= '';
             s/^\s+|\s+$//g;
         }
         die "kernel device-mapper inventory contains a malformed row\n"
-            if $name eq '' || $uuid eq '';
+            if $name eq '';
         die "kernel device-mapper inventory contains duplicate name '$name'\n"
             if exists($inventory->{$name});
+        # UUID is optional for unrelated DM users. Preserve empty UUIDs as
+        # present devices; exact managed-object identity gates still reject
+        # them. An unrelated UUID-less map must not disable all plugin I/O.
         $inventory->{$name} = $uuid;
     }
     return $inventory;
@@ -1142,12 +1156,13 @@ sub _verify_same_vg_alias_configuration {
 }
 
 sub _with_vg_lock {
-    my ($class, $storeid, $scfg, $code, $device) = @_;
+    my ($class, $storeid, $scfg, $code, $device, $acquire_budget) = @_;
     my $lockid = $class->_canonical_vg_lock_id($scfg);
     # Fail immediately when quorum is already absent. The same gate is repeated
     # under the lock because quorum may disappear while the caller waits.
     $class->_verify_mutation_quorum($storeid, $scfg);
     my $timeout = $scfg->{'slt-lock-timeout'} // 30;
+    $timeout = $acquire_budget if defined($acquire_budget) && $acquire_budget < $timeout;
     return $class->cluster_lock_storage(
         $lockid, $scfg->{shared}, $timeout,
         sub {
@@ -1252,6 +1267,10 @@ sub _bridge_admission {
     }, $device);
 }
 
+sub _admission_now {
+    return Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC());
+}
+
 sub _with_mutation_lock {
     my ($class, $storeid, $scfg, $code) = @_;
     my $uuid = $scfg->{'slt-expected-vg-uuid'};
@@ -1264,10 +1283,42 @@ sub _with_mutation_lock {
         my $device = defined($scfg->{'slt-expected-wwid'})
             ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
             : undef;
-        return $class->_with_vg_lock($storeid, $scfg, sub {
-            $class->_require_no_vg_intent($scfg->{'slt-vgname'}, $device);
-            return $code->();
-        }, $device);
+        my $budget = $scfg->{'slt-mutation-admission-timeout'} // 600;
+        die "invalid mutation admission timeout\n"
+            if $budget !~ /^\d+$/ || $budget < 10 || $budget > 86400;
+        my $deadline = $class->_admission_now() + $budget;
+        my $delay_ms = 250;
+        my $waiting;
+        while (1) {
+            my $remaining = $deadline - $class->_admission_now();
+            die "VG mutation admission timed out; intent preserved; no mutation started\n"
+                if $remaining < 1;
+            my $busy;
+            # No eval/retry around the callback: a mutation or lock failure is
+            # propagated exactly once, including ambiguous partial failures.
+            my $result = $class->_with_vg_lock($storeid, $scfg, sub {
+                die "VG mutation admission timed out; no mutation started\n"
+                    if $class->_admission_now() >= $deadline;
+                my $intent = $class->_require_no_vg_intent(
+                    $scfg->{'slt-vgname'}, $device, 1);
+                if (ref($intent) eq 'HASH') {
+                    $busy = $intent;
+                    return;
+                }
+                return $code->();
+            }, $device, int($remaining));
+            return $result if !$busy;
+            warn "waiting for VG '$scfg->{'slt-vgname'}' transition '$busy->{tx}' ($busy->{op}); no mutation started\n"
+                if !defined($waiting) || $waiting ne $busy->{tx};
+            $waiting = $busy->{tx};
+            $remaining = $deadline - $class->_admission_now();
+            next if $remaining <= 0;
+            # Release canonical lock before yielding, so the transition can
+            # finish. Reacquire and revalidate quorum/identity/intent each time.
+            my $wait_ms = $delay_ms < $remaining * 1000 ? $delay_ms : $remaining * 1000;
+            $class->_outer_lock_yield($wait_ms);
+            $delay_ms *= 2 if $delay_ms < 2000;
+        }
     }
 
     $class->_verify_mutation_quorum($storeid, $scfg);
@@ -1324,8 +1375,13 @@ sub _read_vg_intent {
 }
 
 sub _require_no_vg_intent {
-    my ($class, $vg, $device) = @_;
+    my ($class, $vg, $device, $allow_wait) = @_;
     my $intent = $class->_read_vg_intent($vg, $device);
+    # Only a successfully decoded transition is waitable. This is NOT proof
+    # of liveness: abandoned transitions expire without any recovery mutation.
+    return $intent if $allow_wait && $intent
+        && ($intent->{state} // '') eq 'OPEN'
+        && ($intent->{op} // '') =~ /^(?:DM_CUTOVER|DM_PIVOT)$/;
     die "VG '$vg' has unresolved transaction '$intent->{tx}' ($intent->{op} $intent->{object}); mutation refused\n"
         if $intent;
     return 1;
@@ -3294,6 +3350,17 @@ sub activate_volume {
     return $class->_thick_activate_volume($storeid, $scfg, $volname, $snapname, $cache)
         if $class->_allocation_mode($scfg) eq 'thick-generations';
 
+    return $class->_with_mutation_lock($storeid, $scfg, sub {
+        return $class->_activate_thin_volume_locked(
+            $storeid, $scfg, $volname, $snapname, $cache);
+    });
+}
+
+# Reusable only with the canonical mutation lock already held. Rollback must
+# use the same owner/peer/ThinGuard admission before LVM can activate a pool.
+sub _activate_thin_volume_locked {
+    my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
+
     my $vg = $scfg->{'slt-vgname'};
     my $lv = $snapname ? "snap_${volname}_${snapname}" : $volname;
     my (undef, undef, $vmid) = $class->parse_volname($volname);
@@ -3308,7 +3375,6 @@ sub activate_volume {
     # persist for the complete lifetime of the active pool.  Claim the pool
     # under the canonical VG lock before local activation.  A different
     # owner's tag is never stolen or inferred stale here.
-    return $class->_with_mutation_lock($storeid, $scfg, sub {
         $class->_verify_owned_volume($storeid, $scfg, $volname);
         $class->_verify_autoactivation_disabled($vg, $pool, $device);
         $class->_verify_autoactivation_disabled($vg, $lv, $device);
@@ -3343,7 +3409,6 @@ sub activate_volume {
             errmsg => "activating exclusively-owned shared thin LV '$vg/$lv' failed; owner preserved for explicit recovery",
         );
         return 1;
-    });
 }
 
 sub _thin_pool_runtime_state {
@@ -5274,6 +5339,11 @@ sub _volume_snapshot_rollback_locked {
     die "temporary rollback LV '$vg/$temporary' already exists\n"
         if $vg_lvs->{$temporary};
 
+    # lvcreate of the replacement can activate the thin pool even though PVE
+    # stopped/deactivated the VM before rollback. Establish normal exclusive
+    # ownership (and ThinGuard admission) BEFORE that implicit activation.
+    $class->_activate_thin_volume_locked($storeid, $scfg, $volname, $snap, undef);
+
     my $temporary_created = 0;
     my $origin_removed = 0;
     my $rollback_error;
@@ -5324,6 +5394,13 @@ sub _volume_snapshot_rollback_locked {
     die "rollback postcondition failed: '$vg/$volname' is not in pool '$pool'\n"
         if !defined($restored->{pool_lv}) || $restored->{pool_lv} ne $pool;
     $class->_verify_autoactivation_disabled($vg, $volname);
+
+    # Successful offline rollback must not publish an unowned live mapper.
+    # Use normal teardown, which retains ownership while any sibling is live
+    # and releases it only after exact pool/child absence. On earlier failure
+    # ownership and objects remain intact for explicit recovery.
+    $class->_deactivate_thin_volume_locked($storeid, $scfg, $volname, $snap, undef);
+    $class->_deactivate_thin_volume_locked($storeid, $scfg, $volname, undef, undef);
 
     return;
 }

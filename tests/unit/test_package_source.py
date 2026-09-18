@@ -154,12 +154,12 @@ class PackageSourceTests(unittest.TestCase):
         control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
         self.assertRegex(
             control,
-            r"(?m)^Version: 0\.9\.0~rc5(?:\.\d+)+(?:~tg\d+)?$",
+            r"(?m)^Version: 0\.9\.0~rc5(?:\.\d+)+(?:~tg\d+(?:\+fix\d+)?)?$",
         )
 
     def test_experimental_thick_build_has_distinct_package_version(self):
         control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
-        self.assertRegex(control, r"(?m)^Version: .*~tg\d+$")
+        self.assertRegex(control, r"(?m)^Version: .*~tg\d+(?:\+fix\d+)?$")
 
     def test_combined_package_metadata_advertises_both_modes(self):
         control = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")

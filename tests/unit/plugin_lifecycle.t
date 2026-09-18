@@ -14,6 +14,9 @@ my @lvm_results;
 my @commands;
 my @locks;
 my $command_failure;
+my @rollback_runtime;
+my $rollback_admission_failure;
+my $rollback_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_volume_snapshot_rollback_locked;
 my $verify_owned_volume = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_owned_volume;
 my $verify_mutation_quorum = \&PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum;
 my $forced_single_node_quorum = \&PVE::Storage::Custom::SharedLvmThinPlugin::_forced_single_node_quorum_from_evidence;
@@ -45,6 +48,19 @@ my $record_disable_autoactivation = sub {
 };
 
 no warnings 'redefine';
+# Existing rollback metadata fixtures do not model kernel activation. Record
+# the new runtime boundary separately; activation/teardown implementations
+# retain their independent lifecycle tests below and are not globally stubbed.
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_volume_snapshot_rollback_locked = sub {
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_activate_thin_volume_locked = sub {
+        push @rollback_runtime, ['activate', $_[4], scalar(@commands)];
+        die "rollback owner denied\n" if $rollback_admission_failure;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_deactivate_thin_volume_locked = sub {
+        push @rollback_runtime, ['deactivate', $_[4], scalar(@commands)];
+    };
+    return $rollback_locked->(@_);
+};
 local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub {
     die "unexpected lvm_list_volumes call\n" if !@lvm_results;
     return shift @lvm_results;
@@ -90,6 +106,8 @@ sub reset_mocks {
     @commands = ();
     @locks = ();
     $command_failure = undef;
+    @rollback_runtime = ();
+    $rollback_admission_failure = 0;
 }
 
 sub command_lines {
@@ -1948,6 +1966,9 @@ subtest 'rollback materializes replacement before removing current disk' => sub 
     like($lines[1], qr{^/sbin/lvchange --setautoactivation n testvg/slt-rb-}, 'replacement autoactivation disabled');
     is($lines[2], '/sbin/lvremove -f testvg/vm-900001-disk-0', 'current disk removed only after replacement exists');
     like($lines[3], qr{^/sbin/lvrename testvg slt-rb-vm-900001-disk-0-\d+ vm-900001-disk-0$}, 'replacement renamed atomically');
+    is_deeply(\@rollback_runtime,
+        [['activate','before',0],['deactivate','before',4],['deactivate',undef,4]],
+        'claim/guard source before create, teardown snapshot and restored head after rename');
     is(scalar(@locks), 1, 'rollback holds one PVE storage lock');
 };
 
@@ -1972,6 +1993,21 @@ subtest 'rollback preparation failure leaves current disk untouched' => sub {
     };
     ok(!$ok, 'preparation failure propagated');
     unlike(join("\n", command_lines()), qr{lvremove -f testvg/vm-900001-disk-0}, 'current disk was not removed');
+    is_deeply(\@rollback_runtime, [['activate','before',0]],
+        'failure preserves owner and runtime for explicit recovery');
+};
+
+subtest 'rollback owner admission failure precedes every metadata mutation' => sub {
+    reset_mocks();
+    @lvm_results = ({ testvg => {
+        'sltp-900001' => { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' },
+        'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
+        'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
+    } });
+    $rollback_admission_failure=1;
+    eval { $class->volume_snapshot_rollback($scfg,'sharedthin-test','vm-900001-disk-0','before') };
+    like($@,qr/rollback owner denied/,'owner rejection propagated');
+    is(scalar(@commands),0,'no create/remove/rename without runtime admission');
 };
 
 subtest 'rollback rejects noncanonical snapshot before any mutation' => sub {
