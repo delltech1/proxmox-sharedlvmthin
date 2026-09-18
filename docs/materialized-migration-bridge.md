@@ -92,10 +92,11 @@ Thick Generations LV, performs the ordinary PVE online migration, and optionally
 copies the disks back into a per-VM Thin pool on the target. It never activates
 the same dm-thin metadata on two kernels.
 
-Before the return copy, TG30 creates the exact target pool under the canonical
-VG lock. Its reservation is the aggregate virtual disk size plus configured
-burst headroom (one GiB by default). This prevents a fast full-copy from
-outrunning asynchronous autogrow.
+Before the return copy, TG31 creates the exact target pool under the canonical
+VG lock. Its reservation is the larger of aggregate virtual disk size plus
+configured burst headroom (one GiB by default) and the capacity needed to keep
+the completed copy at or below 94% Data%. This prevents a fast full-copy from
+outrunning asynchronous autogrow or finishing immediately mutation-blocked.
 
 Long copies have no arbitrary wall-clock timeout. The root-owned transaction
 state records the active disk, monotonic PVE mirror progress, byte count and

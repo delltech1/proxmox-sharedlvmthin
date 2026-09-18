@@ -37,11 +37,13 @@ slt-vg-reserve-percent 5
 
 The first allocation targets the smaller of its virtual size and the absolute
 headroom (with a 1 GiB technical bootstrap for EFI/TPM-sized allocations).
-Later allocations and dmeventd events target live physical use plus the same
-absolute headroom, rounded upward to a GiB. A 30 TiB virtual disk therefore
+Later allocations and dmeventd events target the larger of live physical use
+plus the same absolute headroom and the capacity needed to keep known use at
+or below 94%, rounded upward to a GiB. A 30 TiB virtual disk therefore
 does not reserve 15 TiB: with 10 GiB physically used and 64 GiB configured
-headroom, the target is 74 GiB. The ceiling applies to headroom, never to the
-total lifetime size of the pool.
+headroom, the target is 74 GiB. With 48 GiB physically used and only 1 GiB
+configured headroom, the safety floor instead produces a 52 GiB target. The
+configured value is a minimum headroom, never a cap on the total pool size.
 
 Elastic growth remains subject to the cluster storage lock, quorum, exact
 storage identity, ownership, thin-pool health, extent rounding and protected

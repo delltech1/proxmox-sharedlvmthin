@@ -149,7 +149,10 @@ pvesm set <STORAGE_ID> \
 
 The 64 GiB value is a conservative starting point, not a universal throughput
 guarantee. Qualify it against the maximum expected write rate and grow
-latency. Existing `fixed`, `proportional`, and `full` policies remain available
+latency. In `elastic` mode it is a minimum: the plugin may allocate more when
+required to leave known used data at or below 94% rather than knowingly finish
+behind the 95% mutation gate. Existing `fixed`, `proportional`, and `full`
+policies remain available
 for compatibility and explicit operational choices. See
 `clone-restore-burst-capacity.md`.
 
