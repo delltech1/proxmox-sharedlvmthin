@@ -12,7 +12,7 @@ full target claim is not. `OPEN` means no current evidence supports the claim.
 | Canonical lock backlog | PASS | 50 simultaneous contenders and 50-way dmeventd event storm; exact one-winner/admission behavior and 50/50 bounded completion | Re-run when lock implementation changes |
 | Timeout behavior | PASS for configured bounded policy | Storage lock and bridge admission waits are bounded/configurable; timeout is never interpreted as proof of failure | Site must qualify values against its measured P99/max latency |
 | Reboot/rejoin | PASS | Controlled node reboot, updated package reboot and runtime-guard reboot evidence in `thin-guard-qualification.md` and Thick status ledger | Repeat for new kernel/LVM/device-mapper releases |
-| Hard-host failover without duplicate Thin activation | PASS for 10-VM fenced gate | Externally hard-powered owner, surviving quorum, PVE HA fencing evidence, peer mapper audit and 10/10 recovery | 50+ simultaneous hard-failover remains OPEN |
+| Hard-host failover without duplicate Thin activation | PASS for 50-VM fenced gate | Externally hard-powered owner, surviving quorum, native PVE HA fencing, 50/50 recovery, exact owner audit and one mapper on exactly one node before and after old-owner rejoin | Does not certify an untested fencing implementation or array |
 | Split-brain refusal | PASS for tested quorum/fencing cases | Owner tags, exact epoch, remote mapper audit, no-quorum mutation refusal and fenced-owner ordering | Does not certify an untested fencing implementation |
 | Progress-driven long operations | PASS at current physical envelope | Persistent schema-v3 state, monotonic QMP progress, validated elapsed/update-age telemetry, transaction manifest, no arbitrary copy deadline, exact resume planner | Physical long-copy duration above 48 GiB remains unmeasured |
 | Interrupted bridge recovery | PASS for tested materialization/return cases | Killed mirror reconciliation, exact runtime/config correlation, resume actions and stale post-cleanup evidence refusal | Repeat with a larger physical payload and one-path loss |
@@ -27,8 +27,8 @@ full target claim is not. `OPEN` means no current evidence supports the claim.
 ## Current non-negotiable boundaries
 
 - No claim of physical 500-GiB--8-TiB copy qualification exists yet.
-- No claim of 50+ VM simultaneous hard-failover exists; the qualified hard
-  failover batch is ten VMs, while the qualified controlled evacuation is 50.
+- The qualified simultaneous hard-failover batch is 50 small disposable VMs.
+  This is an orchestration/ownership result, not a large-disk throughput claim.
 - Restored paths, a process exit code, or a stale transaction file alone never
   authorize mutation.
 - The plugin does not repair dm-thin metadata, configure SAN sessions, replace
@@ -40,7 +40,7 @@ full target claim is not. `OPEN` means no current evidence supports the claim.
    return-to-Thin resume point.
 2. Repeat a physical bridge copy while one of two paths is unavailable, then
    restore the path and prove exact identity/dependency cleanup.
-3. Increase the externally fenced HA batch beyond ten only after proving the
-   lab has enough RAM and fencing capacity without changing storage semantics.
+3. Repeat the 50-VM fenced gate after material PVE HA, watchdog, LVM or kernel
+   changes; do not infer other fencing implementations from this lab result.
 4. Treat an 8-TiB physical test as a separately scheduled endurance run; never
    infer it from the control-plane or arithmetic results.

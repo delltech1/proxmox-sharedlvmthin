@@ -6,7 +6,7 @@
 - Qualified source commit before this handover note: `81dbad0`
 - Package: `pve-sharedlvmthin_0.9.0~rc5.10~tg31_all.deb`
 - SHA-256: `e17b34b215f19d24da68735d848af09c904f6a2d23c6bf63c48cbc804f7969f4`
-- Unit qualification: 197 Python tests and 697 Perl assertions
+- Unit qualification: 198 Python tests and 697 Perl assertions
 - The DEB was built twice from one clean Git archive with identical SHA-256.
 - The exact DEB is installed on all three lab PVE nodes; `dpkg -V` is clean,
   required PVE services are active, and the final compatibility run reported
@@ -33,6 +33,11 @@
   math and signed-range contract; they do not replace physical-copy testing.
 - Bridge inspection reports validated elapsed/progress-age telemetry without
   converting freshness into a timeout, mutation decision or speculative ETA.
+- An externally hard-powered Thin owner passed a simultaneous 50-VM native
+  PVE HA recovery. All 50 reached `started`; exact owner/epoch evidence and
+  mapper cardinality passed 50/50 while the owner was fenced and again after
+  it rejoined. Planned Thin live migration remained fail-closed because an
+  online source is not fencing evidence.
 
 ## Final cluster state
 
@@ -44,7 +49,9 @@
 - All nodes report zero D-state tasks.
 - Final `slt-scale-thin` recovery check: 150 pools, `STATE=HEALTHY`,
   `SAFE_FOR_MUTATION=YES`.
-- Final PVE02 compatibility result: 42 PASS, 0 FAIL.
+- The temporary 50-resource HA test set was removed with zero failures; the
+  cluster returned to 3/3 quorum and the stopped backup proxy was restarted.
+- Final PVE02 compatibility result: 39 explicit PASS records, 0 FAIL.
 - A post-cleanup plan attempt against the retained bridge evidence refused with
   exit 70, unchanged VG free bytes and no recreated LV.
 

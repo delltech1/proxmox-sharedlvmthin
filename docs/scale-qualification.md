@@ -223,6 +223,39 @@ It is not a universal certification of every fencing device, HA policy, SAN or
 large-disk workload. The data path did not copy disk contents, so this test
 must not be represented as 500 GB--8 TB data-movement qualification.
 
+## 2026-09-18 externally fenced 50-VM Thin HA gate
+
+The fenced gate was repeated with 50 simultaneously running, HA-managed Thin
+VMs on `DEV-PRXZFS01`. The only non-test workload on that host was stopped
+before the test. At `2026-09-18T03:41:32Z`, the complete PVE host was hard
+powered off from its external hypervisor. The two surviving nodes remained
+quorate. PVE HA first placed all 50 resources in `fence`, then distributed
+their recovery between `DEV-PRXZFS02` and `DEV-PRXZFS03`; all 50 reached
+`started` without manually changing any owner tag.
+
+The exact read-only post-fence audit passed 50/50. For every manifest VM it
+proved one pmxcfs configuration, a running QEMU on that assigned node, an exact
+matching owner-node tag, one 32-hex owner epoch and exactly one thin-pool
+mapper on exactly the assigned surviving node. After powering the old owner
+back on and restoring 3/3 quorum, the same audit again passed 50/50 across all
+three nodes. The rebooted former owner had no duplicate mapper. The final
+recovery check reported 150 owned Thin pools, `STATE=HEALTHY` and
+`SAFE_FOR_MUTATION=YES`; all 50 temporary HA resources were then removed with
+zero failures and the previously stopped workload was restarted.
+
+The first audit implementation exposed an evidence-only bug: `grep -q` under
+`pipefail` could close a long mapper pipeline early, SIGPIPE `dmsetup`/SSH and
+misclassify a real match as absent. The audit now consumes the complete mapper
+list before deciding cardinality. No storage mutation depended on the faulty
+observation and the corrected audits are the authoritative evidence.
+
+Before the hard-failover run, native PVE planned live relocation was also
+attempted and safely refused for all candidates. During the target start PVE
+still reported the online source as service node with state `migrate`; the
+source was neither fenced nor offline. The takeover gate correctly treated
+that as insufficient evidence. The 50-VM result therefore qualifies fenced
+restart semantics, not direct shared-Thin live migration.
+
 ## 2026-09-18 migration-admission contention gate
 
 The VG-wide materialization admission was exercised with 50 simultaneous

@@ -77,6 +77,22 @@ the configured 600-second policy completed 50/50 events, produced 50/50
 stale/coalesced decisions, changed zero pool sizes, and left recovery healthy
 with zero D-state tasks.
 
+## Fifty-VM fenced Thin failover
+
+Fifty small disposable Thin VMs were HA-managed on one owner when its complete
+virtual PVE host was externally hard-powered off. The two survivors retained
+quorum, PVE HA moved all resources through `fence` and recovery, and all 50
+reached `started`. A read-only exact audit proved matching owner/epoch tags and
+one thin-pool mapper on exactly the assigned node for 50/50 VMs. After the old
+owner rejoined, the same three-node audit again passed 50/50, proving that the
+rebooted former owner did not autoactivate a duplicate mapper.
+
+An attempted planned HA live migration before the destructive test was
+refused safely: during PVE's `migrate` state the source remained online and was
+still the authoritative service node. That is not fencing evidence and must
+not authorize a second dm-thin activation. TG31 therefore qualifies native
+PVE fenced restart, not direct shared-Thin live migration.
+
 A fast full-allocation workload also demonstrated that a 1-GiB elastic pool
 can cross from the first dmeventd threshold to kernel `out_of_data_space`
 before its serialized grow completes. Ordinary plugin mutations continue to

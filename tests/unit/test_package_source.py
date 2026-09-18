@@ -718,6 +718,23 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("sharedlvmthin-compat-check", build)
         self.assertIn("compat-check)", cli)
 
+    def test_hard_failover_audit_is_exact_read_only_and_pipefail_safe(self):
+        audit = (
+            ROOT / "experiments/thin-guard/bulk-hard-failover-audit.sh"
+        ).read_text(encoding="utf-8")
+        relocate = (
+            ROOT / "experiments/thin-guard/bulk-ha-relocate.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("HARD_FAILOVER_AUDIT_FAILURES", audit)
+        self.assertIn("pve-slt-owner-node-$node", audit)
+        self.assertIn("mapper_count != 1", audit)
+        self.assertIn("/sbin/dmsetup", audit)
+        self.assertNotIn('grep -Fxq "$mapper"', audit)
+        self.assertNotIn("lvchange", audit)
+        self.assertNotIn("dmsetup remove", audit)
+        self.assertIn("HA_RELOCATION_SUBMIT_FAILURES", relocate)
+        self.assertIn("timeout --foreground --kill-after=5 60", relocate)
+
 
 if __name__ == "__main__":
     unittest.main()
