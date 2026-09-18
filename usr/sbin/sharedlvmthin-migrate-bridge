@@ -31,11 +31,33 @@ if [ "${1:-}" = inspect ]; then
     [ "$(stat -c %u "$latest")" -eq 0 ] || { echo "untrusted bridge state owner" >&2; exit 70; }
     mode=$(stat -c %a "$latest")
     [ "$mode" = 600 ] || { echo "untrusted bridge state mode: $mode" >&2; exit 70; }
+    inspect_value() {
+        local key=$1
+        awk -F= -v key="$key" '
+            $1 == key {print substr($0, index($0, "=") + 1); n++}
+            END {if (n != 1) exit 1}
+        ' "$latest"
+    }
+    inspect_started=$(inspect_value started_at) \
+        || { echo "bridge state has no unique started_at" >&2; exit 70; }
+    inspect_updated=$(inspect_value updated_at) \
+        || { echo "bridge state has no unique updated_at" >&2; exit 70; }
+    [[ $inspect_started =~ ^[0-9]+$ && $inspect_updated =~ ^[0-9]+$ \
+        && $inspect_updated -ge $inspect_started ]] \
+        || { echo "bridge state timestamps are invalid" >&2; exit 70; }
+    inspect_now=$(date +%s)
+    [ "$inspect_now" -ge "$inspect_updated" ] \
+        || { echo "bridge state updated_at is in the future" >&2; exit 70; }
     awk -F= '
         $1 ~ /^(version|tx|vmid|source_node|target_node|thin_storage|thick_storage|return_thin|phase|disk_count|completed_disks|current_disk|progress_percent|total_bytes|started_at|updated_at|config_sha256|disk_manifest_sha256)$/ {
             print toupper($1) "=" substr($0, index($0, "=") + 1)
         }
     ' "$latest"
+    inspect_age=$((inspect_now - inspect_updated))
+    inspect_fresh=NO
+    [ "$inspect_age" -le 90 ] && inspect_fresh=YES
+    printf 'OBSERVED_AT=%s\nELAPSED_SECONDS=%s\nPROGRESS_AGE_SECONDS=%s\nPROGRESS_UPDATE_FRESH=%s\n' \
+        "$inspect_now" "$((inspect_now - inspect_started))" "$inspect_age" "$inspect_fresh"
     printf 'STATE_FILE=%s\n' "$latest"
     exit 0
 fi

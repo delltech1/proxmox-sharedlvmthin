@@ -106,6 +106,15 @@ timestamps. Read it without taking the mutation lock:
 sharedlvmthin-migrate-bridge inspect <vmid>
 ```
 
+Inspection also prints `OBSERVED_AT`, total `ELAPSED_SECONDS`,
+`PROGRESS_AGE_SECONDS`, and `PROGRESS_UPDATE_FRESH`. Fresh means that the
+durable state was updated within the last 90 seconds. These values are
+observation only: an old update is not proof that copying failed, because PVE,
+QEMU or guest I/O may legitimately pause visible progress. The plugin never
+kills a copy or authorizes recovery from this freshness hint, and it does not
+invent an ETA from a single sample. Invalid, duplicate or future timestamps
+make inspection fail closed.
+
 New transactions use state schema v3. Beside the state file, the bridge writes
 a mode-0600 immutable disk manifest containing every slot, original volume ID
 and exact virtual byte size. Its SHA-256 digest is committed into the state

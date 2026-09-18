@@ -45,6 +45,10 @@
   elastic capacity floor is minimal, remains at or below 94% Data%, and stays
   inside the signed arithmetic contract. This is arithmetic qualification,
   not a claim of physical copy testing at those sizes.
+- Extend read-only bridge inspection with validated observation time, elapsed
+  time and durable progress-update age. The 90-second freshness hint never
+  kills work, declares failure, invents an ETA or authorizes recovery; malformed,
+  duplicate or future timestamp evidence fails inspection closed.
 - Pass 197 Python tests and 697 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)

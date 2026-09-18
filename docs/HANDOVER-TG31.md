@@ -29,6 +29,8 @@
   are recorded in `docs/scale-qualification.md`.
 - Exact 500-GiB and 8-TiB regression vectors cover the capacity-floor integer
   math and signed-range contract; they do not replace physical-copy testing.
+- Bridge inspection reports validated elapsed/progress-age telemetry without
+  converting freshness into a timeout, mutation decision or speculative ETA.
 
 ## Final cluster state
 
