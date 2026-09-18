@@ -41,7 +41,11 @@
   materialization, native Thick live migration, return to Thin and whole-disk
   SHA-256 equality; verify exact temporary Thick cleanup and corrected
   capacity-safe grow/start/stop teardown on the destination.
-- Pass 197 Python tests and 696 Perl assertions.
+- Add exact 500-GiB and 8-TiB integer-boundary regression vectors proving the
+  elastic capacity floor is minimal, remains at or below 94% Data%, and stays
+  inside the signed arithmetic contract. This is arithmetic qualification,
+  not a claim of physical copy testing at those sizes.
+- Pass 197 Python tests and 697 Perl assertions.
 
 ## 0.9.0~rc5.9~tg30 (development candidate)
 

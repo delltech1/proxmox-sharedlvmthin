@@ -23,6 +23,34 @@ subtest 'elastic target preserves mutation safety at large utilization' => sub {
         'absolute one-GiB headroom cannot leave a large pool mutation-blocked');
 };
 
+subtest 'capacity floor is integer-safe across the declared large-disk range' => sub {
+    for my $case (
+        ['500 GiB', 500 * $gib],
+        ['8 TiB', 8 * 1024 * $gib],
+    ) {
+        my ($name, $used) = @$case;
+        my $minimum = PVE::SharedLvmThinSafety::minimum_pool_bytes_for_used(
+            used_bytes => $used,
+        );
+        cmp_ok($minimum, '>=', $used, "$name floor never underallocates used bytes");
+        cmp_ok($minimum * 94, '>=', $used * 100,
+            "$name floor leaves Data% at or below 94%");
+        cmp_ok(($minimum - 1) * 94, '<', $used * 100,
+            "$name result is the exact smallest safe integer target");
+
+        my $elastic = PVE::SharedLvmThinSafety::evaluate_allocation_target(
+            mode => 'elastic', fixed_gib => 1, headroom_gib => 1,
+            requested_kib => int($used / 1024),
+            used_bytes => $used,
+            current_pool_bytes => $used + $gib,
+        );
+        cmp_ok($elastic->{target_bytes}, '>=', $minimum,
+            "$name elastic policy cannot bypass the capacity floor");
+        cmp_ok($elastic->{target_bytes}, '<=', 9_000_000_000_000_000_000,
+            "$name target remains inside the signed arithmetic contract");
+    }
+};
+
 sub target {
     return PVE::SharedLvmThinSafety::evaluate_allocation_target(@_);
 }

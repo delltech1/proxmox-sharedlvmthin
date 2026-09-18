@@ -6,7 +6,7 @@
 - Qualified source commit before this handover note: `95658c5`
 - Package: `pve-sharedlvmthin_0.9.0~rc5.10~tg31_all.deb`
 - SHA-256: `2c4f0477a013f269d153034b8c6d743ab1c830ae34eaae3a4280f920858ed9d2`
-- Unit qualification: 197 Python tests and 696 Perl assertions
+- Unit qualification: 197 Python tests and 697 Perl assertions
 - The DEB was built twice from one clean Git archive with identical SHA-256.
 - The exact DEB is installed on all three lab PVE nodes; `dpkg -V` is clean.
 
@@ -27,6 +27,8 @@
 - A fully written 48-GiB disk passed Thin -> Thick -> native live migration ->
   Thin. Whole-device SHA-256 matched before and after. Timings and exact digest
   are recorded in `docs/scale-qualification.md`.
+- Exact 500-GiB and 8-TiB regression vectors cover the capacity-floor integer
+  math and signed-range contract; they do not replace physical-copy testing.
 
 ## Final cluster state
 
