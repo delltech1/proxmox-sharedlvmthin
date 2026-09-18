@@ -39,6 +39,8 @@
 - Final `slt-scale-thin` recovery check: 150 pools, `STATE=HEALTHY`,
   `SAFE_FOR_MUTATION=YES`.
 - Final PVE02 compatibility result: 42 PASS, 0 FAIL.
+- A post-cleanup plan attempt against the retained bridge evidence refused with
+  exit 70, unchanged VG free bytes and no recreated LV.
 
 ## Important limits
 

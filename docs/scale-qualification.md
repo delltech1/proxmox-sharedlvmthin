@@ -379,3 +379,9 @@ Thin pools, `STATE=HEALTHY` and `SAFE_FOR_MUTATION=YES`.
 
 This is physical qualification at 48 GiB, not a claim that 500-GiB--8-TiB
 physical copy duration or every SAN failure mode has been qualified.
+
+After normal VM/LV cleanup, the retained transaction evidence was deliberately
+passed to the read-only bridge planner once more. With no authoritative pmxcfs
+VM configuration, it refused with exit code 70. VG free bytes were identical
+before and after and no transaction-related LV reappeared. A stale evidence
+file therefore cannot resurrect a destroyed VM or authorize storage mutation.
