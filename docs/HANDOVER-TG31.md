@@ -47,6 +47,14 @@
   materialization copy. Progress continued on the surviving path, the removed
   session restored to 2/2, final recovery was healthy and the non-zero 8-GiB
   disk retained its exact SHA-256.
+- The final all-node compatibility pass deliberately exposed 27 stopped scale
+  VMs whose PVE01 owner reservations survived the earlier hard-failover/reboot
+  test without local mappers, plus one legacy FCoE schema-only pool with a
+  local mapper. The gate correctly failed closed. The FCoE family was proven
+  inactive on all three nodes and processed through the explicit
+  `ALL-NODES-INACTIVE` hardening transaction; every reserved scale VM then
+  completed a normal start/stop lifecycle. All 27 owner cycles passed and no
+  owner/epoch tag was edited or deleted directly.
 
 ## Final cluster state
 
@@ -60,7 +68,9 @@
   pools, `STATE=HEALTHY`, `SAFE_FOR_MUTATION=YES`.
 - The temporary 50-resource HA test set was removed with zero failures; the
   cluster returned to 3/3 quorum and the stopped backup proxy was restarted.
-- Final PVE02 compatibility result: 39 explicit PASS records, 0 FAIL.
+- Final compatibility results after lifecycle reconciliation: PVE01 42 PASS / 0
+  FAIL, PVE02 42 PASS / 0 FAIL and PVE03 41 PASS / 0 FAIL. The count differs
+  only because the nodes expose different configured test-storage sets.
 - A post-cleanup plan attempt against the retained bridge evidence refused with
   exit 70, unchanged VG free bytes and no recreated LV.
 
