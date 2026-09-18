@@ -41,14 +41,16 @@ probably do not need this project.
 
 ## Release status
 
-[`TG31+fix1`](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.10-tg31-fix1)
-(`0.9.0~rc5.10~tg31+fix1`) is the current hotfix pre-release, intended exclusively
+`TG31+fix2` (`0.9.0~rc5.10~tg31+fix2`) is the current hotfix pre-release,
+intended exclusively
 for Proxmox VE 9. It fixes same-VG Thin/Thick mutation admission, offline Thin
 rollback ownership, and unrelated UUID-less device-mapper inventory handling.
-The hotfix passes 198 Python tests and 794 Perl tests plus targeted concurrent
+The hotfix passes 198 Python tests and 799 Perl tests plus targeted concurrent
 snapshot/rollback, restored-disk writes, resize and exact-cleanup lab checks.
-These new checks used the candidate plugin through isolated CLI loading, not
-an installed-package rolling upgrade or a new long-duration endurance run.
+The final package was reinstalled one node at a time across the three-node lab,
+then exercised with the Thin/Thick add/remove matrix, exact offline cleanup and
+four concurrent 100 GiB Thin VMs on two owner nodes. This hotfix did not repeat
+the earlier long-duration endurance run.
 
 TG24 introduced the Thin/Thick Generations architecture;
 TG25 hardened package-update and reboot compatibility; TG26 added the
@@ -77,7 +79,8 @@ TG31 adds authenticated per-disk manifests, a deterministic recovery planner,
 and mandatory QMP live-path correlation so pmxcfs/runtime divergence after an
 interrupted block job fails closed instead of selecting a copy by inference.
 
-See the [TG31+fix1 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX1.md),
+See the [TG31+fix2 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX2.md),
+[TG31+fix1 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX1.md),
 [installation guide](docs/installation.md), [TG31 development notes](docs/RELEASE-NOTES-RC5.10-TG31.md), the
 [TG30 release notes](docs/RELEASE-NOTES-RC5.9-TG30.md), the
 [TG28 release notes](docs/RELEASE-NOTES-RC5.7-TG28.md), the

@@ -1033,6 +1033,26 @@ sub _thick_list_volumes_scoped {
 
 sub _block_device_exists {
     my ($path) = @_;
+
+    # Device-mapper nodes under /dev are published asynchronously by udev and
+    # can disappear before the corresponding kernel mapping.  Safety-critical
+    # callers use this helper to decide whether cleanup, reconstruction, or a
+    # new transition is legal, so a pathname lookup is not authoritative for
+    # these namespaces.  Resolve their canonical DM name and query the kernel
+    # inventory instead.  Keep the ordinary block-device fallback for paths
+    # outside device-mapper/LVM namespaces.
+    my $name;
+    if (defined($path) && $path =~ m{^/dev/mapper/([^/]+)$}) {
+        $name = $1;
+    } elsif (defined($path) && $path =~ m{^/dev/([^/]+)/([^/]+)$}) {
+        my ($vg, $lv) = ($1, $2);
+        for ($vg, $lv) { s/-/--/g; }
+        $name = "$vg-$lv";
+    }
+    if (defined($name)) {
+        my $inventory = _dm_kernel_inventory();
+        return exists($inventory->{$name}) ? 1 : 0;
+    }
     return -b $path;
 }
 
@@ -3158,6 +3178,7 @@ sub _alloc_image_locked {
         if $lvs->{$vg} && $lvs->{$vg}->{$name};
 
     my $created_pool = 0;
+    my $publish_inactive = !$pool_exists;
     my $sid_tag = "pve-slt-sid-$storeid";
     my $import_state = { active => 0 };
 
@@ -3237,6 +3258,15 @@ sub _alloc_image_locked {
         my $owner_state = _thin_owner_state_from_tags($pool_info->{tags});
         die "existing pool '$vg/$pool' predates the exclusive-owner schema; allocation is blocked until explicit offline adoption\n"
             if !$owner_state->{schema};
+        my $local_node = $class->_thin_local_node();
+        die "refusing allocation in '$vg/$pool': persistent owner is '$owner_state->{owner}', local node is '$local_node'\n"
+            if defined($owner_state->{owner}) && $owner_state->{owner} ne $local_node;
+        # lvcreate may transiently activate an otherwise inactive existing
+        # thin pool.  Leaving that mapper behind while the durable owner is
+        # empty makes the next activate_volume correctly fail closed.  Only
+        # a pool already owned by this node may remain active for hotplug;
+        # every unowned/offline allocation must be published fully inactive.
+        $publish_inactive = !defined($owner_state->{owner});
         $import_state = _thin_import_state_from_tags($pool_info->{tags});
 
         my @owned_disks = grep {
@@ -3305,7 +3335,7 @@ sub _alloc_image_locked {
         );
     }
 
-    if ($created_pool || $import_state->{active}) {
+    if ($created_pool || $import_state->{active} || $publish_inactive) {
         my $device = defined($scfg->{'slt-expected-wwid'})
             ? "/dev/mapper/$scfg->{'slt-expected-wwid'}"
             : undef;
@@ -4651,6 +4681,21 @@ sub _free_image_locked {
 
     die "refusing to modify legacy pool '$vg/$pool': ownership is not positively proven\n"
         if $pool_legacy;
+
+    # Removal is a metadata mutation just like allocation.  A PVE caller on a
+    # non-owner node must never be able to delete a disk from a pool which is
+    # actively owned by another host, even if a higher-level configuration or
+    # storage lock was obtained.  The durable owner tag is the final local
+    # safety boundary.  An unowned pool is the valid stopped-VM case; a locally
+    # owned pool is the valid hot-remove case.
+    if ($pool_owned) {
+        my $owner_state = _thin_owner_state_from_tags($pool_info->{tags});
+        die "refusing to remove from '$vg/$pool': pool predates the exclusive-owner schema; explicit offline adoption is required\n"
+            if !$owner_state->{schema};
+        my $local_node = $class->_thin_local_node();
+        die "refusing to remove from '$vg/$pool': persistent owner is '$owner_state->{owner}', local node is '$local_node'\n"
+            if defined($owner_state->{owner}) && $owner_state->{owner} ne $local_node;
+    }
 
     if ($lvs->{$vg} && $lvs->{$vg}->{$volname}) {
         my $volume_info = $lvs->{$vg}->{$volname};

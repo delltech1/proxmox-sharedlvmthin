@@ -1,5 +1,25 @@
 # Changelog
 
+## `0.9.0~rc5.10~tg31+fix2` (hotfix pre-release)
+
+- Preserve Thin ownership during additional-disk allocation: an unowned
+  stopped-VM pool is republished inactive, a locally owned running pool remains
+  active for hot-add, and a foreign-owned pool is rejected before mutation.
+- Qualify Thin/Thick hot-add and hot-remove in all four primary/disk-mode
+  combinations, plus exact two-disk offline cleanup and VG baseline recovery.
+- Apply the Thin durable-owner boundary to deletion as well as allocation:
+  foreign-owner removal fails before mutation, while unowned offline removal
+  and local-owner hot-remove remain supported.
+
+- Treat `/dev/mapper/<name>` and `/dev/<VG>/<LV>` only as convenience
+  namespaces when deciding whether a device-mapper object exists. Recovery,
+  reconstruction, resize, rollback and cleanup gates now resolve the canonical
+  DM name and query the authoritative kernel inventory even when udev has
+  removed or not yet published the block-device node.
+- Preserve the ordinary block-device fallback for paths outside the DM/LVM
+  namespaces. Add exact tests for mapper paths, escaped LVM aliases and absent
+  kernel mappings; the full Perl and Python regression suites remain green.
+
 ## `0.9.0~rc5.10~tg31+fix1` (hotfix pre-release)
 
 - Wait outside the canonical VG lock when a decoded Thick DM_CUTOVER or

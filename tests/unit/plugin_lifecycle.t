@@ -1181,6 +1181,69 @@ subtest 'multi-disk proportional allocation pre-grows from live usage' => sub {
     is(scalar(@numeric), 0, 'all live capacity and postcondition reads consumed');
 };
 
+subtest 'existing Thin allocation preserves the durable owner boundary' => sub {
+    my $pool_unowned = {
+        lv_type => 't',
+        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+    };
+    my $pool_owned = {
+        lv_type => 't',
+        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+    };
+    my $disk = { pool_lv => 'sltp-999900' };
+
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'node1'; };
+    my @published;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_deactivate_new_thin_pool_after_allocation = sub {
+        push @published, [@_[1 .. 3]];
+        return 1;
+    };
+
+    reset_mocks();
+    @lvm_results = (
+        { testvg => { 'sltp-999900' => $pool_unowned, 'vm-999900-disk-0' => $disk } },
+        { testvg => { 'sltp-999900' => $pool_unowned, 'vm-999900-disk-0' => $disk } },
+    );
+    is($class->alloc_image(
+        'sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
+    ), 'vm-999900-disk-1', 'offline second disk allocation succeeds');
+    is_deeply(\@published, [['testvg', 'sltp-999900', 'vm-999900-disk-1']],
+        'an unowned existing pool is republished fully inactive');
+
+    reset_mocks();
+    @published = ();
+    @lvm_results = (
+        { testvg => { 'sltp-999900' => $pool_owned, 'vm-999900-disk-0' => $disk } },
+        { testvg => { 'sltp-999900' => $pool_owned, 'vm-999900-disk-0' => $disk } },
+    );
+    is($class->alloc_image(
+        'sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
+    ), 'vm-999900-disk-1', 'local-owner hotplug allocation succeeds');
+    is_deeply(\@published, [], 'a locally owned active pool is never torn down by hotplug');
+
+    reset_mocks();
+    @published = ();
+    my $pool_foreign = {
+        %$pool_owned,
+        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-node2,pve-slt-owner-epoch-abcdef0123456789abcdef0123456789',
+    };
+    @lvm_results = ({ testvg => {
+        'sltp-999900' => $pool_foreign,
+        'vm-999900-disk-0' => $disk,
+    } });
+    my $ok = eval {
+        $class->alloc_image(
+            'sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
+        );
+        1;
+    };
+    ok(!$ok, 'foreign-owned pool allocation is rejected');
+    like($@, qr/persistent owner is 'node2'/, 'foreign owner refusal is explicit');
+    is(scalar(@commands), 0, 'foreign owner refusal performs zero mutation');
+    is_deeply(\@published, [], 'foreign pool is never deactivated or rewritten');
+};
+
 subtest 'inactive pool allocation never repeats headroom growth' => sub {
     reset_mocks();
     my $policy = {
@@ -1816,6 +1879,67 @@ subtest 'one-of-many disk deletion preserves the shared per-VM pool' => sub {
     my @lines = command_lines();
     is(scalar(grep { /lvremove/ } @lines), 1, 'only requested disk removed');
     unlike(join("\n", @lines), qr{sltp-900001$}, 'referenced pool preserved');
+};
+
+subtest 'Thin removal preserves the durable owner boundary' => sub {
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub {
+        return 'testnode';
+    };
+    my $disk = { pool_lv => 'sltp-900001' };
+
+    reset_mocks();
+    @lvm_results = ({ testvg => {
+        'sltp-900001' => {
+            lv_type => 't',
+            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-peer01,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+        },
+        'vm-900001-disk-0' => $disk,
+    } });
+    my $ok = eval {
+        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        1;
+    };
+    ok(!$ok, 'foreign-owner removal rejected');
+    like($@, qr/persistent owner is 'peer01', local node is 'testnode'/,
+        'foreign-owner refusal is explicit');
+    is(scalar(@commands), 0, 'foreign-owner refusal occurs before mutation');
+
+    reset_mocks();
+    my $local_pool = {
+        lv_type => 't',
+        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-testnode,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+    };
+    @lvm_results = (
+        { testvg => { 'sltp-900001' => $local_pool, 'vm-900001-disk-0' => $disk,
+            'vm-900001-disk-1' => $disk } },
+        { testvg => { 'sltp-900001' => $local_pool, 'vm-900001-disk-0' => $disk,
+            'vm-900001-disk-1' => $disk } },
+        { testvg => { 'sltp-900001' => $local_pool, 'vm-900001-disk-1' => $disk } },
+    );
+    $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+    is(scalar(grep { /lvremove -f testvg\/vm-900001-disk-0$/ } command_lines()), 1,
+        'local-owner hot-remove deletes only the requested disk');
+    unlike(join("\n", command_lines()), qr{lvremove -f testvg/sltp-900001$},
+        'local-owner hot-remove preserves the active pool');
+
+    reset_mocks();
+    my $unowned_pool = {
+        lv_type => 't',
+        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+    };
+    @lvm_results = (
+        { testvg => { 'sltp-900001' => $unowned_pool,
+            'vm-900001-disk-0' => $disk } },
+        { testvg => { 'sltp-900001' => $unowned_pool,
+            'vm-900001-disk-0' => $disk } },
+        { testvg => { 'sltp-900001' => $unowned_pool } },
+    );
+    $ok = eval {
+        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        1;
+    };
+    ok($ok, 'unowned stopped-VM removal remains permitted');
 };
 
 subtest 'unexpected LV reference prevents empty-pool cleanup' => sub {

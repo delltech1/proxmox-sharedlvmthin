@@ -26,4 +26,16 @@ eval { $class->_thick_frontend_present({},$vol) };
 like($@,qr/UUID mismatch/,'managed frontend without UUID remains fail-closed');
 $rows=['foreign-map|'];
 is($class->_thick_frontend_present({},$vol),0,'absence remains exact despite foreign map');
+
+$rows=['test--vg-sltg--head|LVM-head'];
+ok(PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists(
+    '/dev/mapper/test--vg-sltg--head'),
+    'mapper namespace existence comes from kernel inventory');
+ok(PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists(
+    '/dev/test-vg/sltg-head'),
+    'LVM convenience namespace resolves to the exact kernel DM name');
+$rows=[];
+ok(!PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists(
+    '/dev/mapper/test--vg-sltg--head'),
+    'missing udev-independent kernel mapping is absent');
 done_testing();
