@@ -3322,6 +3322,7 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
     local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventories; };
