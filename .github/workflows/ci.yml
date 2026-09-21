@@ -30,9 +30,11 @@ jobs:
             DEBIAN/preinst DEBIAN/postinst DEBIAN/prerm DEBIAN/postrm \
             usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
-      - name: Reproducible dual-mode package build
+      - name: Prove both package profiles reproducible
+        run: sh scripts/check-reproducible-packages.sh
+      - name: Build dual-mode package candidate
         run: sh scripts/build.sh dist/dual dual
-      - name: Reproducible Thick-only package build
+      - name: Build Thick-only package candidate
         run: sh scripts/build.sh dist/thick-only thick-only
       - name: Verify dual and Thick-only shared payload parity
         run: |
