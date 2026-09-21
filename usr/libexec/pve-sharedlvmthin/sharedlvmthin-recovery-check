@@ -170,6 +170,16 @@ def clean(value):
     return str(value or "").strip()
 
 
+def config_boolean(value, field):
+    """Parse PVE boolean spellings without treating ambiguity as false."""
+    normalized = clean(value or "0").lower()
+    if normalized in {"0", "no", "off", "false"}:
+        return False
+    if normalized in {"1", "yes", "on", "true"}:
+        return True
+    raise RuntimeError(f"storage has invalid {field} value '{normalized}'")
+
+
 def pve_reference_files(sid, vol):
     """Return exact cluster configuration references without mutating state."""
     needle = f"{sid}:{vol}"
@@ -524,6 +534,16 @@ def main(argv=None):
     expected_wwid = clean(cfg.get("slt-expected-wwid")).lower()
     expected_paths = clean(cfg.get("slt-expected-min-paths"))
     allocation_mode = clean(cfg.get("slt-allocation-mode") or "thin")
+    try:
+        storage_disabled = config_boolean(cfg.get("disable"), "disable")
+    except RuntimeError as exc:
+        print(f"STORAGE_ID={sid}")
+        print("VG_INTENT_CLEAR=FAIL")
+        print("THICK_ANCHORS_HEALTHY=FAIL")
+        print("STATE=RECOVERY_REQUIRED")
+        print("SAFE_FOR_MUTATION=NO")
+        print(f"DETAIL={exc}")
+        return 2
     if not re.fullmatch(r"[0-9a-f]+", expected_wwid):
         print(f"STORAGE_ID={sid}")
         print("VG_INTENT_CLEAR=FAIL")
@@ -547,8 +567,9 @@ def main(argv=None):
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
         ("POOL", ["/sbin/lvs", *lvm_scope, "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent", vg]),
-        ("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]),
     ]
+    if not storage_disabled:
+        probes.append(("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]))
     evidence = {}
     for label, command in probes:
         result = bounded_probe(command)
@@ -676,10 +697,14 @@ def main(argv=None):
         results["THIN_OWNER_STATE"] = "PASS" if not owner_failures else "FAIL"
         details.extend(f"recovery-required: {item}" for item in owner_failures)
 
-    pve_out = evidence.get("PVE", {}).get("out", "")
-    results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
-        rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
-    ) else "FAIL"
+    if storage_disabled:
+        results["PVE_STORAGE_HEALTH"] = "PASS"
+        details.append("PVE active-status gate is not applicable to explicitly disabled storage")
+    else:
+        pve_out = evidence.get("PVE", {}).get("out", "")
+        results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
+            rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
+        ) else "FAIL"
 
     if expected_wwid:
         mp = bounded_probe(["/sbin/multipath", "-ll", expected_wwid])

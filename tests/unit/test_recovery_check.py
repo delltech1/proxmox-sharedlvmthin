@@ -221,7 +221,7 @@ sharedlvmthin: two
     def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
                  allocation_mode="thin", lvs_output=None, referenced=True,
                  vg_tags="", observed_commands=None,
-                 expected_wwid="3600abcd"):
+                 expected_wwid="3600abcd", disabled=False):
         cfg = {
             "slt-vgname": "testvg",
             "slt-expected-vg-uuid": "vg-uuid",
@@ -230,6 +230,8 @@ sharedlvmthin: two
             "slt-expected-min-paths": "2",
             "slt-allocation-mode": allocation_mode,
         }
+        if disabled:
+            cfg["disable"] = "1"
 
         def probe(command):
             if observed_commands is not None:
@@ -295,6 +297,40 @@ sharedlvmthin: two
         self.assertIn("VG_INTENT_CLEAR=FAIL", output)
         self.assertIn("THICK_ANCHORS_HEALTHY=FAIL", output)
         self.assertIn("no LVM probe was run", output)
+
+    def test_disabled_storage_skips_only_pve_active_probe(self):
+        commands = []
+        name, tags = self.anchor()
+        lvs_output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        rc, output = self.run_main(
+            disabled=True, allocation_mode="thick-generations",
+            lvs_output=lvs_output, observed_commands=commands,
+        )
+        self.assertEqual(rc, 0)
+        self.assertFalse(any(command[0].endswith("pvesm") for command in commands))
+        self.assertEqual(
+            sum(command[0] in {"/sbin/vgs", "/sbin/pvs", "/sbin/lvs"}
+                for command in commands),
+            4,
+        )
+        self.assertIn("PVE_STORAGE_HEALTH=PASS", output)
+        self.assertIn("not applicable to explicitly disabled storage", output)
+        self.assertIn("SAFE_FOR_MUTATION=YES", output)
+
+    def test_invalid_disable_value_fails_without_probes(self):
+        commands = []
+        cfg = {
+            "slt-vgname": "testvg", "slt-expected-vg-uuid": "vg-uuid",
+            "slt-expected-pv-uuid": "pv-uuid", "slt-expected-wwid": "3600abcd",
+            "disable": "ambiguous",
+        }
+        with mock.patch.object(self.checker, "storage_config", return_value=cfg), \
+             mock.patch.object(self.checker, "bounded_probe", side_effect=commands.append), \
+             redirect_stdout(StringIO()) as output:
+            rc = self.checker.main(["test"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(commands, [])
+        self.assertIn("invalid disable value", output.getvalue())
 
     def test_nearly_full_thin_pool_is_scoped_capacity_warning(self):
         rc, output = self.run_main(lvs_output=(

@@ -5,6 +5,10 @@
 - Scope every LVM probe in the read-only recovery/upgrade checker to the pinned
   `/dev/mapper/<WWID>`. VG, intent, PV and LV evidence can no longer be sourced
   from an unrelated same-name local or stale VG before the identity comparison.
+- Give explicitly disabled storage a usable but equally strict recovery-check
+  path: only the PVE `active` status probe is not applicable; pinned identity,
+  paths, quorum, D-state, VG intent, LVM flags and Thick anchors remain
+  mandatory. Invalid disable syntax fails before any external probe.
 - Include explicitly disabled, locally scoped SharedLvmThin storage in the
   pre-unpack recovery gate. Disabling a configuration no longer hides an OPEN
   intent or incomplete Thick anchor from ordinary upgrades or package-profile
