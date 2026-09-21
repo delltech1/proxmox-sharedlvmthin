@@ -5185,6 +5185,9 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $hydration_complete = {
         %$prepared, phase => 'HYDRATION_COMPLETE', head => $new, generation => 1,
     };
+    my $linear_pivoted = {
+        %$prepared, phase => 'LINEAR_PIVOTED', head => $new, generation => 1,
+    };
     my $source_ready = { %$prepared, phase => 'SOURCE_READY' };
     my $committed = {
         %$prepared, phase => 'COMMITTED', head => $new, generation => 1,
@@ -5195,6 +5198,9 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $anchor_tags_hydrating = join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$hydrating)});
     my $anchor_tags_hydration_complete = join(',', @{
         PVE::SharedLvmThinThick::anchor_tags(%$hydration_complete)
+    });
+    my $anchor_tags_linear_pivoted = join(',', @{
+        PVE::SharedLvmThinThick::anchor_tags(%$linear_pivoted)
     });
     my $old_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
@@ -5228,14 +5234,19 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         %{$prepared_inventory->{testvg}},
         $anchor => { tags => $anchor_tags_hydration_complete },
     } };
+    my $linear_pivoted_inventory = { testvg => {
+        %{$prepared_inventory->{testvg}},
+        $anchor => { tags => $anchor_tags_linear_pivoted },
+    } };
     my $after_cleanup = { testvg => {
-        $anchor => { tags => $anchor_tags_hydration_complete },
+        $anchor => { tags => $anchor_tags_linear_pivoted },
         $old => { tags => $old_tags, lv_size => $size },
         $new => { tags => $new_tags, lv_size => $size },
     } };
     my @inventories = (
         $initial, $prepared_inventory, $source_ready_inventory, $committed_inventory,
-        $hydrating_inventory, $hydration_complete_inventory, $after_cleanup,
+        $hydrating_inventory, $hydration_complete_inventory, $linear_pivoted_inventory,
+        $after_cleanup,
     );
     my @events;
     my @scoped_devices;
