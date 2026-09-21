@@ -4,6 +4,7 @@
 
 import json
 import glob
+import hashlib
 import os
 import platform
 import re
@@ -69,6 +70,29 @@ def package_version(name):
     return value(["dpkg-query", "-W", "-f=${Version}", name])
 
 
+def installed_plugin_package():
+    flavor = read_file("/usr/share/pve-sharedlvmthin/package-flavor")
+    if flavor == "thick-only":
+        return "pve-sharedlvmthin-thick", flavor
+    if flavor == "dual":
+        return "pve-sharedlvmthin", flavor
+    return None, flavor
+
+
+def evaluate_package_identity(package, flavor, version):
+    expected = {
+        "dual": "pve-sharedlvmthin",
+        "thick-only": "pve-sharedlvmthin-thick",
+    }
+    if flavor not in expected:
+        return "FAIL", "package flavor marker is missing or invalid"
+    if package != expected[flavor]:
+        return "FAIL", "package identity contradicts the installed flavor marker"
+    if not version:
+        return "FAIL", f"installed package version is unavailable for {package}"
+    return "PASS", f"installed package identity is {package} {version} ({flavor})"
+
+
 def read_file(path):
     try:
         with open(path, "r") as f:
@@ -107,6 +131,7 @@ def parse_storage_cfg():
                 "expected_min_paths": None,
                 "expected_pv_uuid": None,
                 "expected_wwid": None,
+                "tg_max_active_materializations": 4,
             }
             continue
 
@@ -137,6 +162,12 @@ def parse_storage_cfg():
 
             elif s.startswith("slt-allocation-mode "):
                 current["allocation_mode"] = s.split(None, 1)[1]
+
+            elif s.startswith("slt-tg-max-active-materializations "):
+                value = s.split(None, 1)[1]
+                current["tg_max_active_materializations"] = (
+                    int(value) if value.isdigit() else value
+                )
 
             elif s.startswith("slt-initial-pool-size "):
                 try:
@@ -469,6 +500,58 @@ def vg_info(vg):
         }
 
 
+def evaluate_vg_mutation_intent(vg, output):
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return "FAIL", "VG mutation-intent inventory is ambiguous", None
+    fields = [field.strip() for field in lines[0].split("|", 1)]
+    if len(fields) != 2 or fields[0] != vg:
+        return "FAIL", "VG mutation-intent inventory is malformed or belongs to another VG", None
+    managed = [tag.strip() for tag in fields[1].split(",")
+               if tag.strip().startswith("slt_tg_vgi_")]
+    if not managed:
+        return "PASS", "no persistent VG mutation intent", None
+    allowed = {"v", "tx", "state", "op", "object", "before", "sha256"}
+    values = {}
+    for tag in managed:
+        match = re.fullmatch(r"slt_tg_vgi_([A-Za-z0-9_]+)=([A-Za-z0-9_.:+-]+)", tag)
+        if not match or match.group(1) not in allowed or match.group(1) in values:
+            return "FAIL", "VG mutation-intent tags are malformed or duplicated", None
+        values[match.group(1)] = match.group(2)
+    if set(values) != allowed:
+        return "FAIL", "VG mutation intent is incomplete or contains unknown fields", None
+    order = ("v", "tx", "state", "op", "object", "before")
+    canonical = "|".join(f"{key}={values[key]}" for key in order)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    operations = {"ALLOC", "EXTEND", "REMOVE", "REMOVE_SNAPSHOT", "DM_CUTOVER", "DM_PIVOT"}
+    if (values["v"] != "1" or values["state"] != "OPEN"
+            or values["op"] not in operations
+            or not re.fullmatch(r"[0-9a-f]{32}", values["tx"])
+            or not re.fullmatch(r"[0-9a-f]{16,64}", values["before"])
+            or values["sha256"] != digest):
+        return "FAIL", "VG mutation-intent identity or digest is invalid", None
+    reason = f"OPEN {values['op']} mutation intent blocks all new mutations"
+    if values["op"] == "EXTEND":
+        reason += "; use the explicit thick-recover-resize workflow when its runtime proof is available"
+    elif values["op"] == "REMOVE":
+        reason += "; use the explicit reference-gated thick-recover-volume-delete workflow"
+    elif values["op"] in {"DM_CUTOVER", "DM_PIVOT"}:
+        reason += ("; use thick-recover-prepare only for a still-MATERIALIZED anchor "
+                   "whose transition was never published, otherwise use thick-resume")
+    return "FAIL", reason, values["op"]
+
+
+def vg_mutation_intent(vg, expected_wwid=None):
+    command = ["vgs", "--readonly"]
+    if expected_wwid:
+        command.extend(["--devices", f"/dev/mapper/{expected_wwid}"])
+    command.extend(["--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg])
+    rc, out, err = run(command)
+    if rc != 0:
+        return "FAIL", err or out or "VG mutation-intent inventory is unavailable", None
+    return evaluate_vg_mutation_intent(vg, out)
+
+
 def pools(vg, sid):
     rc, out, err = run([
         "lvs",
@@ -665,7 +748,10 @@ def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
             )
             item["worker_state"] = observed_worker
             if (
-                phase not in {"PREPARED", "HYDRATING", "HYDRATION_COMPLETE", "LINEAR_PIVOTED"}
+                phase not in {
+                    "PREPARED", "SOURCE_READY", "COMMITTED", "HYDRATING",
+                    "HYDRATION_COMPLETE", "LINEAR_PIVOTED",
+                }
                 or not transaction
                 or not re.fullmatch(r"[0-9a-f]{32}", transaction)
             ):
@@ -714,6 +800,31 @@ def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
             item["reason"] = "volume has exactly one PVE configuration reference"
         results.append(item)
     return results
+
+
+def evaluate_thick_materialization_admission(anchors, limit):
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 64:
+        return "FAIL", {
+            "active": None,
+            "limit": limit,
+            "available": False,
+            "reason": "Thick materialization concurrency limit is invalid",
+        }
+    active = sum(
+        1 for anchor in anchors or []
+        if anchor.get("phase") != "MATERIALIZED"
+    )
+    available = active < limit
+    return "PASS", {
+        "active": active,
+        "limit": limit,
+        "available": available,
+        "reason": (
+            f"{active}/{limit} Thick materialization slots active; "
+            + ("new PREPARE may be admitted" if available
+               else "new PREPARE is intentionally blocked at the configured ceiling")
+        ),
+    }
 
 
 def evaluate_pool_flags(attr, health_status, check_needed=None):
@@ -1253,6 +1364,8 @@ def build_transport(vg):
 api, apiage = pve_api()
 papi = plugin_api()
 states = pvesm_states()
+plugin_package, package_flavor = installed_plugin_package()
+plugin_version = package_version(plugin_package) if plugin_package else None
 
 doc = {
     "schema": 1,
@@ -1266,7 +1379,9 @@ doc = {
         "storage_api": api,
         "storage_api_age": apiage,
         "plugin_api": papi,
-        "plugin_version": package_version("pve-sharedlvmthin"),
+        "plugin_package": plugin_package,
+        "package_flavor": package_flavor,
+        "plugin_version": plugin_version,
         "storage_package": package_version("libpve-storage-perl"),
     },
     "lvm": lvm_info(),
@@ -1290,6 +1405,12 @@ def check(name, status, message):
         doc["result"] = "WARN"
 
 
+package_status, package_message = evaluate_package_identity(
+    plugin_package, package_flavor, plugin_version
+)
+check("plugin_package_identity", package_status, package_message)
+
+
 api_status, api_message = evaluate_api_compatibility(api, apiage, papi)
 check("storage_api", api_status, api_message)
 
@@ -1306,8 +1427,10 @@ for storage in parse_storage_cfg():
         **storage,
         "pve": states.get(sid, {}),
         "vg_info": None,
+        "vg_mutation_intent": None,
         "pools": [],
         "thick_anchors": [],
+        "thick_materialization_admission": None,
         "pool_inventory_error": None,
         "metadata_spares": [],
         "transport": None,
@@ -1344,6 +1467,18 @@ for storage in parse_storage_cfg():
         item["vg_info"] = vg_info(vg)
 
         if item["vg_info"].get("visible"):
+            intent_status, intent_reason, intent_op = vg_mutation_intent(
+                vg, storage.get("expected_wwid"),
+            )
+            item["vg_mutation_intent"] = {
+                "status": intent_status,
+                "operation": intent_op,
+                "reason": intent_reason,
+            }
+            check(
+                f"vg_mutation_intent:{sid}", intent_status,
+                f"{sid}: {intent_reason}",
+            )
             pool_inventory, pool_error, thick_anchors = pools(vg, sid)
             item["pool_inventory_error"] = pool_error
             if pool_error is not None:
@@ -1357,6 +1492,18 @@ for storage in parse_storage_cfg():
                 item["thick_anchors"] = evaluate_thick_anchor_references(
                     sid, thick_anchors, thick_worker_state
                 )
+                materialization_limit = storage.get(
+                    "tg_max_active_materializations", 4
+                )
+                admission_status, admission = evaluate_thick_materialization_admission(
+                    item["thick_anchors"], materialization_limit
+                )
+                item["thick_materialization_admission"] = admission
+                if storage.get("allocation_mode") == "thick-generations":
+                    check(
+                        f"thick_materialization_admission:{sid}", admission_status,
+                        f"{sid}: {admission['reason']}",
+                    )
                 for anchor in item["thick_anchors"]:
                     if anchor.get("status") in {"WARN", "FAIL"}:
                         check(

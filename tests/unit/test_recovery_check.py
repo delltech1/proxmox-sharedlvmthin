@@ -219,21 +219,27 @@ sharedlvmthin: two
         self.assertIn("local tpool mapper", failures[0])
 
     def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
-                 allocation_mode="thin", lvs_output=None, referenced=True):
+                 allocation_mode="thin", lvs_output=None, referenced=True,
+                 vg_tags="", observed_commands=None,
+                 expected_wwid="3600abcd", disabled=False):
         cfg = {
             "slt-vgname": "testvg",
             "slt-expected-vg-uuid": "vg-uuid",
             "slt-expected-pv-uuid": "pv-uuid",
-            "slt-expected-wwid": "3600abcd",
+            "slt-expected-wwid": expected_wwid,
             "slt-expected-min-paths": "2",
             "slt-allocation-mode": allocation_mode,
         }
+        if disabled:
+            cfg["disable"] = "1"
 
         def probe(command):
+            if observed_commands is not None:
+                observed_commands.append(command)
             joined = " ".join(command)
             out = ""
             if command[0].endswith("vgs"):
-                out = "vg-uuid"
+                out = f"testvg|{vg_tags}" if "vg_name,vg_tags" in command else "vg-uuid"
             elif command[0].endswith("pvs"):
                 out = f"pv-uuid|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
@@ -267,6 +273,99 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("STATE=HEALTHY", output)
         self.assertIn("SAFE_FOR_MUTATION=YES", output)
+
+    def test_all_lvm_inventory_is_scoped_to_pinned_wwid(self):
+        commands = []
+        rc, _ = self.run_main(observed_commands=commands)
+        self.assertEqual(rc, 0)
+        lvm_commands = [
+            command for command in commands
+            if command[0] in {"/sbin/vgs", "/sbin/pvs", "/sbin/lvs"}
+        ]
+        self.assertEqual(len(lvm_commands), 4)
+        for command in lvm_commands:
+            position = command.index("--devices")
+            self.assertEqual(command[position + 1], "/dev/mapper/3600abcd")
+
+    def test_invalid_wwid_runs_no_unscoped_lvm_probe(self):
+        commands = []
+        rc, output = self.run_main(
+            expected_wwid="not-a-wwid", observed_commands=commands,
+        )
+        self.assertEqual(rc, 2)
+        self.assertEqual(commands, [])
+        self.assertIn("VG_INTENT_CLEAR=FAIL", output)
+        self.assertIn("THICK_ANCHORS_HEALTHY=FAIL", output)
+        self.assertIn("no LVM probe was run", output)
+
+    def test_disabled_storage_skips_only_pve_active_probe(self):
+        commands = []
+        name, tags = self.anchor()
+        lvs_output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        rc, output = self.run_main(
+            disabled=True, allocation_mode="thick-generations",
+            lvs_output=lvs_output, observed_commands=commands,
+        )
+        self.assertEqual(rc, 0)
+        self.assertFalse(any(command[0].endswith("pvesm") for command in commands))
+        self.assertEqual(
+            sum(command[0] in {"/sbin/vgs", "/sbin/pvs", "/sbin/lvs"}
+                for command in commands),
+            4,
+        )
+        self.assertIn("PVE_STORAGE_HEALTH=PASS", output)
+        self.assertIn("not applicable to explicitly disabled storage", output)
+        self.assertIn("SAFE_FOR_MUTATION=YES", output)
+
+    def test_preinstall_skips_only_unavailable_pve_plugin_probe(self):
+        commands = []
+        cfg = {
+            "slt-vgname": "testvg", "slt-expected-vg-uuid": "vg-uuid",
+            "slt-expected-pv-uuid": "pv-uuid", "slt-expected-wwid": "3600abcd",
+            "slt-expected-min-paths": "2", "slt-allocation-mode": "thin",
+        }
+
+        def probe(command):
+            commands.append(command)
+            if command[0].endswith("vgs"):
+                out = "testvg|" if "vg_name,vg_tags" in command else "vg-uuid"
+            elif command[0].endswith("pvs"):
+                out = "pv-uuid|/dev/mapper/3600abcd"
+            elif command[0].endswith("lvs"):
+                out = ""
+            elif command[0].endswith("multipath"):
+                out = "|- active ready running\n`- active ready running"
+            elif command[0].endswith("pvecm"):
+                out = "Quorate: Yes"
+            else:
+                out = ""
+            return {"status": "PASS", "rc": 0, "out": out, "err": "", "pid": 1, "state": None}
+
+        with mock.patch.object(self.checker, "storage_config", return_value=cfg), \
+             mock.patch.object(self.checker, "bounded_probe", side_effect=probe), \
+             mock.patch.object(self.checker, "settled_dstate_evidence", return_value=("PASS", [], [], 0)), \
+             mock.patch.object(self.checker, "pve_snapshot_references", return_value=set()), \
+             redirect_stdout(StringIO()) as output:
+            rc = self.checker.main(["--preinstall", "test"])
+        self.assertEqual(rc, 0, output.getvalue())
+        self.assertFalse(any(command[0].endswith("pvesm") for command in commands))
+        self.assertIn("PVE_STORAGE_HEALTH=PASS", output.getvalue())
+        self.assertIn("before first local plugin unpack", output.getvalue())
+
+    def test_invalid_disable_value_fails_without_probes(self):
+        commands = []
+        cfg = {
+            "slt-vgname": "testvg", "slt-expected-vg-uuid": "vg-uuid",
+            "slt-expected-pv-uuid": "pv-uuid", "slt-expected-wwid": "3600abcd",
+            "disable": "ambiguous",
+        }
+        with mock.patch.object(self.checker, "storage_config", return_value=cfg), \
+             mock.patch.object(self.checker, "bounded_probe", side_effect=commands.append), \
+             redirect_stdout(StringIO()) as output:
+            rc = self.checker.main(["test"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(commands, [])
+        self.assertIn("invalid disable value", output.getvalue())
 
     def test_nearly_full_thin_pool_is_scoped_capacity_warning(self):
         rc, output = self.run_main(lvs_output=(
@@ -354,6 +453,62 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("THICK_ANCHORS_HEALTHY=PASS", text)
         self.assertIn("SAFE_FOR_MUTATION=YES", text)
+
+    def test_open_extend_intent_is_visible_and_blocks_recovery_check(self):
+        name, tags = self.anchor()
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        values = {
+            "v": "1", "tx": "4" * 32, "state": "OPEN", "op": "EXTEND",
+            "object": name, "before": "b" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        intent = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output,
+            vg_tags=intent,
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("VG_INTENT_CLEAR=FAIL", text)
+        self.assertIn("OPEN EXTEND intent blocks mutation", text)
+        self.assertIn("sharedlvmthin thick-recover-resize test <volume>", text)
+        self.assertIn("SAFE_FOR_MUTATION=NO", text)
+
+    def test_malformed_vg_intent_fails_closed(self):
+        ok, details = self.checker.vg_intent_health(
+            "testvg|slt_tg_vgi_v=1,slt_tg_vgi_v=1", "test", "testvg"
+        )
+        self.assertFalse(ok)
+        self.assertIn("malformed or ambiguous", details[0])
+
+    def test_open_remove_intent_names_only_the_reference_gated_recovery(self):
+        name, tags = self.anchor()
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        values = {
+            "v": "1", "tx": "7" * 32, "state": "OPEN", "op": "REMOVE",
+            "object": name, "before": "c" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        intent = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output,
+            vg_tags=intent,
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("OPEN REMOVE intent blocks mutation", text)
+        self.assertIn(
+            "sharedlvmthin thick-recover-volume-delete test <volume>", text
+        )
+        self.assertIn("SAFE_FOR_MUTATION=NO", text)
 
     def test_unreferenced_materialized_thick_anchor_fails_closed(self):
         name, tags = self.anchor()

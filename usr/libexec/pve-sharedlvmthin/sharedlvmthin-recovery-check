@@ -170,6 +170,16 @@ def clean(value):
     return str(value or "").strip()
 
 
+def config_boolean(value, field):
+    """Parse PVE boolean spellings without treating ambiguity as false."""
+    normalized = clean(value or "0").lower()
+    if normalized in {"0", "no", "off", "false"}:
+        return False
+    if normalized in {"1", "yes", "on", "true"}:
+        return True
+    raise RuntimeError(f"storage has invalid {field} value '{normalized}'")
+
+
 def pve_reference_files(sid, vol):
     """Return exact cluster configuration references without mutating state."""
     needle = f"{sid}:{vol}"
@@ -453,12 +463,67 @@ def thin_reference_health(pool_output, sid, reference_lookup,
     return (not failures), pools, failures
 
 
+def vg_intent_health(output, sid, expected_vg):
+    """Reject every persistent mutation intent; validate it before reporting."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if len(lines) != 1:
+        return False, ["VG intent inventory is ambiguous"]
+    fields = [field.strip() for field in lines[0].split("|", 1)]
+    if len(fields) != 2 or fields[0] != expected_vg:
+        return False, ["VG intent inventory is malformed"]
+    managed = [tag.strip() for tag in fields[1].split(",")
+               if tag.strip().startswith("slt_tg_vgi_")]
+    if not managed:
+        return True, []
+    values = {}
+    token = re.compile(r"[A-Za-z0-9_.:+-]+")
+    allowed = {"v", "tx", "state", "op", "object", "before", "sha256"}
+    for tag in managed:
+        match = re.fullmatch(r"slt_tg_vgi_([A-Za-z0-9_]+)=([A-Za-z0-9_.:+-]+)", tag)
+        if not match or match.group(1) not in allowed or match.group(1) in values:
+            return False, ["VG mutation intent tags are malformed or ambiguous"]
+        values[match.group(1)] = match.group(2)
+    if set(values) != allowed or any(not token.fullmatch(value) for value in values.values()):
+        return False, ["VG mutation intent is incomplete or non-canonical"]
+    order = ("v", "tx", "state", "op", "object", "before")
+    canonical = "|".join(f"{key}={values[key]}" for key in order)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    operations = {"ALLOC", "EXTEND", "REMOVE", "REMOVE_SNAPSHOT", "DM_CUTOVER", "DM_PIVOT"}
+    if (values["v"] != "1" or values["state"] != "OPEN"
+            or values["op"] not in operations
+            or not re.fullmatch(r"[0-9a-f]{32}", values["tx"])
+            or not re.fullmatch(r"[0-9a-f]{16,64}", values["before"])
+            or values["sha256"] != digest):
+        return False, ["VG mutation intent identity or digest is invalid"]
+    if values["op"] == "EXTEND":
+        return False, [
+            "OPEN EXTEND intent blocks mutation; for a proven active frontend run "
+            f"sharedlvmthin thick-recover-resize {sid} <volume>"
+        ]
+    if values["op"] == "REMOVE":
+        return False, [
+            "OPEN REMOVE intent blocks mutation; after proving the volume has no PVE "
+            "references run "
+            f"sharedlvmthin thick-recover-volume-delete {sid} <volume>"
+        ]
+    if values["op"] in {"DM_CUTOVER", "DM_PIVOT"}:
+        return False, [
+            f"OPEN {values['op']} intent blocks mutation; if the authoritative anchor "
+            "is still MATERIALIZED and the transition was never published, run "
+            f"sharedlvmthin thick-recover-prepare {sid} <volume>; otherwise use the "
+            "state-specific thick-resume workflow"
+        ]
+    return False, [f"OPEN {values['op']} intent blocks mutation and requires exact recovery"]
+
+
 def main(argv=None):
     argv = argv or sys.argv[1:]
-    if len(argv) != 1 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", argv[0]):
-        print("Usage: sharedlvmthin recovery-check <storage-id>", file=sys.stderr)
+    preinstall = len(argv) == 2 and argv[0] == "--preinstall"
+    sid_arg = argv[1] if preinstall else (argv[0] if len(argv) == 1 else "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sid_arg):
+        print("Usage: sharedlvmthin recovery-check [--preinstall] <storage-id>", file=sys.stderr)
         return 64
-    sid = argv[0]
+    sid = sid_arg
     try:
         cfg = storage_config(sid)
     except RuntimeError as exc:
@@ -471,6 +536,26 @@ def main(argv=None):
     expected_wwid = clean(cfg.get("slt-expected-wwid")).lower()
     expected_paths = clean(cfg.get("slt-expected-min-paths"))
     allocation_mode = clean(cfg.get("slt-allocation-mode") or "thin")
+    try:
+        storage_disabled = config_boolean(cfg.get("disable"), "disable")
+    except RuntimeError as exc:
+        print(f"STORAGE_ID={sid}")
+        print("VG_INTENT_CLEAR=FAIL")
+        print("THICK_ANCHORS_HEALTHY=FAIL")
+        print("STATE=RECOVERY_REQUIRED")
+        print("SAFE_FOR_MUTATION=NO")
+        print(f"DETAIL={exc}")
+        return 2
+    if not re.fullmatch(r"[0-9a-f]+", expected_wwid):
+        print(f"STORAGE_ID={sid}")
+        print("VG_INTENT_CLEAR=FAIL")
+        print("THICK_ANCHORS_HEALTHY=FAIL")
+        print("STATE=RECOVERY_REQUIRED")
+        print("SAFE_FOR_MUTATION=NO")
+        print("DETAIL=expected multipath WWID is missing or non-canonical; no LVM probe was run")
+        return 2
+    device = f"/dev/mapper/{expected_wwid}"
+    lvm_scope = ["--devices", device]
     results = {}
     details = []
 
@@ -478,13 +563,15 @@ def main(argv=None):
     # one outstanding LVM/PVE probe maximum and prevents the checker itself
     # from accumulating tasks during a storage incident.
     probes = [
-        ("VG", ["/sbin/vgs", "--readonly", "--noheadings", "--separator", "|", "-o", "vg_uuid", vg]),
-        ("PV", ["/sbin/pvs", "--readonly", "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
+        ("VG", ["/sbin/vgs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "vg_uuid", vg]),
+        ("INTENT", ["/sbin/vgs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg]),
+        ("PV", ["/sbin/pvs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
-        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent", vg]),
-        ("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]),
+        ("POOL", ["/sbin/lvs", *lvm_scope, "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent", vg]),
     ]
+    if not storage_disabled and not preinstall:
+        probes.append(("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]))
     evidence = {}
     for label, command in probes:
         result = bounded_probe(command)
@@ -494,12 +581,18 @@ def main(argv=None):
             break
 
     results["BOUNDED_LVM_PROBES"] = "PASS" if all(
-        evidence.get(x, {}).get("status") == "PASS" for x in ("VG", "PV", "POOL")
+        evidence.get(x, {}).get("status") == "PASS" for x in ("VG", "INTENT", "PV", "POOL")
     ) else "FAIL"
 
     vg_lines = [x.strip() for x in evidence.get("VG", {}).get("out", "").splitlines() if x.strip()]
     actual_vg = vg_lines[0] if len(vg_lines) == 1 else ""
     results["VG_UUID_MATCH"] = "PASS" if expected_vg and actual_vg.lower() == expected_vg.lower() else "FAIL"
+
+    intent_ok, intent_details = vg_intent_health(
+        evidence.get("INTENT", {}).get("out", ""), sid, vg,
+    )
+    results["VG_INTENT_CLEAR"] = "PASS" if intent_ok else "FAIL"
+    details.extend(f"recovery-required: {item}" for item in intent_details)
 
     pv_lines = [x.strip() for x in evidence.get("PV", {}).get("out", "").splitlines() if x.strip()]
     actual_pv = actual_dev = ""
@@ -606,10 +699,17 @@ def main(argv=None):
         results["THIN_OWNER_STATE"] = "PASS" if not owner_failures else "FAIL"
         details.extend(f"recovery-required: {item}" for item in owner_failures)
 
-    pve_out = evidence.get("PVE", {}).get("out", "")
-    results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
-        rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
-    ) else "FAIL"
+    if storage_disabled:
+        results["PVE_STORAGE_HEALTH"] = "PASS"
+        details.append("PVE active-status gate is not applicable to explicitly disabled storage")
+    elif preinstall:
+        results["PVE_STORAGE_HEALTH"] = "PASS"
+        details.append("PVE active-status gate is not applicable before first local plugin unpack")
+    else:
+        pve_out = evidence.get("PVE", {}).get("out", "")
+        results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(
+            rf"(?m)^\s*{re.escape(sid)}\s+\S+\s+active\b", pve_out
+        ) else "FAIL"
 
     if expected_wwid:
         mp = bounded_probe(["/sbin/multipath", "-ll", expected_wwid])
@@ -642,6 +742,7 @@ def main(argv=None):
         details.append(f"unscoped_dstate_tasks={len(unknown)}; positive storage attribution unavailable")
 
     ordered = ["PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
+               "VG_INTENT_CLEAR",
                "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "THIN_REFERENCES_HEALTHY",
                "THIN_OWNER_STATE",
                "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",

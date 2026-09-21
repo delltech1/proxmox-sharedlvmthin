@@ -65,11 +65,21 @@ window. Event waits use bounded slices to permit revalidation. Completion
 requires exact geometry, a fully hydrated counter and zero active hydration
 requests. Counter regression, geometry change, immediate wait failure or a
 full interval without progress is recovery-required and fails closed.
+The interval is measured with a monotonic clock, so NTP corrections, manual
+wall-clock changes and daylight-saving transitions cannot shorten or extend
+the watchdog window.
 
 The asynchronous worker has `TimeoutStartSec=infinity`; systemd does not kill
 a legitimate long hydration. Restart/resume reconstructs only the exact
 persisted transaction and verifies all dependencies before continuing.
 Admission waits never clear or steal an existing transition.
+
+`slt-tg-max-active-materializations` bounds aggregate dm-clone pressure across
+the entire VG (default 4, range 1..64). Admission counts signed anchors in a
+transition phase while holding the canonical VG lock. At the ceiling a new
+snapshot or rollback fails before its intent or LVs are created; running
+guests and existing materialization workers are not interrupted. Choose the
+limit from measured SAN throughput and latency rather than VM count alone.
 
 Thick deactivation uses `slt-tg-close-timeout` (default 30 seconds, allowed
 1..300) only to observe the exact frontend open count reaching zero. This

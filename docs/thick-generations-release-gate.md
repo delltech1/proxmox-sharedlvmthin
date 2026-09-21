@@ -1,8 +1,23 @@
 # Thick Generations release gate
 
-Thick Generations remains a release candidate. Every required software and
-available live integration gate below has positive evidence; a documented
-hardware boundary is not converted into a success claim.
+Thick Generations remains a release candidate. Existing lifecycle evidence is
+recorded below, but the newly separated Thick-only package profile has open
+installation and replacement gates. No source-level test or successful package
+build converts those open runtime gates into a success claim. A documented
+hardware boundary is likewise not converted into a success claim.
+
+## Published TG32 versus audit candidate
+
+The immutable `v0.9.0-rc5.11-tg32` pre-release contains the previously
+qualified dual-mode TG32 package. It is not rebuilt or silently replaced by
+this audit. The Thick-only profile, explicit dm-clone `rw`/`ro`/`Fail` checks,
+monotonic transition timing, package transaction fences, checksum manifests
+and profile-replacement tooling exist only on the unreleased audit branch until
+a later candidate passes every applicable open gate below.
+
+No known incident currently proves routine data corruption in the published
+TG32 artifact. That absence is not a production-safety claim and the new
+hardening must not be represented as retroactively present in its `.deb`.
 
 Disruptive cluster and transport coverage is tracked separately in the
 [Thin and Thick Generations redundancy gate](thick-generations-redundancy-gate.md).
@@ -36,8 +51,20 @@ The executable order and remaining original-cluster work are defined in the
 | Physical petabyte storage | Representative array qualification | NOT TESTED |
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
 | Web and installer | Dual-mode configuration, authentication, monitoring and live rendering | PASS |
+| Thick-only clean install | Exact candidate installs/configures on every qualified PVE API version; no absent Thin helper is invoked | OPEN |
+| Package profile replacement | Dual-to-Thick-only and Thick-only-to-dual replacement refuse unsafe state and preserve healthy Thick guests | OPEN |
+| Package rolling update | Same-flavor upgrade one node at a time with active services, reboot and post-update guest I/O verification | OPEN |
+| Package removal fence | Active ThinGuard plus managed Thin objects positively refuses removal; empty audited inventory permits cleanup | OPEN |
+| Thick-only diagnostics | Package identity/version, Doctor and JSON health output match the installed Thick-only artifact on a live PVE node | OPEN |
+| PREPARE cleanup recovery | Intent-only, partial signed remnants, complete signed pair and ambiguity refusal with guest hashes and idempotent retry | OPEN |
+| Materialization admission | Per-VG saturation refuses before intent/LV creation, preserves active workers and admits work after capacity returns | OPEN |
+| Worker scheduling ambiguity | Lost/failed systemd acknowledgement preserves the transaction, starts no synchronous second owner and remains explicitly resumable | OPEN |
+| Admission health telemetry | Exact active/limit/available values for AVAILABLE and SATURATED states; invalid or conflicting policy fails closed | OPEN |
+| Device-scoped capacity | Capacity query is pinned to the configured multipath WWID and cannot accept a same-name local/stale VG | OPEN |
+| Frontend-removal postcondition | A surviving mapper after reported removal prevents lower signed-LV deactivation and preserves recovery evidence | OPEN |
+| Kernel dm-clone gate | Module dry-run succeeds before/after reboot and a controlled transition proves the registered `clone` v1.x target | OPEN |
 | Recovery monitoring | Live IN_PROGRESS, RECOVERY_REQUIRED and post-resume MATERIALIZED classification; scoped dmeventd requirement | PASS |
-| Regression | Python, Perl taint-mode, package content and privacy gates at accepted commit | PASS: 166 PYTHON CASES; 115 PERL SUBTESTS / 635 ASSERTIONS |
+| Regression | Python, Perl taint-mode, package content, privacy, reproducibility and profile-parity gates at the exact PR head | PASS: USE THE HEAD-BOUND PR CHECK; RUNTIME ROWS REMAIN OPEN |
 
 `PASS` means the evidence is recorded in
 [`thick-generations-poc-status.md`](thick-generations-poc-status.md). A current
@@ -52,4 +79,8 @@ Thick Generations.
 Before publishing a package, repeat the full regression and package privacy
 checks against the exact commit used to build the release artifact. Install
 that identical artifact on every qualified PVE Storage API version, verify
-service health, and retain its checksum with the test evidence.
+service health, and retain its checksum with the test evidence. For the
+Thick-only profile, execute every package row marked `OPEN` above with both a
+quiescent cluster and deliberately injected refusal conditions. A refused
+unsafe transaction must leave the previously installed package and guest I/O
+intact; merely returning a non-zero dpkg status is insufficient evidence.

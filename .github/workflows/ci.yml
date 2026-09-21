@@ -11,7 +11,7 @@ jobs:
   test-and-build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install build and test dependencies
         run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
       - name: Python unit tests
@@ -25,13 +25,37 @@ jobs:
           perl -Itests/unit/lib -Iusr/share/perl5 -c usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize
           python3 -m py_compile usr/libexec/pve-sharedlvmthin/sharedlvmthin-web usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
       - name: Shell static analysis
-        run: shellcheck -x scripts/*.sh experiments/thick-generations/*.sh usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
-      - name: Reproducible package build
-        run: sh scripts/build.sh
-      - name: Upload package
-        uses: actions/upload-artifact@v4
+        run: |
+          shellcheck -x scripts/*.sh experiments/thick-generations/*.sh \
+            DEBIAN/preinst DEBIAN/postinst DEBIAN/prerm DEBIAN/postrm \
+            usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure \
+            usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
+      - name: Prove both package profiles reproducible
+        run: sh scripts/check-reproducible-packages.sh
+      - name: Build dual-mode package candidate
+        run: sh scripts/build.sh dist/dual dual
+      - name: Build Thick-only package candidate
+        run: sh scripts/build.sh dist/thick-only thick-only
+      - name: Verify dual and Thick-only shared payload parity
+        run: |
+          dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
+          thick=$(find dist/thick-only -maxdepth 1 -name '*.deb' -print -quit)
+          sh scripts/compare-package-profiles.sh "$dual" "$thick"
+      - name: Verify package identities and mutual exclusion
+        run: |
+          dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
+          thick=$(find dist/thick-only -maxdepth 1 -name '*.deb' -print -quit)
+          test "$(dpkg-deb -f "$dual" Package)" = pve-sharedlvmthin
+          test "$(dpkg-deb -f "$thick" Package)" = pve-sharedlvmthin-thick
+          dpkg-deb -f "$dual" Conflicts | grep -qw pve-sharedlvmthin-thick
+          dpkg-deb -f "$thick" Conflicts | grep -qw pve-sharedlvmthin
+          test "$(dpkg-deb -f "$dual" Version)" = "$(dpkg-deb -f "$thick" Version)"
+      - name: Upload package candidates
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: pve-sharedlvmthin-package
+          name: pve-sharedlvmthin-package-candidates
           path: |
-            dist/*.deb
-            dist/SHA256SUMS
+            dist/dual/*.deb
+            dist/dual/SHA256SUMS
+            dist/thick-only/*.deb
+            dist/thick-only/SHA256SUMS

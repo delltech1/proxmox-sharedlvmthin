@@ -1,6 +1,235 @@
 #!/bin/sh
 set -eu
 
+PACKAGE_FLAVOR=dual
+if [ "${DPKG_MAINTSCRIPT_PACKAGE:-}" = "pve-sharedlvmthin-thick" ]; then
+    PACKAGE_FLAVOR=thick-only
+fi
+
+INSTALLED_FLAVOR=$(sed -n '1p' \
+    /usr/share/pve-sharedlvmthin/package-flavor 2>/dev/null || true)
+STORAGECFG=/etc/pve/storage.cfg
+PREINST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+CANDIDATE_RECOVERY_CHECK="$PREINST_DIR/sharedlvmthin-candidate-recovery-check"
+CANDIDATE_PREINSTALL=0
+[ "${1:-}" != "upgrade" ] && [ -z "$INSTALLED_FLAVOR" ] && CANDIDATE_PREINSTALL=1
+CANDIDATE_INVENTORY=
+CANDIDATE_RESULT=
+
+# Invoked indirectly by the EXIT and signal traps below.
+# shellcheck disable=SC2317
+cleanup_candidate_audit() {
+    [ -z "$CANDIDATE_INVENTORY" ] || rm -f -- "$CANDIDATE_INVENTORY"
+    [ -z "$CANDIDATE_RESULT" ] || rm -f -- "$CANDIDATE_RESULT"
+}
+trap cleanup_candidate_audit EXIT
+trap 'cleanup_candidate_audit; exit 130' HUP INT TERM
+
+# dpkg has not unpacked the candidate payload yet. Published TG32's installed
+# helper skipped disabled storage and did not yet expose the signed VG-intent
+# proof for enabled storage either. The candidate therefore carries an
+# executable copy of its new read-only recovery checker in the control archive.
+# Use that copy here before
+# payload unpacking; never substitute the less strict installed checker.
+audit_candidate_storages() {
+    [ -r "$STORAGECFG" ] || {
+        echo "ERROR: SharedLvmThin upgrade refused: storage configuration is unreadable." >&2
+        return 1
+    }
+    [ -x "$CANDIDATE_RECOVERY_CHECK" ] || {
+        echo "ERROR: SharedLvmThin upgrade refused: candidate recovery checker is missing." >&2
+        return 1
+    }
+    CANDIDATE_INVENTORY=$(mktemp) || return 1
+    if ! awk '
+        function emit() {
+            if (inside) print sid "|" mode "|" nodes
+        }
+        /^sharedlvmthin:[[:space:]]+/ {
+            emit()
+            if ($2 in seen) exit 3
+            seen[$2]=1
+            inside=1; sid=$2; mode="thin"; nodes=""; next
+        }
+        /^[^[:space:]]/ { emit(); inside=0; next }
+        inside && $1 == "disable" {
+            value=(NF == 1 ? "1" : tolower($2))
+            if (value !~ /^(0|no|off|false|1|yes|on|true)$/) exit 2
+            next
+        }
+        inside && $1 == "slt-allocation-mode" { mode=$2; next }
+        inside && $1 == "nodes" { nodes=$2; next }
+        END { emit() }
+    ' "$STORAGECFG" >"$CANDIDATE_INVENTORY"; then
+        echo "ERROR: SharedLvmThin upgrade refused: candidate storage configuration is ambiguous." >&2
+        return 1
+    fi
+
+    if ! local_node=$(hostname); then
+        echo "ERROR: SharedLvmThin upgrade refused: local node identity is unavailable." >&2
+        return 1
+    fi
+    while IFS='|' read -r sid mode nodes; do
+        [ -n "$sid" ] || continue
+        case "$sid" in
+            *[!A-Za-z0-9_.-]*|'')
+                echo "ERROR: SharedLvmThin upgrade refused: storage identifier is invalid." >&2
+                return 1
+                ;;
+        esac
+        case "$sid" in [A-Za-z0-9]*) ;; *) return 1 ;; esac
+        if [ -n "$nodes" ]; then
+            case ",$nodes," in *",$local_node,"*) ;; *) continue ;; esac
+        fi
+        case "$mode" in
+            thin|thick-generations) ;;
+            *)
+                echo "ERROR: SharedLvmThin upgrade refused: storage '$sid' has an unsupported allocation mode." >&2
+                return 1
+                ;;
+        esac
+
+        CANDIDATE_RESULT=$(mktemp) || return 1
+        if [ "$CANDIDATE_PREINSTALL" -eq 1 ]; then
+            candidate_args="--preinstall"
+        else
+            candidate_args=
+        fi
+        # candidate_args has only the fixed value above or is empty; deliberate
+        # word splitting supplies the optional flag as one argument.
+        # shellcheck disable=SC2086
+        if timeout --foreground --kill-after=10 150 \
+            "$CANDIDATE_RECOVERY_CHECK" $candidate_args "$sid" \
+            >"$CANDIDATE_RESULT" 2>&1; then
+            candidate_rc=0
+        else
+            candidate_rc=$?
+        fi
+        cat "$CANDIDATE_RESULT"
+        candidate_healthy=$(grep -c '^STATE=HEALTHY$' "$CANDIDATE_RESULT" || true)
+        candidate_safe=$(grep -c '^SAFE_FOR_MUTATION=YES$' "$CANDIDATE_RESULT" || true)
+        candidate_anchors=$(grep -c '^THICK_ANCHORS_HEALTHY=PASS$' "$CANDIDATE_RESULT" || true)
+        candidate_intent=$(grep -c '^VG_INTENT_CLEAR=PASS$' "$CANDIDATE_RESULT" || true)
+        rm -f -- "$CANDIDATE_RESULT"
+        CANDIDATE_RESULT=
+        if [ "$candidate_rc" -ne 0 ] || [ "$candidate_healthy" -ne 1 ] || \
+           [ "$candidate_safe" -ne 1 ] || [ "$candidate_anchors" -ne 1 ] || \
+           [ "$candidate_intent" -ne 1 ]; then
+            echo "ERROR: SharedLvmThin upgrade refused: storage '$sid' is not positively recovery-safe under candidate rules." >&2
+            return 1
+        fi
+    done <"$CANDIDATE_INVENTORY"
+    rm -f -- "$CANDIDATE_INVENTORY"
+    CANDIDATE_INVENTORY=
+}
+
+# Replacing shared plugin code while an asynchronous Thick transaction is
+# running (or has failed) is unsafe in either package direction. Apply this
+# fence to ordinary upgrades as well as dual <-> Thick-only replacements.
+# The Debian upgrade argument is authoritative even if an old package predates
+# the flavor marker. A cross-profile replacement is detected by the installed
+# marker. A first local installation on a node joining an existing cluster must
+# still audit storage already present in pmxcfs; only a host with no
+# SharedLvmThin configuration may skip the storage audit.
+IS_UPGRADE=0
+[ "${1:-}" = "upgrade" ] && IS_UPGRADE=1
+[ -n "$INSTALLED_FLAVOR" ] && IS_UPGRADE=1
+if [ -r "$STORAGECFG" ] && grep -q '^sharedlvmthin:[[:space:]]' "$STORAGECFG"; then
+    IS_UPGRADE=1
+fi
+if [ "$IS_UPGRADE" -eq 1 ]; then
+    case "$INSTALLED_FLAVOR" in
+        dual|thick-only|'') ;;
+        *)
+            echo "ERROR: SharedLvmThin upgrade refused: installed package flavor is invalid." >&2
+            exit 1
+            ;;
+    esac
+
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "ERROR: SharedLvmThin upgrade refused: systemctl is unavailable." >&2
+        exit 1
+    fi
+    if ! THICK_UNITS=$(systemctl list-units --all --no-legend \
+        --state=active,activating,deactivating,failed \
+        'pve-sharedlvmthin-tg-*' 2>/dev/null); then
+        echo "ERROR: SharedLvmThin upgrade refused: transient Thick" >&2
+        echo "materialization units could not be enumerated." >&2
+        exit 1
+    fi
+    if printf '%s\n' "$THICK_UNITS" | grep -q '[^[:space:]]'; then
+        echo "ERROR: SharedLvmThin upgrade refused: a Thick materialization" >&2
+        echo "unit is pending, active or failed. Complete and verify recovery first." >&2
+        exit 1
+    fi
+
+    if ! audit_candidate_storages; then
+        echo "ERROR: candidate recovery fence refused the package transaction." >&2
+        echo "No package files were replaced." >&2
+        exit 1
+    fi
+fi
+
+# The Thick-only package must never silently strand a configured or existing
+# managed Thin pool. Refuse before unpacking, while the previous package is
+# still intact and recoverable.
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    if [ ! -r "$STORAGECFG" ]; then
+        echo "ERROR: Thick-only package installation refused: /etc/pve/storage.cfg" >&2
+        echo "is not readable, so the allocation modes cannot be proven safe." >&2
+        exit 1
+    fi
+    if awk '
+            BEGIN { in_slt=0; mode="thin"; bad=0 }
+            /^[^[:space:]][^:]*:[[:space:]]/ {
+                if (in_slt && mode != "thick-generations") bad=1
+                in_slt=($1 == "sharedlvmthin:"); mode="thin"; next
+            }
+            in_slt && $1 == "slt-allocation-mode" { mode=$2 }
+            END {
+                if (in_slt && mode != "thick-generations") bad=1
+                exit bad ? 0 : 1
+            }
+        ' "$STORAGECFG"; then
+        echo "ERROR: Thick-only package installation refused: a SharedLvmThin" >&2
+        echo "storage is configured in Thin mode (including the legacy default)." >&2
+        echo "Move or remove every Thin-backed guest and configuration first." >&2
+        exit 1
+    fi
+
+    if ! command -v lvs >/dev/null 2>&1 || ! command -v vgs >/dev/null 2>&1; then
+        echo "ERROR: Thick-only package installation refused: LVM inventory tools are unavailable," >&2
+        echo "so managed Thin objects cannot be excluded." >&2
+        exit 1
+    fi
+    if ! VOLUME_GROUPS=$(vgs --readonly --noheadings --separator '|' \
+        -o vg_name,vg_attr 2>/dev/null); then
+        echo "ERROR: Thick-only package installation refused: VG inventory failed." >&2
+        echo "Managed Thin objects cannot be excluded." >&2
+        exit 1
+    fi
+    if printf '%s\n' "$VOLUME_GROUPS" |
+       awk -F'|' '{ gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2) }
+                    length($2) < 4 || substr($2, 4, 1) == "p" { bad=1 }
+                    END { exit bad ? 0 : 1 }'; then
+        echo "ERROR: Thick-only package installation refused: LVM reports a partial" >&2
+        echo "or ambiguous VG, so absence of managed Thin objects is unproven." >&2
+        exit 1
+    fi
+    if ! MANAGED_LVS=$(lvs --readonly --noheadings --separator '|' \
+        -o lv_tags,segtype 2>/dev/null); then
+        echo "ERROR: Thick-only package installation refused: LVM inventory failed." >&2
+        echo "Managed Thin objects cannot be excluded." >&2
+        exit 1
+    fi
+    if printf '%s\n' "$MANAGED_LVS" |
+       awk -F'|' '$1 ~ /pve-slt-sid-/ { found=1 } END { exit found ? 0 : 1 }'; then
+        echo "ERROR: Thick-only package installation refused: managed Thin" >&2
+        echo "objects still exist. Their data must not be stranded by a flavor switch." >&2
+        exit 1
+    fi
+fi
+
 # P0 upgrade fence for the exclusive Thin owner schema.  A legacy pool that
 # is locally active may have been activated before persistent ownership was
 # recorded.  Installing the new runtime over that state would leave a window

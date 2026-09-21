@@ -1,5 +1,256 @@
 # Changelog
 
+## Unreleased — Thick Generations audit
+
+- After dpkg replacement and `daemon-reload`, make Thick-only configuration
+  prove that every excluded Thin/bridge executable is absent and that the
+  ThinGuard unit is positively inactive or failed.  Stale payload, an active
+  guardian or unavailable systemd evidence leaves the package unconfigured.
+- Remove the migration-bridge admission/planning/QMP helpers and daemon-only
+  ThinGuard/mobility Perl modules from the Thick-only payload, not merely their
+  public executables.  Artifact validation rejects any of these dormant Thin
+  operational components if they reappear.
+- Hide every Thin recovery/metadata command from Thick-only CLI help while
+  retaining the independent runtime rejection if a caller invokes a Thin
+  command name directly.
+- Make transient Thick-worker enumeration mandatory before every audited
+  upgrade/profile replacement.  Missing `systemctl` no longer skips the gate;
+  both package profiles pre-depend on its owning `systemd` package and refuse
+  when unit state cannot be read.
+- Make Dual-package removal independent of the current ThinGuard service state.
+  Every removal now requires a complete non-partial LVM inventory and refuses
+  while any managed Thin object exists, even if the guardian was manually
+  stopped or failed; service shutdown happens only after that proof.  Resolve
+  the exact systemd `ActiveState`, refuse an unavailable/ambiguous state, and
+  positively re-read `inactive` or `failed` after stopping before files may be
+  removed.
+- Refuse a Thick-only install or profile replacement when the system-wide LVM
+  inventory contains a partial or malformed VG.  A successful but incomplete
+  `lvs` view is no longer accepted as proof that all managed Thin objects are
+  absent while one or more PVs are missing.
+- Declare the non-Essential runtime used by the candidate pre-unpack recovery
+  checker as Debian `Pre-Depends` in both package profiles.  The safety fence
+  can no longer rely on ordinary `Depends`, whose packages are not guaranteed
+  to be available when the candidate `preinst` runs.  Depend directly on the
+  packages that own `pvecm` and `pvesm`, rather than pre-depending on the whole
+  `pve-manager` package and unnecessarily constraining PVE upgrade ordering.
+- Scope every LVM probe in the read-only recovery/upgrade checker to the pinned
+  `/dev/mapper/<WWID>`. VG, intent, PV and LV evidence can no longer be sourced
+  from an unrelated same-name local or stale VG before the identity comparison.
+- Give explicitly disabled storage a usable but equally strict recovery-check
+  path: only the PVE `active` status probe is not applicable; pinned identity,
+  paths, quorum, D-state, VG intent, LVM flags and Thick anchors remain
+  mandatory. Invalid disable syntax fails before any external probe.
+- Re-audit every locally scoped SharedLvmThin storage with the candidate
+  recovery rules before unpacking. Neither an enabled nor disabled
+  configuration can hide an OPEN intent or incomplete Thick anchor from
+  ordinary upgrades or package-profile replacement; unavailable or
+  recovery-required state refuses before files are
+  replaced. The candidate `preinst` performs this check with the exact new
+  read-only checker shipped in its control archive, because dpkg has not yet
+  unpacked the payload and published TG32's installed checker lacks the signed
+  intent and disabled-storage semantics. Storage scoped exclusively to other
+  nodes remains not applicable. Release validation proves the control-archive
+  checker is executable, syntax-valid and byte-identical to the payload copy in
+  both package profiles. The candidate no longer double-probes through the old
+  installed helper; Debian's `upgrade` argument and the installed flavor marker
+  select the audit, and duplicate storage identifiers fail before probing. A
+  first local install also runs the candidate audit whenever cluster
+  `storage.cfg` already contains SharedLvmThin storage, covering a new node
+  joining an existing data-bearing cluster. Its explicit `--preinstall` mode
+  skips only the PVE active-status probe that cannot work before the local
+  plugin is unpacked; every storage and recovery invariant remains mandatory.
+- Fail closed when asynchronous materialization scheduling is not positively
+  confirmed. A `systemd-run` client/transport error may occur after the exact
+  transaction worker was queued, so the snapshot callback no longer starts a
+  competing synchronous owner; it preserves recovery evidence and requires an
+  explicit `thick-resume` after inspecting the transaction service and timer.
+  The transient worker also pins `Restart=no`, preventing systemd policy from
+  replaying a failed storage mutation without fresh persistent-state checks.
+- Separate historical cluster evidence from the current audit delta. The
+  release gate now requires explicit physical tests for package profiles,
+  PREPARE cleanup, VG-wide concurrency admission, device-scoped capacity,
+  frontend-removal postconditions, health telemetry and the post-reboot
+  dm-clone kernel target before an audit artifact can be published.
+- Extend the read-only compatibility gate with a dry-run proof that the
+  running kernel can load `dm-clone` after reboot. If the target is already
+  registered, require the supported v1 interface and fail on unavailable or
+  ambiguous target inventory.
+- Strengthen the explicit disposable-node package gate after installation: it
+  now proves the opposite profile is absent, the installed flavor marker
+  matches package identity, and the recovery CLI contains
+  `thick-recover-prepare` before declaring the node candidate valid.
+- Require positive frontend absence after a successful stable `dmsetup remove`
+  before deactivating the signed anchor and HEAD LVs. A misleading command
+  success can no longer let teardown proceed against a surviving frontend.
+- Scope the Thick capacity probe to the pinned multipath WWID with LVM
+  `--devices`; a same-name local or stale VG can no longer supply admission
+  figures after storage identity was verified.
+- Expose the active/limit/available Thick materialization admission state in
+  JSON health output so operators can distinguish a healthy saturated VG from
+  a lost worker or recovery-required transaction.
+- Bound aggregate dm-clone pressure per VG with
+  `slt-tg-max-active-materializations` (default 4). Admission counts exact
+  signed non-MATERIALIZED anchors under the canonical VG lock and refuses a
+  new PREPARE before writing an intent or LV when the ceiling is reached.
+- Add explicit idempotent cleanup for a snapshot/rollback PREPARE that never
+  reached the signed anchor. `thick-recover-prepare` accepts only the exact
+  OPEN intent, unchanged MATERIALIZED anchor/frontend and correctly signed
+  destination/metadata remainder; ambiguity preserves every object and intent.
+- Eliminate the unowned transition-LV crash window. Snapshot/rollback
+  destination and dm-clone metadata LVs now receive their complete signed
+  ownership tags plus `autoactivation=n` in the atomic `lvcreate` command,
+  matching the already-hardened initial-allocation path.
+- Add explicit, reference-gated recovery for interrupted whole-volume deletes.
+  It derives authority from the exact signed `OPEN REMOVE` intent and canonical
+  anchor, safely continues with both objects or an anchor left after HEAD
+  removal, and clears an already-completed delete without replaying mutation.
+- Make partial Thick allocation cleanup idempotent across its own two delete
+  boundaries. Recovery now accepts an exact signed generation left before
+  anchor creation or an exact signed anchor left after generation removal,
+  while continuing to reject foreign objects, runtime frontends and PVE refs.
+- Bind every dm-clone status observation to the signed transition geometry.
+  The target must start at sector zero and report the exact frontend length,
+  region size and derived region count throughout hydration and final pivot;
+  substituted, truncated or internally impossible metadata/hydration counters
+  fail closed.
+- Before any direct zero/metadata write through an LVM pathname, compare the
+  exact device-scoped VG/LV UUID pair with the active kernel DM UUID. A stale
+  mapper or duplicate-name collision now fails before it can redirect a raw
+  write to an unrelated device.
+- Route every Thick LV activation through one activate-and-prove primitive.
+  Each requested LV receives an individual post-activation kernel UUID check;
+  direct unverified `lvchange -ay` call sites are prohibited by regression
+  tests, including read-only snapshot and runtime-reconstruction paths.
+- Route every Thick LV deactivation through a symmetric prove-and-deactivate
+  primitive. Any pre-existing mapper must match the scoped LVM UUID, and the
+  exact kernel mapper must be absent after `lvchange -an`; already-inactive
+  objects remain an idempotent success case.
+- Require that proof immediately before deleting detached dm-clone metadata,
+  a superseded rollback HEAD, or a signed snapshot. Snapshot deletion no longer
+  treats a missing udev pathname as evidence that the kernel mapper is absent.
+- Add idempotent online Thick resize recovery without changing persistent tag
+  formats. It derives the old published size from the exact verified linear
+  frontend and the target from the signed HEAD LV, repeats and flushes the full
+  unpublished zero tail, atomically republishes it, and clears only the exact
+  `OPEN EXTEND` intent. Missing or contradictory runtime evidence fails closed.
+- Make the read-only recovery checker inspect and cryptographically validate
+  the VG mutation-intent tags. Any OPEN or malformed intent now prevents a
+  healthy/safe-for-mutation result; `OPEN EXTEND` reports the exact explicit
+  resize-recovery command instead of being hidden by a materialized anchor.
+- Apply the same device-scoped, digest-validating VG-intent gate to JSON health
+  and therefore the web/Doctor view. Monitoring can no longer report PASS when
+  the mutation admission path is fenced by an OPEN or malformed intent.
+- Require exactly one explicit `VG_INTENT_CLEAR=PASS` record in the package
+  upgrade gate. A checker regression that omits, duplicates or weakens this
+  evidence cannot authorize Dual or Thick-only unpacking.
+- Exercise five-TiB allocation zeroing and a four-to-five-TiB interrupted
+  online resize in CI, asserting exact byte counts, sector counts and tail
+  offsets so large-volume paths cannot silently regress to 32-bit arithmetic.
+- Cover every resize-recovery publication boundary: an already-published map
+  clears only the exact intent without repeating I/O, a missing frontend fails
+  before mutation, and an already-suspended frontend resumes without issuing a
+  second suspend.
+- Require every authoritative and inactive Thick linear table to be exactly one
+  full segment with source offset zero and no trailing target arguments. UUID,
+  size and dependency identity can no longer mask a shifted map on the correct
+  backing LV.
+- Fully zero every new snapshot/rollback destination before a dm-clone
+  frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
+  semantics deterministic and prevents old free-extent contents from becoming
+  readable when discard passdown is disabled. Interrupted `PREPARED` recovery
+  repeats the entire exact zero range before advancing.
+- Classify an exact, complete clone left suspended at the final pivot boundary
+  as explicitly recoverable `PIVOT_READY` evidence. It still blocks unrelated
+  mutation and may proceed only after the resume path revalidates the signed
+  source, complete hydration, writable metadata and inactive linear table.
+- Treat kernel `dm-clone` metadata mode as mandatory transition evidence.
+  `ro`, `Fail`, or a missing mode now stops hydration/recovery immediately and
+  preserves the transaction instead of being misclassified as ordinary slow
+  progress until the no-progress timeout.
+- Add a Thick-only Debian package profile built from the same plugin core as
+  the dual-mode package. It exposes only `thick-generations`, removes Thin
+  operational helpers, refuses installation while Thin configuration or
+  managed Thin pools remain, and conflicts with the dual package so their
+  shared files cannot overwrite one another.
+- Make Doctor package-aware: Thick-only installations verify their own package,
+  treat absent Thin services and autogrow policy as intentional, and use the
+  Thick Generations default when the fixed allocation property is omitted.
+- Refuse a dual-to-Thick package replacement while a transient Thick worker is
+  pending, active or failed, or while the installed read-only upgrade gate
+  cannot positively prove a healthy mutation-safe state.
+- Measure Thick hydration and close-wait deadlines with a monotonic clock so
+  wall-clock corrections cannot shorten or extend their safety windows.
+- Require PVE filesystem freeze orchestration for live LXC `rootdir` block
+  snapshots in both package profiles, matching the safety contract used by
+  other external block-snapshot backends.
+- Apply the pre-unpack Thick transaction/recovery fence to ordinary upgrades
+  and both package-profile replacement directions, not only dual-to-Thick.
+- Refuse removal while an active ThinGuard still protects managed Thin
+  objects; stop it only after a successful empty managed-object inventory.
+- Fix Thick-only package configuration so `postinst` never syntax-checks Thin
+  daemons intentionally absent from that artifact, and enforce the condition
+  against the built package in the release checker.
+- Report the actual Thick-only package identity and version in JSON health
+  diagnostics instead of querying the mutually exclusive dual package.
+- Make Thick-only installation fail closed when cluster storage configuration
+  is unreadable, `lvs` is unavailable, or the authoritative LVM inventory
+  fails; missing evidence is never treated as an empty Thin inventory.
+- Keep binary-package documentation under the actual package namespace and
+  reject cross-profile documentation leakage during artifact validation.
+- Pin published TG32 persistent-format fixtures for object keys, LV/mapper
+  names and every signed Thick anchor, generation, transition and VG-intent
+  tag sequence. Package-profile maintenance now fails CI if it silently
+  changes the shared on-disk format.
+- Prevent a later purge of the replaced profile's residual Debian
+  `config-files` entry from deleting configuration, recovery state or LVM
+  policy owned by the currently installed opposite package profile.
+- Remove the dual package's precisely delimited managed Thin autogrow fragment
+  when configuring Thick-only, preventing a stale `thin_command` reference to
+  a monitor intentionally absent from that artifact while preserving all
+  administrator/vendor LVM policy.
+- Make JSON health monitoring fail, rather than merely report a null version,
+  when the package-flavor marker is missing/invalid, contradicts the package
+  identity or the installed package version cannot be read.
+- Validate the positive artifact manifest as well as Thin exclusions: both
+  package profiles must contain the shared Thick schema/plugin, materializer,
+  recovery, upgrade, compatibility and health entry points with executable
+  modes where required.
+- Compare the built package payloads directly: every file retained by
+  Thick-only must match the dual artifact byte-for-byte and mode-for-mode,
+  excluding only the explicit flavor marker and mapped package documentation.
+- Add a dry-run-by-default disposable-node package profile gate with exact
+  artifact checksum and hostname confirmation, bounded recovery checks,
+  downgrade/profile-version refusal and explicit post-install verification.
+  It never downloads dependencies, reboots a host or advances another node.
+- Keep a refused package removal operationally side-effect free by evaluating
+  the active ThinGuard/managed-object fence before stopping or disabling the
+  diagnostics service.
+- Generate and validate a complete deterministic Debian data-file checksum
+  manifest for both package profiles, and reject post-install verification
+  output instead of treating an empty or unchecked `dpkg --verify` run as
+  evidence of package integrity.
+- Prove build reproducibility rather than inferring it: CI rebuilds both Dual
+  and Thick-only profiles in independent staging directories and requires
+  byte-identical `.deb` artifacts and checksum files.
+- Make the post-hydration linear pivot a separately resumable transaction
+  boundary. A crash after the authoritative frontend points at the new HEAD
+  can now finish exact source-mapper, metadata and superseded rollback-HEAD
+  cleanup without replaying the pivot or requiring already removed temporary
+  objects to reappear.
+- Explicitly deactivate the exact signed Thick HEAD and anchor before deletion
+  even when the stable frontend is already absent, instead of delegating that
+  decision to `lvremove -f`.
+- Make explicit `thick-resume` cover every persisted transition phase from
+  `PREPARED` through `LINEAR_PIVOTED`, and reconstruct a reboot-lost frontend
+  after the pivot as a canonical linear map to the signed new HEAD only.
+- Scope the rollback source read-only probe to the configured pinned multipath
+  device, preventing an unscoped duplicate-VG lookup from influencing the
+  transition decision.
+- Make the final clone-to-linear cutover resumable when the frontend was
+  already suspended by an interrupted attempt, and revalidate complete `rw`
+  dm-clone status after I/O drains but before publishing the linear table.
+
 ## RC5.11 TG32 — experimental timing and scale hardening
 
 - Clarify the public migration contract without changing behavior: a running

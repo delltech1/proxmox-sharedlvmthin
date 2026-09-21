@@ -19,7 +19,7 @@ use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinPeerAudit qw(select_peer_nodes evaluate_peer_mapper_evidence);
 use PVE::SharedLvmThinGuardClient;
 use PVE::SharedLvmThinThick qw(
-    anchor_name clone_geometry decode_anchor_tags decode_generation_tags
+    anchor_name clone_geometry decode_anchor_tags decode_generation_tags decode_transition_tags
     generation_name mapper_name object_key
     materialized_rebase_state validate_anchor_transition validate_generation_tags
     vg_intent_tags decode_vg_intent_tags
@@ -77,6 +77,28 @@ sub _runtime_storage_api {
 
 sub type {
     return 'sharedlvmthin';
+}
+
+sub _package_flavor_path {
+    return '/usr/share/pve-sharedlvmthin/package-flavor';
+}
+
+sub _package_flavor {
+    my ($class) = @_;
+    my $path = $class->_package_flavor_path();
+    return 'dual' if !-e $path;
+    open(my $fh, '<', $path)
+        or die "cannot read SharedLvmThin package flavor '$path': $!\n";
+    my $flavor = <$fh>;
+    my $extra = <$fh>;
+    close($fh)
+        or die "cannot close SharedLvmThin package flavor '$path': $!\n";
+    die "SharedLvmThin package flavor is missing or ambiguous\n"
+        if !defined($flavor) || defined($extra);
+    $flavor =~ s/\s+$//;
+    die "unknown SharedLvmThin package flavor '$flavor'\n"
+        if $flavor ne 'dual' && $flavor ne 'thick-only';
+    return $flavor;
 }
 
 sub _outer_lock_yield {
@@ -148,16 +170,19 @@ sub plugindata {
 # native Proxmox storage properties.
 #
 sub properties {
-    return {
+    my $thick_only = __PACKAGE__->_package_flavor() eq 'thick-only';
+    my $properties = {
         'slt-vgname' => {
             description => 'Backing shared LVM volume group.',
             type => 'string',
         },
         'slt-allocation-mode' => {
-            description => 'Experimental lab-only backend: per-VM Thin pools or fully allocated Thick Generations; both modes require disposable storage.',
+            description => $thick_only
+                ? 'Experimental lab-only Thick Generations backend; requires disposable storage.'
+                : 'Experimental lab-only backend: per-VM Thin pools or fully allocated Thick Generations; both modes require disposable storage.',
             type => 'string',
-            enum => ['thin', 'thick-generations'],
-            default => 'thin',
+            enum => $thick_only ? ['thick-generations'] : ['thin', 'thick-generations'],
+            default => $thick_only ? 'thick-generations' : 'thin',
         },
         'slt-tg-hydration-timeout' => {
             description => 'Bounded Thick Generations no-progress timeout in seconds. Continuing verified dm-clone progress may run longer for large disks.',
@@ -241,6 +266,13 @@ sub properties {
             maximum => 256,
             default => 32,
         },
+        'slt-tg-max-active-materializations' => {
+            description => 'VG-wide ceiling for simultaneously published Thick Generations dm-clone transitions. New snapshot/rollback preparation fails closed at the limit; existing guests and workers are untouched.',
+            type => 'integer',
+            minimum => 1,
+            maximum => 64,
+            default => 4,
+        },
         'slt-tg-online-materialization' => {
             description => 'Materialize an online Thick Generations snapshot after returning control to PVE, or synchronously while the VM remains paused.',
             type => 'string',
@@ -311,10 +343,20 @@ sub properties {
             maximum => 1048576,
         },
     };
+    if ($thick_only) {
+        delete @$properties{qw(
+            slt-thin-leaseguard slt-thin-peer-connect-timeout
+            slt-thin-peer-probe-timeout slt-thin-ha-takeover
+            slt-initial-pool-size slt-initial-pool-mode
+            slt-initial-pool-percent slt-initial-pool-max
+            slt-burst-headroom-gib
+        )};
+    }
+    return $properties;
 }
 
 sub options {
-    return {
+    my $options = {
         'slt-vgname' => { fixed => 1 },
         'slt-allocation-mode' => { fixed => 1, optional => 1 },
         'slt-tg-hydration-timeout' => { optional => 1 },
@@ -329,6 +371,7 @@ sub options {
         'slt-thin-ha-takeover' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
+        'slt-tg-max-active-materializations' => { optional => 1 },
         'slt-tg-online-materialization' => { optional => 1 },
         'slt-initial-pool-size' => { optional => 1 },
         'slt-initial-pool-mode' => { optional => 1 },
@@ -348,13 +391,27 @@ sub options {
         content => { optional => 1 },
         shared => { optional => 1 },
     };
+    if (__PACKAGE__->_package_flavor() eq 'thick-only') {
+        delete @$options{qw(
+            slt-thin-leaseguard slt-thin-peer-connect-timeout
+            slt-thin-peer-probe-timeout slt-thin-ha-takeover
+            slt-initial-pool-size slt-initial-pool-mode
+            slt-initial-pool-percent slt-initial-pool-max
+            slt-burst-headroom-gib
+        )};
+    }
+    return $options;
 }
 
 sub _allocation_mode {
     my ($class, $scfg) = @_;
-    my $mode = $scfg->{'slt-allocation-mode'} // 'thin';
+    my $flavor = $class->_package_flavor();
+    my $mode = $scfg->{'slt-allocation-mode'}
+        // ($flavor eq 'thick-only' ? 'thick-generations' : 'thin');
     die "unknown SharedLvmThin allocation mode '$mode'\n"
         if $mode ne 'thin' && $mode ne 'thick-generations';
+    die "Thin allocation mode is unavailable in the Thick-only package\n"
+        if $flavor eq 'thick-only' && $mode ne 'thick-generations';
     return $mode;
 }
 
@@ -594,8 +651,8 @@ sub _thick_verify_frontend {
         "reading thick-generations frontend table '$mapper' failed",
     );
     die "thick-generations frontend '$mapper' table is not one linear segment\n"
-        if @$table != 1 || $table->[0] !~ /^0\s+(\d+)\s+linear\s+/;
-    my ($actual_sectors) = $table->[0] =~ /^0\s+(\d+)\s+linear\s+/;
+        if @$table != 1 || $table->[0] !~ /^0\s+(\d+)\s+linear\s+\S+\s+0$/;
+    my ($actual_sectors) = $table->[0] =~ /^0\s+(\d+)\s+linear\s+\S+\s+0$/;
     die "thick-generations frontend '$mapper' size mismatch\n"
         if defined($expected_sectors) && $actual_sectors != $expected_sectors;
     my $deps = _command_lines(
@@ -683,7 +740,7 @@ sub _thick_verify_source_mapper {
         "reading thick-generations source mapper '$mapper' table failed",
     );
     die "thick-generations source mapper '$mapper' table mismatch\n"
-        if @$table != 1 || $table->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+/;
+        if @$table != 1 || $table->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+\S+\s+0$/;
     my $deps = _command_lines(
         ['/sbin/dmsetup', 'deps', '-o', 'devname', $mapper],
         "reading thick-generations source mapper '$mapper' dependencies failed",
@@ -712,6 +769,103 @@ sub _thick_mapper_is_suspended {
     die "device-mapper suspend state for '$mapper' is unknown: '$value'\n";
 }
 
+sub _thick_verify_active_lv_identity {
+    my ($class, $vg, $lv, $device) = @_;
+    die "active Thick LV identity requires a valid VG/LV name\n"
+        if !defined($vg) || $vg !~ /^[A-Za-z0-9+_.-]+$/
+        || !defined($lv) || $lv !~ /^[A-Za-z0-9+_.-]+$/;
+    die "active Thick LV identity requires an exact mapper device\n"
+        if !defined($device) || $device !~ m{^/dev/mapper/[0-9A-Fa-f]+$};
+
+    my $identity = _command_lines(
+        ['/sbin/lvs', '--readonly', '--devices', $device, '--noheadings',
+            '--separator', '|', '-o', 'vg_uuid,lv_uuid,lv_name', "$vg/$lv"],
+        "reading active Thick LV identity of '$vg/$lv' failed",
+    );
+    die "active Thick LV identity of '$vg/$lv' is ambiguous\n" if @$identity != 1;
+    my ($vg_uuid, $lv_uuid, $actual_name) = split(/\|/, $identity->[0], -1);
+    for ($vg_uuid, $lv_uuid, $actual_name) {
+        $_ //= '';
+        s/^\s+|\s+$//g;
+    }
+    die "active Thick LV identity returned unexpected object '$actual_name'\n"
+        if $actual_name ne $lv;
+    for ($vg_uuid, $lv_uuid) {
+        die "active Thick LV identity contains an invalid UUID\n"
+            if !/^[A-Za-z0-9-]+$/;
+        s/-//g;
+    }
+
+    my $vg_dm = $vg;
+    my $lv_dm = $lv;
+    $vg_dm =~ s/-/--/g;
+    $lv_dm =~ s/-/--/g;
+    my $kernel = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'uuid', "$vg_dm-$lv_dm"],
+        "reading kernel identity of active Thick LV '$vg/$lv' failed",
+    );
+    die "kernel identity of active Thick LV '$vg/$lv' is ambiguous\n" if @$kernel != 1;
+    my $actual_uuid = $kernel->[0];
+    $actual_uuid =~ s/^\s+|\s+$//g;
+    my $expected_uuid = "LVM-$vg_uuid$lv_uuid";
+    die "kernel identity of active Thick LV '$vg/$lv' does not match its scoped LVM UUID\n"
+        if $actual_uuid ne $expected_uuid;
+    return 1;
+}
+
+sub _thick_activate_exact_lvs {
+    my ($class, $vg, $device, $errmsg, @lvs) = @_;
+    die "exact Thick activation requires at least one LV\n" if !@lvs;
+    my %seen;
+    for my $lv (@lvs) {
+        die "exact Thick activation contains an invalid or duplicate LV name\n"
+            if !defined($lv) || $lv !~ /^[A-Za-z0-9+_.-]+$/ || $seen{$lv}++;
+    }
+    run_command(
+        ['/sbin/lvchange', '--devices', $device, '-ay', '-K', map { "$vg/$_" } @lvs],
+        errmsg => $errmsg,
+    );
+    $class->_thick_verify_active_lv_identity($vg, $_, $device) for @lvs;
+    return 1;
+}
+
+sub _thick_lv_mapper_name {
+    my ($vg, $lv) = @_;
+    my $vg_dm = $vg;
+    my $lv_dm = $lv;
+    $vg_dm =~ s/-/--/g;
+    $lv_dm =~ s/-/--/g;
+    return "$vg_dm-$lv_dm";
+}
+
+sub _thick_deactivate_exact_lvs {
+    my ($class, $vg, $device, $errmsg, @lvs) = @_;
+    die "exact Thick deactivation requires at least one LV\n" if !@lvs;
+    my %seen;
+    for my $lv (@lvs) {
+        die "exact Thick deactivation contains an invalid or duplicate LV name\n"
+            if !defined($lv) || $lv !~ /^[A-Za-z0-9+_.-]+$/ || $seen{$lv}++;
+    }
+
+    my $before = _dm_kernel_inventory();
+    for my $lv (@lvs) {
+        my $mapper = _thick_lv_mapper_name($vg, $lv);
+        $class->_thick_verify_active_lv_identity($vg, $lv, $device)
+            if exists($before->{$mapper});
+    }
+    run_command(
+        ['/sbin/lvchange', '--devices', $device, '-an', map { "$vg/$_" } @lvs],
+        errmsg => $errmsg,
+    );
+    my $after = _dm_kernel_inventory();
+    for my $lv (@lvs) {
+        my $mapper = _thick_lv_mapper_name($vg, $lv);
+        die "exact Thick LV '$vg/$lv' remains active after deactivation\n"
+            if exists($after->{$mapper});
+    }
+    return 1;
+}
+
 # Intentionally inert production hook. Qualification drivers may locally
 # override this method to terminate only their own disposable worker at an
 # exact persisted crash boundary. No configuration or environment variable can
@@ -736,16 +890,39 @@ sub _thick_transition_anchor {
 }
 
 sub _thick_verify_clone_status {
-    my ($class, $mapper, $must_be_complete) = @_;
+    my ($class, $mapper, $must_be_complete, $expected_sectors, $expected_region) = @_;
+    die "dm-clone status verification for '$mapper' has no authoritative sector count\n"
+        if !defined($expected_sectors) || $expected_sectors !~ /^\d+$/ || !$expected_sectors;
+    die "dm-clone status verification for '$mapper' has no authoritative region size\n"
+        if !defined($expected_region) || $expected_region !~ /^\d+$/ || !$expected_region;
     my $lines = _command_lines(
         ['/sbin/dmsetup', 'status', '--noflush', $mapper],
         "reading dm-clone status for '$mapper' failed",
     );
     die "dm-clone status for '$mapper' is ambiguous\n" if @$lines != 1;
-    my ($hydrated, $total, $hydrating) =
-        $lines->[0] =~ /^0\s+\d+\s+clone\s+\S+\s+\S+\s+\S+\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
+    my $status = $lines->[0];
+    die "dm-clone frontend '$mapper' entered the kernel Fail metadata state; automatic hydration or pivot is unsafe\n"
+        if $status =~ /^0\s+\d+\s+clone\s+Fail\s*$/i;
+    my ($status_sectors, $metadata_block, $metadata_used, $metadata_total,
+        $region, $hydrated, $total, $hydrating) =
+        $status =~ /^0\s+(\d+)\s+clone\s+(\d+)\s+(\d+)\/(\d+)\s+(\d+)\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
     die "dm-clone status for '$mapper' is malformed\n"
-        if !defined($hydrated) || !$total || !defined($hydrating);
+        if !defined($status_sectors) || !defined($metadata_block)
+        || !defined($metadata_used) || !defined($metadata_total)
+        || !defined($region) || !defined($hydrated) || !defined($total)
+        || !defined($hydrating);
+    die "dm-clone status counters for '$mapper' are internally impossible\n"
+        if !$metadata_block || !$metadata_total || !$total
+        || $metadata_used > $metadata_total
+        || $hydrated > $total || $hydrating > $total - $hydrated;
+    die "dm-clone status geometry for '$mapper' does not match the signed transition\n"
+        if $status_sectors != $expected_sectors || $region != $expected_region
+        || $total != int(($expected_sectors + $expected_region - 1) / $expected_region);
+    my ($metadata_mode) = $status =~ /\s+(rw|ro)\s*$/i;
+    die "dm-clone status for '$mapper' does not report an authoritative metadata mode\n"
+        if !defined($metadata_mode);
+    die "dm-clone frontend '$mapper' metadata is read-only; automatic hydration or pivot is unsafe\n"
+        if lc($metadata_mode) ne 'rw';
     die "dm-clone hydration for '$mapper' is incomplete ($hydrated/$total, $hydrating active)\n"
         if $must_be_complete && ($hydrated != $total || $hydrating != 0);
     return (int($hydrated), int($total), int($hydrating));
@@ -817,10 +994,12 @@ sub _thick_verify_clone_frontend {
 }
 
 sub _thick_wait_for_hydration {
-    my ($class, $mapper, $timeout) = @_;
+    my ($class, $mapper, $timeout, $expected_sectors, $expected_region) = @_;
     die "invalid thick-generations hydration timeout\n"
         if !defined($timeout) || $timeout !~ /^\d+$/ || $timeout < 60 || $timeout > 86400;
-    my ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+    my ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status(
+        $mapper, 0, $expected_sectors, $expected_region,
+    );
     return 1 if $hydrated == $total && $hydrating == 0;
 
     my $last_hydrated = $hydrated;
@@ -839,7 +1018,9 @@ sub _thick_wait_for_hydration {
         # Close the completion-before-wait race after capturing the event
         # number.  A changed total or regressing progress is ambiguous and
         # never resets the observation window.
-        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status(
+            $mapper, 0, $expected_sectors, $expected_region,
+        );
         return 1 if $hydrated == $total && $hydrating == 0;
         die "dm-clone hydration geometry changed for '$mapper'\n"
             if $total != $last_total || $hydrated < $last_hydrated;
@@ -867,7 +1048,9 @@ sub _thick_wait_for_hydration {
         };
         $wait_error = $@ if $@;
         my $wait_elapsed = $class->_thick_progress_clock() - $wait_started;
-        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status(
+            $mapper, 0, $expected_sectors, $expected_region,
+        );
         return 1 if $hydrated == $total && $hydrating == 0;
         die "dm-clone hydration geometry changed for '$mapper'\n"
             if $total != $last_total || $hydrated < $last_hydrated;
@@ -884,7 +1067,9 @@ sub _thick_wait_for_hydration {
 }
 
 sub _thick_progress_clock {
-    return Time::HiRes::time();
+    # Wall-clock corrections must neither expire a healthy long hydration
+    # early nor keep a stalled clone alive past its no-progress interval.
+    return Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC());
 }
 
 sub _thick_frontend_open_count {
@@ -913,7 +1098,7 @@ sub _thick_schedule_materialization {
     run_command(
         ['/usr/bin/systemd-run', '--quiet', '--collect', "--unit=$unit",
             '--on-active=3s', '--timer-property=AccuracySec=100ms',
-            '--property=Type=exec', '--property=Nice=10',
+            '--property=Type=exec', '--property=Restart=no', '--property=Nice=10',
             '--property=IOSchedulingClass=best-effort', '--property=IOSchedulingPriority=7',
             '--property=TimeoutStartSec=infinity',
             $worker, $storeid, $volname, $snap, $operation, $tx],
@@ -944,9 +1129,10 @@ sub _thick_activate_volume {
         my $vg = $scfg->{'slt-vgname'};
         $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
         $class->_verify_autoactivation_disabled($vg, $snapshot, $device);
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$snapshot"],
-            errmsg => "activating thick-generations snapshot '$vg/$snapshot' failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating thick-generations snapshot '$vg/$snapshot' failed",
+            $snapshot,
         );
         $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
         return 1;
@@ -968,10 +1154,10 @@ sub _thick_activate_volume {
     }
     die "thick-generations volume '$storeid:$volname' is materializing and its exact frontend is missing; recovery required\n"
         if $state->{phase} ne 'MATERIALIZED';
-    run_command(
-        ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-            "$vg/$state->{head}", "$vg/$anchor"],
-        errmsg => "activating thick-generations state for '$vg/$volname' failed",
+    $class->_thick_activate_exact_lvs(
+        $vg, $device,
+        "activating thick-generations state for '$vg/$volname' failed",
+        $state->{head}, $anchor,
     );
     $class->_verify_autoactivation_disabled($vg, $state->{head}, $device);
     my $sectors = _command_lines(
@@ -1002,9 +1188,10 @@ sub _thick_deactivate_volume {
         );
         my $vg = $scfg->{'slt-vgname'};
         $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
-            errmsg => "deactivating thick-generations snapshot '$vg/$snapshot' failed",
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating thick-generations snapshot '$vg/$snapshot' failed",
+            $snapshot,
         );
         return 1;
     }
@@ -1053,11 +1240,14 @@ sub _thick_deactivate_volume {
             ['/sbin/dmsetup', 'remove', '--retry', $mapper],
             errmsg => "removing stable thick-generations frontend '$mapper' failed",
         );
+        die "stable thick-generations frontend '$mapper' removal is unconfirmed; "
+            . "underlying LVs remain active\n"
+            if _block_device_exists("/dev/mapper/$mapper");
     }
-    run_command(
-        ['/sbin/lvchange', '--devices', $device, '-an',
-            "$vg/$anchor", "$vg/$state->{head}"],
-        errmsg => "deactivating thick-generations state for '$vg/$volname' failed",
+    $class->_thick_deactivate_exact_lvs(
+        $vg, $device,
+        "deactivating thick-generations state for '$vg/$volname' failed",
+        $anchor, $state->{head},
     );
     return 1;
 }
@@ -1215,6 +1405,7 @@ sub _verify_same_vg_alias_configuration {
     my %lock_yield;
     my %bridge_timeout;
     my %thick_close_timeout;
+    my %thick_materialization_limit;
     my %peer_connect_timeout;
     my %peer_probe_timeout;
     my %node_scope;
@@ -1241,6 +1432,7 @@ sub _verify_same_vg_alias_configuration {
         $lock_yield{$candidate->{'slt-lock-yield-ms'} // 1000} = 1;
         $bridge_timeout{$candidate->{'slt-bridge-admission-timeout'} // 86400} = 1;
         $thick_close_timeout{$candidate->{'slt-tg-close-timeout'} // 30} = 1;
+        $thick_materialization_limit{$candidate->{'slt-tg-max-active-materializations'} // 4} = 1;
         $peer_connect_timeout{$candidate->{'slt-thin-peer-connect-timeout'} // 5} = 1;
         $peer_probe_timeout{$candidate->{'slt-thin-peer-probe-timeout'} // 15} = 1;
         $node_scope{_canonical_node_scope($candidate->{nodes})} = 1;
@@ -1263,6 +1455,8 @@ sub _verify_same_vg_alias_configuration {
         if keys(%bridge_timeout) != 1;
     die "same-VG aliases must use the same Thick frontend close timeout\n"
         if keys(%thick_close_timeout) != 1;
+    die "same-VG aliases must use the same Thick materialization concurrency limit\n"
+        if keys(%thick_materialization_limit) != 1;
     die "same-VG aliases must use the same Thin peer SSH connection timeout\n"
         if keys(%peer_connect_timeout) != 1;
     die "same-VG aliases must use the same Thin peer whole-probe timeout\n"
@@ -1612,9 +1806,11 @@ sub _thick_capacity_gate {
         if !defined($scfg->{'slt-vg-reserve-percent'})
         && !defined($scfg->{'slt-vg-reserve-gib'});
     my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my ($vg_size, $vg_free, $extent_size) = _allocation_numeric_fields(
         [
-            '/sbin/vgs', '--readonly', '--noheadings', '--units', 'b', '--nosuffix',
+            '/sbin/vgs', '--readonly', '--devices', $device,
+            '--noheadings', '--units', 'b', '--nosuffix',
             '--separator', '|', '-o', 'vg_size,vg_free,vg_extent_size', $vg,
         ],
         "reading thick-generations capacity of VG '$vg' failed", 3,
@@ -1634,6 +1830,29 @@ sub _thick_capacity_gate {
         . "$decision->{reserve_bytes} bytes; no LV was created\n"
         if !$decision->{allowed};
     return $decision;
+}
+
+sub _thick_materialization_admission {
+    my ($class, $scfg, $lvs) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $limit = $scfg->{'slt-tg-max-active-materializations'} // 4;
+    die "invalid Thick materialization concurrency limit\n"
+        if $limit !~ /^\d+$/ || $limit < 1 || $limit > 64;
+    die "Thick materialization admission cannot see VG '$vg'\n"
+        if ref($lvs) ne 'HASH' || ref($lvs->{$vg}) ne 'HASH';
+
+    my $active = 0;
+    for my $anchor (grep { /^sltg-a-/ } keys %{$lvs->{$vg}}) {
+        my $state = decode_anchor_tags($lvs->{$vg}->{$anchor}->{tags} // '');
+        next if $state->{phase} eq 'MATERIALIZED';
+        die "Thick materialization admission found unsupported anchor phase '$state->{phase}'\n"
+            if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+        $active++;
+    }
+    die "Thick materialization admission refused on VG '$vg': $active active transition(s) "
+        . "already meet configured limit $limit; no intent or LV was created\n"
+        if $active >= $limit;
+    return $active;
 }
 
 sub _change_exact_tags {
@@ -1831,27 +2050,31 @@ sub _thick_recover_partial_allocation {
         my @related = sort grep {
             $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
         } keys %$objects;
-        die "partial-allocation recovery requires exactly the signed anchor and generation-0 HEAD\n"
-            if @related != 2 || $related[0] ne $anchor || $related[1] ne $head;
+        my $anchor_present = exists($objects->{$anchor});
+        my $head_present = exists($objects->{$head});
+        die "partial-allocation recovery requires one or both exact signed allocation objects\n"
+            if !@related || grep { $_ ne $anchor && $_ ne $head } @related;
         die "partial-allocation recovery refused: transaction frontend '$mapper' exists\n"
             if _block_device_exists("/dev/mapper/$mapper");
 
-        my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
-        die "partial-allocation anchor does not match the exact OPEN ALLOC transaction\n"
-            if $state->{sid} ne $storeid || $state->{vol} ne $volname
-            || $state->{phase} ne 'PREPARED' || $state->{op} ne 'ALLOC'
-            || $state->{tx} ne $intent->{tx} || $state->{snapshot} ne 'none'
-            || $state->{generation} != 0 || $state->{head} ne $head
-            || $state->{source} ne $head || $state->{old} ne $head
-            || $state->{new} ne $head;
+        if ($anchor_present) {
+            my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
+            die "partial-allocation anchor does not match the exact OPEN ALLOC transaction\n"
+                if $state->{sid} ne $storeid || $state->{vol} ne $volname
+                || $state->{phase} ne 'PREPARED' || $state->{op} ne 'ALLOC'
+                || $state->{tx} ne $intent->{tx} || $state->{snapshot} ne 'none'
+                || $state->{generation} != 0 || $state->{head} ne $head
+                || $state->{source} ne $head || $state->{old} ne $head
+                || $state->{new} ne $head;
+        }
         validate_generation_tags(
             $objects->{$head}->{tags} // '', sid => $storeid, vol => $volname,
             role => 'head', generation => 0,
-        );
+        ) if $head_present;
         my $references = $class->_thick_pve_reference_files($storeid, $volname);
         die "partial-allocation recovery refused: PVE still references '$storeid:$volname' in "
             . join(', ', @$references) . "\n" if @$references;
-        for my $object ($anchor, $head) {
+        for my $object (grep { exists($objects->{$_}) } ($anchor, $head)) {
             $class->_verify_autoactivation_disabled($vg, $object, $device);
             my $active = _command_lines(
                 ['/sbin/lvs', '--noheadings', '--devices', $device,
@@ -1861,9 +2084,10 @@ sub _thick_recover_partial_allocation {
             die "partial-allocation recovery refused: '$vg/$object' active state is ambiguous\n"
                 if @$active != 1 || $active->[0] !~ /^....([a-]).*$/;
             if ($1 eq 'a') {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$object"],
-                    errmsg => "deactivating partial-allocation object '$vg/$object' failed",
+                $class->_thick_deactivate_exact_lvs(
+                    $vg, $device,
+                    "deactivating partial-allocation object '$vg/$object' failed",
+                    $object,
                 );
                 my $after = _command_lines(
                     ['/sbin/lvs', '--noheadings', '--devices', $device,
@@ -1879,11 +2103,11 @@ sub _thick_recover_partial_allocation {
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$head"],
                 errmsg => "removing partial thick generation '$vg/$head' failed",
-            );
+            ) if $head_present;
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$anchor"],
                 errmsg => "removing partial thick anchor '$vg/$anchor' failed",
-            );
+            ) if $anchor_present;
         };
         $command_error = $@ if $@;
         my $after = $class->_thick_list_volumes_scoped($vg, $device);
@@ -1899,6 +2123,228 @@ sub _thick_recover_partial_allocation {
             if $command_error;
         $class->_clear_vg_intent($vg, %$intent, _device => $device);
         return 'PARTIAL_ALLOCATION_RECOVERED';
+    }, $device);
+}
+
+sub _thick_recover_volume_delete {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my (undef, $name) = $class->parse_volname($volname);
+    die "volume-delete recovery requires the canonical volume name\n"
+        if $name ne $volname;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $anchor = anchor_name($namespace, $volname);
+    my $key = object_key($namespace, $volname);
+    my $mapper = mapper_name($namespace, $volname);
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "VG '$vg' has no volume-delete transaction to recover\n" if !$intent;
+        die "VG '$vg' intent is not the exact OPEN REMOVE transaction for '$volname'\n"
+            if $intent->{state} ne 'OPEN' || $intent->{op} ne 'REMOVE'
+            || $intent->{object} ne $anchor;
+        my %expected = %$intent;
+        $class->_require_exact_vg_intent($vg, %expected, _device => $device);
+
+        my $references = $class->_thick_pve_reference_files($storeid, $volname);
+        die "volume-delete recovery refused: PVE still references '$storeid:$volname' in "
+            . join(', ', @$references) . "\n" if @$references;
+        die "volume-delete recovery refused: transaction frontend '$mapper' exists\n"
+            if _block_device_exists("/dev/mapper/$mapper");
+
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my $objects = $lvs->{$vg} // {};
+        my @related = sort grep {
+            $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
+        } keys %$objects;
+        my $anchor_present = exists($objects->{$anchor});
+        my $head;
+        if ($anchor_present) {
+            my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
+            die "volume-delete recovery anchor is not a canonical materialized allocation\n"
+                if $state->{sid} ne $storeid || $state->{vol} ne $volname
+                || $state->{phase} ne 'MATERIALIZED' || $state->{op} ne 'ALLOC'
+                || $state->{snapshot} ne 'none' || $state->{source} ne $state->{head}
+                || $state->{old} ne $state->{head} || $state->{new} ne $state->{head};
+            $head = $state->{head};
+            die "volume-delete recovery found objects outside the signed HEAD and anchor\n"
+                if grep { $_ ne $anchor && $_ ne $head } @related;
+            if (exists($objects->{$head})) {
+                validate_generation_tags(
+                    $objects->{$head}->{tags} // '', sid => $storeid, vol => $volname,
+                    role => 'head', generation => $state->{generation},
+                );
+            }
+        } else {
+            die "volume-delete recovery found owned-looking objects without the signed anchor\n"
+                if @related;
+        }
+
+        my @remaining = grep { defined($_) && exists($objects->{$_}) } ($head, $anchor);
+        for my $object (@remaining) {
+            $class->_verify_autoactivation_disabled($vg, $object, $device);
+        }
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating remaining volume-delete objects for '$vg/$volname' failed",
+            @remaining,
+        ) if @remaining;
+
+        my $command_error = '';
+        eval {
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$head"],
+                errmsg => "removing remaining thick generation '$vg/$head' failed",
+            ) if defined($head) && exists($objects->{$head});
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$anchor"],
+                errmsg => "removing remaining thick generation anchor '$vg/$anchor' failed",
+            ) if $anchor_present;
+        };
+        $command_error = $@ if $@;
+
+        eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
+        die "VOLUME DELETE RECOVERY: storage identity could not be revalidated; "
+            . "OPEN REMOVE intent preserved: $@" if $@;
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
+        my $after_objects = $after->{$vg} // {};
+        my @after_related = grep {
+            $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
+        } keys %$after_objects;
+        die "VOLUME DELETE RECOVERY: exact or ambiguous objects remain; "
+            . "OPEN REMOVE intent preserved" . ($command_error ? ": $command_error" : "\n")
+            if @after_related;
+        warn "volume-delete recovery command reported an error, but authoritative inventory "
+            . "proves all exact objects absent; clearing the matching intent without retry: "
+            . $command_error if $command_error;
+        $class->_clear_vg_intent($vg, %expected, _device => $device);
+        return 'VOLUME_DELETE_RECOVERED';
+    }, $device);
+}
+
+sub _thick_recover_unpublished_prepare {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my (undef, $name) = $class->parse_volname($volname);
+    die "unpublished-prepare recovery requires the canonical volume name\n"
+        if $name ne $volname;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $expected_anchor = anchor_name($namespace, $volname);
+    my $key = object_key($namespace, $volname);
+    my $front = mapper_name($namespace, $volname);
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "VG '$vg' has no unpublished transition prepare to recover\n" if !$intent;
+        die "VG '$vg' intent is not an exact OPEN unpublished transition for '$volname'\n"
+            if $intent->{state} ne 'OPEN'
+            || ($intent->{op} ne 'DM_CUTOVER' && $intent->{op} ne 'DM_PIVOT')
+            || $intent->{object} ne $expected_anchor;
+        my %expected_intent = %$intent;
+        $class->_require_exact_vg_intent(
+            $vg, %expected_intent, _device => $device,
+        );
+
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        die "unpublished-prepare recovery cannot see VG '$vg'\n" if !$lvs->{$vg};
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        die "unpublished-prepare recovery found a non-materialized anchor\n"
+            if $state->{phase} ne 'MATERIALIZED';
+        die "unpublished-prepare recovery intent was already recorded in the anchor\n"
+            if $state->{tx} eq $intent->{tx};
+        die "unpublished-prepare recovery anchor identity mismatch\n"
+            if $anchor ne $expected_anchor;
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $state->{head}, int($head_info->{lv_size} / 512),
+        );
+        die "unpublished-prepare recovery refused: stable frontend is suspended\n"
+            if $class->_thick_mapper_is_suspended($front);
+        my $dm = _dm_kernel_inventory();
+        die "unpublished-prepare recovery found transition runtime before PREPARED\n"
+            if grep { /^\Q$front\E-src-\d{8}$/ } keys %$dm;
+
+        my $generation = int($state->{generation}) + 1;
+        die "unpublished-prepare recovery generation is outside the supported range\n"
+            if $generation > 99_999_999;
+        my $new = generation_name($namespace, $volname, $generation);
+        my $meta = sprintf('sltg-m-%s-%08d', $key, $generation);
+        my $objects = $lvs->{$vg};
+        for my $object (grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %$objects) {
+            next if $object eq $state->{head} || $object eq $new;
+            my $owned = decode_generation_tags($objects->{$object}->{tags} // '');
+            die "unpublished-prepare recovery found an ambiguous generation\n"
+                if $owned->{sid} ne $storeid || $owned->{vol} ne $volname
+                || $owned->{role} ne 'snapshot'
+                || generation_name($namespace, $volname, $owned->{generation}) ne $object;
+        }
+        my @metadata = grep { /^sltg-m-\Q$key\E-/ } keys %$objects;
+        die "unpublished-prepare recovery found foreign transition metadata\n"
+            if grep { $_ ne $meta } @metadata;
+        if (exists($objects->{$new})) {
+            validate_generation_tags(
+                $objects->{$new}->{tags} // '', sid => $storeid, vol => $volname,
+                role => 'head', generation => $generation,
+            );
+        }
+        if (exists($objects->{$meta})) {
+            my $owned = decode_transition_tags($objects->{$meta}->{tags} // '');
+            die "unpublished-prepare metadata ownership does not match the exact intent\n"
+                if $owned->{sid} ne $storeid || $owned->{vol} ne $volname
+                || $owned->{tx} ne $intent->{tx} || $owned->{kind} ne 'metadata'
+                || int($owned->{generation}) != $generation;
+        }
+
+        my @remaining = grep { exists($objects->{$_}) } ($meta, $new);
+        for my $object (@remaining) {
+            $class->_verify_autoactivation_disabled($vg, $object, $device);
+        }
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating unpublished transition objects for '$vg/$volname' failed",
+            @remaining,
+        ) if @remaining;
+        my $command_error = '';
+        eval {
+            for my $object ($meta, $new) {
+                next if !exists($objects->{$object});
+                run_command(
+                    ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$object"],
+                    errmsg => "removing unpublished transition object '$vg/$object' failed",
+                );
+            }
+        };
+        $command_error = $@ if $@;
+
+        $class->_verify_storage_identity($storeid, $scfg, $device);
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
+        die "unpublished-prepare recovery cannot confirm VG '$vg' after cleanup\n"
+            if !$after->{$vg};
+        die "unpublished-prepare recovery left exact transition objects; intent preserved"
+            . ($command_error ? ": $command_error" : "\n")
+            if exists($after->{$vg}->{$new}) || exists($after->{$vg}->{$meta});
+        my ($final, $final_head, $final_anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $after);
+        die "unpublished-prepare recovery changed the authoritative anchor\n"
+            if $final_anchor ne $anchor
+            || join('|', @{PVE::SharedLvmThinThick::anchor_tags(%$final)})
+                ne join('|', @{PVE::SharedLvmThinThick::anchor_tags(%$state)});
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $final->{head}, int($final_head->{lv_size} / 512),
+        );
+        warn "unpublished-prepare cleanup command reported an error, but exact postconditions "
+            . "prove cleanup complete; clearing the matching intent without retry: "
+            . $command_error if $command_error;
+        $class->_clear_vg_intent(
+            $vg, %expected_intent, _device => $device,
+        );
+        return 'UNPUBLISHED_PREPARE_RECOVERED';
     }, $device);
 }
 
@@ -2020,9 +2466,10 @@ sub _thick_alloc_image {
     }, $device);
 
     eval {
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$head"],
-            errmsg => "activating new thick generation '$vg/$head' for zeroing failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating new thick generation '$vg/$head' for zeroing failed",
+            $head,
         );
         my $zero_bytes = int($size) * 1024;
         $class->_zero_new_thick_generation(
@@ -2032,9 +2479,10 @@ sub _thick_alloc_image {
             ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$head"],
             errmsg => "flushing new thick generation '$vg/$head' failed",
         );
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$head"],
-            errmsg => "deactivating zeroed thick generation '$vg/$head' failed",
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating zeroed thick generation '$vg/$head' failed",
+            $head,
         );
     };
     if (my $error = $@) {
@@ -3809,10 +4257,10 @@ sub _thick_resume_transition {
         || $intent->{op} ne $expected_intent_op || $intent->{object} ne $anchor
         || $intent->{tx} ne $state->{tx};
     die "recoverable transition request identity mismatch\n"
-        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE)$/
+        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/
         || $state->{op} ne $operation || $state->{snapshot} ne $snap
         || ($state->{phase} =~ /^(?:PREPARED|SOURCE_READY)$/ && $state->{head} ne $state->{old})
-        || ($state->{phase} =~ /^(?:COMMITTED|HYDRATING|HYDRATION_COMPLETE)$/
+        || ($state->{phase} =~ /^(?:COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/
             && $state->{head} ne $state->{new});
 
     my ($old, $new, $source) = @{$state}{qw(old new source)};
@@ -3831,10 +4279,16 @@ sub _thick_resume_transition {
     my $expected_new = generation_name($namespace, $volname, $new_gen);
     my $meta = sprintf('sltg-m-%s-%08d', $key, $new_gen);
     die "prepared transition destination name mismatch\n" if $new ne $expected_new;
-    for my $name ($old, $source, $new, $meta) {
+    for my $name ($source, $new) {
         die "prepared transition object '$vg/$name' is missing\n"
             if !$lvs->{$vg} || !$lvs->{$vg}->{$name};
     }
+    die "prepared transition object '$vg/$old' is missing\n"
+        if (!$lvs->{$vg} || !$lvs->{$vg}->{$old})
+        && !($state->{phase} eq 'LINEAR_PIVOTED' && $operation eq 'ROLLBACK');
+    die "prepared transition object '$vg/$meta' is missing\n"
+        if (!$lvs->{$vg} || !$lvs->{$vg}->{$meta})
+        && $state->{phase} ne 'LINEAR_PIVOTED';
 
     my ($source_gen, $source_info);
     if ($operation eq 'ROLLBACK') {
@@ -3849,7 +4303,9 @@ sub _thick_resume_transition {
         die "prepared snapshot source identity mismatch\n" if $source ne $old;
     }
     my $size = $source_info->{lv_size};
-    my $old_size = $lvs->{$vg}->{$old}->{lv_size};
+    my $old_size = $lvs->{$vg}->{$old}
+        ? $lvs->{$vg}->{$old}->{lv_size}
+        : $size;
     die "prepared transition size is invalid\n"
         if !defined($size) || $size !~ /^\d+$/ || !$size || $size % 512
         || !defined($old_size) || $old_size !~ /^\d+$/ || !$old_size || $old_size % 512;
@@ -3860,14 +4316,17 @@ sub _thick_resume_transition {
         $lvs->{$vg}->{$new}->{tags} // '', sid => $storeid,
         vol => $volname, role => 'head', generation => $new_gen,
     );
-    $class->_thick_verify_transition_metadata(
-        $storeid, $scfg, $volname, $lvs->{$vg}->{$meta},
-        tx => $intent->{tx}, generation => $new_gen,
-        region => $geometry->{region_sectors},
-        metadata_bytes => $geometry->{metadata_bytes}, name => $meta, device => $device,
-    );
+    if ($lvs->{$vg}->{$meta}) {
+        $class->_thick_verify_transition_metadata(
+            $storeid, $scfg, $volname, $lvs->{$vg}->{$meta},
+            tx => $intent->{tx}, generation => $new_gen,
+            region => $geometry->{region_sectors},
+            metadata_bytes => $geometry->{metadata_bytes}, name => $meta, device => $device,
+        );
+    }
     $class->_verify_autoactivation_disabled($vg, $new, $device);
-    $class->_verify_autoactivation_disabled($vg, $meta, $device);
+    $class->_verify_autoactivation_disabled($vg, $meta, $device)
+        if $lvs->{$vg}->{$meta};
     my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $source_gen);
     if (_block_device_exists("/dev/mapper/$source_map")) {
         $class->_thick_verify_source_mapper(
@@ -3878,7 +4337,7 @@ sub _thick_resume_transition {
                 $vg, $anchor, $state, phase => 'SOURCE_READY', _device => $device,
             );
         }
-    } elsif ($state->{phase} ne 'PREPARED') {
+    } elsif ($state->{phase} ne 'PREPARED' && $state->{phase} ne 'LINEAR_PIVOTED') {
         my $front = mapper_name($namespace, $volname);
         die "$state->{phase} transition runtime is partial; source mapper '$source_map' is missing\n"
             if _block_device_exists("/dev/mapper/$front");
@@ -3907,6 +4366,31 @@ sub _thick_reconstruct_missing_transition_runtime {
     my $source_map = $tr->{source_map};
     my $front_exists = _block_device_exists("/dev/mapper/$front");
     my $source_exists = _block_device_exists("/dev/mapper/$source_map");
+
+    # Once LINEAR_PIVOTED is durably recorded, the new signed HEAD is the sole
+    # data authority. A reboot may remove the transient stable frontend after
+    # the pivot while cleanup objects are present, partially removed, or fully
+    # absent. Reconstruct only the canonical linear frontend; never recreate a
+    # clone table or already-cleaned transition artifact in this phase.
+    if ($phase eq 'LINEAR_PIVOTED') {
+        my $sectors = int($tr->{size} / 512);
+        if (!$front_exists) {
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating linear-pivoted Thick Generations HEAD failed",
+                $tr->{new},
+            );
+            my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
+                    '--table', "0 $sectors linear /dev/$vg/$tr->{new} 0"],
+                errmsg => "reconstructing linear-pivoted Thick Generations frontend failed",
+            );
+        }
+        $class->_thick_verify_frontend($scfg, $volname, $tr->{new}, $sectors);
+        return 1;
+    }
+
     return 1 if $front_exists && $source_exists;
     die "$phase transition runtime is partial; refusing reconstruction\n"
         if $front_exists || $source_exists;
@@ -3915,10 +4399,10 @@ sub _thick_reconstruct_missing_transition_runtime {
     # anchor, immutable generations, clone metadata, and OPEN VG intent remain
     # persistent. Reconstruct only the exact dependency graph described by
     # those already-verified objects. No global scan or cleanup is performed.
-    run_command(
-        ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-            "$vg/$tr->{source}", "$vg/$tr->{new}", "$vg/$tr->{meta}"],
-        errmsg => "activating exact persisted transition objects failed",
+    $class->_thick_activate_exact_lvs(
+        $vg, $device,
+        "activating exact persisted transition objects failed",
+        $tr->{source}, $tr->{new}, $tr->{meta},
     );
     run_command(
         ['/sbin/dmsetup', '--verifyudev', 'create', $source_map,
@@ -3932,10 +4416,10 @@ sub _thick_reconstruct_missing_transition_runtime {
 
     my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
     if ($phase eq 'SOURCE_READY') {
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-                "$vg/$tr->{old}", "$vg/$tr->{anchor}"],
-            errmsg => "activating exact pre-cutover state failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating exact pre-cutover state failed",
+            $tr->{old}, $tr->{anchor},
         );
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
@@ -3970,6 +4454,7 @@ sub _thick_reconstruct_missing_transition_runtime {
     );
     $class->_thick_verify_clone_status(
         $front, $phase eq 'HYDRATION_COMPLETE' ? 1 : 0,
+        $sectors, $tr->{geometry}->{region_sectors},
     );
     return 1;
 }
@@ -4018,6 +4503,7 @@ sub _thick_verify_published_transition_frontend {
     $class->_thick_verify_clone_status(
         mapper_name($class->_thick_namespace($scfg), $volname),
         $phase eq 'HYDRATION_COMPLETE' ? 1 : 0,
+        int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
     );
     return 1;
 }
@@ -4090,7 +4576,7 @@ sub _thick_volume_snapshot {
             ($source, $source_gen, $source_info) = $class->_thick_find_snapshot(
                 $storeid, $scfg, $volname, $snap, $lvs,
             );
-            $class->_thick_verify_snapshot_readonly($vg, $source);
+            $class->_thick_verify_snapshot_readonly($vg, $source, $device);
             $class->_verify_autoactivation_disabled($vg, $source, $device);
         }
         my $new_gen = $old_gen + 1;
@@ -4123,6 +4609,7 @@ sub _thick_volume_snapshot {
         die "thick-generations transition object already exists\n"
             if $lvs->{$vg}->{$new} || $lvs->{$vg}->{$meta}
             || _block_device_exists("/dev/mapper/$source_map");
+        $class->_thick_materialization_admission($scfg, $lvs);
         $class->_thick_capacity_gate(
             $storeid, $scfg, int(($size + 1023) / 1024),
             $geometry->{metadata_bytes},
@@ -4135,31 +4622,37 @@ sub _thick_volume_snapshot {
         );
         $class->_set_vg_intent($vg, %intent, _device => $device);
         $class->_thick_fault_point('C1', $operation, $storeid, $volname);
+        my $new_tags = PVE::SharedLvmThinThick::generation_tags(
+            sid => $storeid, vol => $volname, role => 'head',
+            generation => $new_gen,
+        );
+        my @new_create = (
+            '/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+            '--devices', $device, '-L', "${size}B", '-n', $new,
+            '--setactivationskip', 'y', '--setautoactivation', 'n',
+        );
+        push @new_create, map { ('--addtag', $_) } @$new_tags;
+        push @new_create, $vg;
         run_command(
-            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
-                '--devices', $device, '-L', "${size}B", '-n', $new,
-                '--setactivationskip', 'y', $vg],
+            \@new_create,
             errmsg => "creating thick snapshot destination '$vg/$new' failed",
         );
+        my $meta_tags = transition_tags(
+            sid => $storeid, vol => $volname, tx => $intent{tx},
+            kind => 'metadata', generation => $new_gen,
+            region => $geometry->{region_sectors},
+        );
+        my @meta_create = (
+            '/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+            '--devices', $device,
+            '-L', $geometry->{metadata_bytes} . 'B', '-n', $meta,
+            '--setactivationskip', 'y', '--setautoactivation', 'n',
+        );
+        push @meta_create, map { ('--addtag', $_) } @$meta_tags;
+        push @meta_create, $vg;
         run_command(
-            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
-                '--devices', $device,
-                '-L', $geometry->{metadata_bytes} . 'B', '-n', $meta,
-                '--setactivationskip', 'y', $vg],
+            \@meta_create,
             errmsg => "creating dm-clone metadata '$vg/$meta' failed",
-        );
-        $class->_change_exact_tags(
-            $vg, $new, [], PVE::SharedLvmThinThick::generation_tags(
-                sid => $storeid, vol => $volname, role => 'head',
-                generation => $new_gen,
-            ), "tagging thick snapshot destination '$vg/$new' failed", $device,
-        );
-        $class->_change_exact_tags(
-            $vg, $meta, [], transition_tags(
-                sid => $storeid, vol => $volname, tx => $intent{tx},
-                kind => 'metadata', generation => $new_gen,
-                region => $geometry->{region_sectors},
-            ), "tagging dm-clone metadata '$vg/$meta' failed", $device,
         );
         $class->_disable_and_verify_autoactivation($vg, $new, $device);
         $class->_disable_and_verify_autoactivation($vg, $meta, $device);
@@ -4189,9 +4682,36 @@ sub _thick_volume_snapshot {
 
     if ($tr->{state}->{phase} eq 'PREPARED') {
         eval {
+            # dm-clone treats a DISCARD covering an unhydrated region as a
+            # request to mark that region hydrated without copying the source.
+            # We deliberately disable discard passdown so a guest cannot make
+            # storage-specific discard semantics part of correctness.  The
+            # destination must therefore contain deterministic zeroes before
+            # the clone frontend can ever be published.  PREPARED is an
+            # idempotent boundary: after interruption the whole exact range is
+            # zeroed again, never assumed complete from a partial attempt.
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating thick snapshot destination for zeroing failed",
+                $tr->{new},
+            );
+            $class->_zero_new_thick_generation(
+                "/dev/$vg/$tr->{new}", int($tr->{size}),
+                "thick snapshot destination '$vg/$tr->{new}'",
+            );
             run_command(
-                ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{meta}"],
-                errmsg => "activating dm-clone metadata failed",
+                ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$tr->{new}"],
+                errmsg => "flushing zeroed thick snapshot destination failed",
+            );
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating zeroed thick snapshot destination failed",
+                $tr->{new},
+            );
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating dm-clone metadata failed",
+                $tr->{meta},
             );
             run_command(
                 ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$tr->{meta}",
@@ -4235,10 +4755,10 @@ sub _thick_volume_snapshot {
                 device => $device,
             );
             if (!_block_device_exists("/dev/mapper/$front")) {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-                        "$vg/$tr->{old}", "$vg/$tr->{anchor}"],
-                    errmsg => "activating prepared thick-generations source failed",
+                $class->_thick_activate_exact_lvs(
+                    $vg, $device,
+                    "activating prepared thick-generations source failed",
+                    $tr->{old}, $tr->{anchor},
                 );
                 my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
                 my $sectors = int($tr->{old_size} / 512);
@@ -4251,10 +4771,10 @@ sub _thick_volume_snapshot {
             $class->_thick_verify_frontend(
                 $scfg, $volname, $tr->{old}, int($tr->{old_size} / 512),
             );
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-                    "$vg/$tr->{source}", "$vg/$tr->{new}", "$vg/$tr->{meta}"],
-                errmsg => "activating snapshot transition LVs failed",
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating snapshot transition LVs failed",
+                $tr->{source}, $tr->{new}, $tr->{meta},
             );
         # Construct the read-only source view while the old linear frontend is
         # still active.  No LVM command may run while that frontend is
@@ -4375,7 +4895,9 @@ sub _thick_volume_snapshot {
             region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
             new => $tr->{new}, source_map => $tr->{source_map},
         );
-        $class->_thick_verify_clone_status($front, 0);
+        $class->_thick_verify_clone_status(
+            $front, 0, $sectors, $tr->{geometry}->{region_sectors},
+        );
         if (!$rollback) {
             $class->_thick_ensure_snapshot_readonly(
                 $vg, $tr->{old}, $lvs->{$vg}->{$tr->{old}}, $device,
@@ -4422,11 +4944,19 @@ sub _thick_volume_snapshot {
                 # the same PVE multi-disk snapshot operation.
                 return;
             }
-            warn "asynchronous Thick Generations materialization could not be scheduled; "
-                . "completing synchronously: $@";
+            # systemd-run is a mutating request.  A transport/client error does
+            # not prove that systemd rejected it: the exact transaction worker
+            # may already be queued or running.  Never start a synchronous
+            # second owner after that ambiguous boundary.  Persistent anchor
+            # and intent evidence make an explicit resume safe and repeatable.
+            die "asynchronous Thick Generations materialization scheduling was not "
+                . "confirmed; transaction '$intent{tx}' is preserved. Inspect the exact "
+                . "pve-sharedlvmthin-tg-$intent{tx} service/timer and run sharedlvmthin "
+                . "thick-resume '$storeid' '$volname': $@";
         }
         $class->_thick_wait_for_hydration(
             $front, $scfg->{'slt-tg-hydration-timeout'} // 3600,
+            int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
         );
 
         $class->_with_vg_lock($storeid, $scfg, sub {
@@ -4443,7 +4973,9 @@ sub _thick_volume_snapshot {
             region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
             new => $tr->{new}, source_map => $tr->{source_map},
         );
-        $class->_thick_verify_clone_status($front, 1);
+        $class->_thick_verify_clone_status(
+            $front, 1, int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
+        );
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'HYDRATION_COMPLETE', _device => $device,
         );
@@ -4468,7 +5000,10 @@ sub _thick_volume_snapshot {
             region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
             new => $tr->{new}, source_map => $tr->{source_map},
         );
-        $class->_thick_verify_clone_status($front, 1);
+        $class->_thick_verify_clone_status(
+            $front, 1, int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
+        );
+        my $already_suspended = $class->_thick_mapper_is_suspended($front);
         my $sectors = int($tr->{size} / 512);
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'reload', $front, '--table',
@@ -4480,10 +5015,24 @@ sub _thick_volume_snapshot {
             "reading inactive linear pivot table failed",
         );
         die "inactive linear pivot table postcondition failed\n"
-            if @$inactive != 1 || $inactive->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+/;
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
-            errmsg => "suspending hydrated frontend for linear pivot failed",
+            if @$inactive != 1
+            || $inactive->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+\S+\s+0$/;
+        if (!$already_suspended) {
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
+                errmsg => "suspending hydrated frontend for linear pivot failed",
+            );
+        }
+        die "hydrated frontend did not enter suspended state before linear pivot\n"
+            if !$class->_thick_mapper_is_suspended($front);
+        # Re-read the still-active clone target after I/O has drained and
+        # before the inactive linear table is published. This closes the race
+        # in which metadata could enter ro/Fail after the earlier completion
+        # observation. A crash here leaves an exactly classifiable suspended
+        # clone plus the deterministic inactive table; resume repeats no data
+        # mutation and can safely continue this boundary.
+        $class->_thick_verify_clone_status(
+            $front, 1, $sectors, $tr->{geometry}->{region_sectors},
         );
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'resume', $front],
@@ -4493,33 +5042,79 @@ sub _thick_volume_snapshot {
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'LINEAR_PIVOTED', _device => $device,
         );
+        $tr->{state} = $state;
+        return;
+        }, $device);
+    }
 
-        $class->_thick_verify_transition_metadata(
-            $storeid, $scfg, $volname, $lvs->{$vg}->{$tr->{meta}},
-            tx => $intent{tx}, generation => $tr->{new_gen},
-            region => $tr->{geometry}->{region_sectors},
-            metadata_bytes => $tr->{geometry}->{metadata_bytes}, name => $tr->{meta},
-            device => $device,
+    if ($tr->{state}->{phase} eq 'LINEAR_PIVOTED') {
+        $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_thick_require_transition_intent(
+            $storeid, $scfg, $volname, \%intent,
         );
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
+        die "linear-pivoted transition anchor disappeared before cleanup\n" if !$info;
+        my $state = decode_anchor_tags($info->{tags} // '');
+        die "linear-pivoted transition state mismatch\n"
+            if $state->{phase} ne 'LINEAR_PIVOTED' || $state->{tx} ne $intent{tx}
+            || $state->{head} ne $tr->{new} || $state->{old} ne $tr->{old}
+            || $state->{new} ne $tr->{new};
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $tr->{new}, int($tr->{size} / 512),
+        );
+        if ($lvs->{$vg}->{$tr->{meta}}) {
+            $class->_thick_verify_transition_metadata(
+                $storeid, $scfg, $volname, $lvs->{$vg}->{$tr->{meta}},
+                tx => $intent{tx}, generation => $tr->{new_gen},
+                region => $tr->{geometry}->{region_sectors},
+                metadata_bytes => $tr->{geometry}->{metadata_bytes}, name => $tr->{meta},
+                device => $device,
+            );
+        }
         $class->_thick_verify_snapshot_readonly($vg, $tr->{source}, $device);
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'remove', $tr->{source_map}],
-            errmsg => "removing detached snapshot source mapper failed",
-        );
-        run_command(
-            ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{meta}"],
-            errmsg => "removing detached dm-clone metadata failed",
-        );
+        if (_block_device_exists("/dev/mapper/$tr->{source_map}")) {
+            $class->_thick_verify_source_mapper(
+                $scfg, $tr->{source_map}, $tr->{source}, int($tr->{size} / 512),
+                $intent{tx},
+            );
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'remove', $tr->{source_map}],
+                errmsg => "removing detached snapshot source mapper failed",
+            );
+        }
+        if ($lvs->{$vg}->{$tr->{meta}}) {
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating detached dm-clone metadata failed",
+                $tr->{meta},
+            );
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{meta}"],
+                errmsg => "removing detached dm-clone metadata failed",
+            );
+        }
         die "detached snapshot source mapper still exists after removal\n"
             if _block_device_exists("/dev/mapper/$tr->{source_map}");
         my $after = $class->_thick_list_volumes_scoped($vg, $device);
         die "detached dm-clone metadata still exists after removal\n"
             if $after->{$vg} && $after->{$vg}->{$tr->{meta}};
         if ($rollback) {
-            run_command(
-                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{old}"],
-                errmsg => "removing superseded rollback HEAD failed",
-            );
+            if ($after->{$vg} && $after->{$vg}->{$tr->{old}}) {
+                validate_generation_tags(
+                    $after->{$vg}->{$tr->{old}}->{tags} // '', sid => $storeid,
+                    vol => $volname, role => 'head', generation => $tr->{old_gen},
+                );
+                $class->_thick_deactivate_exact_lvs(
+                    $vg, $device,
+                    "deactivating superseded rollback HEAD failed",
+                    $tr->{old},
+                );
+                run_command(
+                    ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{old}"],
+                    errmsg => "removing superseded rollback HEAD failed",
+                );
+            }
             $after = $class->_thick_list_volumes_scoped($vg, $device);
             die "superseded rollback HEAD still exists after removal\n"
                 if $after->{$vg} && $after->{$vg}->{$tr->{old}};
@@ -4532,6 +5127,7 @@ sub _thick_volume_snapshot {
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'MATERIALIZED', _device => $device,
         );
+        $tr->{state} = $state;
         $class->_clear_vg_intent($vg, %intent, _device => $device)
             if !$intent{_anchor_scoped};
         return;
@@ -4603,11 +5199,19 @@ sub _thick_free_image {
             );
             die "refusing thick-generations delete: frontend '$mapper' removal is unconfirmed\n"
                 if _block_device_exists("/dev/mapper/$mapper");
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$anchor", "$vg/$head"],
-                errmsg => "deactivating thick-generations state for '$vg/$volname' before delete failed",
-            );
         }
+
+        # The frontend can legitimately be absent after a reboot or a completed
+        # deactivate_volume() call while one of the private LVs is still active
+        # because of interrupted local cleanup.  Never let lvremove's force
+        # semantics decide that case.  Deactivate the two exact, signed objects
+        # explicitly and device-scoped before recording a destructive intent.
+        # Repeating -an for already inactive LVs is deliberately idempotent.
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating thick-generations state for '$vg/$volname' before delete failed",
+            $anchor, $head,
+        );
 
         my $tx = $class->_new_transaction_id();
         my %intent = (
@@ -4632,7 +5236,9 @@ sub _thick_free_image {
         my $after = $class->_thick_list_volumes_scoped($vg, $device);
         eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
         die "PARTIAL DELETE for '$storeid:$volname': storage identity/availability "
-            . "could not be revalidated; OPEN REMOVE intent preserved and no retry attempted: $@"
+            . "could not be revalidated; OPEN REMOVE intent preserved and no retry attempted. "
+            . "After restoring authoritative storage visibility run sharedlvmthin "
+            . "thick-recover-volume-delete '$storeid' '$volname': $@"
             if $@;
         # lvm_list_volumes() omits an otherwise healthy VG when it becomes empty.
         # Positive identity revalidation above distinguishes that from disappearance.
@@ -4640,7 +5246,8 @@ sub _thick_free_image {
         my $head_remains = exists($after_objects->{$head});
         my $anchor_remains = exists($after_objects->{$anchor});
         die "PARTIAL DELETE for '$storeid:$volname': head=$head_remains "
-            . "anchor=$anchor_remains; OPEN REMOVE intent preserved and no retry attempted\n"
+            . "anchor=$anchor_remains; OPEN REMOVE intent preserved and no retry attempted. "
+            . "Run sharedlvmthin thick-recover-volume-delete '$storeid' '$volname'\n"
             if $head_remains || $anchor_remains;
 
         warn "thick-generations delete command reported an error, but exact postcondition "
@@ -4938,6 +5545,120 @@ sub _free_image_locked {
     return undef;
 }
 
+sub _thick_recover_resize {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    my %resume;
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "volume '$storeid:$volname' has no recoverable OPEN EXTEND intent\n"
+            if !$intent || $intent->{state} ne 'OPEN' || $intent->{op} ne 'EXTEND';
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        die "resize recovery intent targets another object\n"
+            if $intent->{object} ne $anchor;
+        die "resize recovery requires a materialized authoritative HEAD\n"
+            if $state->{phase} ne 'MATERIALIZED';
+        $class->_require_exact_vg_intent($vg, %$intent, _device => $device);
+        die "resize recovery requires the exact active frontend\n"
+            if !$class->_thick_frontend_present($scfg, $volname);
+        $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        my $table = _command_lines(
+            ['/sbin/dmsetup', 'table', $mapper],
+            "reading published frontend size for resize recovery failed",
+        );
+        die "resize recovery frontend table is not the exact canonical linear map\n"
+            if @$table != 1
+            || $table->[0] !~ /^0\s+(\d+)\s+linear\s+\S+\s+0$/;
+        my $published = int($1) * 512;
+        my $target = $head_info->{lv_size};
+        die "resize recovery HEAD size is invalid\n"
+            if !defined($target) || $target !~ /^\d+$/ || !$target || $target % 512;
+        die "resize recovery refuses a backing LV smaller than the published frontend\n"
+            if $target < $published;
+        $class->_verify_autoactivation_disabled($vg, $state->{head}, $device);
+        if ($target == $published) {
+            $class->_clear_vg_intent($vg, %$intent, _device => $device);
+            return;
+        }
+        %resume = (
+            intent => $intent, anchor => $anchor, head => $state->{head},
+            old_size => $published, new_size => int($target),
+        );
+        return;
+    }, $device);
+    return 'RESIZE_RECOVERED' if !%resume;
+
+    # Repeating the complete unpublished tail is idempotent.  The stable
+    # frontend still exposes only old_size, so no guest can observe a partial
+    # retry.  Exact UUID proof prevents a stale /dev pathname redirect.
+    $class->_thick_verify_active_lv_identity($vg, $resume{head}, $device);
+    my $length = $resume{new_size} - $resume{old_size};
+    run_command(
+        ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$resume{head}", 'bs=4M',
+            "seek=$resume{old_size}", "count=$length", 'iflag=count_bytes',
+            'oflag=seek_bytes,direct', 'conv=fsync,nocreat', 'status=none'],
+        errmsg => "zero-initializing unpublished resize tail failed",
+    );
+    run_command(
+        ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$resume{head}"],
+        errmsg => "flushing recovered resize tail failed",
+    );
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        my %intent = %{$resume{intent}};
+        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        die "resize recovery authority changed while zeroing\n"
+            if $anchor ne $resume{anchor} || $state->{phase} ne 'MATERIALIZED'
+            || $state->{head} ne $resume{head}
+            || ($head_info->{lv_size} // -1) != $resume{new_size};
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $resume{head}, int($resume{old_size} / 512),
+        );
+        my $new_sectors = int($resume{new_size} / 512);
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'reload', $mapper, '--table',
+                "0 $new_sectors linear /dev/$vg/$resume{head} 0"],
+            errmsg => "loading recovered thick-generations frontend failed",
+        );
+        my $inactive = _command_lines(
+            ['/sbin/dmsetup', 'table', '--inactive', $mapper],
+            "reading recovered inactive frontend table failed",
+        );
+        die "resize recovery inactive frontend table postcondition failed\n"
+            if @$inactive != 1
+            || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+\S+\s+0$/;
+        my $already_suspended = $class->_thick_mapper_is_suspended($mapper);
+        if (!$already_suspended) {
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $mapper],
+                errmsg => "suspending recovered thick-generations frontend failed",
+            );
+        }
+        die "resize recovery frontend did not enter suspended state\n"
+            if !$class->_thick_mapper_is_suspended($mapper);
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'resume', $mapper],
+            errmsg => "publishing recovered thick-generations frontend failed",
+        );
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $resume{head}, $new_sectors,
+        );
+        $class->_clear_vg_intent($vg, %intent, _device => $device);
+        return;
+    }, $device);
+    return 'RESIZE_RECOVERED';
+}
+
 sub _thick_volume_resize {
     my ($class, $scfg, $storeid, $volname, $size, $running, $snapname) = @_;
     die "resizing thick-generations snapshots is not supported\n" if defined($snapname);
@@ -5021,10 +5742,13 @@ sub _thick_volume_resize {
 
     my $zero_error = '';
     eval {
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$resize{head}"],
-            errmsg => "activating extended thick generation '$vg/$resize{head}' failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating extended thick generation '$vg/$resize{head}' failed",
+            $resize{head},
         ) if !$resize{frontend};
+        $class->_thick_verify_active_lv_identity($vg, $resize{head}, $device)
+            if $resize{frontend};
         my $length = $resize{new_size} - $resize{old_size};
         run_command(
             ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$resize{head}", 'bs=4M',
@@ -5036,9 +5760,10 @@ sub _thick_volume_resize {
             ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$resize{head}"],
             errmsg => "flushing extended thick generation '$vg/$resize{head}' failed",
         );
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$resize{head}"],
-            errmsg => "deactivating extended thick generation '$vg/$resize{head}' failed",
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating extended thick generation '$vg/$resize{head}' failed",
+            $resize{head},
         ) if !$resize{frontend};
     };
     $zero_error = $@ if $@;
@@ -5082,7 +5807,7 @@ sub _thick_volume_resize {
             die "PARTIAL RESIZE for '$storeid:$volname': inactive frontend table "
                 . "postcondition failed; OPEN EXTEND intent preserved\n"
                 if @$inactive != 1
-                || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+/;
+                || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+\S+\s+0$/;
             run_command(
                 ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $mapper],
                 errmsg => "suspending thick-generations frontend '$mapper' for resize failed",
@@ -5274,12 +5999,13 @@ sub _thick_volume_snapshot_delete {
                 $device,
             );
             $class->_thick_fault_point('D2', 'REMOVE_SNAPSHOT', $storeid, $volname);
-            if (_block_device_exists($path)) {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
-                    errmsg => "deactivating snapshot '$vg/$snapshot' before delete failed",
-                );
-            }
+            # Do not infer kernel inactivity from a missing /dev symlink.  udev
+            # may lag or be damaged while the exact mapper still exists.
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating snapshot '$vg/$snapshot' before delete failed",
+                $snapshot,
+            );
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$snapshot"],
                 errmsg => "removing snapshot '$vg/$snapshot' failed",
@@ -5446,13 +6172,11 @@ sub _thick_recover_snapshot_delete {
 
         if (defined($owned)) {
             $verify_snapshot_inactive->();
-            my $path = "/dev/$vg/$snapshot";
-            if (_block_device_exists($path)) {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
-                    errmsg => "deactivating snapshot '$vg/$snapshot' during recovery failed",
-                );
-            }
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating snapshot '$vg/$snapshot' during recovery failed",
+                $snapshot,
+            );
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$snapshot"],
                 errmsg => "removing snapshot '$vg/$snapshot' during recovery failed",
@@ -5669,6 +6393,13 @@ sub _volume_snapshot_rollback_locked {
 }
 
 sub volume_rollback_is_possible {
+    return 1;
+}
+
+# LXC mounts raw block volumes directly on the host. Ask PVE to freeze those
+# filesystems around the storage snapshot callback, matching other block
+# backends with external snapshots. This hook is not the VM/QGA freeze policy.
+sub volume_snapshot_needs_fsfreeze {
     return 1;
 }
 

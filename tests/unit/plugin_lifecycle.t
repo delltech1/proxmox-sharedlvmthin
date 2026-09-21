@@ -354,6 +354,14 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
         'large materialization queues can select a bounded multi-day wait');
     is($bridge_property->{default}, 86400,
         'default bridge admission covers a measured long-copy maintenance window');
+    my $materialization_property =
+        $class->properties()->{'slt-tg-max-active-materializations'};
+    is($materialization_property->{minimum}, 1,
+        'at least one Thick transition can be admitted');
+    is($materialization_property->{maximum}, 64,
+        'aggregate dm-clone concurrency has a bounded schema ceiling');
+    is($materialization_property->{default}, 4,
+        'default aggregate dm-clone pressure is conservative');
     require PVE::Storage;
     no warnings 'redefine';
     local *PVE::Storage::config = sub {
@@ -436,6 +444,17 @@ subtest 'thick allocation zeroing offloads safely and has a complete fallback' =
     is(scalar(@commands), 2, 'each zero primitive is attempted at most once');
 
     reset_mocks();
+    my $five_tib = 5 * 1024 * 1024 * 1024 * 1024;
+    $command_failure = qr{/usr/sbin/blkdiscard};
+    is($class->_zero_new_thick_generation(
+        '/dev/testvg/exact-head', $five_tib, 'multi-terabyte test head',
+    ), 'direct-write-fallback', 'multi-terabyte zeroing preserves the exact 64-bit byte count');
+    is_deeply([command_lines()], [
+        "/usr/sbin/blkdiscard --zeroout --offset 0 --length $five_tib /dev/testvg/exact-head",
+        "/usr/bin/dd if=/dev/zero of=/dev/testvg/exact-head bs=4M count=$five_tib iflag=count_bytes oflag=direct conv=fsync,nocreat status=none",
+    ], 'multi-terabyte offload and fallback never truncate or round the range');
+
+    reset_mocks();
     eval { $class->_zero_new_thick_generation('/dev/testvg/exact-head', 513, 'test head') };
     like($@, qr/invalid thick-generation zero length/,
         'unaligned ranges are rejected before any block operation');
@@ -445,6 +464,96 @@ subtest 'thick allocation zeroing offloads safely and has a complete fallback' =
     like($@, qr/invalid thick-generation block-device path/,
         'path traversal is rejected before any block operation');
     is(scalar(@commands), 0, 'invalid block path performs no command');
+};
+
+subtest 'active Thick LV raw-write identity is pinned to the scoped LVM UUID' => sub {
+    my @answers = (
+        [' vg-uuid | lv-uuid | exact-head '],
+        [' LVM-vguuidlvuuid '],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @answers;
+    };
+    ok($class->_thick_verify_active_lv_identity(
+        'testvg', 'exact-head', '/dev/mapper/3600abcd',
+    ), 'matching scoped LVM and kernel DM UUIDs authorize the raw write');
+    is(scalar(@answers), 0, 'identity verifier consumed both authoritative probes');
+
+    @answers = (
+        ['vg-uuid|lv-uuid|exact-head'],
+        ['LVM-different'],
+    );
+    eval { $class->_thick_verify_active_lv_identity(
+        'testvg', 'exact-head', '/dev/mapper/3600abcd',
+    ) };
+    like($@, qr/does not match its scoped LVM UUID/,
+        'stale or colliding kernel mapper fails before any raw write');
+};
+
+subtest 'every Thick LV activation proves each exact kernel identity' => sub {
+    reset_mocks();
+    my @verified;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub {
+        my (undef, $vg, $lv, $device) = @_;
+        push @verified, "$vg|$lv|$device";
+        return 1;
+    };
+    ok($class->_thick_activate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'activation failed', 'head', 'anchor',
+    ), 'exact multi-LV activation succeeds only through the proving wrapper');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -ay -K testvg/head testvg/anchor',
+    ], 'one device-scoped activation covers only the requested LVs');
+    is_deeply(\@verified, [
+        'testvg|head|/dev/mapper/3600abcd',
+        'testvg|anchor|/dev/mapper/3600abcd',
+    ], 'every activated LV receives its own post-activation UUID proof');
+
+    reset_mocks();
+    eval { $class->_thick_activate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'activation failed', 'head', 'head',
+    ) };
+    like($@, qr/invalid or duplicate LV name/,
+        'duplicate activation targets fail before the LVM command');
+    is(scalar(@commands), 0, 'invalid activation performs no command');
+};
+
+subtest 'every Thick LV deactivation proves identity and kernel absence' => sub {
+    reset_mocks();
+    my @inventories = (
+        { 'testvg-head' => 'LVM-vguuidlvuuid' },
+        {},
+    );
+    my @verified;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub {
+        return shift @inventories;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub {
+        my (undef, $vg, $lv, $device) = @_;
+        push @verified, "$vg|$lv|$device";
+        return 1;
+    };
+    ok($class->_thick_deactivate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'deactivation failed', 'head',
+    ), 'an exact active LV is proved before deactivation and absent afterward');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/head',
+    ], 'deactivation targets only the requested device-scoped LV');
+    is_deeply(\@verified, ['testvg|head|/dev/mapper/3600abcd'],
+        'a present pre-command mapper receives an exact UUID proof');
+    is(scalar(@inventories), 0, 'both pre- and post-command inventories were consumed');
+
+    reset_mocks();
+    @inventories = ({}, { 'testvg-head' => 'LVM-vguuidlvuuid' });
+    eval { $class->_thick_deactivate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'deactivation failed', 'head',
+    ) };
+    like($@, qr/remains active after deactivation/,
+        'a successful command cannot hide a remaining kernel mapper');
+    reset_mocks();
 };
 
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
@@ -2534,6 +2643,11 @@ subtest 'thin volumes advertise zero-initialized copy destinations' => sub {
     );
 };
 
+subtest 'block snapshots request PVE filesystem freeze for live LXC rootdir volumes' => sub {
+    is($class->volume_snapshot_needs_fsfreeze(), 1,
+        'storage snapshot hook requires host filesystem freeze');
+};
+
 subtest 'allocation mode defaults to thin and thick mode requires explicit safety identity' => sub {
     is($class->_allocation_mode({}), 'thin', 'existing storage defaults to thin');
     is(
@@ -2568,6 +2682,38 @@ subtest 'allocation mode defaults to thin and thick mode requires explicit safet
     delete $no_reserve{'slt-vg-reserve-gib'};
     eval { $class->_require_thick_identity_config('thick-test', \%no_reserve) };
     like($@, qr/requires a protected VG reserve/, 'thick mode cannot consume the last VG extents');
+};
+
+subtest 'Thick-only package flavor shares the core but removes every Thin entry point' => sub {
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_package_flavor = sub {
+        return 'thick-only';
+    };
+    is($class->_allocation_mode({}), 'thick-generations',
+        'Thick-only configuration defaults to Thick Generations');
+    eval { $class->_allocation_mode({ 'slt-allocation-mode' => 'thin' }) };
+    like($@, qr/Thin allocation mode is unavailable in the Thick-only package/,
+        'explicit Thin mode fails closed in Thick-only flavor');
+
+    my $properties = $class->properties();
+    is_deeply($properties->{'slt-allocation-mode'}->{enum}, ['thick-generations'],
+        'PVE schema advertises only Thick Generations');
+    is($properties->{'slt-allocation-mode'}->{default}, 'thick-generations',
+        'PVE schema has no legacy Thin default');
+    ok(!exists($properties->{'slt-thin-leaseguard'}),
+        'Thin runtime policy is absent from Thick-only properties');
+    ok(!exists($properties->{'slt-initial-pool-mode'}),
+        'Thin allocation policy is absent from Thick-only properties');
+
+    my $options = $class->options();
+    ok(!exists($options->{'slt-thin-ha-takeover'}),
+        'Thin HA option is absent from Thick-only schema');
+    ok(exists($options->{'slt-tg-hydration-timeout'}),
+        'Thick transition controls remain available');
+    ok(exists($properties->{'slt-tg-max-active-materializations'}),
+        'Thick-only schema exposes the VG-wide materialization ceiling');
+    ok(exists($options->{'slt-tg-max-active-materializations'}),
+        'Thick-only options accept the VG-wide materialization ceiling');
 };
 
 subtest 'thin and thick aliases over one pinned VG share one canonical mutation lock' => sub {
@@ -2692,6 +2838,9 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
         ['Thick frontend close timeout mismatch',
             { %$thick, 'slt-tg-close-timeout' => 90 },
             qr/same Thick frontend close timeout/],
+        ['Thick materialization concurrency mismatch',
+            { %$thick, 'slt-tg-max-active-materializations' => 8 },
+            qr/same Thick materialization concurrency limit/],
         ['Thin peer SSH connection timeout mismatch',
             { %$thick, 'slt-thin-peer-connect-timeout' => 30 },
             qr/same Thin peer SSH connection timeout/],
@@ -2965,6 +3114,43 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     is(scalar(@cleared), 1, 'OPEN intent clears after exact absence proof');
 
     reset_mocks();
+    @inventories = (
+        { testvg => { $head => { tags => $head_tags, lv_state => '-' } } },
+        { testvg => {} },
+    );
+    @cleared = ();
+    is($class->_thick_recover_partial_allocation($cfg, $storeid, $volname),
+        'PARTIAL_ALLOCATION_RECOVERED',
+        'creation interrupted before anchor creation is idempotently recovered');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
+    ], 'a lone exact signed generation is the only object removed');
+    is(scalar(@cleared), 1, 'head-only recovery clears intent after exact absence proof');
+
+    reset_mocks();
+    @inventories = (
+        { testvg => { $anchor => { tags => $anchor_tags, lv_state => '-' } } },
+        { testvg => {} },
+    );
+    @cleared = ();
+    is($class->_thick_recover_partial_allocation($cfg, $storeid, $volname),
+        'PARTIAL_ALLOCATION_RECOVERED',
+        'cleanup interrupted after generation removal is idempotently recovered');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
+    ], 'a lone exact signed anchor is the only object removed');
+    is(scalar(@cleared), 1, 'anchor-only recovery clears intent after exact absence proof');
+
+    reset_mocks();
+    @inventories = ({ testvg => {} });
+    @cleared = ();
+    eval { $class->_thick_recover_partial_allocation($cfg, $storeid, $volname) };
+    like($@, qr/requires one or both exact signed allocation objects/,
+        'empty inventory is not silently adopted by partial-object recovery');
+    is(scalar(@commands), 0, 'empty-inventory refusal performs no mutation');
+    is_deeply(\@cleared, [], 'empty-inventory refusal preserves OPEN intent');
+
+    reset_mocks();
     @inventories = ($before);
     @cleared = ();
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub {
@@ -2974,6 +3160,118 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     like($@, qr/PVE still references/, 'any exact PVE reference blocks partial cleanup');
     is(scalar(@commands), 0, 'reference refusal performs no mutation');
     is_deeply(\@cleared, [], 'reference refusal preserves the OPEN intent');
+};
+
+subtest 'thick volume-delete recovery is exact and repeatable at every delete boundary' => sub {
+    reset_mocks();
+    my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $namespace = 'vg-uuid';
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $intent = {
+        tx => ('7' x 32), state => 'OPEN', op => 'REMOVE',
+        object => $anchor, before => ('6' x 32),
+    };
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => $namespace,
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
+        sid => $storeid, vol => $volname, phase => 'MATERIALIZED',
+        tx => ('5' x 32), op => 'ALLOC', snapshot => 'none', source => $head,
+        old => $head, new => $head, head => $head, generation => 0, region => 8,
+    )});
+    my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'head', generation => 0,
+    )});
+    my @inventories = (
+        { testvg => {
+            $anchor => { tags => $anchor_tags, lv_state => '-' },
+            $head => { tags => $head_tags, lv_state => '-' },
+        } },
+        { testvg => {} },
+    );
+    my (@cleared, @deactivated);
+
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code, $device) = @_;
+        is($device, '/dev/mapper/3600abcd', 'volume-delete recovery lock is device-scoped');
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { $intent };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub { [] };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+        return shift(@inventories);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_exact_lvs = sub {
+        my (undef, undef, undef, undef, @objects) = @_;
+        push @deactivated, @objects;
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        my (undef, $vg, %seen) = @_;
+        push @cleared, [$vg, \%seen];
+        return 1;
+    };
+
+    is($class->_thick_recover_volume_delete($cfg, $storeid, $volname),
+        'VOLUME_DELETE_RECOVERED',
+        'complete signed delete remainder is recovered');
+    is_deeply(\@deactivated, [$head, $anchor], 'both exact signed objects are deactivated');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
+    ], 'HEAD and anchor are removed in the canonical order');
+    is(scalar(@cleared), 1, 'matching OPEN REMOVE clears after absence proof');
+
+    reset_mocks();
+    @inventories = (
+        { testvg => { $anchor => { tags => $anchor_tags, lv_state => '-' } } },
+        { testvg => {} },
+    );
+    @deactivated = ();
+    @cleared = ();
+    is($class->_thick_recover_volume_delete($cfg, $storeid, $volname),
+        'VOLUME_DELETE_RECOVERED',
+        'anchor left after HEAD removal is idempotently recovered');
+    is_deeply(\@deactivated, [$anchor], 'only the remaining signed anchor is deactivated');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
+    ], 'only the remaining signed anchor is removed');
+    is(scalar(@cleared), 1, 'anchor-only recovery clears after absence proof');
+
+    reset_mocks();
+    @inventories = ({ testvg => {} }, { testvg => {} });
+    @deactivated = ();
+    @cleared = ();
+    is($class->_thick_recover_volume_delete($cfg, $storeid, $volname),
+        'VOLUME_DELETE_RECOVERED',
+        'already-complete delete clears only its matching preserved intent');
+    is_deeply(\@deactivated, [], 'already-complete recovery deactivates nothing');
+    is(scalar(@commands), 0, 'already-complete recovery repeats no delete command');
+    is(scalar(@cleared), 1, 'already-complete recovery clears exactly one intent');
+
+    reset_mocks();
+    @inventories = ({ testvg => {} });
+    @cleared = ();
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub {
+        ['/etc/pve/qemu-server/900001.conf'];
+    };
+    eval { $class->_thick_recover_volume_delete($cfg, $storeid, $volname) };
+    like($@, qr/PVE still references/, 'PVE reference blocks volume-delete recovery');
+    is(scalar(@commands), 0, 'reference refusal performs no deletion');
+    is_deeply(\@cleared, [], 'reference refusal preserves OPEN REMOVE intent');
 };
 
 subtest 'orphan tree recovery enumerates only signed snapshots and rechecks each mutation' => sub {
@@ -3126,6 +3424,7 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     my @intent_events;
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code) = @_;
         return $code->();
@@ -3147,9 +3446,10 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     };
     is($class->free_image($storeid, $cfg, $volname, 0), undef, 'exact thick delete completes');
     is_deeply([command_lines()], [
+        "/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/$anchor testvg/$head",
         "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
         "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
-    ], 'only the exact head and anchor are removed');
+    ], 'exact head and anchor are deactivated before removal even without a frontend');
     is_deeply(\@intent_events, ['OPEN', 'CLEAR'], 'intent brackets the verified delete');
 
     reset_mocks();
@@ -3235,8 +3535,8 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
     )});
-    my $old = 4 * 1024 * 1024;
-    my $new = 8 * 1024 * 1024;
+    my $old = 4 * 1024 * 1024 * 1024 * 1024;
+    my $new = 5 * 1024 * 1024 * 1024 * 1024;
     my $old_inventory = { testvg => {
         $anchor => { tags => $anchor_tags, lv_size => $old },
         $head => { tags => $head_tags, lv_size => $old },
@@ -3263,6 +3563,7 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
     local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return shift @inventories; };
@@ -3321,6 +3622,128 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     }
 };
 
+subtest 'online Thick resize recovery republishes only a proven zeroed tail' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $anchor = PVE::SharedLvmThinThick::anchor_name('vg-uuid', $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name('vg-uuid', $volname, 0);
+    my $old = 4 * 1024 * 1024;
+    my $new = 8 * 1024 * 1024;
+    my $state = { phase => 'MATERIALIZED', head => $head };
+    my $intent = {
+        v => 1, tx => ('4' x 32), state => 'OPEN', op => 'EXTEND',
+        object => $anchor, before => ('b' x 32),
+    };
+    my @verified_sizes;
+    my @suspend_states = qw(Active Suspended);
+    my @events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { return $intent; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {}; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
+        return ($state, { lv_size => $new }, $anchor);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
+        push @verified_sizes, $_[4]; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub {
+        push @events, 'IDENTITY'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        push @events, 'CLEAR'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        my ($command) = @_;
+        return [shift(@suspend_states)] if grep { $_ eq 'suspended' } @$command;
+        return ["0 " . int($new / 512) . " linear 253:7 0"]
+            if grep { $_ eq '--inactive' } @$command;
+        return ["0 " . int($old / 512) . " linear 253:7 0"];
+    };
+
+    is($class->_thick_recover_resize($cfg, $storeid, $volname),
+        'RESIZE_RECOVERED', 'interrupted multi-terabyte resize is recovered from authoritative sizes');
+    my @lines = command_lines();
+    like(join("\n", @lines), qr{/usr/bin/dd .*seek=\Q$old\E count=\Q@{[$new - $old]}\E .*iflag=count_bytes},
+        'the complete multi-terabyte unpublished byte range is zeroed again without truncation');
+    like(join("\n", @lines), qr{/sbin/blockdev --flushbufs /dev/testvg/\Q$head\E},
+        'the repeated tail initialization is flushed before publication');
+    my ($reload) = grep { /dmsetup --verifyudev reload/ } @lines;
+    my ($suspend) = grep { /dmsetup --verifyudev suspend --noflush/ } @lines;
+    my ($resume) = grep { /dmsetup --verifyudev resume/ } @lines;
+    ok(defined($reload) && defined($suspend) && defined($resume),
+        'recovery publishes through verified reload, suspend, and resume');
+    is_deeply(\@verified_sizes, [undef, int($old / 512), int($new / 512)],
+        'frontend identity is proved before recovery, before cutover, and after publication');
+    is_deeply(\@events, [qw(IDENTITY CLEAR)],
+        'raw-write identity is proved and the exact intent clears last');
+
+    {
+        reset_mocks();
+        @events = ();
+        @verified_sizes = ();
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+            return ["0 " . int($new / 512) . " linear 253:7 0"];
+        };
+        is($class->_thick_recover_resize($cfg, $storeid, $volname),
+            'RESIZE_RECOVERED', 'already-published resize finalizes idempotently');
+        is_deeply([command_lines()], [],
+            'already-published resize performs no zero, reload, suspend, or resume');
+        is_deeply(\@verified_sizes, [undef],
+            'already-published resize still proves the exact canonical frontend');
+        is_deeply(\@events, ['CLEAR'],
+            'already-published resize clears only its exact remaining intent');
+    }
+
+    {
+        reset_mocks();
+        @events = ();
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { return 0; };
+        eval { $class->_thick_recover_resize($cfg, $storeid, $volname) };
+        like($@, qr/requires the exact active frontend/,
+            'offline resize recovery refuses to infer the old published boundary');
+        is_deeply([command_lines()], [], 'missing-frontend refusal performs no mutation');
+        is_deeply(\@events, [], 'missing-frontend refusal preserves the OPEN intent');
+    }
+
+    {
+        reset_mocks();
+        @events = ();
+        @verified_sizes = ();
+        my @already_suspended = qw(Suspended Suspended);
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+            my ($command) = @_;
+            return [shift(@already_suspended)] if grep { $_ eq 'suspended' } @$command;
+            return ["0 " . int($new / 512) . " linear 253:7 0"]
+                if grep { $_ eq '--inactive' } @$command;
+            return ["0 " . int($old / 512) . " linear 253:7 0"];
+        };
+        is($class->_thick_recover_resize($cfg, $storeid, $volname),
+            'RESIZE_RECOVERED', 'already-suspended publication boundary is resumable');
+        my @suspended_lines = command_lines();
+        is(scalar(grep { /dmsetup --verifyudev suspend/ } @suspended_lines), 0,
+            'already-suspended recovery never issues a second suspend');
+        is(scalar(grep { /dmsetup --verifyudev resume/ } @suspended_lines), 1,
+            'already-suspended recovery publishes with one exact resume');
+        is_deeply(\@events, [qw(IDENTITY CLEAR)],
+            'already-suspended recovery retains raw-write proof and clear-last ordering');
+    }
+};
+
 subtest 'thick clone frontend and hydration wait require exact evidence' => sub {
     reset_mocks();
     my $cfg = {
@@ -3345,6 +3768,40 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
     ), 'clone frontend identity, table, and exact dependency set pass');
     is(scalar(@reads), 0, 'all exact clone evidence was consumed');
 
+    @reads = (['0 8192 clone 8 70/5120 8 4/1024 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 rw']);
+    is_deeply([$class->_thick_verify_clone_status($mapper, 0, 8192, 8)], [4, 1024, 1],
+        'clone status accepts exact writable metadata evidence');
+
+    @reads = (['0 8192 clone 8 70/5120 8 4/1024 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 ro']);
+    eval { $class->_thick_verify_clone_status($mapper, 0, 8192, 8) };
+    like($@, qr/metadata is read-only; automatic hydration or pivot is unsafe/,
+        'read-only clone metadata fails immediately instead of looking like slow hydration');
+
+    @reads = (['0 8192 clone Fail']);
+    eval { $class->_thick_verify_clone_status($mapper, 0, 8192, 8) };
+    like($@, qr/kernel Fail metadata state; automatic hydration or pivot is unsafe/,
+        'kernel Fail state receives a distinct fail-closed classification');
+
+    @reads = (['0 8192 clone 8 70/5120 8 4/1024 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32']);
+    eval { $class->_thick_verify_clone_status($mapper, 0, 8192, 8) };
+    like($@, qr/does not report an authoritative metadata mode/,
+        'missing metadata mode is ambiguous and fails closed');
+
+    for my $case (
+        ['0 4096 clone 8 70/5120 8 4/512 1 0 0 rw', 8192, 8, 'wrong target length'],
+        ['1 8192 clone 8 70/5120 8 4/1024 1 0 0 rw', 8192, 8, 'nonzero target start'],
+        ['0 8192 clone 8 70/5120 16 4/512 1 0 0 rw', 8192, 8, 'wrong region size'],
+        ['0 8192 clone 8 70/5120 8 4/512 1 0 0 rw', 8192, 8, 'wrong total regions'],
+        ['0 8192 clone 8 70/5120 8 1025/1024 0 0 0 rw', 8192, 8, 'impossible hydrated count'],
+        ['0 8192 clone 8 5121/5120 8 4/1024 1 0 0 rw', 8192, 8, 'impossible metadata use'],
+        ['0 8192 clone 8 70/5120 8 1023/1024 2 0 0 rw', 8192, 8, 'overlapping hydration counters'],
+    ) {
+        @reads = ([$case->[0]]);
+        eval { $class->_thick_verify_clone_status($mapper, 0, $case->[1], $case->[2]) };
+        like($@, qr/(?:malformed|internally impossible|does not match the signed transition)/,
+            "$case->[3] fails closed");
+    }
+
     my @status = ([8, 8, 0]);
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub {
         my (undef, undef, $must_be_complete) = @_;
@@ -3352,14 +3809,14 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         die "incomplete\n" if $must_be_complete && ($row[0] != $row[1] || $row[2] != 0);
         return @row;
     };
-    ok($class->_thick_wait_for_hydration($mapper, 60),
+    ok($class->_thick_wait_for_hydration($mapper, 60, 8192, 8),
         'already complete hydration returns without waiting');
     is(scalar(@commands), 0, 'already complete hydration spawns no wait probe');
 
     reset_mocks();
     @status = ([1, 8, 0], [2, 8, 1], [8, 8, 0]);
     @reads = (['17']);
-    ok($class->_thick_wait_for_hydration($mapper, 60),
+    ok($class->_thick_wait_for_hydration($mapper, 60, 8192, 8),
         'one event-numbered wait closes the completion race');
     is(scalar(@commands), 1, 'exactly one potentially blocking wait is spawned');
     like((command_lines())[0], qr{/usr/bin/timeout --kill-after=5s 60s /sbin/dmsetup wait \Q$mapper\E 17$},
@@ -3379,7 +3836,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
             $now += 50;
             return;
         };
-        ok($class->_thick_wait_for_hydration($mapper, 60),
+        ok($class->_thick_wait_for_hydration($mapper, 60, 8192, 8),
             'verified progress renews the bounded no-progress observation window');
     }
     is(scalar(@commands), 2,
@@ -3400,7 +3857,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         $now += 61;
         die "observation slice expired\n";
     };
-    eval { $class->_thick_wait_for_hydration($mapper, 60) };
+    eval { $class->_thick_wait_for_hydration($mapper, 60, 8192, 8) };
     like($@, qr/made no verified progress for 60s/,
         'a full no-progress window is recovery-required');
     is(scalar(@commands), 1,
@@ -3418,7 +3875,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         push @commands, [@$command];
         die "dmsetup wait failed immediately\n";
     };
-    eval { $class->_thick_wait_for_hydration($mapper, 60) };
+    eval { $class->_thick_wait_for_hydration($mapper, 60, 8192, 8) };
     like($@, qr/event wait .* failed before the observation boundary/,
         'an immediate dmsetup wait failure is fail-closed instead of a busy retry loop');
     is(scalar(@commands), 1, 'an immediate wait failure is attempted exactly once');
@@ -3467,7 +3924,8 @@ subtest 'online materialization mode and worker scheduling are exact' => sub {
     is_deeply([command_lines()], [
         "/usr/bin/systemd-run --quiet --collect --unit=pve-sharedlvmthin-tg-$tx "
             . "--on-active=3s --timer-property=AccuracySec=100ms --property=Type=exec "
-            . "--property=Nice=10 --property=IOSchedulingClass=best-effort "
+            . "--property=Restart=no --property=Nice=10 "
+            . "--property=IOSchedulingClass=best-effort "
             . "--property=IOSchedulingPriority=7 --property=TimeoutStartSec=infinity "
             . "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize "
             . "thick-test vm-900001-disk-0 snap1 SNAPSHOT $tx",
@@ -3507,7 +3965,7 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
         size => 4096, old_size => 4096, geometry => { region_sectors => 8 },
         operation => 'SNAPSHOT', snapshot => 'snap1',
     };
-    my (@scheduled, $waited, $scoped);
+    my (@scheduled, $waited, $scoped, $schedule_error);
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
@@ -3520,7 +3978,9 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {} };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_resume_transition = sub { return $transition };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_schedule_materialization = sub {
-        @scheduled = @_[1 .. 6]; return 'worker';
+        @scheduled = @_[1 .. 6];
+        die "ambiguous systemd transport failure\n" if $schedule_error;
+        return 'worker';
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_scope_transition_intent_to_anchor = sub {
         my $intent = $_[4];
@@ -3544,6 +4004,17 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
             PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
             ' 0 enable_hydration',
     ], 'callback only enables hydration before returning');
+
+    $schedule_error = 1;
+    $waited = 0;
+    $scoped = 0;
+    eval { $class->volume_snapshot(
+        $cfg, 'thick-test', 'vm-900001-disk-0', 'snap1',
+    ) };
+    like($@, qr/scheduling was not confirmed.*transaction '$tx' is preserved.*thick-resume/s,
+        'ambiguous worker scheduling preserves the transaction and requires explicit resume');
+    ok(!$waited, 'ambiguous scheduling never starts a synchronous second owner');
+    is($scoped, 1, 'ambiguous scheduling retains anchor-scoped recovery authority');
 };
 
 subtest 'thick deactivate removes kernel mapper even when its udev node vanished' => sub {
@@ -3566,6 +4037,7 @@ subtest 'thick deactivate removes kernel mapper even when its udev node vanished
         return ($state, {}, 'anchor-lv');
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
         $verified++; return 1;
@@ -4447,6 +4919,7 @@ subtest 'host-loss recovery reconstructs only the exact persisted clone runtime'
     my ($source_verified, $clone_verified, $status_expected);
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub { return 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub {
         $source_verified++; return 1;
     };
@@ -4481,6 +4954,29 @@ subtest 'host-loss recovery reconstructs only the exact persisted clone runtime'
     ) };
     like($@, qr/runtime is partial; refusing reconstruction/,
         'a partial runtime is never guessed or overwritten');
+
+    reset_mocks();
+    $tr->{state} = { phase => 'LINEAR_PIVOTED' };
+    my $linear_verified = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
+        $linear_verified++;
+        is($_[3], 'new', 'post-pivot reconstruction targets only the authoritative new HEAD');
+        is($_[4], 8, 'post-pivot reconstruction preserves exact sector geometry');
+        return 1;
+    };
+    ok($class->_thick_reconstruct_missing_transition_runtime(
+        $cfg, 'vm-900001-disk-0', $tr, { tx => $tx },
+    ), 'host-loss after a recorded linear pivot reconstructs only the canonical linear frontend');
+    is($linear_verified, 1, 'reconstructed linear frontend is positively verified');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -ay -K testvg/new',
+        '/sbin/dmsetup --verifyudev create sltg-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
+            ' --uuid SLT-TG2-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
+            ' --table 0 8 linear /dev/testvg/new 0',
+    ], 'post-pivot reboot recovery does not recreate clone metadata or a source mapper');
 };
 
 subtest 'anchor-scoped hydration permits an unrelated VG transaction only' => sub {
@@ -4728,6 +5224,7 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     );
     my @events;
     no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code) = @_; return $code->();
     };
@@ -4797,6 +5294,8 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
         'partial delete preserves the OPEN intent after the anchor rebase');
     is(scalar(grep { m{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/\Q$snapshot\E$} } command_lines()), 1,
         'partial delete performs exactly one removal attempt');
+    is(scalar(grep { m{/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/\Q$snapshot\E$} } command_lines()), 1,
+        'missing udev path does not bypass exact kernel deactivation proof');
 };
 
 subtest 'thick snapshot-delete recovery deterministically resumes prepared and finalize states' => sub {
@@ -4843,8 +5342,9 @@ subtest 'thick snapshot-delete recovery deterministically resumes prepared and f
         { testvg => { $head => {}, $anchor => {} } },
     );
     my @states = ($prepared, $rebased);
-    my @events;
     no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
+    my @events;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code, $device) = @_;
@@ -4875,8 +5375,9 @@ subtest 'thick snapshot-delete recovery deterministically resumes prepared and f
     is_deeply(\@events, [qw(INTENT_VERIFIED REBASE CLEAR)],
         'prepared recovery verifies intent, rebases, then clears only after delete');
     is_deeply([command_lines()], [
+        "/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/$snapshot",
         "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$snapshot",
-    ], 'prepared recovery removes only the exact device-scoped snapshot');
+    ], 'prepared recovery deactivates and removes only the exact device-scoped snapshot');
 
     reset_mocks();
     @inventory = (
@@ -5058,6 +5559,47 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
         is($hydration_complete->{state}->{phase}, 'HYDRATION_COMPLETE',
             'C9 resume reconstructs the exact persisted pre-pivot state');
     }
+
+    $state = { %$state, phase => 'LINEAR_PIVOTED' };
+    delete $inventory->{testvg}->{$meta};
+    my $linear_pivoted = $class->_thick_resume_transition(
+        $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', $intent,
+    );
+    is($linear_pivoted->{state}->{phase}, 'LINEAR_PIVOTED',
+        'post-pivot resume accepts already removed metadata and source runtime');
+};
+
+subtest 'linear frontend verification requires an exact zero-offset table' => sub {
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+    };
+    my $volname = 'vm-900001-disk-0';
+    my $head = 'head-lv';
+    my $uuid = 'SLT-TG2-' . PVE::SharedLvmThinThick::object_key('vg-uuid', $volname);
+    my @answers = (
+        ["$uuid|Writeable"],
+        ['0 65536 linear 253:7 0'],
+        ['1 dependencies : (testvg-head--lv)'],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @answers;
+    };
+    ok($class->_thick_verify_frontend($cfg, $volname, $head, 65536),
+        'exact one-segment zero-offset frontend is accepted');
+    is(scalar(@answers), 0, 'frontend verifier consumed all exact probes');
+
+    for my $bad_table (
+        '0 65536 linear 253:7 8',
+        '0 65536 linear 253:7 0 unexpected',
+    ) {
+        @answers = (["$uuid|Writeable"], [$bad_table]);
+        eval { $class->_thick_verify_frontend($cfg, $volname, $head, 65536) };
+        like($@, qr/table is not one linear segment/,
+            "non-canonical frontend table '$bad_table' fails closed");
+        is(scalar(@answers), 0, 'invalid table is rejected before dependency probing');
+    }
 };
 
 subtest 'C4 source mapper verification is exact and read-only' => sub {
@@ -5084,6 +5626,16 @@ subtest 'C4 source mapper verification is exact and read-only' => sub {
         $cfg, $mapper, $source, 65536, $tx,
     ) };
     like($@, qr/is not read-only/, 'writeable source mapper fails closed');
+
+    @answers = (
+        ["SLT-TG3-SOURCE-$tx|Read-only"],
+        ['0 65536 linear 253:7 8'],
+    );
+    eval { $class->_thick_verify_source_mapper(
+        $cfg, $mapper, $source, 65536, $tx,
+    ) };
+    like($@, qr/table mismatch/, 'non-zero source offset fails closed before dependency probing');
+    is(scalar(@answers), 0, 'invalid source table consumed only identity and table probes');
 };
 
 subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
@@ -5124,6 +5676,9 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $hydration_complete = {
         %$prepared, phase => 'HYDRATION_COMPLETE', head => $new, generation => 1,
     };
+    my $linear_pivoted = {
+        %$prepared, phase => 'LINEAR_PIVOTED', head => $new, generation => 1,
+    };
     my $source_ready = { %$prepared, phase => 'SOURCE_READY' };
     my $committed = {
         %$prepared, phase => 'COMMITTED', head => $new, generation => 1,
@@ -5135,11 +5690,18 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my $anchor_tags_hydration_complete = join(',', @{
         PVE::SharedLvmThinThick::anchor_tags(%$hydration_complete)
     });
+    my $anchor_tags_linear_pivoted = join(',', @{
+        PVE::SharedLvmThinThick::anchor_tags(%$linear_pivoted)
+    });
     my $old_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
     )});
     my $new_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 1,
+    )});
+    my $meta_tags = join(',', @{PVE::SharedLvmThinThick::transition_tags(
+        sid => $storeid, vol => $volname, tx => $new_tx,
+        kind => 'metadata', generation => 1, region => 8,
     )});
     my $initial = { testvg => {
         $anchor => { tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$materialized)}) },
@@ -5149,7 +5711,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         $anchor => { tags => $anchor_tags_prepared },
         $old => { tags => $old_tags, lv_size => $size, lv_attr => '-wi-XX---k' },
         $new => { tags => $new_tags, lv_size => $size },
-        $meta => { tags => '', lv_size => 24 * 1024 * 1024 },
+        $meta => { tags => $meta_tags, lv_size => 24 * 1024 * 1024 },
     } };
     my $hydrating_inventory = { testvg => {
         %{$prepared_inventory->{testvg}},
@@ -5167,14 +5729,19 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         %{$prepared_inventory->{testvg}},
         $anchor => { tags => $anchor_tags_hydration_complete },
     } };
+    my $linear_pivoted_inventory = { testvg => {
+        %{$prepared_inventory->{testvg}},
+        $anchor => { tags => $anchor_tags_linear_pivoted },
+    } };
     my $after_cleanup = { testvg => {
-        $anchor => { tags => $anchor_tags_hydration_complete },
+        $anchor => { tags => $anchor_tags_linear_pivoted },
         $old => { tags => $old_tags, lv_size => $size },
         $new => { tags => $new_tags, lv_size => $size },
     } };
     my @inventories = (
         $initial, $prepared_inventory, $source_ready_inventory, $committed_inventory,
-        $hydrating_inventory, $hydration_complete_inventory, $after_cleanup,
+        $hydrating_inventory, $hydration_complete_inventory, $linear_pivoted_inventory,
+        $after_cleanup,
     );
     my @events;
     my @scoped_devices;
@@ -5198,11 +5765,16 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_transition_metadata = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_frontend = sub { return 1; };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub { return (8, 8, 0); };
+    my $clone_status_checks = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub {
+        $clone_status_checks++;
+        return (8, 8, 0);
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_for_hydration = sub { push @events, 'HYDRATION_WAIT'; return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
         return ($materialized, { tags => $old_tags, lv_size => $size }, $anchor);
@@ -5224,11 +5796,12 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
         return shift @inventories;
     };
-    my $suspend_reads = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
+    my @suspend_states = qw(Active Suspended Suspended Active Suspended);
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
         my ($command) = @_;
         if (grep { $_ eq 'suspended' } @$command) {
-            return [++$suspend_reads == 1 ? 'Active' : 'Suspended'];
+            return [shift(@suspend_states) // 'Suspended'];
         }
         return ['0 65536 linear 253:7 0'];
     };
@@ -5251,12 +5824,30 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my @snapshot_commands = command_lines();
     is(scalar(grep { /lvcreate/ } @snapshot_commands), 2,
         'snapshot creates exactly one destination and one metadata LV');
+    is(scalar(grep { /lvcreate .* --setautoactivation n .* --addtag slt_tg/ }
+        @snapshot_commands), 2,
+        'both transition LVs receive ownership and no-autoactivation atomically at creation');
+    is(scalar(grep { /lvcreate .* --addtag slt_tgo_sha256=/ }
+        @snapshot_commands), 1,
+        'destination creation includes its signed generation digest');
+    is(scalar(grep { /lvcreate .* --addtag slt_tgt_sha256=/ }
+        @snapshot_commands), 1,
+        'metadata creation includes its signed transition digest');
     like(join("\n", @snapshot_commands), qr{lvcreate .* -L 20971520B -n \Q$meta\E},
         'metadata capacity comes from persisted geometry, not a fixed 16 MiB value');
+    my ($zero_index) = grep {
+        $snapshot_commands[$_] =~ m{/usr/sbin/blkdiscard --zeroout --offset 0 --length \Q$size\E /dev/testvg/\Q$new\E}
+    } 0 .. $#snapshot_commands;
+    ok(defined($zero_index),
+        'the complete new HEAD is deterministically zeroed before dm-clone publication');
     is(scalar(grep { /dmsetup .*suspend --noflush/ } @snapshot_commands), 2,
         'clone cutover and linear pivot each use one explicit noflush suspend');
     is(scalar(grep { /dmsetup .*resume/ } @snapshot_commands), 2,
         'each suspended cutover has exactly one resume');
+    is($clone_status_checks, 4,
+        'clone completion and writable metadata are reverified after pivot suspension');
+    is(scalar(@suspend_states), 0,
+        'both cutover and pivot prove active and suspended runtime boundaries');
     my ($source_index) = grep { $snapshot_commands[$_] =~ /dmsetup .*create .*src-/ } 0 .. $#snapshot_commands;
     my ($cutover_suspend) = grep { $snapshot_commands[$_] =~ /dmsetup .*suspend --noflush/ } 0 .. $#snapshot_commands;
     my ($cutover_resume) = grep {
@@ -5265,16 +5856,87 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my ($readonly_index) = grep { $snapshot_commands[$_] =~ /lvchange .* -pr/ } 0 .. $#snapshot_commands;
     ok(defined($source_index) && defined($cutover_suspend) && $source_index < $cutover_suspend,
         'read-only source mapper is prepared before the atomic cutover');
+    ok(defined($zero_index) && defined($source_index) && $zero_index < $source_index,
+        'destination zero initialization finishes before the source/clone runtime exists');
     ok(defined($cutover_resume) && defined($readonly_index) && $readonly_index > $cutover_resume,
         'persistent snapshot LV becomes read-only only after the frontend is resumed');
-    is(scalar(@scoped_devices), 10,
+    is(scalar(@scoped_devices), 8,
         'every transition tag mutation carries an explicit device scope');
     ok(!scalar(grep { $_ ne '/dev/mapper/3600abcd' } @scoped_devices),
         'every scoped metadata mutation uses the pinned multipath device');
     is(scalar(grep { /lvremove .* -f testvg\/\Q$meta\E/ } @snapshot_commands), 1,
         'only the exact detached metadata LV is removed');
+    my ($meta_deactivate) = grep {
+        $snapshot_commands[$_] =~ /lvchange .* -an testvg\/\Q$meta\E/
+    } 0 .. $#snapshot_commands;
+    my ($meta_remove) = grep {
+        $snapshot_commands[$_] =~ /lvremove .* -f testvg\/\Q$meta\E/
+    } 0 .. $#snapshot_commands;
+    ok(defined($meta_deactivate) && defined($meta_remove) && $meta_deactivate < $meta_remove,
+        'detached metadata is exactly deactivated and proved absent before removal');
     is($events[-1], 'INTENT_CLEAR', 'VG intent clears only after MATERIALIZED');
     is(scalar(@inventories), 0, 'all lifecycle inventories were consumed');
+};
+
+subtest 'Thick materialization admission is VG-wide and fail-closed' => sub {
+    my $mk_anchor = sub {
+        my ($vol, $generation, $phase) = @_;
+        my $tx = sprintf('%032x', $generation + 1);
+        my $old = "g$generation";
+        my $new = 'g' . ($generation + 1);
+        if ($phase eq 'MATERIALIZED') {
+            return PVE::SharedLvmThinThick::anchor_tags(
+                v => 5, sid => 'thick-a', vol => $vol, phase => $phase, tx => $tx,
+                op => 'ALLOC', snapshot => 'none', source => $old,
+                old => $old, new => $old, head => $old,
+                generation => $generation, region => 8,
+            );
+        }
+        return PVE::SharedLvmThinThick::anchor_tags(
+            v => 5, sid => 'thick-a', vol => $vol, phase => $phase, tx => $tx,
+            op => 'SNAPSHOT', snapshot => "snap$generation", source => $old,
+            old => $old, new => $new, head => $new,
+            generation => $generation + 1, region => 8,
+        );
+    };
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-tg-max-active-materializations' => 2,
+    };
+    my $inventory = { testvg => {
+        'sltg-a-one' => { tags => $mk_anchor->('vm-101-disk-0', 0, 'HYDRATING') },
+        'sltg-a-two' => { tags => $mk_anchor->('vm-102-disk-0', 1, 'MATERIALIZED') },
+    } };
+    is($class->_thick_materialization_admission($cfg, $inventory), 1,
+        'materialized anchors do not consume a hydration slot');
+    $inventory->{testvg}->{'sltg-a-three'} = {
+        tags => $mk_anchor->('vm-103-disk-0', 2, 'HYDRATION_COMPLETE'),
+    };
+    eval { $class->_thick_materialization_admission($cfg, $inventory) };
+    like($@, qr/already meet configured limit 2; no intent or LV was created/,
+        'new transition is refused exactly at the configured VG-wide limit');
+    $inventory->{testvg}->{'sltg-a-bad'} = { tags => '' };
+    eval { $class->_thick_materialization_admission($cfg, $inventory) };
+    like($@, qr/incomplete Thick Generations anchor/,
+        'ambiguous owned-looking anchor fails closed');
+};
+
+subtest 'Thick capacity admission is scoped to the pinned device' => sub {
+    my $seen;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_numeric_fields = sub {
+        my ($command) = @_;
+        $seen = [@$command];
+        return (100 * 1024**3, 80 * 1024**3, 4 * 1024**2);
+    };
+    my $decision = $class->_thick_capacity_gate('thick-a', {
+        'slt-vgname' => 'testvg',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-percent' => 5,
+    }, 1024);
+    ok($decision->{allowed}, 'small allocation remains within the protected reserve');
+    like(join(' ', @$seen), qr{^/sbin/vgs --readonly --devices /dev/mapper/3600abcd },
+        'capacity query is pinned to the exact multipath device');
 };
 
 done_testing();

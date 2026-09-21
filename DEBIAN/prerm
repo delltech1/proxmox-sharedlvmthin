@@ -2,9 +2,84 @@
 set -e
 
 SERVICE=pve-sharedlvmthin-web.service
+THIN_GUARD_SERVICE=pve-sharedlvmthin-thin-guard.service
 
 case "$1" in
     remove|deconfigure)
+        # A Conflicts/Replaces flavor switch invokes the old package's removal
+        # scripts. Never leave an in-memory Thin guardian running after its
+        # executable and unit are removed, but also never disarm it while a
+        # managed Thin object still exists. Ambiguous inventory refuses the
+        # removal before package files disappear. Perform this refusal gate
+        # before stopping even the non-data-path web service, so a rejected
+        # package transaction leaves the installed profile operationally
+        # unchanged.
+        PACKAGE_FLAVOR=dual
+        if [ "${DPKG_MAINTSCRIPT_PACKAGE:-}" = "pve-sharedlvmthin-thick" ]; then
+            PACKAGE_FLAVOR=thick-only
+        fi
+        if [ "$PACKAGE_FLAVOR" = dual ]; then
+            if ! command -v lvs >/dev/null 2>&1 || ! command -v vgs >/dev/null 2>&1; then
+                echo "ERROR: package removal refused: managed Thin storage cannot be audited." >&2
+                exit 1
+            fi
+            if ! VOLUME_GROUPS=$(vgs --readonly --noheadings --separator '|' \
+                -o vg_name,vg_attr 2>/dev/null); then
+                echo "ERROR: package removal refused: VG inventory failed." >&2
+                exit 1
+            fi
+            if printf '%s\n' "$VOLUME_GROUPS" |
+               awk -F'|' '{ gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2) }
+                            length($2) < 4 || substr($2, 4, 1) == "p" { bad=1 }
+                            END { exit bad ? 0 : 1 }'; then
+                echo "ERROR: package removal refused: LVM reports a partial or ambiguous VG." >&2
+                echo "Absence of managed Thin objects is unproven." >&2
+                exit 1
+            fi
+            if ! THIN_LVS=$(lvs --readonly --noheadings -o lv_tags 2>/dev/null); then
+                echo "ERROR: package removal refused: managed Thin inventory failed." >&2
+                exit 1
+            fi
+            if printf '%s\n' "$THIN_LVS" | awk '$0 ~ /pve-slt-sid-/ { found=1 } END { exit found ? 0 : 1 }'; then
+                echo "ERROR: package removal refused: managed Thin objects still exist." >&2
+                echo "Drain/migrate them before removing the package, regardless of ThinGuard state." >&2
+                exit 1
+            fi
+            if ! GUARD_STATE=$(systemctl show --property ActiveState --value \
+                "$THIN_GUARD_SERVICE" 2>/dev/null); then
+                echo "ERROR: package removal refused: ThinGuard state is unavailable." >&2
+                exit 1
+            fi
+            case "$GUARD_STATE" in
+                active|activating|reloading|deactivating)
+                    systemctl stop "$THIN_GUARD_SERVICE"
+                    if ! GUARD_STATE=$(systemctl show --property ActiveState --value \
+                        "$THIN_GUARD_SERVICE" 2>/dev/null); then
+                        echo "ERROR: package removal refused: stopped ThinGuard state is unavailable." >&2
+                        exit 1
+                    fi
+                    case "$GUARD_STATE" in
+                        inactive|failed) ;;
+                        *)
+                            echo "ERROR: package removal refused: ThinGuard stop is unconfirmed ($GUARD_STATE)." >&2
+                            exit 1
+                            ;;
+                    esac
+                    ;;
+                inactive|failed) ;;
+                *)
+                    echo "ERROR: package removal refused: ambiguous ThinGuard state '$GUARD_STATE'." >&2
+                    exit 1
+                    ;;
+            esac
+            if ! systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1; then
+                echo "ERROR: package removal refused: ThinGuard disable failed." >&2
+                exit 1
+            fi
+        fi
+        if [ "$PACKAGE_FLAVOR" = thick-only ]; then
+            systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1 || true
+        fi
         systemctl stop "$SERVICE" >/dev/null 2>&1 || true
         systemctl disable "$SERVICE" >/dev/null 2>&1 || true
         ;;

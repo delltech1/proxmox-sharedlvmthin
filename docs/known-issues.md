@@ -10,8 +10,8 @@
    claim that the source comment alone proves every observed target stall.
 2. Indefinite `queue_if_no_path` can block LVM/PVE management during total path loss. Multipath policy remains an administrator-owned infrastructure setting; Doctor reports risk but does not change it.
 3. Legacy untagged per-VM pools are preserved and are not silently adopted, tagged, grown, or deleted.
-4. Thick Generations are newer than the established Thin mode and remain a
-   release-candidate technology in TG25. Validate the complete lifecycle on
+4. Thick Generations remain release-candidate technology. The upstream Linux
+   kernel still marks `DM_CLONE` experimental. Validate the complete lifecycle on
    disposable storage matching the intended production topology before use.
 5. Web sessions are in memory; a dashboard service restart requires login again.
 6. Physical FC HBA/fabric behavior requires qualification with the intended production hardware, firmware, array and multipath policy.

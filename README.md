@@ -269,10 +269,21 @@ It does not expose storage mutation endpoints. See the
 python3 -m unittest discover -s tests/unit -v
 prove -v tests/unit/plugin_lifecycle.t
 sh scripts/build.sh
+# Restricted Thick Generations package candidate:
+sh scripts/build.sh dist/thick-only thick-only
 ```
 
-The reproducible package is written to `dist/` and validated for forbidden
-content and common credential leaks.
+The default dual-mode package is written to `dist/`. The Thick-only command
+uses a separate output directory so neither artifact nor checksum manifest can
+overwrite the other. Both are validated for forbidden content and common
+credential leaks.
+
+The separately installable `pve-sharedlvmthin-thick` profile exposes only
+experimental Thick Generations. It shares the same Thick implementation and
+on-disk format with the dual-mode package; it is not a second storage driver.
+The packages conflict intentionally and must never be installed together. See
+the [Thick-only package boundary](docs/thick-only-package.md). A CI artifact is
+only a build candidate, not a published or qualified release.
 
 ## Safety model
 

@@ -5,6 +5,25 @@
 set -u
 
 VERSION="0.3-doctor"
+PACKAGE_FLAVOR_FILE=/usr/share/pve-sharedlvmthin/package-flavor
+PACKAGE_FLAVOR=dual
+if [ -e "$PACKAGE_FLAVOR_FILE" ]; then
+    IFS= read -r PACKAGE_FLAVOR <"$PACKAGE_FLAVOR_FILE" || {
+        echo "ERROR: cannot read package flavor" >&2
+        exit 2
+    }
+fi
+case "$PACKAGE_FLAVOR" in
+    dual|thick-only) ;;
+    *) echo "ERROR: unknown package flavor '$PACKAGE_FLAVOR'" >&2; exit 2 ;;
+esac
+
+require_dual_mode() {
+    if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+        echo "ERROR: this command is unavailable in the Thick-only package" >&2
+        exit 64
+    fi
+}
 DOCTOR_MODE="${DOCTOR_MODE:-full}"
 PLUGIN="/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 MONITOR="/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor"
@@ -83,7 +102,9 @@ section() {
 }
 
 get_package_version() {
-    dpkg-query -W -f='${Version}' pve-sharedlvmthin 2>/dev/null || true
+    local package=pve-sharedlvmthin
+    [ "$PACKAGE_FLAVOR" != "thick-only" ] || package=pve-sharedlvmthin-thick
+    dpkg-query -W -f='${Version}' "$package" 2>/dev/null || true
 }
 
 get_pve_version() {
@@ -130,10 +151,12 @@ doctor() {
 
     PKGVER="$(get_package_version)"
 
+    PACKAGE_NAME=pve-sharedlvmthin
+    [ "$PACKAGE_FLAVOR" != "thick-only" ] || PACKAGE_NAME=pve-sharedlvmthin-thick
     if [ -n "$PKGVER" ]; then
-        pass "Package installed: pve-sharedlvmthin $PKGVER"
+        pass "Package installed: $PACKAGE_NAME $PKGVER (flavor=$PACKAGE_FLAVOR)"
     else
-        fail "Package pve-sharedlvmthin is not installed"
+        fail "Package $PACKAGE_NAME is not installed"
     fi
 
     if [ -f "$PLUGIN" ]; then
@@ -142,7 +165,9 @@ doctor() {
         fail "Plugin file missing: $PLUGIN"
     fi
 
-    if [ -x "$MONITOR" ]; then
+    if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+        pass "Thin autogrow monitor is intentionally absent in Thick-only flavor"
+    elif [ -x "$MONITOR" ]; then
         pass "Autogrow monitor present and executable"
     else
         fail "Autogrow monitor missing/not executable: $MONITOR"
@@ -253,6 +278,9 @@ doctor() {
         warn "LVM metadata archive directory is unavailable; Doctor made no change"
     fi
 
+    if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+        pass "Thin dmeventd/autogrow policy is not applicable to Thick-only flavor"
+    else
     if command -v dmeventd >/dev/null 2>&1; then
         DMEV="$(dmeventd -V 2>&1 | head -1)"
         pass "dmeventd installed: $DMEV"
@@ -296,6 +324,7 @@ doctor() {
         pass "Thin autoextend growth = 10%"
     else
         warn "Thin autoextend growth is '${GROW:-unset}', qualified legacy fallback is 10"
+    fi
     fi
 
     section "Configured SharedLvmThin storage"
@@ -396,7 +425,9 @@ doctor() {
             /^[^[:space:]]/ {inside=0}
             inside && $1 == "slt-allocation-mode" {print $2; exit}
         ' "$STORAGECFG")"
-        STORAGE_ALLOCATION_MODE="${STORAGE_ALLOCATION_MODE:-thin}"
+        DEFAULT_ALLOCATION_MODE=thin
+        [ "$PACKAGE_FLAVOR" != "thick-only" ] || DEFAULT_ALLOCATION_MODE=thick-generations
+        STORAGE_ALLOCATION_MODE="${STORAGE_ALLOCATION_MODE:-$DEFAULT_ALLOCATION_MODE}"
 
         ALLOCATION_MODE="$(awk -v sid="$SID" '
             $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
@@ -1340,6 +1371,7 @@ deep_doctor() {
 case "${1:-doctor}" in
     doctor)
         if [ "${2:-}" = "--deep" ]; then
+            require_dual_mode
             deep_doctor
         elif [ "${2:-}" = "--quick" ]; then
             DOCTOR_MODE=quick doctor
@@ -1351,6 +1383,7 @@ case "${1:-doctor}" in
         fi
         ;;
     deep|--deep)
+        require_dual_mode
         deep_doctor
         ;;
     recovery-check)
@@ -1390,6 +1423,30 @@ case "${1:-doctor}" in
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
             --recover-delete "$2" "$3"
         ;;
+    thick-recover-volume-delete)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-volume-delete <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-volume-delete "$2" "$3"
+        ;;
+    thick-recover-prepare)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-prepare <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-prepare "$2" "$3"
+        ;;
+    thick-recover-resize)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-resize <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-resize "$2" "$3"
+        ;;
     thick-recover-empty-alloc)
         if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
             echo "Usage: sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>" >&2
@@ -1423,6 +1480,7 @@ case "${1:-doctor}" in
             --recover-orphan-tree "$2" "$3"
         ;;
     thin-recover-orphan)
+        require_dual_mode
         if [ "$#" -ne 3 ]; then
             echo "Usage: sharedlvmthin thin-recover-orphan <storage-id> <volume>" >&2
             exit 64
@@ -1431,6 +1489,7 @@ case "${1:-doctor}" in
             --recover-thin-orphan "$2" "$3"
         ;;
     thin-recover-fenced-owner)
+        require_dual_mode
         if [ "$#" -ne 4 ]; then
             echo "Usage: sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>" >&2
             exit 64
@@ -1440,6 +1499,7 @@ case "${1:-doctor}" in
             --recover-fenced-thin-owner "$2" "$3" "$4"
         ;;
     thin-adopt-owner-model)
+        require_dual_mode
         if [ "$#" -ne 4 ] || [ "$4" != "ALL-NODES-INACTIVE" ]; then
             echo "Usage: sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE" >&2
             exit 64
@@ -1449,6 +1509,7 @@ case "${1:-doctor}" in
             --adopt-thin-owner-model "$2" "$3" "$4"
         ;;
     thin-metadata-check)
+        require_dual_mode
         if [ "$#" -ne 3 ]; then
             echo "Usage: sharedlvmthin thin-metadata-check <storage-id> <volume>" >&2
             exit 64
@@ -1469,14 +1530,19 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin compat-check"
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-volume-delete <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-prepare <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-resize <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-orphan-alloc <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-orphan-tree <storage-id> <volume>"
-        echo "  sharedlvmthin thin-recover-orphan <storage-id> <volume>"
-        echo "  sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>"
-        echo "  sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE"
-        echo "  sharedlvmthin thin-metadata-check <storage-id> <volume>"
+        if [ "$PACKAGE_FLAVOR" = dual ]; then
+            echo "  sharedlvmthin thin-recover-orphan <storage-id> <volume>"
+            echo "  sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>"
+            echo "  sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE"
+            echo "  sharedlvmthin thin-metadata-check <storage-id> <volume>"
+        fi
         echo "  sharedlvmthin version"
         exit 64
         ;;

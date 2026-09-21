@@ -1,0 +1,111 @@
+# Thick-only package profile
+
+The Thick-only package is an experimental packaging profile of the same
+SharedLvmThin source and Thick Generations implementation. It is not a fork,
+does not introduce a second on-disk format and must not receive independent
+storage logic. A correctness fix in shared Thick code therefore reaches both
+the dual-mode and Thick-only packages.
+
+CI also evaluates fixed fixtures for the published TG32 object-key derivation,
+LV and mapper names, ordered anchor/generation/transition/VG-intent tags and
+their signed digests. Changing one of those fixtures is a persistent-format
+change and requires an explicit migration and mixed-version qualification; it
+cannot be accepted as ordinary package-profile maintenance.
+
+The profiles are mutually exclusive:
+
+- `pve-sharedlvmthin` exposes experimental Thin and Thick Generations modes;
+- `pve-sharedlvmthin-thick` exposes only experimental Thick Generations;
+- both use the `sharedlvmthin` PVE storage type and the same signed Thick
+  anchor/generation schemas;
+- Debian `Conflicts` and `Replaces` prevent both packages from owning the
+  shared plugin files simultaneously.
+
+The Thick-only profile removes Thin runtime services, helpers and migration
+bridge from the binary package. It also omits bridge-only helpers and the
+daemon-only ThinGuard/mobility Perl modules, rather than shipping dormant
+operational components. Its plugin schema defaults to
+`thick-generations`, does not advertise Thin-only properties, and rejects an
+explicit Thin allocation mode. The public CLI and the internal recovery worker
+also reject Thin operations so a direct helper invocation cannot bypass the
+package boundary. Thick-only CLI help advertises only common diagnostics and
+Thick recovery commands; Thin command names remain visible only in the Dual
+profile.
+
+After a clean install or profile replacement, `postinst` independently checks
+that the excluded Thin/bridge executables are absent and that systemd reports
+ThinGuard as `inactive` or `failed`. Stale payload, an active guardian or
+unavailable runtime state refuses package configuration instead of declaring a
+Thick-only node ready.
+
+## Switching from the dual-mode package
+
+Switching is permitted only after every `sharedlvmthin` storage is explicitly
+configured as `thick-generations` and no managed Thin pool remains in any
+backing VG. The pre-install script checks both conditions before files are
+unpacked and refuses an ambiguous or unsafe switch. It also refuses every
+partial or malformed VG inventory: a successful but incomplete LVM scan is
+not proof that managed Thin objects are absent. A Thin pool must be
+migrated or deliberately removed with the dual-mode package; uninstalling its
+runtime is never a migration procedure.
+
+When an older SharedLvmThin package is present, the pre-install script also
+runs its bounded read-only upgrade gate and refuses any pending, active or
+failed transient Thick materialization unit. A package replacement therefore
+cannot remove entry points while a known asynchronous worker is unfinished.
+The gate never resumes, repairs or deletes a transaction. Missing `systemctl`
+or an unreadable unit inventory is a refusal, not evidence that no worker is
+running.
+
+The same pre-unpack transaction and recovery fence applies to ordinary
+upgrades and to a Thick-only-to-dual replacement. During removal of the dual
+profile, dpkg also stops and disables ThinGuard so no orphaned in-memory
+guardian can remain after its executable and unit are removed. This service
+cleanup is not a storage mutation and does not deactivate guest volumes. The
+old Dual package refuses removal whenever any managed Thin object exists even
+if ThinGuard is already stopped or failed, and a partial VG inventory is never
+treated as an empty inventory. An unavailable or ambiguous systemd state also
+refuses removal; an active guardian must reach a positively re-read stopped
+state before its unit and executable can be removed.
+
+The Thick-only post-install step removes only the dual package's explicitly
+delimited, project-managed `lvmlocal.conf` autogrow fragment because that
+fragment points to a Thin monitor intentionally absent from the Thick-only
+artifact. It saves a pre-change copy in the private state directory and never
+removes or rewrites administrator/vendor LVM policy outside the markers.
+
+If the replaced package remains as a Debian `config-files` entry, subsequently
+purging that residual entry detects the currently installed package-flavor
+marker and preserves the active profile's shared configuration, recovery state
+and LVM policy. An invalid marker also preserves state rather than guessing
+ownership. Purging the actually active/removed profile retains the normal
+scoped cleanup behavior.
+
+The dpkg installed-state database is checked independently of the marker. If
+the opposite profile is installed, its state is preserved even when the marker
+is missing, unreadable or contradictory; contradictory evidence is reported
+for repair but never resolved by deleting shared state.
+
+Run `sharedlvmthin upgrade-check` immediately before every rolling package
+change. Every Thick anchor must be positively verified as `MATERIALIZED`; do
+not replace plugin code while a hydration, rollback, deletion or recovery
+transaction is in progress. Upgrade one cluster node at a time and verify the
+installed package, PVE services, storage health and guest I/O before advancing.
+
+For the disposable qualification cluster, use
+`experiments/thick-generations/package-profile-gate.sh`. It is dry-run by
+default and requires an absolute non-symlink package path, exact SHA-256 and
+exact hostname confirmation. Mutation additionally requires `--execute` and
+root. It uses `dpkg` on that exact local artifact, never downloads dependencies
+and never reboots or advances another node. A profile replacement is accepted
+only at the identical package version; ordinary same-profile downgrades are
+refused.
+
+## Release boundary
+
+Building both profiles in CI proves that their package contents and common
+source remain internally consistent. It does not make either profile
+production-ready. The Thick-only artifact must remain unpublished until its
+own install, upgrade, replacement, reboot and destructive disposable-storage
+qualification gates pass. Both profiles remain experimental, unsupported and
+limited to disposable lab hardware, storage and guest data.

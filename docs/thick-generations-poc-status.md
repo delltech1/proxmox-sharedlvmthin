@@ -989,6 +989,12 @@ independent disk in the VG to start its own transaction. If worker scheduling
 fails, the callback completes materialization synchronously instead of
 acknowledging an unsupervised transition.
 
+This paragraph records the behavior of that historical prototype. The current
+audit candidate deliberately supersedes the fallback: an unconfirmed
+`systemd-run` result may mean the transaction worker was already queued, so it
+preserves the transaction and requires inspection plus explicit resume instead
+of starting a possible second owner.
+
 A live 7 GiB Linux qualification used the conservative 8/8 hydration profile
 while a foreground workload repeatedly replaced and fdatasync'ed a 128 MiB
 file. The snapshot callback returned successfully in 8.731 seconds and PVE

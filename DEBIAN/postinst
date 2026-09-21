@@ -10,6 +10,12 @@ WEB=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web
 CONF=/etc/pve-sharedlvmthin/web.conf
 SERVICE=pve-sharedlvmthin-web.service
 THIN_GUARD_SERVICE=pve-sharedlvmthin-thin-guard.service
+PACKAGE_FLAVOR_FILE=/usr/share/pve-sharedlvmthin/package-flavor
+PACKAGE_FLAVOR=$(sed -n '1p' "$PACKAGE_FLAVOR_FILE" 2>/dev/null || true)
+[ "$PACKAGE_FLAVOR" = "dual" ] || [ "$PACKAGE_FLAVOR" = "thick-only" ] || {
+    echo "ERROR: invalid or missing SharedLvmThin package flavor" >&2
+    exit 1
+}
 LVMLOCAL=/etc/lvm/lvmlocal.conf
 STATE_DIR=/var/lib/pve-sharedlvmthin
 LVM_BEGIN='# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW'
@@ -19,26 +25,55 @@ echo
 echo "Configuring SharedLvmThin..."
 
 perl -c "$PLUGIN"
-perl -c "$MONITOR"
 perl -c "$MATERIALIZER"
-perl -c "$THIN_GUARDD"
+if [ "$PACKAGE_FLAVOR" = "dual" ]; then
+    perl -c "$MONITOR"
+    perl -c "$THIN_GUARDD"
+fi
 python3 -m py_compile "$HEALTH"
 python3 -m py_compile "$WEB"
 
-chmod 0755 "$MONITOR" "$MATERIALIZER" "$THIN_GUARDD" "$HEALTH" "$WEB" \
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+chmod 0755 "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
+
+if [ "$PACKAGE_FLAVOR" = "dual" ]; then
+    chmod 0755 "$MONITOR" "$THIN_GUARDD" \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check
+fi
 
 # Install the tested dmeventd policy only when the administrator has not
 # already selected any of these settings.  Never overwrite a vendor or local
 # SAN policy.  The marked fragment is removable independently during purge.
 mkdir -p "$STATE_DIR"
-if grep -Eq '^[[:space:]]*(thin_command|thin_pool_autoextend_threshold|thin_pool_autoextend_percent)[[:space:]]*=' "$LVMLOCAL" 2>/dev/null; then
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null || \
+       grep -Fq "$LVM_END" "$LVMLOCAL" 2>/dev/null; then
+        # The dual package owns only this explicitly delimited fragment.
+        # Thick-only removes it because its thin_command target is deliberately
+        # absent. Require one complete, non-nested block before editing; a
+        # damaged marker must preserve the file and fail package configuration.
+        if ! awk -v begin="$LVM_BEGIN" -v end="$LVM_END" '
+            $0 == begin { if (open || seen) exit 2; open=1; seen=1; next }
+            $0 == end { if (!open) exit 2; open=0; closed=1; next }
+            END { if (!seen || open || !closed) exit 2 }
+        ' "$LVMLOCAL"; then
+            echo "ERROR: malformed SharedLvmThin-managed LVM policy markers;" >&2
+            echo "preserving $LVMLOCAL unchanged for manual inspection." >&2
+            exit 1
+        fi
+        cp -a "$LVMLOCAL" "$STATE_DIR/lvmlocal.conf.before-thick-only"
+        sed -i "/^$LVM_BEGIN$/,/^$LVM_END$/d" "$LVMLOCAL"
+        echo "Removed obsolete SharedLvmThin-managed Thin autogrow policy."
+    else
+        echo "Thick-only package: no SharedLvmThin-managed Thin autogrow policy is present."
+        echo "Administrator-owned LVM settings were not modified."
+    fi
+elif grep -Eq '^[[:space:]]*(thin_command|thin_pool_autoextend_threshold|thin_pool_autoextend_percent)[[:space:]]*=' "$LVMLOCAL" 2>/dev/null; then
     if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null; then
         echo "Existing SharedLvmThin managed LVM autogrow configuration preserved."
     else
@@ -64,10 +99,45 @@ fi
 
 systemctl daemon-reload
 
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    for FORBIDDEN_THIN_PATH in \
+        /lib/systemd/system/pve-sharedlvmthin-thin-guard.service \
+        /usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
+        /usr/sbin/sharedlvmthin-migrate-bridge
+    do
+        if [ -e "$FORBIDDEN_THIN_PATH" ]; then
+            echo "ERROR: Thick-only configuration refused: stale Thin component remains:" >&2
+            echo "  $FORBIDDEN_THIN_PATH" >&2
+            echo "Do not use this node until package ownership and profile replacement are repaired." >&2
+            exit 1
+        fi
+    done
+    if ! THIN_GUARD_STATE=$(systemctl show --property ActiveState --value \
+        "$THIN_GUARD_SERVICE" 2>/dev/null); then
+        echo "ERROR: Thick-only configuration refused: ThinGuard runtime state is unavailable." >&2
+        exit 1
+    fi
+    case "$THIN_GUARD_STATE" in
+        inactive|failed) ;;
+        *)
+            echo "ERROR: Thick-only configuration refused: ThinGuard remains '$THIN_GUARD_STATE'." >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # Never restart an armed runtime guardian during a package transaction. Its
 # in-memory epoch/watchdog bindings remain authoritative until every protected
 # mapper has completed normal PVE teardown.
-if systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
+if [ "$PACKAGE_FLAVOR" = "dual" ] && systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
     echo "Active ThinGuard preserved without restart during package upgrade."
     echo "Drain protected VMs, verify the guardian is IDLE, then restart $THIN_GUARD_SERVICE."
 fi
@@ -197,7 +267,11 @@ fi
 
 echo
 echo "SharedLvmThin installation complete."
-echo "WARNING: BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL."
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    echo "WARNING: THICK GENERATIONS IS EXPERIMENTAL."
+else
+    echo "WARNING: BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL."
+fi
 echo "Use only disposable lab hosts, storage and guest data; no support or warranty is offered."
 if [ "$HEALTH_OK" -eq 1 ] && [ "$PVE_REFRESH_OK" -eq 1 ]; then
     echo "Installation status: BOUNDED PREFLIGHT PASSED"

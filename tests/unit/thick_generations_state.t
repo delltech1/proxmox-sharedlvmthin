@@ -8,7 +8,7 @@ use Test::More;
 use PVE::SharedLvmThinThick qw(
     anchor_tags decode_anchor_tags generation_tags validate_anchor_transition
     validate_generation_tags vg_intent_tags decode_vg_intent_tags clone_geometry
-    transition_tags validate_transition_tags materialized_rebase_state
+    transition_tags decode_transition_tags validate_transition_tags materialized_rebase_state
     classify_recovery
 );
 
@@ -148,6 +148,13 @@ my $transition = transition_tags(
     sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
     kind => 'metadata', generation => 1, region => 8,
 );
+my $decoded_transition = decode_transition_tags($transition);
+is_deeply(
+    { map { $_ => $decoded_transition->{$_} } qw(v sid vol tx kind generation region) },
+    { v => 1, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
+      kind => 'metadata', generation => 1, region => 8 },
+    'transition ownership proof round-trips through the strict decoder',
+);
 ok(validate_transition_tags(
     $transition, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
     kind => 'metadata', generation => 1, region => 8,
@@ -157,6 +164,12 @@ eval { validate_transition_tags(
     kind => 'metadata', generation => 1, region => 8,
 ) };
 like($@, qr/ownership proof mismatch/, 'foreign transition metadata is rejected');
+my @tampered_transition = @$transition;
+$tampered_transition[2] = 'slt_tgt_vol=vm-999-disk-0';
+eval { decode_transition_tags(\@tampered_transition) };
+like($@, qr/digest mismatch/, 'tampered transition ownership proof fails closed');
+eval { decode_transition_tags([@$transition, 'slt_tgt_kind=metadata']) };
+like($@, qr/duplicate/, 'duplicate transition ownership field fails closed');
 
 my $intent = vg_intent_tags(
     tx => $tx, state => 'OPEN', op => 'DM_CUTOVER', object => 'sltg-a-test',
@@ -293,6 +306,18 @@ is($c6_suspended->{materialization_state}, 'PUBLISH_REQUIRED',
     'C6 suspended old-generation runtime is an exact resumable publication state');
 is($c6_suspended->{safe_for_mutation}, 0,
     'C6 publication recovery remains fail-closed');
+my $c9_suspended = classify_recovery(
+    anchor => { %$recovery_prepared, phase => 'HYDRATION_COMPLETE', head => 'g1', generation => 1 },
+    intent => $cutover_intent, objects => { %transition_objects },
+    runtime => 'clone', runtime_suspended => 1, clone_status => 'complete',
+    clone_source => 'source', expected_anchor => $anchor_object,
+);
+is($c9_suspended->{data_state}, 'VALID',
+    'a complete clone suspended at the pivot boundary retains deterministic authority');
+is($c9_suspended->{materialization_state}, 'PIVOT_READY',
+    'a suspended complete clone is explicitly resumable without replaying hydration');
+is($c9_suspended->{safe_for_mutation}, 0,
+    'suspended pivot recovery still blocks unrelated mutation');
 my $c6_active = classify_recovery(
     anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
     intent => $cutover_intent, objects => { %transition_objects },
@@ -340,6 +365,30 @@ for my $case (
     is($classification->{data_state}, 'VALID', "rollback $phase has deterministic data authority");
     is($classification->{safe_for_mutation}, 0, "rollback $phase remains fail-closed");
 }
+
+my $post_pivot_partial_cleanup = classify_recovery(
+    anchor => { %$rollback_recovery, phase => 'LINEAR_PIVOTED', head => 'g2', generation => 2 },
+    intent => $rollback_intent,
+    objects => { head => 1, source => 1, new => 1 },
+    runtime => 'linear-new', clone_status => 'none', clone_source => 'none',
+    expected_anchor => $anchor_object,
+);
+is($post_pivot_partial_cleanup->{data_state}, 'VALID',
+    'linear-pivoted rollback remains deterministic after metadata and old HEAD cleanup');
+is($post_pivot_partial_cleanup->{materialization_state}, 'FINALIZE_READY',
+    'post-pivot partial cleanup can finalize without recreating removed objects');
+
+my $post_pivot_reboot = classify_recovery(
+    anchor => { %$rollback_recovery, phase => 'LINEAR_PIVOTED', head => 'g2', generation => 2 },
+    intent => $rollback_intent,
+    objects => { head => 1, source => 1, new => 1 },
+    runtime => 'absent', clone_status => 'none', clone_source => 'none',
+    expected_anchor => $anchor_object,
+);
+is($post_pivot_reboot->{data_state}, 'VALID',
+    'linear-pivoted rollback retains deterministic authority after host reboot');
+is($post_pivot_reboot->{materialization_state}, 'RECONSTRUCT_REQUIRED',
+    'post-pivot reboot requires exact linear frontend reconstruction before cleanup');
 
 my $rollback_materialized = {
     %$rollback_recovery, phase => 'MATERIALIZED', head => 'g2', generation => 2,

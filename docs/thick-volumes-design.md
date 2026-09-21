@@ -46,9 +46,52 @@ A snapshot transition temporarily becomes:
 immutable source + persistent dm-clone metadata -> writable destination HEAD
 ```
 
+Before that frontend is published, the complete destination HEAD is explicitly
+zeroed and flushed. This is a correctness and data-isolation requirement:
+dm-clone marks an unhydrated region valid when it receives a DISCARD, while the
+table deliberately uses `no_discard_passdown`. A destination containing old
+free-extent data would therefore be unsafe. If zeroing is interrupted, the
+persisted `PREPARED` phase repeats the full exact range; it never resumes from
+an unproven offset. Hardware BLKZEROOUT is preferred and a full direct-zero
+write is the fail-safe fallback, so large or slow destinations can extend the
+snapshot callback duration before any guest-visible cutover.
+
+Every direct zero or metadata write additionally proves that the kernel DM
+node's `LVM-<VG UUID><LV UUID>` identity matches the exact LV returned by a
+device-scoped LVM query. Names alone never authorize a raw write, so a stale
+mapper or duplicate-VG name cannot redirect initialization to another device.
+The same rule protects reads and device-mapper table construction: all Thick
+LV activation is centralized in an activate-and-prove primitive that validates
+every requested LV separately before any caller can use its pathname.
+Deactivation is symmetric: an existing mapper is UUID-proved before the LVM
+command, and authoritative kernel inventory must show every exact mapper
+absent afterward. An already-inactive LV can be repeated safely.
+
 When hydration completes, the frontend is atomically pivoted back to a linear
 table whose only dependency is the destination generation. dm-clone is a
 transaction transport, not the permanent storage format.
+
+The pivot tolerates an exact already-suspended clone left by interruption. It
+loads and verifies the deterministic inactive linear table, proves the mapper
+is suspended, and then rechecks complete hydration plus writable dm-clone
+metadata before resume publishes the destination-only mapping. Unknown,
+read-only, failed, or geometrically inconsistent status remains suspended and
+fails closed rather than publishing the linear table.
+
+Every status observation is also bound to the signed transition geometry, not
+merely to a plausible hydration counter. The device-mapper target must begin at
+sector zero and report the exact frontend sector length, configured region
+size, and region count derived from those two values. Those invariants are
+rechecked before and after each bounded event wait and again at the pivot, so a
+replaced, truncated, or internally impossible runtime map cannot inherit the
+authority of an otherwise valid persistent anchor. Metadata usage may never
+exceed metadata capacity, and hydrated plus currently hydrating regions may
+never exceed the target's derived region count.
+
+The read-only recovery classifier reports that exact suspended boundary as
+`PIVOT_READY`, never as healthy or mutation-safe. This keeps diagnostics and
+the explicit resume implementation consistent without allowing an ordinary
+operation to adopt or bypass the interrupted transition.
 
 For a running guest, PVE keeps QEMU paused until the storage snapshot callback
 returns. Online materialization is therefore asynchronous by default. The
@@ -71,7 +114,16 @@ During asynchronous materialization:
 - read-only inventory continues to report the current HEAD;
 - a guest stop must not dismantle worker-owned dependencies;
 - any ambiguous identity, table, status, or intent fails closed;
-- failure to schedule the worker falls back to synchronous completion.
+- a positively confirmed worker schedule lets the snapshot callback return;
+- an unconfirmed `systemd-run` result never falls back to synchronous
+  completion, because the exact worker may already have been queued. The
+  persistent transaction is preserved for inspection and explicit resume.
+
+Destination and dm-clone metadata LVs are born with their complete signed
+ownership tags and `autoactivation=n` in the same `lvcreate` operation. A host
+loss can therefore leave no object, one signed object, both signed objects, or
+the signed PREPARED anchor, but this version never creates a transition LV
+whose ownership must later be inferred from its deterministic name.
 
 The optional `slt-tg-online-materialization synchronous` setting exists for
 diagnostic qualification. It intentionally keeps the PVE snapshot callback
@@ -88,16 +140,32 @@ sharedlvmthin thick-resume <storage-id> <volume>
 The command accepts no caller-supplied snapshot or transaction identity. It
 derives those fields from the signed persistent state, requires either its
 exact VG intent or the exact anchor-scoped handoff, and reconstructs runtime
-tables only when all transition mappers are absent. A partial runtime is
-ambiguous and is refused. Successful resumption continues persistent dm-clone
+tables only when their persisted phase and exact dependencies permit it.
+`PREPARED`, `SOURCE_READY`, `COMMITTED`, `HYDRATING`,
+`HYDRATION_COMPLETE`, and `LINEAR_PIVOTED` are explicit resume inputs. A
+partial pre-pivot runtime is ambiguous and is refused. Successful resumption
+continues persistent dm-clone
 progress, completes the linear pivot, and clears only the exact transition
-metadata and any matching intent.
+metadata and any matching intent. `LINEAR_PIVOTED` is itself persistent
+authority: recovery first proves that the stable frontend maps only the signed
+new HEAD, then idempotently finishes any remaining source-mapper, metadata-LV
+and superseded rollback-HEAD cleanup. An already absent cleanup object is
+accepted only in that post-pivot phase; a present object is revalidated before
+its single removal attempt. Each LVM cleanup object is passed through the
+device-scoped prove-and-deactivate gate before `lvremove`; a present kernel
+mapper must match the authoritative LVM UUID and must be confirmed absent after
+deactivation. If a reboot removed the frontend after the recorded
+pivot, recovery activates only the signed new HEAD and reconstructs its exact
+linear frontend; it never recreates dm-clone metadata or a source mapper.
 
 The same command also resumes a persisted `ROLLBACK` transition. The operation
 type is derived exclusively from the signed anchor; callers cannot select or
-change it. Recovery requires the rollback snapshot generation, superseded HEAD,
-new HEAD, metadata LV, transaction ID, geometry, and `DM_PIVOT` intent to match
-exactly. A stale PVE `lock: rollback` is not modified by the storage plugin. It
+change it. Before the linear pivot, recovery requires the rollback snapshot
+generation, superseded HEAD, new HEAD, metadata LV, transaction ID, geometry,
+and `DM_PIVOT` intent to match exactly. After a proven `LINEAR_PIVOTED`
+boundary, the superseded HEAD and metadata may already be absent because their
+exact cleanup completed before interruption. A stale PVE `lock: rollback` is
+not modified by the storage plugin. It
 may be cleared with native PVE tooling only after materialization, storage
 health, and restored data authority have been positively verified.
 
@@ -116,9 +184,77 @@ The command accepts neither a snapshot name nor a transaction identifier. It
 derives both from persistent signed state, holds the canonical VG lock,
 requires quorum and pinned storage identity, scopes LVM mutations to the
 expected multipath device, refuses an open or foreign object, performs at most
-one exact removal attempt, verifies the canonical HEAD, and clears only the
+one exact removal attempt, proves kernel deactivation independently of udev
+pathname presence, verifies the canonical HEAD, and clears only the
 matching intent. If the object is already absent after the verified rebase, it
 performs finalize-only recovery without retrying removal.
+
+An interrupted whole-volume removal preserves its exact signed `OPEN REMOVE`
+intent. After confirming that PVE no longer references the volume, resume only
+with:
+
+```text
+sharedlvmthin thick-recover-volume-delete <storage-id> <volume>
+```
+
+The recovery refuses a runtime frontend or any object outside the canonical
+signed HEAD and anchor. It can repeat the complete pair, remove only the anchor
+left after HEAD deletion, or clear only the matching intent when authoritative
+inventory proves that deletion had already completed.
+
+An interrupted online grow remains fenced by its `OPEN EXTEND` intent. When
+the exact stable linear frontend is still present, recovery is available with:
+
+```text
+sharedlvmthin thick-recover-resize <storage-id> <volume>
+```
+
+The command accepts no size from the operator. It derives the previously
+published byte boundary from the UUID- and dependency-verified linear frontend
+and the target boundary from the signed authoritative HEAD LV. If the target is
+larger, it repeats and flushes the complete unpublished zero tail, revalidates
+the intent and object identities, then publishes the larger linear table via a
+verified suspend/resume cutover. If publication already completed, it only
+verifies the final map and clears the matching intent. A missing frontend,
+smaller backing LV, non-linear table, identity mismatch, or changed authority
+is ambiguous and remains fail-closed for manual investigation.
+
+`sharedlvmthin recovery-check <storage-id>` independently reads the VG tags and
+validates the complete signed mutation intent. A materialized anchor never
+overrides an OPEN intent: diagnostics report `VG_INTENT_CLEAR=FAIL`, keep
+`SAFE_FOR_MUTATION=NO`, and identify `thick-recover-resize` for an exact
+`EXTEND` case. Malformed, incomplete, duplicate, unknown, or digest-mismatched
+intent evidence is likewise fail-closed.
+
+The JSON health/Doctor path performs the same independent read-only check using
+the pinned multipath device. It publishes the status, operation and reason in
+`vg_mutation_intent` and raises a failing `vg_mutation_intent:<storage-id>`
+check, so CLI diagnostics, web monitoring and upgrade gates cannot disagree
+about whether a persistent mutation is still open.
+
+Package upgrades and Dual/Thick-only profile switches require exactly one
+`VG_INTENT_CLEAR=PASS` result for every applicable configured storage in
+addition to the overall healthy and safe-for-mutation records. Missing or
+duplicated proof is an upgrade refusal before package files are replaced.
+
+Large-volume arithmetic is byte-exact on the supported 64-bit Proxmox host
+architecture. Regression fixtures cover a five-TiB full zero initialization
+and recovery of a four-to-five-TiB online grow, including the exact byte seek,
+count and resulting device-mapper sector boundary. These tests do not claim
+physical-array throughput qualification; that remains a disposable-lab gate.
+
+Resize recovery is explicitly idempotent at its final boundaries. A frontend
+already published at the authoritative HEAD size is verified and only the
+matching intent is cleared. A frontend already suspended after loading the new
+inactive table is verified and resumed without a second suspend. Absence of the
+frontend leaves the intent untouched because the old published boundary cannot
+be derived safely from persistent v1 evidence alone.
+
+Every stable frontend, read-only transition source and inactive linear table is
+accepted only as one exact `0 <sectors> linear <device> 0` segment. The UUID,
+expected size and sole dependency are checked independently, while any non-zero
+source offset or trailing target argument is ambiguous and fails closed before
+publication or cleanup.
 
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never

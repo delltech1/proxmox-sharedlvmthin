@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import io
 import os
 import re
@@ -76,6 +77,7 @@ class StorageConfigurationTests(unittest.TestCase):
                 )
                 self.assertFalse(storages[0]["disabled"])
 
+
     def test_node_scope_is_recorded(self):
         storages = self.parse_text(
             "sharedlvmthin: scoped\n"
@@ -89,6 +91,139 @@ class StorageConfigurationTests(unittest.TestCase):
             "sharedlvmthin: global\n\tslt-vgname vg_global\n"
         )
         self.assertIsNone(storages[0]["nodes"])
+
+    def test_thick_materialization_limit_defaults_and_parses(self):
+        default = self.parse_text(
+            "sharedlvmthin: thick-default\n\tslt-vgname vg_a\n"
+        )[0]
+        self.assertEqual(default["tg_max_active_materializations"], 4)
+        explicit = self.parse_text(
+            "sharedlvmthin: thick-tuned\n"
+            "\tslt-vgname vg_b\n"
+            "\tslt-tg-max-active-materializations 12\n"
+        )[0]
+        self.assertEqual(explicit["tg_max_active_materializations"], 12)
+
+
+class ThickMaterializationAdmissionHealthTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.evaluate = staticmethod(
+            load_function("evaluate_thick_materialization_admission")
+        )
+
+    def test_slots_are_counted_from_non_materialized_anchors(self):
+        status, result = self.evaluate([
+            {"phase": "MATERIALIZED"},
+            {"phase": "HYDRATING"},
+            {"phase": "HYDRATION_COMPLETE"},
+        ], 3)
+        self.assertEqual(status, "PASS")
+        self.assertEqual(result["active"], 2)
+        self.assertTrue(result["available"])
+
+    def test_saturated_limit_is_visible_but_not_false_failure(self):
+        status, result = self.evaluate([
+            {"phase": "HYDRATING"}, {"phase": "PREPARED"},
+        ], 2)
+        self.assertEqual(status, "PASS")
+        self.assertFalse(result["available"])
+        self.assertIn("intentionally blocked", result["reason"])
+
+    def test_invalid_limit_fails_health_closed(self):
+        for value in (0, 65, "four", True):
+            with self.subTest(value=value):
+                status, result = self.evaluate([], value)
+                self.assertEqual(status, "FAIL")
+                self.assertFalse(result["available"])
+
+
+class VgMutationIntentHealthTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "evaluate_vg_mutation_intent"
+        )
+        namespace = {"re": re, "hashlib": hashlib}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"), namespace)
+        cls.evaluate = staticmethod(namespace["evaluate_vg_mutation_intent"])
+
+    def test_empty_intent_is_healthy(self):
+        status, reason, operation = self.evaluate("testvg", "testvg|")
+        self.assertEqual((status, operation), ("PASS", None))
+        self.assertIn("no persistent", reason)
+
+    def test_open_extend_is_validated_but_fails_health_closed(self):
+        values = {
+            "v": "1", "tx": "4" * 32, "state": "OPEN", "op": "EXTEND",
+            "object": "sltg-a-0123456789abcdef01234567", "before": "b" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        tags = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        status, reason, operation = self.evaluate("testvg", f"testvg|{tags}")
+        self.assertEqual((status, operation), ("FAIL", "EXTEND"))
+        self.assertIn("blocks all new mutations", reason)
+        self.assertIn("thick-recover-resize", reason)
+
+    def test_duplicate_or_wrong_vg_intent_is_fail_closed(self):
+        status, _, _ = self.evaluate(
+            "testvg", "testvg|slt_tg_vgi_v=1,slt_tg_vgi_v=1"
+        )
+        self.assertEqual(status, "FAIL")
+        status, _, _ = self.evaluate("testvg", "othervg|")
+        self.assertEqual(status, "FAIL")
+
+    def test_open_remove_points_to_reference_gated_volume_delete_recovery(self):
+        values = {
+            "v": "1", "tx": "7" * 32, "state": "OPEN", "op": "REMOVE",
+            "object": "sltg-a-0123456789abcdef01234567", "before": "c" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        tags = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        status, reason, operation = self.evaluate("testvg", f"testvg|{tags}")
+        self.assertEqual((status, operation), ("FAIL", "REMOVE"))
+        self.assertIn("thick-recover-volume-delete", reason)
+
+
+class PackageIdentityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.evaluate = staticmethod(load_function("evaluate_package_identity"))
+
+    def test_dual_and_thick_only_exact_identity_pass(self):
+        for package, flavor in (
+            ("pve-sharedlvmthin", "dual"),
+            ("pve-sharedlvmthin-thick", "thick-only"),
+        ):
+            with self.subTest(flavor=flavor):
+                status, message = self.evaluate(package, flavor, "1.2.3")
+                self.assertEqual(status, "PASS")
+                self.assertIn(package, message)
+
+    def test_missing_or_unknown_marker_fails(self):
+        for flavor in (None, "", "future"):
+            with self.subTest(flavor=flavor):
+                status, _ = self.evaluate(None, flavor, None)
+                self.assertEqual(status, "FAIL")
+
+    def test_identity_mismatch_and_missing_version_fail(self):
+        status, _ = self.evaluate("pve-sharedlvmthin", "thick-only", "1.2.3")
+        self.assertEqual(status, "FAIL")
+        status, _ = self.evaluate("pve-sharedlvmthin-thick", "thick-only", None)
+        self.assertEqual(status, "FAIL")
 
 
 class ClusterHealthSemanticsTests(unittest.TestCase):
@@ -527,6 +662,23 @@ class ThickAnchorReferenceTests(unittest.TestCase):
         self.assertEqual(result[0]["materialization_state"], "RECOVERY_REQUIRED")
         self.assertIn("thick-resume", result[0]["reason"])
         self.assertIn("no automatic repair", result[0]["reason"])
+
+    def test_every_persisted_transition_phase_is_reported_as_resumable(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        for phase in (
+            "PREPARED", "SOURCE_READY", "COMMITTED", "HYDRATING",
+            "HYDRATION_COMPLETE", "LINEAR_PIVOTED",
+        ):
+            with self.subTest(phase=phase):
+                result = evaluate("thick", [{
+                    "name": "sltg-a-key", "volume": "vm-100-disk-0",
+                    "phase": phase, "transaction": "d" * 32,
+                }], lambda _transaction, _sid, _volume: "ABSENT")
+                self.assertEqual(result[0]["status"], "FAIL")
+                self.assertEqual(
+                    result[0]["materialization_state"], "RECOVERY_REQUIRED"
+                )
+                self.assertIn("thick-resume", result[0]["reason"])
 
     def test_ambiguous_materialization_phase_fails_closed(self):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
