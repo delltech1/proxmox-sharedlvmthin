@@ -36,6 +36,10 @@
   fails; missing evidence is never treated as an empty Thin inventory.
 - Keep binary-package documentation under the actual package namespace and
   reject cross-profile documentation leakage during artifact validation.
+- Pin published TG32 persistent-format fixtures for object keys, LV/mapper
+  names and every signed Thick anchor, generation, transition and VG-intent
+  tag sequence. Package-profile maintenance now fails CI if it silently
+  changes the shared on-disk format.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

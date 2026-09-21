@@ -6,6 +6,12 @@ does not introduce a second on-disk format and must not receive independent
 storage logic. A correctness fix in shared Thick code therefore reaches both
 the dual-mode and Thick-only packages.
 
+CI also evaluates fixed fixtures for the published TG32 object-key derivation,
+LV and mapper names, ordered anchor/generation/transition/VG-intent tags and
+their signed digests. Changing one of those fixtures is a persistent-format
+change and requires an explicit migration and mixed-version qualification; it
+cannot be accepted as ordinary package-profile maintenance.
+
 The profiles are mutually exclusive:
 
 - `pve-sharedlvmthin` exposes experimental Thin and Thick Generations modes;
