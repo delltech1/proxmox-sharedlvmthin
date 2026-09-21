@@ -6,6 +6,10 @@
   exact device-scoped VG/LV UUID pair with the active kernel DM UUID. A stale
   mapper or duplicate-name collision now fails before it can redirect a raw
   write to an unrelated device.
+- Route every Thick LV activation through one activate-and-prove primitive.
+  Each requested LV receives an individual post-activation kernel UUID check;
+  direct unverified `lvchange -ay` call sites are prohibited by regression
+  tests, including read-only snapshot and runtime-reconstruction paths.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

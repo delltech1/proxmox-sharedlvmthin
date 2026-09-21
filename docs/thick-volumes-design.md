@@ -60,6 +60,9 @@ Every direct zero or metadata write additionally proves that the kernel DM
 node's `LVM-<VG UUID><LV UUID>` identity matches the exact LV returned by a
 device-scoped LVM query. Names alone never authorize a raw write, so a stale
 mapper or duplicate-VG name cannot redirect initialization to another device.
+The same rule protects reads and device-mapper table construction: all Thick
+LV activation is centralized in an activate-and-prove primitive that validates
+every requested LV separately before any caller can use its pathname.
 
 When hydration completes, the frontend is atomically pivoted back to a linear
 table whose only dependency is the destination generation. dm-clone is a

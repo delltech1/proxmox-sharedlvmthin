@@ -834,9 +834,12 @@ exit 0
             ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
         ).read_text(encoding="utf-8")
         self.assertIn("sub _thick_verify_active_lv_identity", source)
+        self.assertIn("sub _thick_activate_exact_lvs", source)
         self.assertIn("'vg_uuid,lv_uuid,lv_name'", source)
         self.assertIn('my $expected_uuid = "LVM-$vg_uuid$lv_uuid"', source)
-        self.assertEqual(source.count("_thick_verify_active_lv_identity("), 4)
+        self.assertEqual(source.count("['/sbin/lvchange', '--devices', $device, '-ay'"), 1)
+        self.assertEqual(source.count("_thick_activate_exact_lvs("), 11)
+        self.assertEqual(source.count("_thick_verify_active_lv_identity("), 2)
 
     def test_snapshot_delete_recovery_is_an_explicit_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")

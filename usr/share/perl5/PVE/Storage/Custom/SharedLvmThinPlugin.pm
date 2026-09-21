@@ -805,6 +805,22 @@ sub _thick_verify_active_lv_identity {
     return 1;
 }
 
+sub _thick_activate_exact_lvs {
+    my ($class, $vg, $device, $errmsg, @lvs) = @_;
+    die "exact Thick activation requires at least one LV\n" if !@lvs;
+    my %seen;
+    for my $lv (@lvs) {
+        die "exact Thick activation contains an invalid or duplicate LV name\n"
+            if !defined($lv) || $lv !~ /^[A-Za-z0-9+_.-]+$/ || $seen{$lv}++;
+    }
+    run_command(
+        ['/sbin/lvchange', '--devices', $device, '-ay', '-K', map { "$vg/$_" } @lvs],
+        errmsg => $errmsg,
+    );
+    $class->_thick_verify_active_lv_identity($vg, $_, $device) for @lvs;
+    return 1;
+}
+
 # Intentionally inert production hook. Qualification drivers may locally
 # override this method to terminate only their own disposable worker at an
 # exact persisted crash boundary. No configuration or environment variable can
@@ -1047,9 +1063,10 @@ sub _thick_activate_volume {
         my $vg = $scfg->{'slt-vgname'};
         $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
         $class->_verify_autoactivation_disabled($vg, $snapshot, $device);
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$snapshot"],
-            errmsg => "activating thick-generations snapshot '$vg/$snapshot' failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating thick-generations snapshot '$vg/$snapshot' failed",
+            $snapshot,
         );
         $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
         return 1;
@@ -1071,10 +1088,10 @@ sub _thick_activate_volume {
     }
     die "thick-generations volume '$storeid:$volname' is materializing and its exact frontend is missing; recovery required\n"
         if $state->{phase} ne 'MATERIALIZED';
-    run_command(
-        ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-            "$vg/$state->{head}", "$vg/$anchor"],
-        errmsg => "activating thick-generations state for '$vg/$volname' failed",
+    $class->_thick_activate_exact_lvs(
+        $vg, $device,
+        "activating thick-generations state for '$vg/$volname' failed",
+        $state->{head}, $anchor,
     );
     $class->_verify_autoactivation_disabled($vg, $state->{head}, $device);
     my $sectors = _command_lines(
@@ -2123,11 +2140,11 @@ sub _thick_alloc_image {
     }, $device);
 
     eval {
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$head"],
-            errmsg => "activating new thick generation '$vg/$head' for zeroing failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating new thick generation '$vg/$head' for zeroing failed",
+            $head,
         );
-        $class->_thick_verify_active_lv_identity($vg, $head, $device);
         my $zero_bytes = int($size) * 1024;
         $class->_zero_new_thick_generation(
             "/dev/$vg/$head", $zero_bytes, "new thick generation '$vg/$head'",
@@ -4031,9 +4048,10 @@ sub _thick_reconstruct_missing_transition_runtime {
     if ($phase eq 'LINEAR_PIVOTED') {
         my $sectors = int($tr->{size} / 512);
         if (!$front_exists) {
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{new}"],
-                errmsg => "activating linear-pivoted Thick Generations HEAD failed",
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating linear-pivoted Thick Generations HEAD failed",
+                $tr->{new},
             );
             my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
             run_command(
@@ -4054,10 +4072,10 @@ sub _thick_reconstruct_missing_transition_runtime {
     # anchor, immutable generations, clone metadata, and OPEN VG intent remain
     # persistent. Reconstruct only the exact dependency graph described by
     # those already-verified objects. No global scan or cleanup is performed.
-    run_command(
-        ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-            "$vg/$tr->{source}", "$vg/$tr->{new}", "$vg/$tr->{meta}"],
-        errmsg => "activating exact persisted transition objects failed",
+    $class->_thick_activate_exact_lvs(
+        $vg, $device,
+        "activating exact persisted transition objects failed",
+        $tr->{source}, $tr->{new}, $tr->{meta},
     );
     run_command(
         ['/sbin/dmsetup', '--verifyudev', 'create', $source_map,
@@ -4071,10 +4089,10 @@ sub _thick_reconstruct_missing_transition_runtime {
 
     my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
     if ($phase eq 'SOURCE_READY') {
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-                "$vg/$tr->{old}", "$vg/$tr->{anchor}"],
-            errmsg => "activating exact pre-cutover state failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating exact pre-cutover state failed",
+            $tr->{old}, $tr->{anchor},
         );
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
@@ -4336,11 +4354,11 @@ sub _thick_volume_snapshot {
             # the clone frontend can ever be published.  PREPARED is an
             # idempotent boundary: after interruption the whole exact range is
             # zeroed again, never assumed complete from a partial attempt.
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{new}"],
-                errmsg => "activating thick snapshot destination for zeroing failed",
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating thick snapshot destination for zeroing failed",
+                $tr->{new},
             );
-            $class->_thick_verify_active_lv_identity($vg, $tr->{new}, $device);
             $class->_zero_new_thick_generation(
                 "/dev/$vg/$tr->{new}", int($tr->{size}),
                 "thick snapshot destination '$vg/$tr->{new}'",
@@ -4353,11 +4371,11 @@ sub _thick_volume_snapshot {
                 ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$tr->{new}"],
                 errmsg => "deactivating zeroed thick snapshot destination failed",
             );
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{meta}"],
-                errmsg => "activating dm-clone metadata failed",
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating dm-clone metadata failed",
+                $tr->{meta},
             );
-            $class->_thick_verify_active_lv_identity($vg, $tr->{meta}, $device);
             run_command(
                 ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$tr->{meta}",
                     'bs=4096', 'count=1', 'conv=fsync,nocreat', 'status=none'],
@@ -4400,10 +4418,10 @@ sub _thick_volume_snapshot {
                 device => $device,
             );
             if (!_block_device_exists("/dev/mapper/$front")) {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-                        "$vg/$tr->{old}", "$vg/$tr->{anchor}"],
-                    errmsg => "activating prepared thick-generations source failed",
+                $class->_thick_activate_exact_lvs(
+                    $vg, $device,
+                    "activating prepared thick-generations source failed",
+                    $tr->{old}, $tr->{anchor},
                 );
                 my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
                 my $sectors = int($tr->{old_size} / 512);
@@ -4416,10 +4434,10 @@ sub _thick_volume_snapshot {
             $class->_thick_verify_frontend(
                 $scfg, $volname, $tr->{old}, int($tr->{old_size} / 512),
             );
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-ay', '-K',
-                    "$vg/$tr->{source}", "$vg/$tr->{new}", "$vg/$tr->{meta}"],
-                errmsg => "activating snapshot transition LVs failed",
+            $class->_thick_activate_exact_lvs(
+                $vg, $device,
+                "activating snapshot transition LVs failed",
+                $tr->{source}, $tr->{new}, $tr->{meta},
             );
         # Construct the read-only source view while the old linear frontend is
         # still active.  No LVM command may run while that frontend is
@@ -5242,11 +5260,13 @@ sub _thick_volume_resize {
 
     my $zero_error = '';
     eval {
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$resize{head}"],
-            errmsg => "activating extended thick generation '$vg/$resize{head}' failed",
+        $class->_thick_activate_exact_lvs(
+            $vg, $device,
+            "activating extended thick generation '$vg/$resize{head}' failed",
+            $resize{head},
         ) if !$resize{frontend};
-        $class->_thick_verify_active_lv_identity($vg, $resize{head}, $device);
+        $class->_thick_verify_active_lv_identity($vg, $resize{head}, $device)
+            if $resize{frontend};
         my $length = $resize{new_size} - $resize{old_size};
         run_command(
             ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$resize{head}", 'bs=4M',

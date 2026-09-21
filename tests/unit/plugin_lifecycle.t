@@ -472,6 +472,35 @@ subtest 'active Thick LV raw-write identity is pinned to the scoped LVM UUID' =>
         'stale or colliding kernel mapper fails before any raw write');
 };
 
+subtest 'every Thick LV activation proves each exact kernel identity' => sub {
+    reset_mocks();
+    my @verified;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub {
+        my (undef, $vg, $lv, $device) = @_;
+        push @verified, "$vg|$lv|$device";
+        return 1;
+    };
+    ok($class->_thick_activate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'activation failed', 'head', 'anchor',
+    ), 'exact multi-LV activation succeeds only through the proving wrapper');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -ay -K testvg/head testvg/anchor',
+    ], 'one device-scoped activation covers only the requested LVs');
+    is_deeply(\@verified, [
+        'testvg|head|/dev/mapper/3600abcd',
+        'testvg|anchor|/dev/mapper/3600abcd',
+    ], 'every activated LV receives its own post-activation UUID proof');
+
+    reset_mocks();
+    eval { $class->_thick_activate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'activation failed', 'head', 'head',
+    ) };
+    like($@, qr/invalid or duplicate LV name/,
+        'duplicate activation targets fail before the LVM command');
+    is(scalar(@commands), 0, 'invalid activation performs no command');
+};
+
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
     for my $case (
         ['twi-aotz--|||20.00', 1, 'healthy'],
