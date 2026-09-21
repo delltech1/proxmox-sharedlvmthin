@@ -55,8 +55,12 @@ fi
 # managed Thin pool. Refuse before unpacking, while the previous package is
 # still intact and recoverable.
 if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
-    if [ -r /etc/pve/storage.cfg ]; then
-        if awk '
+    if [ ! -r /etc/pve/storage.cfg ]; then
+        echo "ERROR: Thick-only package installation refused: /etc/pve/storage.cfg" >&2
+        echo "is not readable, so the allocation modes cannot be proven safe." >&2
+        exit 1
+    fi
+    if awk '
             BEGIN { in_slt=0; mode="thin"; bad=0 }
             /^[^[:space:]][^:]*:[[:space:]]/ {
                 if (in_slt && mode != "thick-generations") bad=1
@@ -68,14 +72,24 @@ if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
                 exit bad ? 0 : 1
             }
         ' /etc/pve/storage.cfg; then
-            echo "ERROR: Thick-only package installation refused: a SharedLvmThin" >&2
-            echo "storage is configured in Thin mode (including the legacy default)." >&2
-            echo "Move or remove every Thin-backed guest and configuration first." >&2
-            exit 1
-        fi
+        echo "ERROR: Thick-only package installation refused: a SharedLvmThin" >&2
+        echo "storage is configured in Thin mode (including the legacy default)." >&2
+        echo "Move or remove every Thin-backed guest and configuration first." >&2
+        exit 1
     fi
-    if command -v lvs >/dev/null 2>&1 &&
-       lvs --readonly --noheadings --separator '|' -o lv_tags,segtype 2>/dev/null |
+
+    if ! command -v lvs >/dev/null 2>&1; then
+        echo "ERROR: Thick-only package installation refused: lvs is unavailable," >&2
+        echo "so managed Thin objects cannot be excluded." >&2
+        exit 1
+    fi
+    if ! MANAGED_LVS=$(lvs --readonly --noheadings --separator '|' \
+        -o lv_tags,segtype 2>/dev/null); then
+        echo "ERROR: Thick-only package installation refused: LVM inventory failed." >&2
+        echo "Managed Thin objects cannot be excluded." >&2
+        exit 1
+    fi
+    if printf '%s\n' "$MANAGED_LVS" |
        awk -F'|' '$1 ~ /pve-slt-sid-/ { found=1 } END { exit found ? 0 : 1 }'; then
         echo "ERROR: Thick-only package installation refused: managed Thin" >&2
         echo "objects still exist. Their data must not be stranded by a flavor switch." >&2

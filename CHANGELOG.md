@@ -31,6 +31,11 @@
   against the built package in the release checker.
 - Report the actual Thick-only package identity and version in JSON health
   diagnostics instead of querying the mutually exclusive dual package.
+- Make Thick-only installation fail closed when cluster storage configuration
+  is unreadable, `lvs` is unavailable, or the authoritative LVM inventory
+  fails; missing evidence is never treated as an empty Thin inventory.
+- Keep binary-package documentation under the actual package namespace and
+  reject cross-profile documentation leakage during artifact validation.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
