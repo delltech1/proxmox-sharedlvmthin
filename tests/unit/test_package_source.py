@@ -325,6 +325,20 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("stat -c '%a'", parity)
         self.assertIn("dual/Thick-only shared payload parity: PASS", parity)
 
+        profile_gate = (
+            ROOT / "experiments/thick-generations/package-profile-gate.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("RESULT=DRY_RUN_PASS", profile_gate)
+        self.assertIn("RESULT=EXECUTE_PASS", profile_gate)
+        self.assertIn("dpkg --no-act -i", profile_gate)
+        self.assertIn('dpkg -i "$package"', profile_gate)
+        self.assertIn("dpkg database reports unfinished", profile_gate)
+        self.assertIn("profile replacement requires identical package versions", profile_gate)
+        self.assertNotIn(r"\${", profile_gate)
+        self.assertIn("Reboot was not performed", profile_gate)
+        self.assertNotIn("apt-get", profile_gate)
+        self.assertNotIn("reboot -", profile_gate)
+
         release_gate = (ROOT / "docs/thick-generations-release-gate.md").read_text(
             encoding="utf-8"
         )

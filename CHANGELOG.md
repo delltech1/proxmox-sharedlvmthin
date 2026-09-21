@@ -57,6 +57,10 @@
 - Compare the built package payloads directly: every file retained by
   Thick-only must match the dual artifact byte-for-byte and mode-for-mode,
   excluding only the explicit flavor marker and mapped package documentation.
+- Add a dry-run-by-default disposable-node package profile gate with exact
+  artifact checksum and hostname confirmation, bounded recovery checks,
+  downgrade/profile-version refusal and explicit post-install verification.
+  It never downloads dependencies, reboots a host or advances another node.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

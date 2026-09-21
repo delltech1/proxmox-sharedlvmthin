@@ -73,6 +73,15 @@ not replace plugin code while a hydration, rollback, deletion or recovery
 transaction is in progress. Upgrade one cluster node at a time and verify the
 installed package, PVE services, storage health and guest I/O before advancing.
 
+For the disposable qualification cluster, use
+`experiments/thick-generations/package-profile-gate.sh`. It is dry-run by
+default and requires an absolute non-symlink package path, exact SHA-256 and
+exact hostname confirmation. Mutation additionally requires `--execute` and
+root. It uses `dpkg` on that exact local artifact, never downloads dependencies
+and never reboots or advances another node. A profile replacement is accepted
+only at the identical package version; ordinary same-profile downgrades are
+refused.
+
 ## Release boundary
 
 Building both profiles in CI proves that their package contents and common
