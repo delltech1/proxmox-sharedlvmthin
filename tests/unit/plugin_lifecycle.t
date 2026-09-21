@@ -4555,6 +4555,7 @@ subtest 'host-loss recovery reconstructs only the exact persisted clone runtime'
     my ($source_verified, $clone_verified, $status_expected);
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub { return 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub {
         $source_verified++; return 1;
     };
