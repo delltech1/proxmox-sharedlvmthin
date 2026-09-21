@@ -1,5 +1,8 @@
 import ipaddress
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -8,6 +11,43 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_refused_removal_does_not_stop_services(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            log = temp_path / "systemctl.log"
+            systemctl = temp_path / "systemctl"
+            systemctl.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$*" >>"$SYSTEMCTL_LOG"\n'
+                'if [ "$1" = is-active ]; then exit 0; fi\n'
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            lvs = temp_path / "lvs"
+            lvs.write_text(
+                "#!/bin/sh\nprintf '%s\\n' 'pve-slt-sid-test'\n",
+                encoding="utf-8",
+            )
+            systemctl.chmod(0o755)
+            lvs.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{temp}{os.pathsep}{env['PATH']}"
+            env["SYSTEMCTL_LOG"] = str(log)
+            result = subprocess.run(
+                ["/bin/sh", str(ROOT / "DEBIAN/prerm"), "remove"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("active ThinGuard still protects", result.stderr)
+            calls = log.read_text(encoding="utf-8")
+            self.assertIn("is-active --quiet", calls)
+            self.assertNotIn("stop ", calls)
+            self.assertNotIn("disable ", calls)
+
     def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
         helper = (
             ROOT
@@ -268,6 +308,10 @@ class PackageSourceTests(unittest.TestCase):
         self.assertLess(
             prerm.index("pve-slt-sid-"),
             prerm.index('systemctl stop "$THIN_GUARD_SERVICE"'),
+        )
+        self.assertLess(
+            prerm.index("active ThinGuard still protects"),
+            prerm.index('systemctl stop "$SERVICE"'),
         )
         self.assertIn("PURGED_FLAVOR=dual", postrm)
         self.assertIn("OTHER_PACKAGE=pve-sharedlvmthin-thick", postrm)

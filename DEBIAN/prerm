@@ -6,13 +6,14 @@ THIN_GUARD_SERVICE=pve-sharedlvmthin-thin-guard.service
 
 case "$1" in
     remove|deconfigure)
-        systemctl stop "$SERVICE" >/dev/null 2>&1 || true
-        systemctl disable "$SERVICE" >/dev/null 2>&1 || true
         # A Conflicts/Replaces flavor switch invokes the old package's removal
         # scripts. Never leave an in-memory Thin guardian running after its
         # executable and unit are removed, but also never disarm it while a
         # managed Thin object still exists. Ambiguous inventory refuses the
-        # removal before package files disappear.
+        # removal before package files disappear. Perform this refusal gate
+        # before stopping even the non-data-path web service, so a rejected
+        # package transaction leaves the installed profile operationally
+        # unchanged.
         if systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
             if ! command -v lvs >/dev/null 2>&1; then
                 echo "ERROR: package removal refused: active ThinGuard cannot be audited." >&2
@@ -30,6 +31,8 @@ case "$1" in
             systemctl stop "$THIN_GUARD_SERVICE"
         fi
         systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1 || true
+        systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+        systemctl disable "$SERVICE" >/dev/null 2>&1 || true
         ;;
 esac
 

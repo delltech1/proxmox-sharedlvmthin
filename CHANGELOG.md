@@ -61,6 +61,9 @@
   artifact checksum and hostname confirmation, bounded recovery checks,
   downgrade/profile-version refusal and explicit post-install verification.
   It never downloads dependencies, reboots a host or advances another node.
+- Keep a refused package removal operationally side-effect free by evaluating
+  the active ThinGuard/managed-object fence before stopping or disabling the
+  diagnostics service.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
