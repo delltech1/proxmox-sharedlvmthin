@@ -14,6 +14,8 @@ STORAGECFG=/etc/pve/storage.cfg
 DISABLED_INVENTORY=
 DISABLED_RESULT=
 
+# Invoked indirectly by the EXIT and signal traps below.
+# shellcheck disable=SC2317
 cleanup_disabled_audit() {
     [ -z "$DISABLED_INVENTORY" ] || rm -f -- "$DISABLED_INVENTORY"
     [ -z "$DISABLED_RESULT" ] || rm -f -- "$DISABLED_RESULT"
