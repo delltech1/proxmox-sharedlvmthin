@@ -354,6 +354,14 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
         'large materialization queues can select a bounded multi-day wait');
     is($bridge_property->{default}, 86400,
         'default bridge admission covers a measured long-copy maintenance window');
+    my $materialization_property =
+        $class->properties()->{'slt-tg-max-active-materializations'};
+    is($materialization_property->{minimum}, 1,
+        'at least one Thick transition can be admitted');
+    is($materialization_property->{maximum}, 64,
+        'aggregate dm-clone concurrency has a bounded schema ceiling');
+    is($materialization_property->{default}, 4,
+        'default aggregate dm-clone pressure is conservative');
     require PVE::Storage;
     no warnings 'redefine';
     local *PVE::Storage::config = sub {
@@ -5847,6 +5855,48 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'detached metadata is exactly deactivated and proved absent before removal');
     is($events[-1], 'INTENT_CLEAR', 'VG intent clears only after MATERIALIZED');
     is(scalar(@inventories), 0, 'all lifecycle inventories were consumed');
+};
+
+subtest 'Thick materialization admission is VG-wide and fail-closed' => sub {
+    my $mk_anchor = sub {
+        my ($vol, $generation, $phase) = @_;
+        my $tx = sprintf('%032x', $generation + 1);
+        my $old = "g$generation";
+        my $new = 'g' . ($generation + 1);
+        if ($phase eq 'MATERIALIZED') {
+            return PVE::SharedLvmThinThick::anchor_tags(
+                v => 5, sid => 'thick-a', vol => $vol, phase => $phase, tx => $tx,
+                op => 'ALLOC', snapshot => 'none', source => $old,
+                old => $old, new => $old, head => $old,
+                generation => $generation, region => 8,
+            );
+        }
+        return PVE::SharedLvmThinThick::anchor_tags(
+            v => 5, sid => 'thick-a', vol => $vol, phase => $phase, tx => $tx,
+            op => 'SNAPSHOT', snapshot => "snap$generation", source => $old,
+            old => $old, new => $new, head => $new,
+            generation => $generation + 1, region => 8,
+        );
+    };
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-tg-max-active-materializations' => 2,
+    };
+    my $inventory = { testvg => {
+        'sltg-a-one' => { tags => $mk_anchor->('vm-101-disk-0', 0, 'HYDRATING') },
+        'sltg-a-two' => { tags => $mk_anchor->('vm-102-disk-0', 1, 'MATERIALIZED') },
+    } };
+    is($class->_thick_materialization_admission($cfg, $inventory), 1,
+        'materialized anchors do not consume a hydration slot');
+    $inventory->{testvg}->{'sltg-a-three'} = {
+        tags => $mk_anchor->('vm-103-disk-0', 2, 'HYDRATION_COMPLETE'),
+    };
+    eval { $class->_thick_materialization_admission($cfg, $inventory) };
+    like($@, qr/already meet configured limit 2; no intent or LV was created/,
+        'new transition is refused exactly at the configured VG-wide limit');
+    $inventory->{testvg}->{'sltg-a-bad'} = { tags => '' };
+    eval { $class->_thick_materialization_admission($cfg, $inventory) };
+    like($@, qr/incomplete anchor/, 'ambiguous owned-looking anchor fails closed');
 };
 
 done_testing();

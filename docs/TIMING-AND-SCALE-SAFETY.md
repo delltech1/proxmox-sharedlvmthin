@@ -74,6 +74,13 @@ a legitimate long hydration. Restart/resume reconstructs only the exact
 persisted transaction and verifies all dependencies before continuing.
 Admission waits never clear or steal an existing transition.
 
+`slt-tg-max-active-materializations` bounds aggregate dm-clone pressure across
+the entire VG (default 4, range 1..64). Admission counts signed anchors in a
+transition phase while holding the canonical VG lock. At the ceiling a new
+snapshot or rollback fails before its intent or LVs are created; running
+guests and existing materialization workers are not interrupted. Choose the
+limit from measured SAN throughput and latency rather than VM count alone.
+
 Thick deactivation uses `slt-tg-close-timeout` (default 30 seconds, allowed
 1..300) only to observe the exact frontend open count reaching zero. This
 absorbs qmeventd/host-load close latency without assuming closure. Expiry

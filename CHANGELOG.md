@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Bound aggregate dm-clone pressure per VG with
+  `slt-tg-max-active-materializations` (default 4). Admission counts exact
+  signed non-MATERIALIZED anchors under the canonical VG lock and refuses a
+  new PREPARE before writing an intent or LV when the ceiling is reached.
 - Add explicit idempotent cleanup for a snapshot/rollback PREPARE that never
   reached the signed anchor. `thick-recover-prepare` accepts only the exact
   OPEN intent, unchanged MATERIALIZED anchor/frontend and correctly signed

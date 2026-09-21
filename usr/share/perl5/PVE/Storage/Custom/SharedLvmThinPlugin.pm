@@ -266,6 +266,13 @@ sub properties {
             maximum => 256,
             default => 32,
         },
+        'slt-tg-max-active-materializations' => {
+            description => 'VG-wide ceiling for simultaneously published Thick Generations dm-clone transitions. New snapshot/rollback preparation fails closed at the limit; existing guests and workers are untouched.',
+            type => 'integer',
+            minimum => 1,
+            maximum => 64,
+            default => 4,
+        },
         'slt-tg-online-materialization' => {
             description => 'Materialize an online Thick Generations snapshot after returning control to PVE, or synchronously while the VM remains paused.',
             type => 'string',
@@ -364,6 +371,7 @@ sub options {
         'slt-thin-ha-takeover' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
+        'slt-tg-max-active-materializations' => { optional => 1 },
         'slt-tg-online-materialization' => { optional => 1 },
         'slt-initial-pool-size' => { optional => 1 },
         'slt-initial-pool-mode' => { optional => 1 },
@@ -1394,6 +1402,7 @@ sub _verify_same_vg_alias_configuration {
     my %lock_yield;
     my %bridge_timeout;
     my %thick_close_timeout;
+    my %thick_materialization_limit;
     my %peer_connect_timeout;
     my %peer_probe_timeout;
     my %node_scope;
@@ -1420,6 +1429,7 @@ sub _verify_same_vg_alias_configuration {
         $lock_yield{$candidate->{'slt-lock-yield-ms'} // 1000} = 1;
         $bridge_timeout{$candidate->{'slt-bridge-admission-timeout'} // 86400} = 1;
         $thick_close_timeout{$candidate->{'slt-tg-close-timeout'} // 30} = 1;
+        $thick_materialization_limit{$candidate->{'slt-tg-max-active-materializations'} // 4} = 1;
         $peer_connect_timeout{$candidate->{'slt-thin-peer-connect-timeout'} // 5} = 1;
         $peer_probe_timeout{$candidate->{'slt-thin-peer-probe-timeout'} // 15} = 1;
         $node_scope{_canonical_node_scope($candidate->{nodes})} = 1;
@@ -1442,6 +1452,8 @@ sub _verify_same_vg_alias_configuration {
         if keys(%bridge_timeout) != 1;
     die "same-VG aliases must use the same Thick frontend close timeout\n"
         if keys(%thick_close_timeout) != 1;
+    die "same-VG aliases must use the same Thick materialization concurrency limit\n"
+        if keys(%thick_materialization_limit) != 1;
     die "same-VG aliases must use the same Thin peer SSH connection timeout\n"
         if keys(%peer_connect_timeout) != 1;
     die "same-VG aliases must use the same Thin peer whole-probe timeout\n"
@@ -1813,6 +1825,29 @@ sub _thick_capacity_gate {
         . "$decision->{reserve_bytes} bytes; no LV was created\n"
         if !$decision->{allowed};
     return $decision;
+}
+
+sub _thick_materialization_admission {
+    my ($class, $scfg, $lvs) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $limit = $scfg->{'slt-tg-max-active-materializations'} // 4;
+    die "invalid Thick materialization concurrency limit\n"
+        if $limit !~ /^\d+$/ || $limit < 1 || $limit > 64;
+    die "Thick materialization admission cannot see VG '$vg'\n"
+        if ref($lvs) ne 'HASH' || ref($lvs->{$vg}) ne 'HASH';
+
+    my $active = 0;
+    for my $anchor (grep { /^sltg-a-/ } keys %{$lvs->{$vg}}) {
+        my $state = decode_anchor_tags($lvs->{$vg}->{$anchor}->{tags} // '');
+        next if $state->{phase} eq 'MATERIALIZED';
+        die "Thick materialization admission found unsupported anchor phase '$state->{phase}'\n"
+            if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+        $active++;
+    }
+    die "Thick materialization admission refused on VG '$vg': $active active transition(s) "
+        . "already meet configured limit $limit; no intent or LV was created\n"
+        if $active >= $limit;
+    return $active;
 }
 
 sub _change_exact_tags {
@@ -4569,6 +4604,7 @@ sub _thick_volume_snapshot {
         die "thick-generations transition object already exists\n"
             if $lvs->{$vg}->{$new} || $lvs->{$vg}->{$meta}
             || _block_device_exists("/dev/mapper/$source_map");
+        $class->_thick_materialization_admission($scfg, $lvs);
         $class->_thick_capacity_gate(
             $storeid, $scfg, int(($size + 1023) / 1024),
             $geometry->{metadata_bytes},
