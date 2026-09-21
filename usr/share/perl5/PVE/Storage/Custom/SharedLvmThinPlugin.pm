@@ -4662,11 +4662,18 @@ sub _thick_free_image {
             );
             die "refusing thick-generations delete: frontend '$mapper' removal is unconfirmed\n"
                 if _block_device_exists("/dev/mapper/$mapper");
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$anchor", "$vg/$head"],
-                errmsg => "deactivating thick-generations state for '$vg/$volname' before delete failed",
-            );
         }
+
+        # The frontend can legitimately be absent after a reboot or a completed
+        # deactivate_volume() call while one of the private LVs is still active
+        # because of interrupted local cleanup.  Never let lvremove's force
+        # semantics decide that case.  Deactivate the two exact, signed objects
+        # explicitly and device-scoped before recording a destructive intent.
+        # Repeating -an for already inactive LVs is deliberately idempotent.
+        run_command(
+            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$anchor", "$vg/$head"],
+            errmsg => "deactivating thick-generations state for '$vg/$volname' before delete failed",
+        );
 
         my $tx = $class->_new_transaction_id();
         my %intent = (

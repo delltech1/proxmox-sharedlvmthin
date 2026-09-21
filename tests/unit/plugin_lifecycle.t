@@ -3180,9 +3180,10 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     };
     is($class->free_image($storeid, $cfg, $volname, 0), undef, 'exact thick delete completes');
     is_deeply([command_lines()], [
+        "/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/$anchor testvg/$head",
         "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
         "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
-    ], 'only the exact head and anchor are removed');
+    ], 'exact head and anchor are deactivated before removal even without a frontend');
     is_deeply(\@intent_events, ['OPEN', 'CLEAR'], 'intent brackets the verified delete');
 
     reset_mocks();
