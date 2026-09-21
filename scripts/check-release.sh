@@ -42,6 +42,26 @@ for maintscript in preinst postinst prerm postrm; do
     sh -n "$TMP/control/$maintscript"
 done
 
+CANDIDATE_RECOVERY="$TMP/control/sharedlvmthin-candidate-recovery-check"
+PAYLOAD_RECOVERY="$TMP/root/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check"
+if [ ! -x "$CANDIDATE_RECOVERY" ]; then
+    echo "candidate control-archive recovery checker is missing or not executable" >&2
+    exit 1
+fi
+if [ ! -x "$PAYLOAD_RECOVERY" ]; then
+    echo "payload recovery checker is missing or not executable" >&2
+    exit 1
+fi
+if ! cmp -s "$CANDIDATE_RECOVERY" "$PAYLOAD_RECOVERY"; then
+    echo "candidate preinst recovery checker differs from packaged payload checker" >&2
+    exit 1
+fi
+python3 -m py_compile "$CANDIDATE_RECOVERY"
+grep -Fq 'sharedlvmthin-candidate-recovery-check' "$TMP/control/preinst" || {
+    echo "preinst does not invoke the candidate control-archive recovery checker" >&2
+    exit 1
+}
+
 PACKAGE_NAME=$(dpkg-deb -f "$PACKAGE" Package)
 FLAVOR_FILE="$TMP/root/usr/share/pve-sharedlvmthin/package-flavor"
 if [ ! -f "$FLAVOR_FILE" ]; then

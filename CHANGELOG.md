@@ -17,7 +17,9 @@
   read-only checker shipped in its control archive, because dpkg has not yet
   unpacked the payload and published TG32's installed checker lacks the signed
   intent and disabled-storage semantics. Storage scoped exclusively to other
-  nodes remains not applicable.
+  nodes remains not applicable. Release validation proves the control-archive
+  checker is executable, syntax-valid and byte-identical to the payload copy in
+  both package profiles.
 - Fail closed when asynchronous materialization scheduling is not positively
   confirmed. A `systemd-run` client/transport error may occur after the exact
   transaction worker was queued, so the snapshot callback no longer starts a
