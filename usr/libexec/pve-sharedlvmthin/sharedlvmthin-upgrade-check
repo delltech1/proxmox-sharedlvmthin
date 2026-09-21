@@ -11,7 +11,7 @@ PROBE_TIMEOUT=150
 failures=0
 checked=0
 skipped=0
-skipped_disabled=0
+checked_disabled=0
 skipped_node_scope=0
 result=
 declare -A seen=()
@@ -110,11 +110,12 @@ while IFS='|' read -r sid disabled mode nodes; do
     seen[$sid]=1
 
     case "$disabled" in
-        1|yes|on|true)
+        0|no|off|false|1|yes|on|true) ;;
+        *)
             echo "STORAGE_ID=$sid"
-            echo "RESULT=SKIP_DISABLED"
-            skipped=$((skipped + 1))
-            skipped_disabled=$((skipped_disabled + 1))
+            echo "RESULT=FAIL"
+            echo "DETAIL=invalid disable value"
+            failures=$((failures + 1))
             continue
             ;;
     esac
@@ -140,6 +141,13 @@ while IFS='|' read -r sid disabled mode nodes; do
             echo "DETAIL=unsupported allocation mode"
             failures=$((failures + 1))
             continue
+            ;;
+    esac
+
+    case "$disabled" in
+        1|yes|on|true)
+            checked_disabled=$((checked_disabled + 1))
+            echo "UPGRADE_STORAGE_DISABLED=YES"
             ;;
     esac
 
@@ -181,8 +189,8 @@ while IFS='|' read -r sid disabled mode nodes; do
 done < <(inventory)
 
 echo "UPGRADE_STORAGES_CHECKED=$checked"
-echo "UPGRADE_STORAGES_SKIPPED_DISABLED=$skipped"
-echo "UPGRADE_STORAGES_SKIPPED_EXPLICITLY_DISABLED=$skipped_disabled"
+echo "UPGRADE_STORAGES_SKIPPED_DISABLED=0"
+echo "UPGRADE_STORAGES_CHECKED_EXPLICITLY_DISABLED=$checked_disabled"
 echo "UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=$skipped_node_scope"
 
 if [ "$failures" -ne 0 ]; then

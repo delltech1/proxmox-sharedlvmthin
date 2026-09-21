@@ -28,6 +28,10 @@ cannot close any of these runtime items.
       Dual-to-Thick-only and Thick-only-to-Dual replacement. After every
       transaction prove the opposite package is absent, the flavor marker and
       CLI match the installed package, and existing guest I/O is unchanged.
+- [ ] Disable a disposable Thick storage while it contains an injected OPEN
+      transition, then prove both an ordinary upgrade and profile replacement
+      refuse before unpacking. Restore exact healthy state and prove the same
+      disabled storage is read-only checked and permits the transaction.
 - [ ] Perform the rolling update one node at a time, including a reboot and
       post-reboot identity, quorum, multipath, Doctor, JSON health and guest-I/O
       check. Never infer compatibility merely from successful installation.

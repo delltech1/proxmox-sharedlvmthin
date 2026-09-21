@@ -2,6 +2,11 @@
 
 ## Unreleased — Thick Generations audit
 
+- Include explicitly disabled, locally scoped SharedLvmThin storage in the
+  pre-unpack recovery gate. Disabling a configuration no longer hides an OPEN
+  intent or incomplete Thick anchor from ordinary upgrades or package-profile
+  replacement; unavailable or recovery-required state refuses before files are
+  replaced. Storage scoped exclusively to other nodes remains not applicable.
 - Fail closed when asynchronous materialization scheduling is not positively
   confirmed. A `systemd-run` client/transport error may occur after the exact
   transaction worker was queued, so the snapshot callback no longer starts a
