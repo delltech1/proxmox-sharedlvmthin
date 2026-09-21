@@ -49,7 +49,10 @@ The same pre-unpack transaction and recovery fence applies to ordinary
 upgrades and to a Thick-only-to-dual replacement. During removal of the dual
 profile, dpkg also stops and disables ThinGuard so no orphaned in-memory
 guardian can remain after its executable and unit are removed. This service
-cleanup is not a storage mutation and does not deactivate guest volumes.
+cleanup is not a storage mutation and does not deactivate guest volumes. The
+old Dual package refuses removal whenever any managed Thin object exists even
+if ThinGuard is already stopped or failed, and a partial VG inventory is never
+treated as an empty inventory.
 
 The Thick-only post-install step removes only the dual package's explicitly
 delimited, project-managed `lvmlocal.conf` autogrow fragment because that

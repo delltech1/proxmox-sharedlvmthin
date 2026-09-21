@@ -209,6 +209,12 @@ exit 0
             )
             systemctl.chmod(0o755)
             lvs.chmod(0o755)
+            vgs = temp_path / "vgs"
+            vgs.write_text(
+                "#!/bin/sh\nprintf '%s\\n' 'shared-vg|wz--n-'\n",
+                encoding="utf-8",
+            )
+            vgs.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = f"{temp}{os.pathsep}{env['PATH']}"
             env["SYSTEMCTL_LOG"] = str(log)
@@ -220,11 +226,61 @@ exit 0
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("active ThinGuard still protects", result.stderr)
-            calls = log.read_text(encoding="utf-8")
-            self.assertIn("is-active --quiet", calls)
-            self.assertNotIn("stop ", calls)
-            self.assertNotIn("disable ", calls)
+            self.assertIn("managed Thin objects still exist", result.stderr)
+            self.assertFalse(log.exists(), "inventory refusal must precede service access")
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_inactive_guard_does_not_allow_managed_thin_package_removal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            log = temp_path / "systemctl.log"
+            commands = {
+                "systemctl": (
+                    "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$SYSTEMCTL_LOG\"\n"
+                    "if [ \"$1\" = is-active ]; then exit 3; fi\nexit 0\n"
+                ),
+                "vgs": "#!/bin/sh\nprintf '%s\\n' 'shared-vg|wz--n-'\n",
+                "lvs": "#!/bin/sh\nprintf '%s\\n' 'pve-slt-sid-test'\n",
+            }
+            for name, source in commands.items():
+                command = temp_path / name
+                command.write_text(source, encoding="utf-8")
+                command.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{temp}{os.pathsep}{env['PATH']}"
+            env["SYSTEMCTL_LOG"] = str(log)
+            result = subprocess.run(
+                ["/bin/sh", str(ROOT / "DEBIAN/prerm"), "remove"],
+                env=env, text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("regardless of ThinGuard state", result.stderr)
+            self.assertFalse(log.exists(), "inventory refusal must precede service access")
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_partial_vg_refuses_dual_package_removal_before_service_access(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            log = temp_path / "systemctl.log"
+            commands = {
+                "systemctl": "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$SYSTEMCTL_LOG\"\nexit 3\n",
+                "vgs": "#!/bin/sh\nprintf '%s\\n' 'shared-vg|wz-pn-'\n",
+                "lvs": "#!/bin/sh\nexit 0\n",
+            }
+            for name, source in commands.items():
+                command = temp_path / name
+                command.write_text(source, encoding="utf-8")
+                command.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{temp}{os.pathsep}{env['PATH']}"
+            env["SYSTEMCTL_LOG"] = str(log)
+            result = subprocess.run(
+                ["/bin/sh", str(ROOT / "DEBIAN/prerm"), "remove"],
+                env=env, text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("partial or ambiguous VG", result.stderr)
+            self.assertFalse(log.exists(), "partial inventory must refuse before service access")
 
     @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
     def test_preinst_audits_disabled_storage_with_candidate_checker(self):
@@ -557,13 +613,14 @@ exit 0
         self.assertLess(syntax_guard, guard_syntax)
         self.assertIn('systemctl stop "$THIN_GUARD_SERVICE"', prerm)
         self.assertIn('systemctl disable "$THIN_GUARD_SERVICE"', prerm)
-        self.assertIn("active ThinGuard still protects", prerm)
+        self.assertIn("managed Thin objects still exist", prerm)
+        self.assertIn("partial or ambiguous VG", prerm)
         self.assertLess(
             prerm.index("pve-slt-sid-"),
             prerm.index('systemctl stop "$THIN_GUARD_SERVICE"'),
         )
         self.assertLess(
-            prerm.index("active ThinGuard still protects"),
+            prerm.index("managed Thin objects still exist"),
             prerm.index('systemctl stop "$SERVICE"'),
         )
         self.assertIn("PURGED_FLAVOR=dual", postrm)

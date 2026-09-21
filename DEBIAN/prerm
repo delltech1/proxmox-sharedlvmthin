@@ -14,9 +14,26 @@ case "$1" in
         # before stopping even the non-data-path web service, so a rejected
         # package transaction leaves the installed profile operationally
         # unchanged.
-        if systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
-            if ! command -v lvs >/dev/null 2>&1; then
-                echo "ERROR: package removal refused: active ThinGuard cannot be audited." >&2
+        PACKAGE_FLAVOR=dual
+        if [ "${DPKG_MAINTSCRIPT_PACKAGE:-}" = "pve-sharedlvmthin-thick" ]; then
+            PACKAGE_FLAVOR=thick-only
+        fi
+        if [ "$PACKAGE_FLAVOR" = dual ]; then
+            if ! command -v lvs >/dev/null 2>&1 || ! command -v vgs >/dev/null 2>&1; then
+                echo "ERROR: package removal refused: managed Thin storage cannot be audited." >&2
+                exit 1
+            fi
+            if ! VOLUME_GROUPS=$(vgs --readonly --noheadings --separator '|' \
+                -o vg_name,vg_attr 2>/dev/null); then
+                echo "ERROR: package removal refused: VG inventory failed." >&2
+                exit 1
+            fi
+            if printf '%s\n' "$VOLUME_GROUPS" |
+               awk -F'|' '{ gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2) }
+                            length($2) < 4 || substr($2, 4, 1) == "p" { bad=1 }
+                            END { exit bad ? 0 : 1 }'; then
+                echo "ERROR: package removal refused: LVM reports a partial or ambiguous VG." >&2
+                echo "Absence of managed Thin objects is unproven." >&2
                 exit 1
             fi
             if ! THIN_LVS=$(lvs --readonly --noheadings -o lv_tags 2>/dev/null); then
@@ -24,11 +41,13 @@ case "$1" in
                 exit 1
             fi
             if printf '%s\n' "$THIN_LVS" | awk '$0 ~ /pve-slt-sid-/ { found=1 } END { exit found ? 0 : 1 }'; then
-                echo "ERROR: package removal refused: active ThinGuard still protects" >&2
-                echo "managed Thin objects. Drain/migrate them before removing the package." >&2
+                echo "ERROR: package removal refused: managed Thin objects still exist." >&2
+                echo "Drain/migrate them before removing the package, regardless of ThinGuard state." >&2
                 exit 1
             fi
-            systemctl stop "$THIN_GUARD_SERVICE"
+            if systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
+                systemctl stop "$THIN_GUARD_SERVICE"
+            fi
         fi
         systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1 || true
         systemctl stop "$SERVICE" >/dev/null 2>&1 || true
