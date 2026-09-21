@@ -895,15 +895,21 @@ sub _thick_verify_clone_status {
     my $status = $lines->[0];
     die "dm-clone frontend '$mapper' entered the kernel Fail metadata state; automatic hydration or pivot is unsafe\n"
         if $status =~ /^0\s+\d+\s+clone\s+Fail\s*$/i;
-    my ($status_sectors, $region, $hydrated, $total, $hydrating) =
-        $status =~ /^0\s+(\d+)\s+clone\s+\d+\s+\d+\/\d+\s+(\d+)\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
+    my ($status_sectors, $metadata_block, $metadata_used, $metadata_total,
+        $region, $hydrated, $total, $hydrating) =
+        $status =~ /^0\s+(\d+)\s+clone\s+(\d+)\s+(\d+)\/(\d+)\s+(\d+)\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
     die "dm-clone status for '$mapper' is malformed\n"
-        if !defined($status_sectors) || !defined($region) || !defined($hydrated)
-        || !$total || !defined($hydrating);
+        if !defined($status_sectors) || !defined($metadata_block)
+        || !defined($metadata_used) || !defined($metadata_total)
+        || !defined($region) || !defined($hydrated) || !defined($total)
+        || !defined($hydrating);
+    die "dm-clone status counters for '$mapper' are internally impossible\n"
+        if !$metadata_block || !$metadata_total || !$total
+        || $metadata_used > $metadata_total
+        || $hydrated > $total || $hydrating > $total - $hydrated;
     die "dm-clone status geometry for '$mapper' does not match the signed transition\n"
         if $status_sectors != $expected_sectors || $region != $expected_region
-        || $total != int(($expected_sectors + $expected_region - 1) / $expected_region)
-        || $hydrated > $total;
+        || $total != int(($expected_sectors + $expected_region - 1) / $expected_region);
     my ($metadata_mode) = $status =~ /\s+(rw|ro)\s*$/i;
     die "dm-clone status for '$mapper' does not report an authoritative metadata mode\n"
         if !defined($metadata_mode);

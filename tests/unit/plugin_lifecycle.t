@@ -3629,10 +3629,12 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         ['0 8192 clone 8 70/5120 16 4/512 1 0 0 rw', 8192, 8, 'wrong region size'],
         ['0 8192 clone 8 70/5120 8 4/512 1 0 0 rw', 8192, 8, 'wrong total regions'],
         ['0 8192 clone 8 70/5120 8 1025/1024 0 0 0 rw', 8192, 8, 'impossible hydrated count'],
+        ['0 8192 clone 8 5121/5120 8 4/1024 1 0 0 rw', 8192, 8, 'impossible metadata use'],
+        ['0 8192 clone 8 70/5120 8 1023/1024 2 0 0 rw', 8192, 8, 'overlapping hydration counters'],
     ) {
         @reads = ([$case->[0]]);
         eval { $class->_thick_verify_clone_status($mapper, 0, $case->[1], $case->[2]) };
-        like($@, qr/(?:malformed|does not match the signed transition)/,
+        like($@, qr/(?:malformed|internally impossible|does not match the signed transition)/,
             "$case->[3] fails closed");
     }
 

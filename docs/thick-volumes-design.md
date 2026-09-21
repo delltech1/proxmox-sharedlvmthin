@@ -84,7 +84,9 @@ sector zero and report the exact frontend sector length, configured region
 size, and region count derived from those two values. Those invariants are
 rechecked before and after each bounded event wait and again at the pivot, so a
 replaced, truncated, or internally impossible runtime map cannot inherit the
-authority of an otherwise valid persistent anchor.
+authority of an otherwise valid persistent anchor. Metadata usage may never
+exceed metadata capacity, and hydrated plus currently hydrating regions may
+never exceed the target's derived region count.
 
 The read-only recovery classifier reports that exact suspended boundary as
 `PIVOT_READY`, never as healthy or mutation-safe. This keeps diagnostics and
