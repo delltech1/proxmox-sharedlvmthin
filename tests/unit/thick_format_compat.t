@@ -8,6 +8,7 @@ use Test::More;
 
 use PVE::SharedLvmThinThick qw(
     anchor_name anchor_tags decode_anchor_tags
+    clone_geometry
     generation_name generation_tags decode_generation_tags
     mapper_name object_key transition_tags validate_transition_tags
     vg_intent_tags decode_vg_intent_tags
@@ -25,6 +26,17 @@ is(object_key($sid, $vol), $key, 'published object-key derivation is stable');
 is(anchor_name($sid, $vol), "sltg-a-$key", 'published anchor name is stable');
 is(mapper_name($sid, $vol), "sltg-$key", 'published frontend name is stable');
 is(generation_name($sid, $vol, 0), $head, 'published generation name is stable');
+
+is_deeply(clone_geometry(1024 * 1024 * 1024), {
+    region_sectors => 8,
+    regions => 262144,
+    metadata_bytes => 20971520,
+}, 'published 1 GiB clone geometry remains stable');
+is_deeply(clone_geometry(1024 * 1024 * 1024 * 1024), {
+    region_sectors => 16,
+    regions => 134217728,
+    metadata_bytes => 150994944,
+}, 'published 1 TiB clone geometry remains stable');
 
 my $anchor = anchor_tags(
     sid => $sid, vol => $vol, phase => 'MATERIALIZED',
