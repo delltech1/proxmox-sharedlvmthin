@@ -807,10 +807,18 @@ exit 0
         self.assertIn("my $already_suspended =", pivot)
         self.assertIn("if (!$already_suspended)", pivot)
         self.assertIn("did not enter suspended state before linear pivot", pivot)
-        self.assertGreaterEqual(pivot.count("_thick_verify_clone_status($front, 1)"), 2)
+        status_checks = list(
+            re.finditer(
+                r"_thick_verify_clone_status\(\s*\$front,\s*1,\s*"
+                r"(?:int\(\$tr->\{size\} / 512\)|\$sectors),\s*"
+                r"\$tr->\{geometry\}->\{region_sectors\},\s*\)",
+                pivot,
+            )
+        )
+        self.assertGreaterEqual(len(status_checks), 2)
         self.assertLess(
             pivot.index("did not enter suspended state before linear pivot"),
-            pivot.rindex("_thick_verify_clone_status($front, 1)"),
+            status_checks[-1].start(),
         )
 
     def test_thick_clone_destination_is_zeroed_before_publication(self):
