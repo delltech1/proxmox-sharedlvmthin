@@ -114,7 +114,10 @@ During asynchronous materialization:
 - read-only inventory continues to report the current HEAD;
 - a guest stop must not dismantle worker-owned dependencies;
 - any ambiguous identity, table, status, or intent fails closed;
-- failure to schedule the worker falls back to synchronous completion.
+- a positively confirmed worker schedule lets the snapshot callback return;
+- an unconfirmed `systemd-run` result never falls back to synchronous
+  completion, because the exact worker may already have been queued. The
+  persistent transaction is preserved for inspection and explicit resume.
 
 Destination and dm-clone metadata LVs are born with their complete signed
 ownership tags and `autoactivation=n` in the same `lvcreate` operation. A host

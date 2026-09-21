@@ -487,6 +487,7 @@ exit 0
         self.assertIn("not rebuilt or silently replaced", release_gate)
         self.assertIn("| PREPARE cleanup recovery |", release_gate)
         self.assertIn("| Materialization admission |", release_gate)
+        self.assertIn("| Worker scheduling ambiguity |", release_gate)
         self.assertIn("| Device-scoped capacity |", release_gate)
         self.assertIn("| Frontend-removal postcondition |", release_gate)
         self.assertIn("| Kernel dm-clone gate |", release_gate)

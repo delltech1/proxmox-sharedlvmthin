@@ -48,6 +48,10 @@ cannot close any of these runtime items.
       prove JSON health reports exact active, limit and available counts in
       AVAILABLE and SATURATED states. Invalid or conflicting alias policy must
       fail closed without storage mutation.
+- [ ] Fault-inject a lost or failed `systemd-run` reply after worker submission.
+      Prove the snapshot callback does not start synchronous hydration, the
+      exact transaction service/timer and persistent state remain diagnosable,
+      and one explicit resume completes without a second materialization owner.
 - [ ] Prove Thick capacity admission obtains VG data only through the configured
       `/dev/mapper/<WWID>` device scope. On a fully disposable setup, introduce
       a same-name stale or local VG and prove it cannot supply capacity data.
