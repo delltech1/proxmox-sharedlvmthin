@@ -643,8 +643,8 @@ sub _thick_verify_frontend {
         "reading thick-generations frontend table '$mapper' failed",
     );
     die "thick-generations frontend '$mapper' table is not one linear segment\n"
-        if @$table != 1 || $table->[0] !~ /^0\s+(\d+)\s+linear\s+/;
-    my ($actual_sectors) = $table->[0] =~ /^0\s+(\d+)\s+linear\s+/;
+        if @$table != 1 || $table->[0] !~ /^0\s+(\d+)\s+linear\s+\S+\s+0$/;
+    my ($actual_sectors) = $table->[0] =~ /^0\s+(\d+)\s+linear\s+\S+\s+0$/;
     die "thick-generations frontend '$mapper' size mismatch\n"
         if defined($expected_sectors) && $actual_sectors != $expected_sectors;
     my $deps = _command_lines(
@@ -732,7 +732,7 @@ sub _thick_verify_source_mapper {
         "reading thick-generations source mapper '$mapper' table failed",
     );
     die "thick-generations source mapper '$mapper' table mismatch\n"
-        if @$table != 1 || $table->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+/;
+        if @$table != 1 || $table->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+\S+\s+0$/;
     my $deps = _command_lines(
         ['/sbin/dmsetup', 'deps', '-o', 'devname', $mapper],
         "reading thick-generations source mapper '$mapper' dependencies failed",
@@ -4705,7 +4705,8 @@ sub _thick_volume_snapshot {
             "reading inactive linear pivot table failed",
         );
         die "inactive linear pivot table postcondition failed\n"
-            if @$inactive != 1 || $inactive->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+/;
+            if @$inactive != 1
+            || $inactive->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+\S+\s+0$/;
         if (!$already_suspended) {
             run_command(
                 ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
@@ -5320,7 +5321,7 @@ sub _thick_recover_resize {
         );
         die "resize recovery inactive frontend table postcondition failed\n"
             if @$inactive != 1
-            || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+/;
+            || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+\S+\s+0$/;
         my $already_suspended = $class->_thick_mapper_is_suspended($mapper);
         if (!$already_suspended) {
             run_command(
@@ -5491,7 +5492,7 @@ sub _thick_volume_resize {
             die "PARTIAL RESIZE for '$storeid:$volname': inactive frontend table "
                 . "postcondition failed; OPEN EXTEND intent preserved\n"
                 if @$inactive != 1
-                || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+/;
+                || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+\S+\s+0$/;
             run_command(
                 ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $mapper],
                 errmsg => "suspending thick-generations frontend '$mapper' for resize failed",

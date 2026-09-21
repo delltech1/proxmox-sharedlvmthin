@@ -218,6 +218,12 @@ inactive table is verified and resumed without a second suspend. Absence of the
 frontend leaves the intent untouched because the old published boundary cannot
 be derived safely from persistent v1 evidence alone.
 
+Every stable frontend, read-only transition source and inactive linear table is
+accepted only as one exact `0 <sectors> linear <device> 0` segment. The UUID,
+expected size and sole dependency are checked independently, while any non-zero
+source offset or trailing target argument is ambiguous and fails closed before
+publication or cleanup.
+
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
 automatic and never searches by a similar name. After confirming that no PVE

@@ -39,6 +39,10 @@
   clears only the exact intent without repeating I/O, a missing frontend fails
   before mutation, and an already-suspended frontend resumes without issuing a
   second suspend.
+- Require every authoritative and inactive Thick linear table to be exactly one
+  full segment with source offset zero and no trailing target arguments. UUID,
+  size and dependency identity can no longer mask a shifted map on the correct
+  backing LV.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

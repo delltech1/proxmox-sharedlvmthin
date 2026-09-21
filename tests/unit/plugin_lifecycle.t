@@ -5376,6 +5376,39 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
         'post-pivot resume accepts already removed metadata and source runtime');
 };
 
+subtest 'linear frontend verification requires an exact zero-offset table' => sub {
+    my $cfg = {
+        'slt-vgname' => 'testvg',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+    };
+    my $volname = 'vm-900001-disk-0';
+    my $head = 'head-lv';
+    my $uuid = 'SLT-TG2-' . PVE::SharedLvmThinThick::object_key('vg-uuid', $volname);
+    my @answers = (
+        ["$uuid|Writeable"],
+        ['0 65536 linear 253:7 0'],
+        ['1 dependencies : (testvg-head--lv)'],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @answers;
+    };
+    ok($class->_thick_verify_frontend($cfg, $volname, $head, 65536),
+        'exact one-segment zero-offset frontend is accepted');
+    is(scalar(@answers), 0, 'frontend verifier consumed all exact probes');
+
+    for my $bad_table (
+        '0 65536 linear 253:7 8',
+        '0 65536 linear 253:7 0 unexpected',
+    ) {
+        @answers = (["$uuid|Writeable"], [$bad_table]);
+        eval { $class->_thick_verify_frontend($cfg, $volname, $head, 65536) };
+        like($@, qr/table is not one linear segment/,
+            "non-canonical frontend table '$bad_table' fails closed");
+        is(scalar(@answers), 0, 'invalid table is rejected before dependency probing');
+    }
+};
+
 subtest 'C4 source mapper verification is exact and read-only' => sub {
     my $cfg = { 'slt-vgname' => 'testvg' };
     my $mapper = 'sltg-source';
@@ -5400,6 +5433,16 @@ subtest 'C4 source mapper verification is exact and read-only' => sub {
         $cfg, $mapper, $source, 65536, $tx,
     ) };
     like($@, qr/is not read-only/, 'writeable source mapper fails closed');
+
+    @answers = (
+        ["SLT-TG3-SOURCE-$tx|Read-only"],
+        ['0 65536 linear 253:7 8'],
+    );
+    eval { $class->_thick_verify_source_mapper(
+        $cfg, $mapper, $source, 65536, $tx,
+    ) };
+    like($@, qr/table mismatch/, 'non-zero source offset fails closed before dependency probing');
+    is(scalar(@answers), 0, 'invalid source table consumed only identity and table probes');
 };
 
 subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
