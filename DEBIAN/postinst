@@ -51,7 +51,28 @@ fi
 # SAN policy.  The marked fragment is removable independently during purge.
 mkdir -p "$STATE_DIR"
 if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
-    echo "Thick-only package: Thin autogrow policy is not installed or modified."
+    if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null || \
+       grep -Fq "$LVM_END" "$LVMLOCAL" 2>/dev/null; then
+        # The dual package owns only this explicitly delimited fragment.
+        # Thick-only removes it because its thin_command target is deliberately
+        # absent. Require one complete, non-nested block before editing; a
+        # damaged marker must preserve the file and fail package configuration.
+        if ! awk -v begin="$LVM_BEGIN" -v end="$LVM_END" '
+            $0 == begin { if (open || seen) exit 2; open=1; seen=1; next }
+            $0 == end { if (!open) exit 2; open=0; closed=1; next }
+            END { if (!seen || open || !closed) exit 2 }
+        ' "$LVMLOCAL"; then
+            echo "ERROR: malformed SharedLvmThin-managed LVM policy markers;" >&2
+            echo "preserving $LVMLOCAL unchanged for manual inspection." >&2
+            exit 1
+        fi
+        cp -a "$LVMLOCAL" "$STATE_DIR/lvmlocal.conf.before-thick-only"
+        sed -i "/^$LVM_BEGIN$/,/^$LVM_END$/d" "$LVMLOCAL"
+        echo "Removed obsolete SharedLvmThin-managed Thin autogrow policy."
+    else
+        echo "Thick-only package: no SharedLvmThin-managed Thin autogrow policy is present."
+        echo "Administrator-owned LVM settings were not modified."
+    fi
 elif grep -Eq '^[[:space:]]*(thin_command|thin_pool_autoextend_threshold|thin_pool_autoextend_percent)[[:space:]]*=' "$LVMLOCAL" 2>/dev/null; then
     if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null; then
         echo "Existing SharedLvmThin managed LVM autogrow configuration preserved."

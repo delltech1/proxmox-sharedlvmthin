@@ -247,7 +247,16 @@ class PackageSourceTests(unittest.TestCase):
             preinst.index("if [ -n \"$INSTALLED_FLAVOR\" ]"),
             preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
         )
-        self.assertIn("Thick-only package: Thin autogrow policy", postinst)
+        self.assertIn("Removed obsolete SharedLvmThin-managed Thin autogrow policy", postinst)
+        self.assertIn("Administrator-owned LVM settings were not modified", postinst)
+        self.assertIn("lvmlocal.conf.before-thick-only", postinst)
+        self.assertIn("malformed SharedLvmThin-managed LVM policy markers", postinst)
+        self.assertIn("if (open || seen) exit 2", postinst)
+        thick_branch = postinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]')
+        managed_cleanup = postinst.index('sed -i "/^$LVM_BEGIN$/,/^$LVM_END$/d"')
+        dual_policy = postinst.index("Installed fail-closed SharedLvmThin dmeventd autogrow policy")
+        self.assertLess(thick_branch, managed_cleanup)
+        self.assertLess(managed_cleanup, dual_policy)
         syntax_guard = postinst.index('if [ "$PACKAGE_FLAVOR" = "dual" ]; then')
         monitor_syntax = postinst.index('perl -c "$MONITOR"')
         guard_syntax = postinst.index('perl -c "$THIN_GUARDD"')

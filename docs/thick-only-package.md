@@ -49,6 +49,12 @@ profile, dpkg also stops and disables ThinGuard so no orphaned in-memory
 guardian can remain after its executable and unit are removed. This service
 cleanup is not a storage mutation and does not deactivate guest volumes.
 
+The Thick-only post-install step removes only the dual package's explicitly
+delimited, project-managed `lvmlocal.conf` autogrow fragment because that
+fragment points to a Thin monitor intentionally absent from the Thick-only
+artifact. It saves a pre-change copy in the private state directory and never
+removes or rewrites administrator/vendor LVM policy outside the markers.
+
 If the replaced package remains as a Debian `config-files` entry, subsequently
 purging that residual entry detects the currently installed package-flavor
 marker and preserves the active profile's shared configuration, recovery state

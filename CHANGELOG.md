@@ -43,6 +43,10 @@
 - Prevent a later purge of the replaced profile's residual Debian
   `config-files` entry from deleting configuration, recovery state or LVM
   policy owned by the currently installed opposite package profile.
+- Remove the dual package's precisely delimited managed Thin autogrow fragment
+  when configuring Thick-only, preventing a stale `thin_command` reference to
+  a monitor intentionally absent from that artifact while preserving all
+  administrator/vendor LVM policy.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
