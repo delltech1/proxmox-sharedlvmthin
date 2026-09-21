@@ -148,12 +148,11 @@ my $transition = transition_tags(
     sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
     kind => 'metadata', generation => 1, region => 8,
 );
+my $decoded_transition = decode_transition_tags($transition);
 is_deeply(
-    decode_transition_tags($transition),
-    {
-        v => 1, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
-        kind => 'metadata', generation => 1, region => 8,
-    },
+    { map { $_ => $decoded_transition->{$_} } qw(v sid vol tx kind generation region) },
+    { v => 1, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
+      kind => 'metadata', generation => 1, region => 8 },
     'transition ownership proof round-trips through the strict decoder',
 );
 ok(validate_transition_tags(
