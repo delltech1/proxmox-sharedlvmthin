@@ -6,8 +6,10 @@
 
 Input is one trusted record per line: ``slot|expected-path``.  The helper talks
 directly to the local root-owned QMP socket, asks QEMU for its live block graph,
-and requires exactly one canonical host path for every requested slot.  It
-never changes QEMU, PVE configuration, LVM, or device-mapper state.
+and requires exactly one canonical host path for every requested slot.  The
+expected kernel block-device identity (major:minor plus DM UUID) must also be
+identical before and after the query.  It never changes QEMU, PVE configuration,
+LVM, or device-mapper state.
 """
 
 import json
@@ -51,6 +53,40 @@ def canonical(path):
         return None
 
 
+def device_identity(path):
+    """Return an exact kernel DM identity for a canonical block path.
+
+    A path match alone is insufficient because udev may recreate the same
+    convenience name for a different DM object while recovery is observing
+    QEMU.  Read the kernel identity on both sides of the bounded QMP query and
+    require it to remain stable.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not stat.S_ISBLK(st.st_mode):
+        return None
+    devno = f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}"
+    try:
+        with open(f"/sys/dev/block/{devno}/dm/uuid", encoding="ascii") as handle:
+            dm_uuid = handle.read().strip()
+    except (OSError, UnicodeError):
+        return None
+    if not dm_uuid or len(dm_uuid) > 512 or "\n" in dm_uuid or "\r" in dm_uuid:
+        return None
+    return devno, dm_uuid
+
+
+def verify_stable_identity(path, expected):
+    current = device_identity(path)
+    if current is None:
+        return None, "lost"
+    if current != expected:
+        return None, "changed"
+    return current, None
+
+
 def collect_device_paths(value, result):
     if isinstance(value, dict):
         for key, child in value.items():
@@ -84,6 +120,12 @@ def main(argv):
     if len(argv) != 1 or not re.fullmatch(r"[1-9][0-9]{2,8}", argv[0]):
         die("usage: sharedlvmthin-qmp-path-check <vmid>", 64)
     expected = read_expected()
+    expected_identity = {}
+    for slot, path in expected.items():
+        identity = device_identity(path)
+        if identity is None:
+            die(f"expected path is not an exact kernel DM block device for {slot}")
+        expected_identity[slot] = identity
     qmp_path = f"/run/qemu-server/{argv[0]}.qmp"
     try:
         st = os.stat(qmp_path)
@@ -121,10 +163,22 @@ def main(argv):
 
     if set(observed) != set(expected):
         die("runtime block graph is missing a configured disk")
+
+    observed_identity = {}
+    for slot, path in observed.items():
+        identity, error = verify_stable_identity(path, expected_identity[slot])
+        if error == "lost":
+            die(f"runtime path lost its exact kernel DM identity for {slot}")
+        if error == "changed":
+            die(f"kernel block-device identity changed during QMP proof for {slot}")
+        observed_identity[slot] = identity
+
     print("RUNTIME_PATHS=PASS")
     for slot in sorted(observed):
         print(f"RUNTIME_SLOT={slot}")
         print(f"RUNTIME_PATH={observed[slot]}")
+        print(f"RUNTIME_DEVNO={observed_identity[slot][0]}")
+        print(f"RUNTIME_DM_UUID={observed_identity[slot][1]}")
     return 0
 
 

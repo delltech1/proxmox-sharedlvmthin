@@ -197,6 +197,8 @@ fi
 
 echo
 echo "SharedLvmThin installation complete."
+echo "WARNING: BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL."
+echo "Use only disposable lab hosts, storage and guest data; no support or warranty is offered."
 if [ "$HEALTH_OK" -eq 1 ] && [ "$PVE_REFRESH_OK" -eq 1 ]; then
     echo "Installation status: BOUNDED PREFLIGHT PASSED"
     echo "Run 'sharedlvmthin doctor' for the full per-volume and Thick anchor audit."

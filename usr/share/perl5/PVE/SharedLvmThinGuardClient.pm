@@ -15,6 +15,7 @@ sub new {
         socket_factory => $args{socket_factory},
         allow_real_socket => $args{allow_real_socket} ? 1 : 0,
         socket_path => $args{socket_path} // '/run/pve-sharedlvmthin/thin-guard.sock',
+        request_timeout => $args{request_timeout} // 35,
     }, $class);
 }
 
@@ -47,7 +48,10 @@ sub request {
             $socket = $self->_connect();
             die "ThinGuard socket factory returned no socket\n" if !defined($socket);
             local $SIG{ALRM} = sub { die "ThinGuard request timeout\n" };
-            alarm(35);
+            die "invalid ThinGuard request timeout\n"
+                if $self->{request_timeout} !~ /^\d+$/
+                || $self->{request_timeout} < 1 || $self->{request_timeout} > 1310;
+            alarm($self->{request_timeout});
             my $written = $socket->syswrite($payload, length($payload));
             die "ThinGuard request write failed\n"
                 if !defined($written) || $written != length($payload);

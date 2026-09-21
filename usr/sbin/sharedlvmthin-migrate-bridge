@@ -11,9 +11,9 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 usage() {
     echo "Usage: sharedlvmthin-migrate-bridge <preflight|run> <vmid> <target-node> <thin-storage> <thick-storage> [--keep-thick]" >&2
-    echo "       sharedlvmthin-migrate-bridge inspect <vmid>" >&2
-    echo "       sharedlvmthin-migrate-bridge plan <vmid>" >&2
-    echo "       sharedlvmthin-migrate-bridge resume <vmid>" >&2
+    echo "       sharedlvmthin-migrate-bridge inspect <vmid> [transaction]" >&2
+    echo "       sharedlvmthin-migrate-bridge plan <vmid> [transaction]" >&2
+    echo "       sharedlvmthin-migrate-bridge resume <vmid> [transaction]" >&2
     exit 64
 }
 
@@ -21,13 +21,30 @@ usage() {
 # root-owned mode-0600 state file and must remain observable while the writer
 # holds the lock for a multi-hour copy.
 if [ "${1:-}" = inspect ]; then
-    [ "$#" -eq 2 ] || usage
+    [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || usage
     inspect_vmid=$2
+    inspect_tx=${3:-}
     [[ $inspect_vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
+    [[ -z $inspect_tx || $inspect_tx =~ ^[0-9a-f]{32}$ ]] || usage
     inspect_dir=/var/lib/pve-sharedlvmthin/migration-bridge
-    latest=$(find "$inspect_dir" -maxdepth 1 -type f -name "$inspect_vmid-*.state" \
-        -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 {print $2}')
-    [ -n "$latest" ] || { echo "BRIDGE_STATE=ABSENT"; exit 2; }
+    if [ -n "$inspect_tx" ]; then
+        mapfile -t inspect_files < <(
+            find "$inspect_dir" -maxdepth 1 -type f \
+                -name "$inspect_vmid-$inspect_tx.state" -print 2>/dev/null
+        )
+    else
+        mapfile -t inspect_files < <(
+            find "$inspect_dir" -maxdepth 1 -type f -name "$inspect_vmid-*.state" \
+                -print 2>/dev/null | LC_ALL=C sort
+        )
+    fi
+    [ "${#inspect_files[@]}" -gt 0 ] || { echo "BRIDGE_STATE=ABSENT"; exit 2; }
+    [ "${#inspect_files[@]}" -eq 1 ] || {
+        echo "BRIDGE_STATE=AMBIGUOUS" >&2
+        echo "multiple bridge state files exist for VM $inspect_vmid; specify the exact transaction" >&2
+        exit 70
+    }
+    latest=${inspect_files[0]}
     [ "$(stat -c %u "$latest")" -eq 0 ] || { echo "untrusted bridge state owner" >&2; exit 70; }
     mode=$(stat -c %a "$latest")
     [ "$mode" = 600 ] || { echo "untrusted bridge state mode: $mode" >&2; exit 70; }
@@ -42,6 +59,11 @@ if [ "${1:-}" = inspect ]; then
         || { echo "bridge state has no unique started_at" >&2; exit 70; }
     inspect_updated=$(inspect_value updated_at) \
         || { echo "bridge state has no unique updated_at" >&2; exit 70; }
+    inspected_tx=$(inspect_value tx) \
+        || { echo "bridge state has no unique transaction" >&2; exit 70; }
+    [[ $inspected_tx =~ ^[0-9a-f]{32}$ \
+        && ( -z $inspect_tx || $inspected_tx = "$inspect_tx" ) ]] \
+        || { echo "bridge state transaction identity mismatch" >&2; exit 70; }
     [[ $inspect_started =~ ^[0-9]+$ && $inspect_updated =~ ^[0-9]+$ \
         && $inspect_updated -ge $inspect_started ]] \
         || { echo "bridge state timestamps are invalid" >&2; exit 70; }
@@ -76,14 +98,31 @@ shift
 # was interrupted. Earlier/mixed phases remain fail-closed; they are not
 # guessed into completion.
 if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
-    [ "$#" -eq 2 ] || usage
+    [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || usage
     bridge_action=$1
     resume_vmid=$2
+    requested_tx=${3:-}
     [[ $resume_vmid =~ ^[1-9][0-9]{2,8}$ ]] || usage
+    [[ -z $requested_tx || $requested_tx =~ ^[0-9a-f]{32}$ ]] || usage
     resume_dir=/var/lib/pve-sharedlvmthin/migration-bridge
-    resume_file=$(find "$resume_dir" -maxdepth 1 -type f -name "$resume_vmid-*.state" \
-        -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 {print $2}')
-    [ -n "$resume_file" ] || { echo "no bridge state for VM $resume_vmid" >&2; exit 2; }
+    if [ -n "$requested_tx" ]; then
+        mapfile -t resume_files < <(
+            find "$resume_dir" -maxdepth 1 -type f \
+                -name "$resume_vmid-$requested_tx.state" -print 2>/dev/null
+        )
+    else
+        mapfile -t resume_files < <(
+            find "$resume_dir" -maxdepth 1 -type f -name "$resume_vmid-*.state" \
+                -print 2>/dev/null | LC_ALL=C sort
+        )
+    fi
+    [ "${#resume_files[@]}" -gt 0 ] \
+        || { echo "no bridge state for VM $resume_vmid" >&2; exit 2; }
+    [ "${#resume_files[@]}" -eq 1 ] || {
+        echo "ambiguous bridge recovery: ${#resume_files[@]} state files exist for VM $resume_vmid; specify the exact transaction" >&2
+        exit 70
+    }
+    resume_file=${resume_files[0]}
     [ "$(stat -c %u "$resume_file")" -eq 0 ] && [ "$(stat -c %a "$resume_file")" = 600 ] \
         || { echo "untrusted bridge state" >&2; exit 70; }
     state_value() {
@@ -98,6 +137,8 @@ if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
     total_bytes=$(state_value total_bytes)
     [[ $version =~ ^(2|3)$ && $tx =~ ^[0-9a-f]{32}$ && $vmid = "$resume_vmid" ]] \
         || { echo "invalid bridge state identity" >&2; exit 70; }
+    [[ -z $requested_tx || $tx = "$requested_tx" ]] \
+        || { echo "bridge state transaction does not match the requested transaction" >&2; exit 70; }
     [[ $source_node = "$(hostname)" && $target =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
         && $thin_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
         && $thick_store =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \

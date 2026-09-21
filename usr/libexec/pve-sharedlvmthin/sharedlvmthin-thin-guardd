@@ -26,10 +26,10 @@ $SIG{INT} = sub { $stop = 1 };
 $SIG{HUP} = 'IGNORE';
 
 sub capture_json {
-    my (@argv) = @_;
+    my ($timeout, @argv) = @_;
     my $out = '';
     PVE::Tools::run_command(\@argv,
-        timeout => 30,
+        timeout => $timeout,
         outfunc => sub { $out .= "$_[0]\n" },
     );
     my $doc = eval { decode_json($out) };
@@ -41,11 +41,15 @@ sub capture_json {
 my $provider = sub {
     my (%query) = @_;
     if ($query{op} eq 'PREPARE') {
-        return capture_json($inventory, '--prepare',
+        # PREPARE can include one bounded SSH proof per configured peer.  The
+        # helper enforces the per-peer policy loaded from storage.cfg.  This
+        # outer bound only prevents a wedged local inventory process and is
+        # never interpreted as fencing or permission to activate.
+        return capture_json(1300, $inventory, '--prepare',
             @query{qw(storage_id pool_uuid owner_epoch mapper_uuid)});
     }
     if ($query{op} eq 'RELEASE') {
-        return capture_json($inventory, '--release',
+        return capture_json(30, $inventory, '--release',
             @query{qw(storage_id pool_uuid owner_epoch mapper_uuid)});
     }
     if ($query{op} eq 'OBSERVE') {
@@ -56,7 +60,7 @@ my $provider = sub {
         for my $sid (@{$query{storage_ids}}) {
             die "ThinGuard OBSERVE storage ID is malformed\n"
                 if !defined($sid) || $sid !~ /^[A-Za-z0-9_.-]+$/ || $seen{$sid}++;
-            my $one = capture_json($inventory, '--storage-id', $sid);
+            my $one = capture_json(30, $inventory, '--storage-id', $sid);
             $node //= $one->{local_node};
             $quorum //= $one->{quorum};
             die "ThinGuard inventory changed node or quorum within one sample\n"
@@ -71,7 +75,7 @@ my $provider = sub {
 # A fresh daemon must never retroactively bless an existing runtime.  If the
 # previous guardian crashed, its watchdog descriptor closes without magic V
 # and the host must fence; a replacement process may not race that outcome.
-my $startup = capture_json($inventory);
+my $startup = capture_json(30, $inventory);
 my @preexisting = grep { $_->{locally_active} } @{$startup->{pools}};
 die "ThinGuard startup refused: protected Thin runtime predates this process\n"
     if @preexisting;

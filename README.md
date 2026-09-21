@@ -6,6 +6,48 @@ shared LVM volume group backed by FC, FCoE or iSCSI SAN storage. This project
 was originally published as SharedLvmThin; the existing package, command and
 storage-plugin identifiers remain compatible.
 
+> [!CAUTION]
+> **BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL SOFTWARE FOR DISPOSABLE
+> LABORATORY SYSTEMS AND DISPOSABLE DATA ONLY.** Neither allocation mode is
+> production-ready, supported, certified, or warranted. Do not use
+> this release candidate with production workloads, irreplaceable data, or as
+> the only copy of any data. A defect, operator error, incomplete fencing,
+> storage latency or failure, host failure, update, or incompatible platform
+> change can cause loss, corruption, unavailability, or an unrecoverable
+> cluster state. Maintain independently tested backups and recovery procedures.
+> Installation or use means that the operator accepts these risks to the
+> maximum extent permitted by applicable law. The software is provided under
+> GPLv3, including its sections 15–17 warranty disclaimer and limitation of
+> liability. This operational warning explains the tested scope; it does not
+> add a restriction to the GPL or override rights and liabilities that cannot
+> legally be excluded.
+
+Read the full [experimental risk and support boundary](docs/RISK-AND-SUPPORT-BOUNDARY.md)
+before installing or testing the plugin.
+
+## Project status — testing only
+
+This repository publishes an **experimental community test version**. Use it
+only with disposable hosts, disposable shared storage, and disposable guest
+data in a laboratory environment. This applies equally to **Thin** and
+**Thick Generations**. A successful test, long-running test, or previous
+release does not make either mode production-ready or certify it for another
+environment.
+
+Every good-faith report is welcome: successes, failures, suspected corruption,
+timeouts, performance problems, unusual SAN behavior, upgrade regressions and
+reproducible edge cases all help define the real safety envelope. Reports must
+be sanitized and must never contain credentials, private keys, guest data,
+PVE tickets, private addresses, hostnames, WWIDs or other infrastructure
+secrets. Acknowledging, discussing or acting on a report is voluntary and does
+not create an entitlement to support, a fix, a response time or continued
+maintenance.
+
+This is a community project. No support, maintenance response time, service
+level, update schedule, compatibility commitment, warranty, or duty to fix is
+offered or promised. A voluntary reply, issue review, patch, or release does
+not create a support relationship or future obligation.
+
 ## What is it for?
 
 BASTRIX SharedLVM addresses a specific gap in native Proxmox storage support:
@@ -41,11 +83,12 @@ probably do not need this project.
 
 ## Release status
 
-`TG31+fix2` (`0.9.0~rc5.10~tg31+fix2`) is the current hotfix pre-release,
-intended exclusively
-for Proxmox VE 9. It fixes same-VG Thin/Thick mutation admission, offline Thin
-rollback ownership, and unrelated UUID-less device-mapper inventory handling.
-The hotfix passes 198 Python tests and 799 Perl tests plus targeted concurrent
+`RC5.11 TG32` (`0.9.0~rc5.11~tg32`) is the current experimental pre-release,
+intended exclusively for disposable Proxmox VE 9 laboratories. Both Thin and
+Thick Generations remain experimental. TG32 incorporates the previously
+published TG31+fix2 behavior plus additional timing, scale, ambiguity and
+postcondition hardening; it is not a new storage format. The inherited hotfix
+baseline passed 198 Python tests and 799 Perl tests plus targeted concurrent
 snapshot/rollback, restored-disk writes, resize and exact-cleanup lab checks.
 The final package was reinstalled one node at a time across the three-node lab,
 then exercised with the Thin/Thick add/remove matrix, exact offline cleanup and
@@ -69,8 +112,8 @@ TG25 additionally qualifies a full PVE package upgrade and reboot followed by
 automatic transport recovery, storage revalidation and Thin/Thick lifecycle
 operations. This is a laboratory release candidate, not validation of
 200--500 VM enterprise scale or universal certification of every SAN, HBA,
-array, multipath policy, firmware or failure mode. Validate it first on
-disposable storage matching your production design.
+array, multipath policy, firmware or failure mode. Evaluate it only on
+disposable storage matching the prospective design.
 
 TG30 hardens the online Thin migration bridge with observable progress,
 pre-sized return-to-Thin pools, a per-pool 95% mutation gate, and exact
@@ -79,7 +122,8 @@ TG31 adds authenticated per-disk manifests, a deterministic recovery planner,
 and mandatory QMP live-path correlation so pmxcfs/runtime divergence after an
 interrupted block job fails closed instead of selecting a copy by inference.
 
-See the [TG31+fix2 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX2.md),
+See the [RC5.11 TG32 release notes](docs/RELEASE-NOTES-RC5.11-TG32.md),
+the historical [TG31+fix2 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX2.md),
 [TG31+fix1 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX1.md),
 [installation guide](docs/installation.md), [TG31 development notes](docs/RELEASE-NOTES-RC5.10-TG31.md), the
 [TG30 release notes](docs/RELEASE-NOTES-RC5.9-TG30.md), the

@@ -154,17 +154,24 @@ sub properties {
             type => 'string',
         },
         'slt-allocation-mode' => {
-            description => 'Volume backend: per-VM thin pools or experimental fully allocated Thick Generations.',
+            description => 'Experimental lab-only backend: per-VM Thin pools or fully allocated Thick Generations; both modes require disposable storage.',
             type => 'string',
             enum => ['thin', 'thick-generations'],
             default => 'thin',
         },
         'slt-tg-hydration-timeout' => {
-            description => 'Bounded Thick Generations hydration observation timeout in seconds.',
+            description => 'Bounded Thick Generations no-progress timeout in seconds. Continuing verified dm-clone progress may run longer for large disks.',
             type => 'integer',
             minimum => 60,
             maximum => 86400,
             default => 3600,
+        },
+        'slt-tg-close-timeout' => {
+            description => 'Bounded observation window in seconds for a Thick frontend open count to reach zero during deactivation. Expiry refuses removal.',
+            type => 'integer',
+            minimum => 1,
+            maximum => 300,
+            default => 30,
         },
         'slt-lock-timeout' => {
             description => 'Bounded Proxmox cluster storage-lock acquisition timeout in seconds. Size this from measured worst-case serialized metadata operations; it does not configure or replace the PVE HA watchdog.',
@@ -199,6 +206,20 @@ sub properties {
             type => 'string',
             enum => ['disabled', 'remote-audit', 'runtime-guard'],
             default => 'disabled',
+        },
+        'slt-thin-peer-connect-timeout' => {
+            description => 'SSH connection timeout in seconds for each Thin peer mapper probe. A timeout is UNKNOWN and always refuses activation.',
+            type => 'integer',
+            minimum => 1,
+            maximum => 120,
+            default => 5,
+        },
+        'slt-thin-peer-probe-timeout' => {
+            description => 'Whole-command timeout in seconds for each Thin peer mapper probe. Must exceed the connection timeout. Size from measured loaded-node latency; expiry is UNKNOWN and never proves fencing.',
+            type => 'integer',
+            minimum => 2,
+            maximum => 600,
+            default => 15,
         },
         'slt-thin-ha-takeover' => {
             description => 'Opt-in automatic Thin owner takeover only when fresh PVE HA manager state assigns the fenced service to this node. Requires remote-audit or runtime-guard.',
@@ -297,11 +318,14 @@ sub options {
         'slt-vgname' => { fixed => 1 },
         'slt-allocation-mode' => { fixed => 1, optional => 1 },
         'slt-tg-hydration-timeout' => { optional => 1 },
+        'slt-tg-close-timeout' => { optional => 1 },
         'slt-lock-timeout' => { optional => 1 },
         'slt-lock-yield-ms' => { optional => 1 },
         'slt-mutation-admission-timeout' => { optional => 1 },
         'slt-bridge-admission-timeout' => { optional => 1 },
         'slt-thin-leaseguard' => { optional => 1 },
+        'slt-thin-peer-connect-timeout' => { optional => 1 },
+        'slt-thin-peer-probe-timeout' => { optional => 1 },
         'slt-thin-ha-takeover' => { optional => 1 },
         'slt-tg-hydration-threshold' => { optional => 1 },
         'slt-tg-hydration-batch-size' => { optional => 1 },
@@ -353,6 +377,27 @@ sub _thick_online_materialization_mode {
     die "invalid thick-generations online materialization mode\n"
         if $mode ne 'asynchronous' && $mode ne 'synchronous';
     return $mode;
+}
+
+sub _thick_close_timeout {
+    my ($class, $scfg) = @_;
+    my $timeout = $scfg->{'slt-tg-close-timeout'} // 30;
+    die "invalid thick-generations frontend close timeout\n"
+        if $timeout !~ /^\d+$/ || $timeout < 1 || $timeout > 300;
+    return int($timeout);
+}
+
+sub _thin_peer_probe_timing {
+    my ($class, $scfg) = @_;
+    my $connect = $scfg->{'slt-thin-peer-connect-timeout'} // 5;
+    my $probe = $scfg->{'slt-thin-peer-probe-timeout'} // 15;
+    die "invalid Thin peer SSH connection timeout\n"
+        if $connect !~ /^\d+$/ || $connect < 1 || $connect > 120;
+    die "invalid Thin peer whole-probe timeout\n"
+        if $probe !~ /^\d+$/ || $probe < 2 || $probe > 600;
+    die "Thin peer whole-probe timeout must exceed its SSH connection timeout\n"
+        if $probe <= $connect;
+    return (int($connect), int($probe));
 }
 
 sub _require_thick_identity_config {
@@ -778,32 +823,68 @@ sub _thick_wait_for_hydration {
     my ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
     return 1 if $hydrated == $total && $hydrating == 0;
 
-    my $events = _command_lines(
-        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'events', $mapper],
-        "reading dm-clone event counter for '$mapper' failed",
-    );
-    die "dm-clone event counter for '$mapper' is ambiguous\n"
-        if @$events != 1 || $events->[0] !~ /^\d+$/;
-    my $event = int($events->[0]);
+    my $last_hydrated = $hydrated;
+    my $last_total = $total;
+    my $progress_at = $class->_thick_progress_clock();
 
-    # Close the completion-before-wait race after capturing the event number.
-    ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
-    return 1 if $hydrated == $total && $hydrating == 0;
-
-    my $wait_error = '';
-    eval {
-        run_command(
-            ['/usr/bin/timeout', '--kill-after=5s', "${timeout}s",
-                '/sbin/dmsetup', 'wait', $mapper, "$event"],
-            errmsg => "waiting for dm-clone hydration event failed",
+    while (1) {
+        my $events = _command_lines(
+            ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'events', $mapper],
+            "reading dm-clone event counter for '$mapper' failed",
         );
-    };
-    $wait_error = $@ if $@;
-    my $complete = eval { $class->_thick_verify_clone_status($mapper, 1); 1 };
-    die "dm-clone hydration is not positively complete; one bounded wait was used and "
-        . "no additional probe was spawned"
-        . ($wait_error ? ": $wait_error" : "\n") if !$complete;
-    return 1;
+        die "dm-clone event counter for '$mapper' is ambiguous\n"
+            if @$events != 1 || $events->[0] !~ /^\d+$/;
+        my $event = int($events->[0]);
+
+        # Close the completion-before-wait race after capturing the event
+        # number.  A changed total or regressing progress is ambiguous and
+        # never resets the observation window.
+        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+        return 1 if $hydrated == $total && $hydrating == 0;
+        die "dm-clone hydration geometry changed for '$mapper'\n"
+            if $total != $last_total || $hydrated < $last_hydrated;
+        if ($hydrated > $last_hydrated) {
+            $last_hydrated = $hydrated;
+            $progress_at = $class->_thick_progress_clock();
+        }
+
+        my $remaining = $timeout - int($class->_thick_progress_clock() - $progress_at);
+        die "dm-clone hydration for '$mapper' made no verified progress for ${timeout}s\n"
+            if $remaining <= 0;
+        my $slice = $remaining < 60 ? $remaining : 60;
+
+        # A slice timeout is an observation boundary, not a retry of a storage
+        # mutation.  Re-read exact kernel status and extend the window only
+        # after the hydrated-region counter advances.
+        my $wait_started = $class->_thick_progress_clock();
+        my $wait_error = '';
+        eval {
+            run_command(
+                ['/usr/bin/timeout', '--kill-after=5s', "${slice}s",
+                    '/sbin/dmsetup', 'wait', $mapper, "$event"],
+                errmsg => "waiting for dm-clone hydration event failed",
+            );
+        };
+        $wait_error = $@ if $@;
+        my $wait_elapsed = $class->_thick_progress_clock() - $wait_started;
+        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+        return 1 if $hydrated == $total && $hydrating == 0;
+        die "dm-clone hydration geometry changed for '$mapper'\n"
+            if $total != $last_total || $hydrated < $last_hydrated;
+        if ($hydrated > $last_hydrated) {
+            $last_hydrated = $hydrated;
+            $progress_at = $class->_thick_progress_clock();
+        } elsif ($wait_error && $slice > 1 && $wait_elapsed < 1) {
+            die "dm-clone event wait for '$mapper' failed before the observation boundary: "
+                . $wait_error;
+        } elsif ($class->_thick_progress_clock() - $progress_at >= $timeout) {
+            die "dm-clone hydration for '$mapper' made no verified progress for ${timeout}s\n";
+        }
+    }
+}
+
+sub _thick_progress_clock {
+    return Time::HiRes::time();
 }
 
 sub _thick_frontend_open_count {
@@ -834,7 +915,7 @@ sub _thick_schedule_materialization {
             '--on-active=3s', '--timer-property=AccuracySec=100ms',
             '--property=Type=exec', '--property=Nice=10',
             '--property=IOSchedulingClass=best-effort', '--property=IOSchedulingPriority=7',
-            "--property=TimeoutStartSec=" . ($timeout + 300),
+            '--property=TimeoutStartSec=infinity',
             $worker, $storeid, $volname, $snap, $operation, $tx],
         errmsg => "scheduling asynchronous Thick Generations materialization failed",
     );
@@ -940,13 +1021,17 @@ sub _thick_deactivate_volume {
             );
         }
         my $opens;
-        for my $attempt (0 .. 20) {
+        my $close_timeout = $class->_thick_close_timeout($scfg);
+        my $close_deadline = $class->_thick_progress_clock() + $close_timeout;
+        while (1) {
             $opens = $class->_thick_frontend_open_count($mapper);
             last if $opens == 0;
-            last if $attempt == 20;
-            select(undef, undef, undef, 0.1);
+            last if $class->_thick_progress_clock() >= $close_deadline;
+            my $remaining = $close_deadline - $class->_thick_progress_clock();
+            my $pause = $remaining < 0.1 ? $remaining : 0.1;
+            select(undef, undef, undef, $pause) if $pause > 0;
         }
-        die "refusing to deactivate open thick-generations frontend '$mapper' after bounded close wait\n"
+        die "refusing to deactivate open thick-generations frontend '$mapper' after ${close_timeout}s close wait\n"
             if $opens != 0;
         # A close can race qmeventd cleanup. Revalidate the exact table after
         # the bounded wait so a name reuse or table change cannot be mistaken
@@ -1129,6 +1214,9 @@ sub _verify_same_vg_alias_configuration {
     my %lock_timeout;
     my %lock_yield;
     my %bridge_timeout;
+    my %thick_close_timeout;
+    my %peer_connect_timeout;
+    my %peer_probe_timeout;
     my %node_scope;
     for my $alias (@aliases) {
         my $candidate = $ids->{$alias};
@@ -1152,6 +1240,9 @@ sub _verify_same_vg_alias_configuration {
         $lock_timeout{$candidate->{'slt-lock-timeout'} // 30} = 1;
         $lock_yield{$candidate->{'slt-lock-yield-ms'} // 1000} = 1;
         $bridge_timeout{$candidate->{'slt-bridge-admission-timeout'} // 86400} = 1;
+        $thick_close_timeout{$candidate->{'slt-tg-close-timeout'} // 30} = 1;
+        $peer_connect_timeout{$candidate->{'slt-thin-peer-connect-timeout'} // 5} = 1;
+        $peer_probe_timeout{$candidate->{'slt-thin-peer-probe-timeout'} // 15} = 1;
         $node_scope{_canonical_node_scope($candidate->{nodes})} = 1;
     }
     die "shared VG '$vg' requires exactly one thin and one thick-generations alias\n"
@@ -1170,6 +1261,12 @@ sub _verify_same_vg_alias_configuration {
         if keys(%lock_yield) != 1;
     die "same-VG aliases must use the same migration-bridge admission timeout\n"
         if keys(%bridge_timeout) != 1;
+    die "same-VG aliases must use the same Thick frontend close timeout\n"
+        if keys(%thick_close_timeout) != 1;
+    die "same-VG aliases must use the same Thin peer SSH connection timeout\n"
+        if keys(%peer_connect_timeout) != 1;
+    die "same-VG aliases must use the same Thin peer whole-probe timeout\n"
+        if keys(%peer_probe_timeout) != 1;
     die "same-VG aliases must use the same PVE node scope\n"
         if keys(%node_scope) != 1;
     return 1;
@@ -2219,6 +2316,9 @@ sub _thin_remote_mapper_audit_locked {
         if $mode ne 'disabled' && $mode ne 'remote-audit' && $mode ne 'runtime-guard';
     return 1 if $mode eq 'disabled';
 
+    my ($connect_timeout, $probe_timeout) =
+        $class->_thin_peer_probe_timing($scfg);
+
     my ($mapper, $expected_uuid) =
         $class->_thin_pool_dm_identity($vg, $pool, $device);
     my $peers = $class->_thin_configured_peer_nodes($scfg, $fenced_owner);
@@ -2226,7 +2326,8 @@ sub _thin_remote_mapper_audit_locked {
     for my $peer (@$peers) {
         my $ssh = PVE::SSHInfo::ssh_info_to_command({
             name => $peer->{node}, ip => $peer->{ip},
-        }, '-o', 'ConnectTimeout=5');
+        }, '-o', "ConnectTimeout=$connect_timeout", '-o', 'BatchMode=yes',
+            '-o', 'NumberOfPasswordPrompts=0');
         push @$ssh, '--',
             '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence',
             $mapper, $expected_uuid;
@@ -2234,7 +2335,7 @@ sub _thin_remote_mapper_audit_locked {
         eval {
             run_command(
                 $ssh,
-                timeout => 10,
+                timeout => $probe_timeout,
                 outfunc => sub { push @stdout, $_[0] },
                 errfunc => sub { push @stderr, $_[0] },
             );
@@ -2295,7 +2396,19 @@ sub _thin_claim_pool_owner_locked {
     }
     die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' is owned by node '$owner', not '$node'; concurrent dm-thin activation can corrupt metadata; live migration is unsupported\n"
         if defined($owner) && $owner ne $node;
-    return $state->{epoch} if defined($owner);
+    if (defined($owner)) {
+        # A durable local owner is necessary but not sufficient evidence for
+        # reactivation.  A previous partial handoff, manual lvchange, stale
+        # dmeventd instance, or older plugin may have left the exact pool
+        # mapper loaded in another kernel without changing the owner tags.
+        # Re-audit every configured peer before every guarded activation;
+        # never treat an existing local epoch as a shortcut around the
+        # single-kernel invariant.
+        $class->_thin_remote_mapper_audit_locked(
+            $scfg, $vg, $pool, $device, undef,
+        ) if defined($scfg);
+        return $state->{epoch};
+    }
 
     # An unowned pool must also be absent from this kernel.  Generic LVM
     # autoactivation or a leaked dmeventd mapping can otherwise load the same
@@ -2367,7 +2480,13 @@ sub _thin_pve_ha_takeover_evidence {
 sub _thin_runtime_guard_request {
     my ($class, $scfg, $op, %request) = @_;
     return 1 if ($scfg->{'slt-thin-leaseguard'} // 'disabled') ne 'runtime-guard';
-    my $client = PVE::SharedLvmThinGuardClient->new(allow_real_socket => 1);
+    # PREPARE repeats the exact peer proof inside the watchdog guardian.  Its
+    # client wait must not be shorter than the guardian's bounded inventory
+    # process or a healthy loaded proof would become transport ambiguity.
+    my $request_timeout = $op eq 'PREPARE' ? 1310 : 35;
+    my $client = PVE::SharedLvmThinGuardClient->new(
+        allow_real_socket => 1, request_timeout => $request_timeout,
+    );
     my $action = $op eq 'PREPARE' ? 'ACK_PREPARED'
         : $op eq 'RELEASE' ? ['CLEAN_DISARM', 'REFRESH_WATCHDOG']
         : die "invalid ThinGuard operation\n";
@@ -2377,6 +2496,27 @@ sub _thin_runtime_guard_request {
         request_id => _new_transaction_id(),
         %request,
     }, $action);
+}
+
+sub _thin_activation_commit_barrier_locked {
+    my ($class, $scfg, $vg, $pool, $device, $epoch) = @_;
+    die "Thin activation commit barrier received a malformed owner epoch\n"
+        if !defined($epoch) || $epoch !~ /^[a-f0-9]{32}$/;
+
+    $class->_thin_remote_mapper_audit_locked(
+        $scfg, $vg, $pool, $device, undef,
+    );
+    my $commit_owner = _thin_owner_state_from_tags(
+        $class->_thin_pool_tags($vg, $pool, $device),
+    );
+    my $local_node = $class->_thin_local_node();
+    die "UNSAFE shared LVM-thin activation refused: owner epoch changed before local activation of '$vg/$pool'\n"
+        if !$commit_owner->{schema}
+        || !defined($commit_owner->{owner})
+        || $commit_owner->{owner} ne $local_node
+        || !defined($commit_owner->{epoch})
+        || $commit_owner->{epoch} ne $epoch;
+    return 1;
 }
 
 sub _thin_release_pool_owner_locked {
@@ -3431,6 +3571,16 @@ sub _activate_thin_volume_locked {
                 die "ThinGuard refused activation before lvchange: $guard_error";
             }
         }
+
+        # Activation commit barrier.  Peer absence proved while claiming the
+        # owner must not be treated as indefinitely fresh: SSH and guardian
+        # preparation can take long enough for stale/manual state to become
+        # visible.  Audit once more immediately before the mutating lvchange,
+        # then prove that the exact local owner epoch we admitted still exists.
+        $class->_thin_activation_commit_barrier_locked(
+            $scfg, $vg, $pool, $device, $epoch,
+        );
+
         my @activate = ('/sbin/lvchange');
         push @activate, ('--devices', $device) if defined($device);
         push @activate, ('-ay', '-K', "$vg/$lv");
@@ -4983,16 +5133,25 @@ sub _volume_resize_locked {
     # PVE passes the requested size in bytes here.
     # LVM accepts bytes explicitly with the B suffix.
     #
-    run_command(
-        [
+    my $resize_error = '';
+    eval {
+        run_command([
             '/sbin/lvextend',
             '-L', "${size}B",
             "$vg/$volname",
-        ],
-        errmsg => "resizing shared thin LV '$vg/$volname' failed",
-    );
+        ], errmsg => "resizing shared thin LV '$vg/$volname' failed");
+    };
+    $resize_error = $@ if $@;
 
-    $class->_verify_resize_postcondition($scfg, $volname, $size);
+    eval { $class->_verify_resize_postcondition($scfg, $volname, $size); };
+    my $resize_post_error = $@;
+    die(($resize_error || '')
+        . "Thin resize outcome is UNKNOWN; exact requested-size postcondition was not proven; "
+        . "no retry or shrink was attempted: $resize_post_error")
+        if $resize_post_error;
+    warn "Thin lvextend reported an error, but exact postcondition proves the requested "
+        . "size was reached; continuing without retry: $resize_error"
+        if $resize_error;
     $class->_verify_autoactivation_disabled($vg, $volname);
 
     return;
@@ -5020,10 +5179,27 @@ sub _volume_snapshot_locked {
     $class->_verify_owned_volume($storeid, $scfg, $volname);
     my $snapvol = "snap_${volname}_${snap}";
 
-    run_command(
-        ['/sbin/lvcreate', '-n', $snapvol, '-pr', '-s', "$vg/$volname"],
-        errmsg => "creating snapshot '$vg/$snapvol' failed",
-    );
+    # Establish absence before the single create attempt. This makes a fresh
+    # exact postcondition sufficient to classify an ambiguous command result
+    # without adopting a pre-existing same-name object.
+    $class->_verify_snapshot_postcondition($scfg, $volname, $snapvol, 0);
+    my $create_error = '';
+    eval {
+        run_command(
+            ['/sbin/lvcreate', '-n', $snapvol, '-pr', '-s', "$vg/$volname"],
+            errmsg => "creating snapshot '$vg/$snapvol' failed",
+        );
+    };
+    $create_error = $@ if $@;
+
+    eval { $class->_verify_snapshot_postcondition($scfg, $volname, $snapvol, 1); };
+    my $create_post_error = $@;
+    die(($create_error || '')
+        . "Thin snapshot create outcome is UNKNOWN; exact new snapshot postcondition was not proven; "
+        . "no retry or cleanup was attempted: $create_post_error")
+        if $create_post_error;
+    warn "Thin snapshot create reported an error, but exact new-object postcondition "
+        . "is proven; continuing without retry: $create_error" if $create_error;
 
     $class->_disable_and_verify_autoactivation($vg, $snapvol);
     $class->_verify_snapshot_postcondition($scfg, $volname, $snapvol, 1);
@@ -5319,12 +5495,23 @@ sub _volume_snapshot_delete_locked {
     # the destructive command so a stale/foreign name collision fails closed.
     $class->_verify_snapshot_postcondition($scfg, $volname, $snapvol, 1);
 
-    run_command(
-        ['/sbin/lvremove', '-f', "$vg/$snapvol"],
-        errmsg => "removing snapshot '$vg/$snapvol' failed",
-    );
+    my $delete_error = '';
+    eval {
+        run_command(
+            ['/sbin/lvremove', '-f', "$vg/$snapvol"],
+            errmsg => "removing snapshot '$vg/$snapvol' failed",
+        );
+    };
+    $delete_error = $@ if $@;
 
-    $class->_verify_snapshot_postcondition($scfg, $volname, $snapvol, 0);
+    eval { $class->_verify_snapshot_postcondition($scfg, $volname, $snapvol, 0); };
+    my $delete_post_error = $@;
+    die(($delete_error || '')
+        . "Thin snapshot delete outcome is UNKNOWN; exact absence was not proven; "
+        . "no retry was attempted: $delete_post_error")
+        if $delete_post_error;
+    warn "Thin snapshot delete reported an error, but exact absence is proven; "
+        . "continuing without retry: $delete_error" if $delete_error;
 
     return;
 }
@@ -5389,8 +5576,7 @@ sub _volume_snapshot_rollback_locked {
     # ownership (and ThinGuard admission) BEFORE that implicit activation.
     $class->_activate_thin_volume_locked($storeid, $scfg, $volname, $snap, undef);
 
-    my $temporary_created = 0;
-    my $origin_removed = 0;
+    my $stage = 'CREATE';
     my $rollback_error;
 
     eval {
@@ -5398,37 +5584,69 @@ sub _volume_snapshot_rollback_locked {
             ['/sbin/lvcreate', '-kn', '-n', $temporary, '-s', "$vg/$snapvol"],
             errmsg => "preparing rollback from '$vg/$snapvol' failed",
         );
-        $temporary_created = 1;
+        $stage = 'PREPARED';
 
         $class->_disable_and_verify_autoactivation($vg, $temporary);
 
+        $stage = 'REMOVE_ORIGIN';
         run_command(
             ['/sbin/lvremove', '-f', "$vg/$volname"],
             errmsg => "removing '$vg/$volname' for rollback failed",
         );
-        $origin_removed = 1;
 
+        $stage = 'RENAME';
         run_command(
             ['/sbin/lvrename', $vg, $temporary, $volname],
             errmsg => "renaming rollback LV '$vg/$temporary' failed",
         );
-        $temporary_created = 0;
+        $stage = 'RENAMED';
     };
 
     $rollback_error = $@;
 
     if ($rollback_error) {
-        if ($origin_removed) {
+        # A failed client command may already have committed in LVM. Never
+        # classify rollback state from the command exit alone and never retry
+        # lvcreate/lvremove/lvrename. Re-read the exact names and ownership.
+        my $after = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);
+        die "$rollback_error"
+            . "rollback outcome is UNKNOWN because VG '$vg' could not be re-inventoried; "
+            . "no retry or cleanup was attempted\n"
+            if !$after->{$vg};
+        my $origin = $after->{$vg}->{$volname};
+        my $prepared = $after->{$vg}->{$temporary};
+        for my $candidate (
+            [$origin, "$vg/$volname"], [$prepared, "$vg/$temporary"],
+        ) {
+            next if !$candidate->[0];
             die "$rollback_error"
-                . "rollback data is preserved as '$vg/$temporary'; manual recovery is required\n";
+                . "rollback outcome is UNKNOWN: '$candidate->[1]' is not in expected pool '$pool'; "
+                . "no retry or cleanup was attempted\n"
+                if !defined($candidate->[0]->{pool_lv})
+                || $candidate->[0]->{pool_lv} ne $pool;
         }
 
-        if ($temporary_created) {
+        if ($stage eq 'RENAME' && $origin && !$prepared) {
+            warn "rollback rename reported an error, but exact postcondition proves "
+                . "the replacement is published as '$vg/$volname'; continuing without retry: "
+                . $rollback_error;
+        } elsif ($origin && $prepared) {
             die "$rollback_error"
-                . "original '$vg/$volname' remains intact; prepared replacement '$vg/$temporary' was intentionally preserved; automatic cleanup was NOT performed\n";
+                . "exact reread proves original '$vg/$volname' and prepared replacement "
+                . "'$vg/$temporary' both remain; automatic cleanup and retry were NOT performed\n";
+        } elsif (!$origin && $prepared) {
+            die "$rollback_error"
+                . "exact reread proves rollback data is preserved as '$vg/$temporary' while "
+                . "the canonical origin is absent; manual recovery is required and no retry was attempted\n";
+        } elsif ($origin && !$prepared) {
+            die "$rollback_error"
+                . "exact reread proves '$vg/$volname' remains and no prepared replacement exists; "
+                . "no retry or cleanup was attempted\n";
+        } else {
+            die "$rollback_error"
+                . "CRITICAL rollback state: both canonical origin and prepared replacement are absent; "
+                . "no automated action is safe\n";
         }
-
-        die $rollback_error;
     }
 
     $lvs = PVE::Storage::LVMPlugin::lvm_list_volumes($vg);

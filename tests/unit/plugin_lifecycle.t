@@ -32,8 +32,11 @@ my $thin_release_pool_owner_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin
 my $thin_owner_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_from_tags;
 my $thin_owner_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_owner_state_from_tags;
 my $thin_remote_mapper_audit_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked;
+my $thin_peer_probe_timing = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_peer_probe_timing;
+my $thick_close_timeout = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thick_close_timeout;
 my $thin_configured_peer_nodes = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_configured_peer_nodes;
 my $thin_pve_ha_takeover_evidence = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pve_ha_takeover_evidence;
+my $thin_activation_commit_barrier_locked = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_activation_commit_barrier_locked;
 my $deactivate_new_thin_pool_after_allocation = \&PVE::Storage::Custom::SharedLvmThinPlugin::_deactivate_new_thin_pool_after_allocation;
 my $bridge_admission_state = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission_state;
 my $bridge_admission = \&PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission;
@@ -93,6 +96,7 @@ local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactiva
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_claim_pool_owner_locked = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_release_pool_owner_locked = sub { return 1; };
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_activation_commit_barrier_locked = sub { return 1; };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration = sub { return 1; };
 # Unit tests must not depend on a PVE host's PVE::INotify module. Individual
 # owner/peer scenarios override this deterministic local identity as needed.
@@ -122,7 +126,11 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
     ok($thin_remote_mapper_audit_locked->($class, $disabled, 'testvg', 'sltp-100', undef),
         'disabled guard performs no peer operation');
 
-    my $guarded = { 'slt-thin-leaseguard' => 'remote-audit' };
+    my $guarded = {
+        'slt-thin-leaseguard' => 'remote-audit',
+        'slt-thin-peer-connect-timeout' => 17,
+        'slt-thin-peer-probe-timeout' => 49,
+    };
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_dm_identity = sub {
         return ('testvg-sltp--100-tpool', 'LVM-vguuidlvuuid-tpool');
@@ -133,8 +141,10 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
             { node => 'pve03', ip => '203.0.113.3' },
         ];
     };
+    my @probe_invocations;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
         my ($command, %options) = @_;
+        push @probe_invocations, { command => [@$command], timeout => $options{timeout} };
         my ($target) = grep { /^root\@/ } @$command;
         my ($node) = $target =~ /\.(\d+)$/;
         $options{outfunc}->(
@@ -144,6 +154,16 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
     };
     ok($thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef),
         'positive exact absence from every peer passes');
+    is(scalar(@probe_invocations), 2, 'every configured peer is probed exactly once');
+    for my $probe (@probe_invocations) {
+        is($probe->{timeout}, 49, 'whole-probe timeout is passed to the command runner');
+        like(join(' ', @{$probe->{command}}), qr/ConnectTimeout=17/,
+            'configured SSH connection timeout is passed to ssh');
+        like(join(' ', @{$probe->{command}}), qr/BatchMode=yes/,
+            'peer proof cannot fall back to an interactive password prompt');
+        like(join(' ', @{$probe->{command}}), qr/NumberOfPasswordPrompts=0/,
+            'peer proof permits no password prompt');
+    }
 
     local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
         my ($command, %options) = @_;
@@ -159,6 +179,38 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
     eval { $thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef) };
     like($@, qr/cannot prove mapper absence.*peer timeout/s,
         'unreachable peer remains UNKNOWN and blocks activation');
+};
+
+subtest 'Thin peer probe timing is bounded and internally consistent' => sub {
+    is_deeply([$thin_peer_probe_timing->($class, {})], [5, 15],
+        'safe defaults leave a whole-command margin above SSH connect');
+    is_deeply([$thin_peer_probe_timing->($class, {
+        'slt-thin-peer-connect-timeout' => 30,
+        'slt-thin-peer-probe-timeout' => 90,
+    })], [30, 90], 'loaded-site timing can be configured explicitly');
+
+    for my $case (
+        [{ 'slt-thin-peer-connect-timeout' => 0 }, qr/invalid Thin peer SSH connection timeout/],
+        [{ 'slt-thin-peer-connect-timeout' => 121 }, qr/invalid Thin peer SSH connection timeout/],
+        [{ 'slt-thin-peer-probe-timeout' => 1 }, qr/invalid Thin peer whole-probe timeout/],
+        [{ 'slt-thin-peer-probe-timeout' => 601 }, qr/invalid Thin peer whole-probe timeout/],
+        [{ 'slt-thin-peer-connect-timeout' => 30, 'slt-thin-peer-probe-timeout' => 30 },
+            qr/whole-probe timeout must exceed/],
+    ) {
+        eval { $thin_peer_probe_timing->($class, $case->[0]) };
+        like($@, $case->[1], 'unsafe peer timing fails closed');
+    }
+};
+
+subtest 'Thick frontend close timing is bounded' => sub {
+    is($thick_close_timeout->($class, {}), 30, 'loaded hosts get a practical default close window');
+    is($thick_close_timeout->($class, { 'slt-tg-close-timeout' => 120 }), 120,
+        'site-qualified close window is accepted');
+    for my $value (0, 301, 'bad') {
+        eval { $thick_close_timeout->($class, { 'slt-tg-close-timeout' => $value }) };
+        like($@, qr/invalid thick-generations frontend close timeout/,
+            'invalid close timing fails closed');
+    }
 };
 
 subtest 'PVE-native LeaseGuard accepts parsed PVE node-scope hashes' => sub {
@@ -826,6 +878,12 @@ subtest 'ownership ambiguity at mutation boundary fails closed' => sub {
 subtest 'VG loss during snapshot creation has no destructive fallback' => sub {
     reset_mocks();
     $command_failure = qr{/sbin/lvcreate};
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition = sub {
+        my (undef, undef, undef, undef, $must_exist) = @_;
+        return 1 if !$must_exist;
+        die "snapshot create postcondition failed: VG unavailable\n";
+    };
     my $ok = eval {
         $class->volume_snapshot(
             $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
@@ -917,7 +975,10 @@ subtest 'snapshot postcondition requires read-only thin and activation-skip flag
 subtest 'snapshot acknowledgement uncertainty preserves the created snapshot' => sub {
     reset_mocks();
     no warnings 'redefine';
+    my $checks = 0;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition = sub {
+        $checks++;
+        return 1 if $checks == 1;
         die "snapshot postcondition unavailable: VG disappeared\n";
     };
     my $ok = eval {
@@ -933,9 +994,37 @@ subtest 'snapshot acknowledgement uncertainty preserves the created snapshot' =>
     unlike(join("\n", @lines), qr{/sbin/lvremove}, 'uncertain snapshot not cleaned up');
 };
 
+subtest 'snapshot create ambiguity requires prior absence and exact new object' => sub {
+    reset_mocks();
+    $command_failure = qr{/sbin/lvcreate};
+    no warnings 'redefine';
+    my @must_exist;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition = sub {
+        push @must_exist, $_[4];
+        return 1;
+    };
+    my $ok = eval {
+        $class->volume_snapshot(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        );
+        1;
+    };
+    ok($ok, 'fresh exact snapshot classifies a committed create despite client error');
+    is_deeply(\@must_exist, [0, 1, 1],
+        'absence precondition, creation proof and final invariant all run');
+    is(scalar(grep { /lvcreate/ } command_lines()), 1,
+        'ambiguous snapshot create is never retried');
+};
+
 subtest 'snapshot delete timeout is never blindly retried' => sub {
     reset_mocks();
     $command_failure = qr{/sbin/lvremove -f testvg/snap_};
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition = sub {
+        my (undef, undef, undef, undef, $must_exist) = @_;
+        return 1 if $must_exist;
+        die "snapshot delete postcondition failed: object remains\n";
+    };
     my $ok = eval {
         $class->volume_snapshot_delete(
             $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
@@ -944,6 +1033,28 @@ subtest 'snapshot delete timeout is never blindly retried' => sub {
     };
     ok(!$ok, 'delete timeout propagated');
     is(scalar(command_lines()), 1, 'exactly one delete attempt');
+    like($@, qr/outcome is UNKNOWN.*no retry/s,
+        'unproven delete outcome is explicit and fail-closed');
+};
+
+subtest 'snapshot delete ambiguity accepts exact absence without retry' => sub {
+    reset_mocks();
+    $command_failure = qr{/sbin/lvremove -f testvg/snap_};
+    no warnings 'redefine';
+    my @must_exist;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition = sub {
+        push @must_exist, $_[4];
+        return 1;
+    };
+    my $ok = eval {
+        $class->volume_snapshot_delete(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        );
+        1;
+    };
+    ok($ok, 'exact absence classifies a committed delete despite client error');
+    is_deeply(\@must_exist, [1, 0], 'ownership precondition and absence postcondition both run');
+    is(scalar(command_lines()), 1, 'ambiguous snapshot delete is never retried');
 };
 
 subtest 'snapshot delete proves snapshot ownership before lvremove' => sub {
@@ -2055,6 +2166,39 @@ subtest 'resize uses an argv array and explicit byte size' => sub {
     is($locks[0]->[0], 'sharedthin-test', 'correct storage locked');
 };
 
+subtest 'Thin resize ambiguity is classified by exact size without retry' => sub {
+    reset_mocks();
+    $command_failure = qr{/sbin/lvextend};
+    no warnings 'redefine';
+    my $verified = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_resize_postcondition = sub {
+        $verified++;
+        return 1;
+    };
+    my $ok = eval {
+        $class->volume_resize(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 1073741824, 0, undef,
+        );
+        1;
+    };
+    ok($ok, 'exact target size classifies an lvextend client error as completed');
+    is($verified, 1, 'requested size was re-read exactly once');
+    is(scalar(grep { /lvextend/ } command_lines()), 1, 'lvextend was never retried');
+
+    reset_mocks();
+    $command_failure = qr{/sbin/lvextend};
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_resize_postcondition = sub {
+        die "smaller than requested\n";
+    };
+    eval { $class->volume_resize(
+        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 1073741824, 0, undef,
+    ) };
+    like($@, qr/outcome is UNKNOWN.*no retry or shrink/s,
+        'unproven resize preserves the partial state');
+    is(scalar(grep { /lvextend/ } command_lines()), 1,
+        'failed resize postcondition causes no retry');
+};
+
 subtest 'snapshot create and delete each hold the PVE storage lock' => sub {
     reset_mocks();
     $class->volume_snapshot(
@@ -2110,6 +2254,8 @@ subtest 'rollback preparation failure leaves current disk untouched' => sub {
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
+    } }, { testvg => {
+        'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } });
     $command_failure = qr{/sbin/lvcreate -kn};
     my $ok = eval {
@@ -2174,12 +2320,16 @@ subtest 'rollback failure after replacement creation preserves both objects' => 
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation
         = $record_disable_autoactivation;
+    my $temporary = "slt-rb-vm-900001-disk-0-$$";
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
+    } }, { testvg => {
+        'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
+        $temporary => { pool_lv => 'sltp-900001' },
     } });
     $command_failure = qr{/sbin/lvchange --setautoactivation};
     my $ok = eval {
@@ -2192,8 +2342,10 @@ subtest 'rollback failure after replacement creation preserves both objects' => 
     my @lines = command_lines();
     like($lines[0], qr{^/sbin/lvcreate}, 'replacement was prepared');
     unlike(join("\n", @lines), qr{/sbin/lvremove}, 'neither origin nor replacement was deleted');
-    like($@, qr/original .* remains intact.*replacement .* intentionally preserved/s, 'both preserved states reported');
-    like($@, qr/automatic cleanup was NOT performed/, 'cleanup refusal reported');
+    like($@, qr/exact reread proves original .* prepared replacement .* both remain/s,
+        'both preserved states reported from exact inventory');
+    like($@, qr/automatic cleanup and retry were NOT performed/,
+        'cleanup and retry refusal reported');
 };
 
 subtest 'rollback origin-delete failure preserves origin and replacement' => sub {
@@ -2201,12 +2353,16 @@ subtest 'rollback origin-delete failure preserves origin and replacement' => sub
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation
         = $record_disable_autoactivation;
+    my $temporary = "slt-rb-vm-900001-disk-0-$$";
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
+    } }, { testvg => {
+        'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
+        $temporary => { pool_lv => 'sltp-900001' },
     } });
     $command_failure = qr{/sbin/lvremove -f testvg/vm-900001-disk-0};
     my $ok = eval {
@@ -2219,7 +2375,8 @@ subtest 'rollback origin-delete failure preserves origin and replacement' => sub
     my @lines = command_lines();
     is(scalar(grep { /lvrename/ } @lines), 0, 'replacement was not renamed over uncertain origin');
     is(scalar(grep { m{lvremove -f testvg/slt-rb-} } @lines), 0, 'replacement was not cleaned up');
-    like($@, qr/original .* remains intact.*replacement .* intentionally preserved/s, 'recoverable state reported');
+    like($@, qr/exact reread proves original .* prepared replacement .* both remain/s,
+        'recoverable state reported from exact inventory');
 };
 
 subtest 'rollback postcondition failure performs no destructive recovery' => sub {
@@ -2288,12 +2445,15 @@ subtest 'rollback rename failure preserves replacement for recovery' => sub {
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation
         = $record_disable_autoactivation;
+    my $expected_temporary = "slt-rb-vm-900001-disk-0-$$";
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
+    } }, { testvg => {
+        $expected_temporary => { pool_lv => 'sltp-900001' },
     } });
     $command_failure = qr{/sbin/lvrename};
     my $ok = eval {
@@ -2307,6 +2467,50 @@ subtest 'rollback rename failure preserves replacement for recovery' => sub {
     my @lines = command_lines();
     my ($temporary) = $lines[0] =~ /-n (slt-rb-\S+) -s/;
     unlike(join("\n", @lines), qr{lvremove -f testvg/\Q$temporary\E}, 'replacement was not deleted after origin removal');
+};
+
+subtest 'rollback rename ambiguity accepts only the exact completed postcondition' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation
+        = $record_disable_autoactivation;
+    @lvm_results = (
+        { testvg => {
+            'sltp-900001' => {
+                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            },
+            'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
+            'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
+        } },
+        { testvg => {
+            'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
+        } },
+        { testvg => {
+            'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
+        } },
+    );
+    my $rename_failed = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        push @commands, [@$command];
+        if (!$rename_failed && join(' ', @$command) =~ m{/sbin/lvrename}) {
+            $rename_failed = 1;
+            die "rename transport ambiguity\n";
+        }
+        return;
+    };
+    my $ok = eval {
+        $class->volume_snapshot_rollback(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        );
+        1;
+    };
+    ok($ok, 'exact canonical origin plus absent temporary proves rename completion');
+    is(scalar(grep { /lvrename/ } command_lines()), 1,
+        'ambiguous rename is never retried');
+    is_deeply(\@rollback_runtime,
+        [['activate','before',0],['deactivate','before',4],['deactivate',undef,4]],
+        'exact completed state proceeds through normal verified teardown');
 };
 
 subtest 'thin volumes advertise zero-initialized copy destinations' => sub {
@@ -2485,6 +2689,15 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
         ['bridge admission timeout mismatch',
             { %$thick, 'slt-bridge-admission-timeout' => 7200 },
             qr/same migration-bridge admission timeout/],
+        ['Thick frontend close timeout mismatch',
+            { %$thick, 'slt-tg-close-timeout' => 90 },
+            qr/same Thick frontend close timeout/],
+        ['Thin peer SSH connection timeout mismatch',
+            { %$thick, 'slt-thin-peer-connect-timeout' => 30 },
+            qr/same Thin peer SSH connection timeout/],
+        ['Thin peer whole-probe timeout mismatch',
+            { %$thick, 'slt-thin-peer-probe-timeout' => 90 },
+            qr/same Thin peer whole-probe timeout/],
         ['node scope mismatch',
             { %$thick, nodes => 'node-a' },
             qr/same PVE node scope/],
@@ -3153,11 +3366,62 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         'wait is bounded and tied to the captured event number');
 
     reset_mocks();
+    @status = ([1, 8, 0], [2, 8, 1], [3, 8, 1], [3, 8, 0], [8, 8, 0]);
+    @reads = (['18'], ['19']);
+    {
+        my $now = 0;
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_progress_clock = sub {
+            return $now;
+        };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+            my ($command, %options) = @_;
+            push @commands, [@$command];
+            $now += 50;
+            return;
+        };
+        ok($class->_thick_wait_for_hydration($mapper, 60),
+            'verified progress renews the bounded no-progress observation window');
+    }
+    is(scalar(@commands), 2,
+        'large progressing hydration may cross multiple bounded observation slices');
+    like((command_lines())[1], qr{/sbin/dmsetup wait \Q$mapper\E 19$},
+        'each observation slice captures a fresh DM event counter');
+
+    reset_mocks();
     @status = ([1, 8, 0], [2, 8, 1], [2, 8, 0]);
     @reads = (['18']);
+    my $now = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_progress_clock = sub {
+        return $now;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        push @commands, [@$command];
+        $now += 61;
+        die "observation slice expired\n";
+    };
     eval { $class->_thick_wait_for_hydration($mapper, 60) };
-    like($@, qr/not positively complete/, 'non-completion is recovery-required');
-    is(scalar(@commands), 1, 'non-completion never spawns a second wait probe');
+    like($@, qr/made no verified progress for 60s/,
+        'a full no-progress window is recovery-required');
+    is(scalar(@commands), 1,
+        'stagnation uses one bounded observation slice and never retries a mutation');
+
+    reset_mocks();
+    @status = ([1, 8, 0], [1, 8, 0], [1, 8, 0]);
+    @reads = (['20']);
+    $now = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_progress_clock = sub {
+        return $now;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($command, %options) = @_;
+        push @commands, [@$command];
+        die "dmsetup wait failed immediately\n";
+    };
+    eval { $class->_thick_wait_for_hydration($mapper, 60) };
+    like($@, qr/event wait .* failed before the observation boundary/,
+        'an immediate dmsetup wait failure is fail-closed instead of a busy retry loop');
+    is(scalar(@commands), 1, 'an immediate wait failure is attempted exactly once');
 };
 
 subtest 'thick hydration tuning is bounded and internally consistent' => sub {
@@ -3204,7 +3468,7 @@ subtest 'online materialization mode and worker scheduling are exact' => sub {
         "/usr/bin/systemd-run --quiet --collect --unit=pve-sharedlvmthin-tg-$tx "
             . "--on-active=3s --timer-property=AccuracySec=100ms --property=Type=exec "
             . "--property=Nice=10 --property=IOSchedulingClass=best-effort "
-            . "--property=IOSchedulingPriority=7 --property=TimeoutStartSec=900 "
+            . "--property=IOSchedulingPriority=7 --property=TimeoutStartSec=infinity "
             . "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize "
             . "thick-test vm-900001-disk-0 snap1 SNAPSHOT $tx",
     ], 'scheduler passes exact immutable transaction identity to a bounded low-priority worker');
@@ -3480,6 +3744,57 @@ subtest 'failed HA peer audit preserves the fenced-owner recovery context' => su
         'failed audit performs no LVM tag mutation and remains safely retryable');
 };
 
+subtest 'existing local Thin owner is never a peer-audit bypass' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-' . ('a' x 32);
+    };
+    my @audits;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked = sub {
+        my (undef, $cfg, $vg, $pool, $device, $fenced_owner) = @_;
+        push @audits, [$cfg->{'slt-thin-leaseguard'}, $vg, $pool, $device, $fenced_owner];
+        die "remote thin-pool mapper is present on peer 'node2'\n";
+    };
+    my $cfg = {'slt-thin-leaseguard' => 'remote-audit'};
+    eval {
+        $thin_claim_pool_owner_locked->(
+            $class, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd', $cfg);
+    };
+    like($@, qr/remote thin-pool mapper is present/, 'peer conflict refuses local-owner reactivation');
+    is_deeply(\@audits, [[
+        'remote-audit', 'testvg', 'sltp-900001', '/dev/mapper/3600abcd', undef,
+    ]], 'existing local epoch still performs one exact full-peer audit');
+    is(scalar(@commands), 0, 'peer conflict performs no LVM mutation');
+};
+
+subtest 'Thin activation commit barrier rejects stale peer and owner evidence' => sub {
+    reset_mocks();
+    no warnings 'redefine';
+    my $cfg = {'slt-thin-leaseguard' => 'remote-audit'};
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked = sub {
+        die "remote thin-pool mapper is present on peer 'node2'\n";
+    };
+    eval {
+        $thin_activation_commit_barrier_locked->(
+            $class, $cfg, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd', 'a' x 32);
+    };
+    like($@, qr/remote thin-pool mapper is present/, 'last-moment peer conflict blocks activation');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_remote_mapper_audit_locked = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
+        return 'pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-' . ('b' x 32);
+    };
+    eval {
+        $thin_activation_commit_barrier_locked->(
+            $class, $cfg, 'testvg', 'sltp-900001', '/dev/mapper/3600abcd', 'a' x 32);
+    };
+    like($@, qr/owner epoch changed before local activation/, 'epoch drift blocks activation');
+    is(scalar(@commands), 0, 'commit-barrier refusals perform no LVM mutation');
+};
+
 subtest 'thin activation claim writes and verifies one persistent owner' => sub {
     reset_mocks();
     my @tags = (
@@ -3566,6 +3881,10 @@ subtest 'runtime guard acknowledges watchdog before first local activation' => s
         push @events, 'CLAIM';
         return 'a' x 32;
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_activation_commit_barrier_locked = sub {
+        push @events, 'FINAL_PEER_AUDIT';
+        return 1;
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_dm_identity = sub {
         return ('testvg-sltp--900001-tpool', 'LVM-abcdef-tpool', 'pool-uuid');
     };
@@ -3582,8 +3901,8 @@ subtest 'runtime guard acknowledges watchdog before first local activation' => s
     };
     ok($class->activate_volume('shared-test', $cfg, 'vm-900001-disk-0', undef, undef),
         'guarded activation succeeds');
-    is_deeply(\@events, ['CLAIM', 'PREPARE', 'ACTIVATE'],
-        'watchdog admission precedes lvchange activation');
+    is_deeply(\@events, ['CLAIM', 'PREPARE', 'FINAL_PEER_AUDIT', 'ACTIVATE'],
+        'watchdog admission and final peer audit precede lvchange activation');
 
     @events = ();
     my $releases = 0;
@@ -3996,7 +4315,11 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
         snapshot => 'snap1',
     };
     my $verified = 0;
+    my $close_clock = 0;
     no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_progress_clock = sub {
+        return $close_clock++;
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
@@ -4009,9 +4332,15 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
         $verified++; return 1;
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_claim_pool_owner_locked = sub {
+        die "Thick activation entered Thin owner admission\n";
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_activation_commit_barrier_locked = sub {
+        die "Thick activation entered Thin commit barrier\n";
+    };
 
     ok($class->activate_volume('thick-test', $cfg, 'vm-900001-disk-0', undef, undef),
-        'an exact published clone frontend remains available for VM start');
+        'an exact published clone frontend remains available without entering Thin admission');
     ok($class->deactivate_volume('thick-test', $cfg, 'vm-900001-disk-0', undef, undef),
         'zero-open frontend can be released by the guest without dismantling the transition');
     is($verified, 3, 'both lifecycle paths and the post-close state verify the published transition');
@@ -4024,6 +4353,8 @@ subtest 'published hydration remains activatable and a stop preserves worker dep
     ) };
     like($@, qr/refusing to deactivate open thick-generations frontend/,
         'open published frontend remains protected');
+    is_deeply([command_lines()], [],
+        'close timeout performs no mapper removal or dependency cleanup');
 
     my @opens = (1, 1, 0);
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub {

@@ -41,6 +41,24 @@ independently enable native overlapping Thin live migration. Existing storage
 keeps `disabled` behavior until an administrator explicitly selects
 `remote-audit`.
 
+Guarded activation audits every configured peer even when the durable owner
+already names the local node.  The owner epoch is not accepted as proof that an
+older plugin, partial handoff, manual activation, or stale dmeventd instance did
+not leave the exact pool mapper loaded in another kernel.  Missing or conflicting
+peer evidence blocks reactivation without changing LVM metadata.
+
+Immediately before `lvchange -ay`, guarded activation repeats the exact peer
+mapper audit and re-reads the durable local owner epoch.  A peer conflict or an
+epoch change after claim/guardian preparation blocks activation.  This narrow
+commit barrier reduces lifecycle races without depending on private PVE
+migration internals.
+
+Remote evidence enumerates kernel `thin-pool` targets and compares their DM
+UUIDs, not only their device names.  The exact pool is therefore reported as
+present even if an older tool or manual operation loaded it under a
+non-canonical mapper name; a canonical-name/UUID mismatch is ambiguous and
+fails closed.
+
 ### Layer 3: Isolated-copy Thin-to-Thin mobility
 
 The primary Thin mobility design keeps both endpoints Thin but never opens the

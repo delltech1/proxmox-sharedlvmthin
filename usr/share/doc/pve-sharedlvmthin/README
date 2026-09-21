@@ -1,6 +1,22 @@
 SharedLvmThin for Proxmox VE
 ============================
 
+EXPERIMENTAL TEST SOFTWARE -- DISPOSABLE LABS ONLY
+--------------------------------------------------
+
+Both Thin mode and Thick Generations mode are experimental. Neither mode is
+production-ready, supported, certified, or warranted. Use only disposable
+hosts, disposable shared storage, and disposable guest data. Use can cause
+data loss, corruption, unavailability, failed migration or recovery, and host
+or cluster downtime. The operator is responsible for fencing, independent
+tested backups, recovery, SAN identity, multipath behavior, capacity, change
+control, and all use decisions.
+
+No support, maintenance, response time, service level, update schedule,
+compatibility commitment, or duty to fix is offered. See the repository's
+README.md and docs/RISK-AND-SUPPORT-BOUNDARY.md before use. GNU GPLv3 sections
+15 through 17 contain the warranty disclaimer and limitation of liability.
+
 Components
 ----------
 
@@ -33,7 +49,7 @@ Deep Validation
 ---------------
 
 Deep validation performs temporary write operations and must only be
-started explicitly by an administrator from the CLI.
+started explicitly by an administrator from the CLI against disposable data.
 
     sharedlvmthin doctor --deep
 

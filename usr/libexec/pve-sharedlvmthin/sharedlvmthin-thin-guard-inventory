@@ -183,6 +183,16 @@ eval {
             if $pool->{mapper_uuid} ne $prepare->{mapper_uuid};
 
         my $scfg = $cfg->{ids}->{$requested_sid};
+        my $peer_connect_timeout = $scfg->{'slt-thin-peer-connect-timeout'} // 5;
+        my $peer_probe_timeout = $scfg->{'slt-thin-peer-probe-timeout'} // 15;
+        die "invalid Thin peer SSH connection timeout\n"
+            if $peer_connect_timeout !~ /^\d+$/
+            || $peer_connect_timeout < 1 || $peer_connect_timeout > 120;
+        die "invalid Thin peer whole-probe timeout\n"
+            if $peer_probe_timeout !~ /^\d+$/
+            || $peer_probe_timeout < 2 || $peer_probe_timeout > 600;
+        die "Thin peer whole-probe timeout must exceed its SSH connection timeout\n"
+            if $peer_probe_timeout <= $peer_connect_timeout;
         my $wwid = $scfg->{'slt-expected-wwid'} // '';
         my $device = $wwid ne '' ? "/dev/mapper/$wwid" : undef;
         my @scope = defined($device) ? ('--devices', $device) : ();
@@ -214,12 +224,13 @@ eval {
         for my $peer (@$peers) {
             my $ssh = PVE::SSHInfo::ssh_info_to_command({
                 name => $peer->{node}, ip => $peer->{ip},
-            }, '-o', 'ConnectTimeout=5');
+            }, '-o', "ConnectTimeout=$peer_connect_timeout", '-o', 'BatchMode=yes',
+                '-o', 'NumberOfPasswordPrompts=0');
             push @$ssh, '--',
                 '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence',
                 $pool->{mapper_name}, $pool->{mapper_uuid};
             my (@stdout, @stderr);
-            PVE::Tools::run_command($ssh, timeout => 10,
+            PVE::Tools::run_command($ssh, timeout => $peer_probe_timeout,
                 outfunc => sub { push @stdout, $_[0] },
                 errfunc => sub { push @stderr, $_[0] });
             die "peer '$peer->{node}' returned non-canonical evidence\n" if @stdout != 1;

@@ -122,7 +122,7 @@ the survivor. Its first start was refused independently by the storage plugin:
 
 ```text
 UNSAFE shared LVM-thin activation refused: pool ... is owned by node
-'DEV-PRXZFS03', not 'DEV-PRXZFS02'; concurrent dm-thin activation can corrupt
+'lab-node-c', not 'lab-node-b'; concurrent dm-thin activation can corrupt
 metadata; live migration is unsupported
 ```
 
