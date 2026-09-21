@@ -180,6 +180,19 @@ pathname presence, verifies the canonical HEAD, and clears only the
 matching intent. If the object is already absent after the verified rebase, it
 performs finalize-only recovery without retrying removal.
 
+An interrupted whole-volume removal preserves its exact signed `OPEN REMOVE`
+intent. After confirming that PVE no longer references the volume, resume only
+with:
+
+```text
+sharedlvmthin thick-recover-volume-delete <storage-id> <volume>
+```
+
+The recovery refuses a runtime frontend or any object outside the canonical
+signed HEAD and anchor. It can repeat the complete pair, remove only the anchor
+left after HEAD deletion, or clear only the matching intent when authoritative
+inventory proves that deletion had already completed.
+
 An interrupted online grow remains fenced by its `OPEN EXTEND` intent. When
 the exact stable linear frontend is still present, recovery is available with:
 

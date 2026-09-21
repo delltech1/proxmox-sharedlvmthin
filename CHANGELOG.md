@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Add explicit, reference-gated recovery for interrupted whole-volume deletes.
+  It derives authority from the exact signed `OPEN REMOVE` intent and canonical
+  anchor, safely continues with both objects or an anchor left after HEAD
+  removal, and clears an already-completed delete without replaying mutation.
 - Make partial Thick allocation cleanup idempotent across its own two delete
   boundaries. Recovery now accepts an exact signed generation left before
   anchor creation or an exact signed anchor left after generation removal,

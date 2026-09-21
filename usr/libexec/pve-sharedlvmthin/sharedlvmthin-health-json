@@ -526,6 +526,8 @@ def evaluate_vg_mutation_intent(vg, output):
     reason = f"OPEN {values['op']} mutation intent blocks all new mutations"
     if values["op"] == "EXTEND":
         reason += "; use the explicit thick-recover-resize workflow when its runtime proof is available"
+    elif values["op"] == "REMOVE":
+        reason += "; use the explicit reference-gated thick-recover-volume-delete workflow"
     return "FAIL", reason, values["op"]
 
 

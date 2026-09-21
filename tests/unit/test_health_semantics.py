@@ -136,6 +136,22 @@ class VgMutationIntentHealthTests(unittest.TestCase):
         status, _, _ = self.evaluate("testvg", "othervg|")
         self.assertEqual(status, "FAIL")
 
+    def test_open_remove_points_to_reference_gated_volume_delete_recovery(self):
+        values = {
+            "v": "1", "tx": "7" * 32, "state": "OPEN", "op": "REMOVE",
+            "object": "sltg-a-0123456789abcdef01234567", "before": "c" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        tags = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        status, reason, operation = self.evaluate("testvg", f"testvg|{tags}")
+        self.assertEqual((status, operation), ("FAIL", "REMOVE"))
+        self.assertIn("thick-recover-volume-delete", reason)
+
 
 class PackageIdentityTests(unittest.TestCase):
     @classmethod

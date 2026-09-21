@@ -2086,6 +2086,105 @@ sub _thick_recover_partial_allocation {
     }, $device);
 }
 
+sub _thick_recover_volume_delete {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my (undef, $name) = $class->parse_volname($volname);
+    die "volume-delete recovery requires the canonical volume name\n"
+        if $name ne $volname;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $anchor = anchor_name($namespace, $volname);
+    my $key = object_key($namespace, $volname);
+    my $mapper = mapper_name($namespace, $volname);
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "VG '$vg' has no volume-delete transaction to recover\n" if !$intent;
+        die "VG '$vg' intent is not the exact OPEN REMOVE transaction for '$volname'\n"
+            if $intent->{state} ne 'OPEN' || $intent->{op} ne 'REMOVE'
+            || $intent->{object} ne $anchor;
+        my %expected = %$intent;
+        $class->_require_exact_vg_intent($vg, %expected, _device => $device);
+
+        my $references = $class->_thick_pve_reference_files($storeid, $volname);
+        die "volume-delete recovery refused: PVE still references '$storeid:$volname' in "
+            . join(', ', @$references) . "\n" if @$references;
+        die "volume-delete recovery refused: transaction frontend '$mapper' exists\n"
+            if _block_device_exists("/dev/mapper/$mapper");
+
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my $objects = $lvs->{$vg} // {};
+        my @related = sort grep {
+            $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
+        } keys %$objects;
+        my $anchor_present = exists($objects->{$anchor});
+        my $head;
+        if ($anchor_present) {
+            my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
+            die "volume-delete recovery anchor is not a canonical materialized allocation\n"
+                if $state->{sid} ne $storeid || $state->{vol} ne $volname
+                || $state->{phase} ne 'MATERIALIZED' || $state->{op} ne 'ALLOC'
+                || $state->{snapshot} ne 'none' || $state->{source} ne $state->{head}
+                || $state->{old} ne $state->{head} || $state->{new} ne $state->{head};
+            $head = $state->{head};
+            die "volume-delete recovery found objects outside the signed HEAD and anchor\n"
+                if grep { $_ ne $anchor && $_ ne $head } @related;
+            if (exists($objects->{$head})) {
+                validate_generation_tags(
+                    $objects->{$head}->{tags} // '', sid => $storeid, vol => $volname,
+                    role => 'head', generation => $state->{generation},
+                );
+            }
+        } else {
+            die "volume-delete recovery found owned-looking objects without the signed anchor\n"
+                if @related;
+        }
+
+        my @remaining = grep { defined($_) && exists($objects->{$_}) } ($head, $anchor);
+        for my $object (@remaining) {
+            $class->_verify_autoactivation_disabled($vg, $object, $device);
+        }
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating remaining volume-delete objects for '$vg/$volname' failed",
+            @remaining,
+        ) if @remaining;
+
+        my $command_error = '';
+        eval {
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$head"],
+                errmsg => "removing remaining thick generation '$vg/$head' failed",
+            ) if defined($head) && exists($objects->{$head});
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$anchor"],
+                errmsg => "removing remaining thick generation anchor '$vg/$anchor' failed",
+            ) if $anchor_present;
+        };
+        $command_error = $@ if $@;
+
+        eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
+        die "VOLUME DELETE RECOVERY: storage identity could not be revalidated; "
+            . "OPEN REMOVE intent preserved: $@" if $@;
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
+        my $after_objects = $after->{$vg} // {};
+        my @after_related = grep {
+            $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
+        } keys %$after_objects;
+        die "VOLUME DELETE RECOVERY: exact or ambiguous objects remain; "
+            . "OPEN REMOVE intent preserved" . ($command_error ? ": $command_error" : "\n")
+            if @after_related;
+        warn "volume-delete recovery command reported an error, but authoritative inventory "
+            . "proves all exact objects absent; clearing the matching intent without retry: "
+            . $command_error if $command_error;
+        $class->_clear_vg_intent($vg, %expected, _device => $device);
+        return 'VOLUME_DELETE_RECOVERED';
+    }, $device);
+}
+
 sub _zero_new_thick_generation {
     my ($class, $path, $bytes, $description) = @_;
     die "invalid thick-generation zero length\n"
@@ -4960,7 +5059,9 @@ sub _thick_free_image {
         my $after = $class->_thick_list_volumes_scoped($vg, $device);
         eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
         die "PARTIAL DELETE for '$storeid:$volname': storage identity/availability "
-            . "could not be revalidated; OPEN REMOVE intent preserved and no retry attempted: $@"
+            . "could not be revalidated; OPEN REMOVE intent preserved and no retry attempted. "
+            . "After restoring authoritative storage visibility run sharedlvmthin "
+            . "thick-recover-volume-delete '$storeid' '$volname': $@"
             if $@;
         # lvm_list_volumes() omits an otherwise healthy VG when it becomes empty.
         # Positive identity revalidation above distinguishes that from disappearance.
@@ -4968,7 +5069,8 @@ sub _thick_free_image {
         my $head_remains = exists($after_objects->{$head});
         my $anchor_remains = exists($after_objects->{$anchor});
         die "PARTIAL DELETE for '$storeid:$volname': head=$head_remains "
-            . "anchor=$anchor_remains; OPEN REMOVE intent preserved and no retry attempted\n"
+            . "anchor=$anchor_remains; OPEN REMOVE intent preserved and no retry attempted. "
+            . "Run sharedlvmthin thick-recover-volume-delete '$storeid' '$volname'\n"
             if $head_remains || $anchor_remains;
 
         warn "thick-generations delete command reported an error, but exact postcondition "

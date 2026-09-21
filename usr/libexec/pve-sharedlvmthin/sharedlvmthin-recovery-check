@@ -490,6 +490,12 @@ def vg_intent_health(output, sid, expected_vg):
             "OPEN EXTEND intent blocks mutation; for a proven active frontend run "
             f"sharedlvmthin thick-recover-resize {sid} <volume>"
         ]
+    if values["op"] == "REMOVE":
+        return False, [
+            "OPEN REMOVE intent blocks mutation; after proving the volume has no PVE "
+            "references run "
+            f"sharedlvmthin thick-recover-volume-delete {sid} <volume>"
+        ]
     return False, [f"OPEN {values['op']} intent blocks mutation and requires exact recovery"]
 
 

@@ -3147,6 +3147,118 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     is_deeply(\@cleared, [], 'reference refusal preserves the OPEN intent');
 };
 
+subtest 'thick volume-delete recovery is exact and repeatable at every delete boundary' => sub {
+    reset_mocks();
+    my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $namespace = 'vg-uuid';
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $intent = {
+        tx => ('7' x 32), state => 'OPEN', op => 'REMOVE',
+        object => $anchor, before => ('6' x 32),
+    };
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => $namespace,
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
+        sid => $storeid, vol => $volname, phase => 'MATERIALIZED',
+        tx => ('5' x 32), op => 'ALLOC', snapshot => 'none', source => $head,
+        old => $head, new => $head, head => $head, generation => 0, region => 8,
+    )});
+    my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
+        sid => $storeid, vol => $volname, role => 'head', generation => 0,
+    )});
+    my @inventories = (
+        { testvg => {
+            $anchor => { tags => $anchor_tags, lv_state => '-' },
+            $head => { tags => $head_tags, lv_state => '-' },
+        } },
+        { testvg => {} },
+    );
+    my (@cleared, @deactivated);
+
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code, $device) = @_;
+        is($device, '/dev/mapper/3600abcd', 'volume-delete recovery lock is device-scoped');
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { $intent };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub { [] };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+        return shift(@inventories);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_exact_lvs = sub {
+        my (undef, undef, undef, undef, @objects) = @_;
+        push @deactivated, @objects;
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        my (undef, $vg, %seen) = @_;
+        push @cleared, [$vg, \%seen];
+        return 1;
+    };
+
+    is($class->_thick_recover_volume_delete($cfg, $storeid, $volname),
+        'VOLUME_DELETE_RECOVERED',
+        'complete signed delete remainder is recovered');
+    is_deeply(\@deactivated, [$head, $anchor], 'both exact signed objects are deactivated');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
+    ], 'HEAD and anchor are removed in the canonical order');
+    is(scalar(@cleared), 1, 'matching OPEN REMOVE clears after absence proof');
+
+    reset_mocks();
+    @inventories = (
+        { testvg => { $anchor => { tags => $anchor_tags, lv_state => '-' } } },
+        { testvg => {} },
+    );
+    @deactivated = ();
+    @cleared = ();
+    is($class->_thick_recover_volume_delete($cfg, $storeid, $volname),
+        'VOLUME_DELETE_RECOVERED',
+        'anchor left after HEAD removal is idempotently recovered');
+    is_deeply(\@deactivated, [$anchor], 'only the remaining signed anchor is deactivated');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
+    ], 'only the remaining signed anchor is removed');
+    is(scalar(@cleared), 1, 'anchor-only recovery clears after absence proof');
+
+    reset_mocks();
+    @inventories = ({ testvg => {} }, { testvg => {} });
+    @deactivated = ();
+    @cleared = ();
+    is($class->_thick_recover_volume_delete($cfg, $storeid, $volname),
+        'VOLUME_DELETE_RECOVERED',
+        'already-complete delete clears only its matching preserved intent');
+    is_deeply(\@deactivated, [], 'already-complete recovery deactivates nothing');
+    is(scalar(@commands), 0, 'already-complete recovery repeats no delete command');
+    is(scalar(@cleared), 1, 'already-complete recovery clears exactly one intent');
+
+    reset_mocks();
+    @inventories = ({ testvg => {} });
+    @cleared = ();
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub {
+        ['/etc/pve/qemu-server/900001.conf'];
+    };
+    eval { $class->_thick_recover_volume_delete($cfg, $storeid, $volname) };
+    like($@, qr/PVE still references/, 'PVE reference blocks volume-delete recovery');
+    is(scalar(@commands), 0, 'reference refusal performs no deletion');
+    is_deeply(\@cleared, [], 'reference refusal preserves OPEN REMOVE intent');
+};
+
 subtest 'orphan tree recovery enumerates only signed snapshots and rechecks each mutation' => sub {
     reset_mocks();
     my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';

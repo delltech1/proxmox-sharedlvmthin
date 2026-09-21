@@ -892,6 +892,23 @@ exit 0
         self.assertIn("_thick_recover_snapshot_delete", worker)
         self.assertIn("SNAPSHOT_DELETE_RECOVERY_START", worker)
 
+    def test_volume_delete_recovery_is_an_explicit_derived_command(self):
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        plugin = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "thick-recover-volume-delete <storage-id> <volume>", cli
+        )
+        self.assertIn('--recover-volume-delete "$2" "$3"', cli)
+        self.assertIn("VOLUME_DELETE_RECOVERY_START", worker)
+        self.assertIn("_thick_recover_volume_delete", worker)
+        self.assertIn("sub _thick_recover_volume_delete", plugin)
+
     def test_resize_recovery_is_an_explicit_derived_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         worker = (

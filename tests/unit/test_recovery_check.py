@@ -387,6 +387,31 @@ sharedlvmthin: two
         self.assertFalse(ok)
         self.assertIn("malformed or ambiguous", details[0])
 
+    def test_open_remove_intent_names_only_the_reference_gated_recovery(self):
+        name, tags = self.anchor()
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        values = {
+            "v": "1", "tx": "7" * 32, "state": "OPEN", "op": "REMOVE",
+            "object": name, "before": "c" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        intent = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output,
+            vg_tags=intent,
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("OPEN REMOVE intent blocks mutation", text)
+        self.assertIn(
+            "sharedlvmthin thick-recover-volume-delete test <volume>", text
+        )
+        self.assertIn("SAFE_FOR_MUTATION=NO", text)
+
     def test_unreferenced_materialized_thick_anchor_fails_closed(self):
         name, tags = self.anchor()
         output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
