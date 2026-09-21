@@ -71,6 +71,14 @@
 - Prove build reproducibility rather than inferring it: CI rebuilds both Dual
   and Thick-only profiles in independent staging directories and requires
   byte-identical `.deb` artifacts and checksum files.
+- Make the post-hydration linear pivot a separately resumable transaction
+  boundary. A crash after the authoritative frontend points at the new HEAD
+  can now finish exact source-mapper, metadata and superseded rollback-HEAD
+  cleanup without replaying the pivot or requiring already removed temporary
+  objects to reappear.
+- Explicitly deactivate the exact signed Thick HEAD and anchor before deletion
+  even when the stable frontend is already absent, instead of delegating that
+  decision to `lvremove -f`.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

@@ -91,13 +91,21 @@ exact VG intent or the exact anchor-scoped handoff, and reconstructs runtime
 tables only when all transition mappers are absent. A partial runtime is
 ambiguous and is refused. Successful resumption continues persistent dm-clone
 progress, completes the linear pivot, and clears only the exact transition
-metadata and any matching intent.
+metadata and any matching intent. `LINEAR_PIVOTED` is itself persistent
+authority: recovery first proves that the stable frontend maps only the signed
+new HEAD, then idempotently finishes any remaining source-mapper, metadata-LV
+and superseded rollback-HEAD cleanup. An already absent cleanup object is
+accepted only in that post-pivot phase; a present object is revalidated before
+its single removal attempt.
 
 The same command also resumes a persisted `ROLLBACK` transition. The operation
 type is derived exclusively from the signed anchor; callers cannot select or
-change it. Recovery requires the rollback snapshot generation, superseded HEAD,
-new HEAD, metadata LV, transaction ID, geometry, and `DM_PIVOT` intent to match
-exactly. A stale PVE `lock: rollback` is not modified by the storage plugin. It
+change it. Before the linear pivot, recovery requires the rollback snapshot
+generation, superseded HEAD, new HEAD, metadata LV, transaction ID, geometry,
+and `DM_PIVOT` intent to match exactly. After a proven `LINEAR_PIVOTED`
+boundary, the superseded HEAD and metadata may already be absent because their
+exact cleanup completed before interruption. A stale PVE `lock: rollback` is
+not modified by the storage plugin. It
 may be cleared with native PVE tooling only after materialization, storage
 health, and restored data authority have been positively verified.
 
