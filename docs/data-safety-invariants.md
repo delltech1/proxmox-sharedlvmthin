@@ -75,9 +75,12 @@ lock. A pool without that schema is a legacy/unknown state and requires an
 explicit all-nodes-inactive adoption procedure. An owner belonging to another
 node is a hard refusal; it is never stolen, timed out, or inferred stale. The
 exact node and epoch are released only after the last local child, public pool
-and hidden `-tpool` mapper are positively absent. Consequently, normal PVE Thin live migration,
-which prepares storage on the target before the source closes it, must fail
-closed. Offline deactivate-then-activate handoff remains the supported
+and hidden `-tpool` mapper are positively absent. Consequently, direct in-place
+PVE Thin live migration, which prepares the same thin pool on the target before
+the source closes it, must fail closed. Online VM migration from Thin remains
+available through the Materialized Migration Bridge, which converts every
+managed disk to an independent Thick Generation before cross-node movement.
+Offline deactivate-then-activate handoff remains the supported direct Thin
 mobility model.
 
 After a host failure, an owner may be cleared only through the explicit
@@ -113,3 +116,4 @@ each storage status reports that same physical VG truthfully. Administrators
 must not sum both alias values as independent capacity. Doctor detects the
 canonical pair and emits this warning; the plugin does not divide, hide, or
 otherwise fabricate capacity to compensate for a presentation-layer aggregate.
+

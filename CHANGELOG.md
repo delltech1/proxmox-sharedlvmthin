@@ -2,6 +2,10 @@
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
+- Clarify the public migration contract without changing behavior: a running
+  VM may migrate online from Thin through the Materialized Migration Bridge
+  (`Thin -> Thick -> live migration -> Thin`); only direct in-place dm-thin
+  overlap between two kernels is unsupported and refused.
 - Make Thin peer SSH-connect and whole-evidence deadlines independently
   configurable, bounded, internally consistent and identical across same-VG
   Thin/Thick aliases. Expiry remains `UNKNOWN` and refuses activation.
@@ -506,4 +510,5 @@
 ## 0.9.0~rc3
 
 Known-good POC baseline preserved separately with verified release hashes.
+
 

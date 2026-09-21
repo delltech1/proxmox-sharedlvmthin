@@ -9,11 +9,23 @@ is unsafe for dm-thin even when PVE later runs only one VM instance.
 
 The plugin therefore persists a versioned owner record containing the exact
 node and a fresh activation epoch. It refuses target activation while a
-different node owns the pool. Thin live migration is unsupported and must fail
-closed. A successful migration task from an older release is not evidence of
-metadata safety.
+different node owns the pool. **Direct in-place shared dm-thin live migration**
+is unsupported and must fail closed; the guard must never permit two kernels
+to own the same thin pool merely to satisfy PVE's source/target overlap.
 
-Supported cross-node movement is an offline handoff:
+This does **not** mean that a running VM whose disks start in Thin cannot be
+migrated online. The experimental Materialized Migration Bridge performs the
+supported workflow `Thin -> Thick -> normal PVE live migration -> Thin` while
+the VM remains online. Cross-node migration begins only after every managed VM
+disk is an independent Thick Generation, and the optional return creates new
+target-owned Thin pools. See
+[materialized-migration-bridge.md](materialized-migration-bridge.md).
+
+A successful direct Thin migration task from an older release is not evidence
+of metadata safety.
+
+Direct Thin-to-Thin cross-node movement without materialization is an offline
+handoff:
 
 1. stop and flush QEMU on the source;
 2. deactivate the final Thin LV and pool;
@@ -107,3 +119,4 @@ QMP socket, or config/runtime mismatch returns
 `RUNTIME_CONFIG_DIVERGENCE` and blocks automatic mutation. An operator must
 then stop the guest and reconcile the two views from positive evidence; the
 bridge never guesses which copy is newer.
+

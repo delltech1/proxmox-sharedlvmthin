@@ -123,7 +123,8 @@ the survivor. Its first start was refused independently by the storage plugin:
 ```text
 UNSAFE shared LVM-thin activation refused: pool ... is owned by node
 'lab-node-c', not 'lab-node-b'; concurrent dm-thin activation can corrupt
-metadata; live migration is unsupported
+metadata; direct in-place Thin live migration is unsupported (use the
+Materialized Migration Bridge for online VM migration)
 ```
 
 The exact old epoch remained intact. After the old boot was positively proven
@@ -283,3 +284,4 @@ include:
 - hardware watchdog qualification in addition to the lab `softdog`.
 
 Production arming remains disabled until those gates pass.
+

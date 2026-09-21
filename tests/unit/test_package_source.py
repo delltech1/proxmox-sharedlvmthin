@@ -224,12 +224,15 @@ class PackageSourceTests(unittest.TestCase):
             ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("Thin live migration is unsupported", migration)
-        self.assertIn("overlapping Thin live migration", readme)
+        self.assertIn("Direct in-place shared dm-thin live migration", migration)
+        self.assertIn("Thin -> Thick -> normal PVE live migration -> Thin", migration)
+        self.assertIn("A running VM whose disks\nstart in Thin can migrate online", readme)
+        self.assertIn("Only direct in-place shared dm-thin migration", readme)
         self.assertIn("LIVE REFUSED BY DESIGN", gate)
         self.assertIn("TG26 correction", scale)
         self.assertNotIn("- [x] Offline and online migration between nodes.", plan)
-        self.assertIn("live migration is unsupported", plugin)
+        self.assertIn("direct in-place Thin live migration is unsupported", plugin)
+        self.assertIn("Materialized Migration Bridge for online VM migration", plugin)
 
     def test_doctor_accepts_elastic_and_legacy_thresholds(self):
         doctor = (ROOT / "usr/sbin/sharedlvmthin").read_text()
@@ -778,4 +781,5 @@ class PackageSourceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -66,10 +66,14 @@ from VMware is not a requirement:
   ordinary linear steady-state device and temporary `dm-clone` transitions.
 
 Both modes integrate through the standard Proxmox Storage API and support
-snapshots, rollback, resize, backup and Storage Move. Materialized Thick
-Generations support normal shared-storage live migration. Thin mode requires
-an offline deactivate-then-activate handoff; overlapping Thin live migration
-is intentionally refused because dm-thin metadata is not cluster-coherent. The
+snapshots, rollback, resize, backup and Storage Move. A running VM whose disks
+start in Thin can migrate online through the Materialized Migration Bridge:
+the disks are moved online to independent Thick Generations, normal PVE
+shared-storage live migration runs, and the disks can then be moved online to
+new target-owned Thin pools. Only direct in-place shared dm-thin migration is
+refused, because PVE's source/target activation overlap would expose the same
+non-cluster-coherent dm-thin metadata to two kernels. An offline
+deactivate-then-activate Thin handoff remains available. The
 implementation uses standard Proxmox orchestration and Linux LVM,
 device-mapper and multipath components—without proprietary SAN integration,
 third-party kernel modules or an external locking service.
@@ -199,8 +203,11 @@ kernel after QEMU opens the disk.
 Every managed Thin pool therefore has a versioned persistent owner consisting
 of one PVE node plus a fresh activation epoch. A second node cannot activate it
 until the first node has closed every child and the public and hidden pool
-mappings are positively absent. Thin live migration is
-unsupported and fails closed. Offline movement is supported through an exact
+mappings are positively absent. Direct in-place shared dm-thin live migration
+is unsupported and fails closed. Online migration of a running VM whose disks
+start and finish in Thin is provided by the experimental Materialized
+Migration Bridge (`Thin -> Thick -> live migration -> Thin`), without
+overlapping Thin ownership. Offline movement is also supported through an exact
 deactivate-then-activate handoff. A stale owner after host loss requires proven
 external fencing and the explicit recovery procedure in
 [migration.md](docs/migration.md).
@@ -288,8 +295,9 @@ disposable-lab gate, including real external owner-host fencing, survivor
 refusal, explicit recovery, fresh epoch and exact data canary, has passed. It
 is not universal production certification; representative physical SAN/HBA
 qualification and local acceptance remain required. Earlier
-Thin live-migration success is retained only as historical evidence and is not
-a safety claim; current Thin activation fails closed before cross-node overlap.
+Direct in-place Thin live-migration success is retained only as historical
+evidence and is not a safety claim; current Thin activation fails closed before
+cross-node overlap. Online migration from Thin uses the materialized bridge.
 The qualification also covered materialized Thick live migration, cross-node
 reconstruction, Thin-to-Thick and Thick-to-Thin Storage Move, native PVE
 backup/restore, and exact cleanup. Veeam qualification covered
@@ -345,5 +353,6 @@ is not affiliated with or endorsed by Proxmox Server Solutions GmbH.
 Report vulnerabilities through GitHub Private Vulnerability Reporting. General
 bugs should include sanitized diagnostics only—never credentials, PVE tickets,
 private keys, guest data, or organization-specific storage identities.
+
 
 

@@ -2394,7 +2394,7 @@ sub _thin_claim_pool_owner_locked {
             if !$state->{schema} || defined($state->{owner}) || defined($state->{epoch});
         $owner = undef;
     }
-    die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' is owned by node '$owner', not '$node'; concurrent dm-thin activation can corrupt metadata; live migration is unsupported\n"
+    die "UNSAFE shared LVM-thin activation refused: pool '$vg/$pool' is owned by node '$owner', not '$node'; concurrent dm-thin activation can corrupt metadata; direct in-place Thin live migration is unsupported (use the Materialized Migration Bridge for online VM migration)\n"
         if defined($owner) && $owner ne $node;
     if (defined($owner)) {
         # A durable local owner is necessary but not sufficient evidence for
@@ -5718,3 +5718,4 @@ sub volume_has_feature {
 }
 
 1;
+
