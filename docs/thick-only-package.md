@@ -62,6 +62,11 @@ and LVM policy. An invalid marker also preserves state rather than guessing
 ownership. Purging the actually active/removed profile retains the normal
 scoped cleanup behavior.
 
+The dpkg installed-state database is checked independently of the marker. If
+the opposite profile is installed, its state is preserved even when the marker
+is missing, unreadable or contradictory; contradictory evidence is reported
+for repair but never resolved by deleting shared state.
+
 Run `sharedlvmthin upgrade-check` immediately before every rolling package
 change. Every Thick anchor must be positively verified as `MATERIALIZED`; do
 not replace plugin code while a hydration, rollback, deletion or recovery

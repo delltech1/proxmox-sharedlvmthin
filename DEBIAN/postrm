@@ -12,17 +12,37 @@ esac
 
 if [ "$1" = "purge" ]; then
     PURGED_FLAVOR=dual
+    OTHER_PACKAGE=pve-sharedlvmthin-thick
+    OTHER_FLAVOR=thick-only
     if [ "${DPKG_MAINTSCRIPT_PACKAGE:-}" = "pve-sharedlvmthin-thick" ]; then
         PURGED_FLAVOR=thick-only
+        OTHER_PACKAGE=pve-sharedlvmthin
+        OTHER_FLAVOR=dual
     fi
     ACTIVE_FLAVOR=$(sed -n '1p' \
         /usr/share/pve-sharedlvmthin/package-flavor 2>/dev/null || true)
 
+    # dpkg's installed-state database is authoritative even if a damaged or
+    # temporarily unreadable package marker supplies no evidence. Never let a
+    # stale residual purge delete state from an installed opposite profile.
+    OTHER_STATUS=$(dpkg-query -W -f='${db:Status-Abbrev}' \
+        "$OTHER_PACKAGE" 2>/dev/null || true)
+    case "$OTHER_STATUS" in
+        ii*)
+            if [ "$ACTIVE_FLAVOR" != "$OTHER_FLAVOR" ]; then
+                echo "WARNING: installed $OTHER_PACKAGE conflicts with package-flavor marker; preserving shared state." >&2
+            else
+                echo "Residual $PURGED_FLAVOR package purge: preserving state owned by active $ACTIVE_FLAVOR profile."
+            fi
+            exit 0
+            ;;
+    esac
+
     # After a Conflicts/Replaces switch, the old package can remain only as a
     # residual config-files entry. Purging that obsolete entry must never
     # delete configuration or recovery state owned by the active opposite
-    # profile. The installed flavor marker is shipped by, and therefore
-    # authoritative for, the currently active binary package.
+    # profile. When readable, the installed flavor marker supplies a second
+    # independent ownership signal.
     case "$ACTIVE_FLAVOR" in
         dual|thick-only)
             if [ "$ACTIVE_FLAVOR" != "$PURGED_FLAVOR" ]; then

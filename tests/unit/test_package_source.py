@@ -270,6 +270,9 @@ class PackageSourceTests(unittest.TestCase):
             prerm.index('systemctl stop "$THIN_GUARD_SERVICE"'),
         )
         self.assertIn("PURGED_FLAVOR=dual", postrm)
+        self.assertIn("OTHER_PACKAGE=pve-sharedlvmthin-thick", postrm)
+        self.assertIn("OTHER_STATUS=$(dpkg-query", postrm)
+        self.assertIn("installed $OTHER_PACKAGE conflicts with package-flavor marker", postrm)
         self.assertIn('ACTIVE_FLAVOR=$(sed -n', postrm)
         self.assertIn('if [ "$ACTIVE_FLAVOR" != "$PURGED_FLAVOR" ]', postrm)
         preserve = postrm.index("preserving state owned by active")
