@@ -54,6 +54,9 @@
   package profiles must contain the shared Thick schema/plugin, materializer,
   recovery, upgrade, compatibility and health entry points with executable
   modes where required.
+- Compare the built package payloads directly: every file retained by
+  Thick-only must match the dual artifact byte-for-byte and mode-for-mode,
+  excluding only the explicit flavor marker and mapped package documentation.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

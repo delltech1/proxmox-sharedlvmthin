@@ -317,6 +317,14 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("usr/share/perl5/PVE/SharedLvmThinThick.pm", release_check)
         self.assertIn("sharedlvmthin-thick-materialize", release_check)
 
+        parity = (ROOT / "scripts/compare-package-profiles.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("restricted build profile, not a fork", parity)
+        self.assertIn("cmp -s", parity)
+        self.assertIn("stat -c '%a'", parity)
+        self.assertIn("dual/Thick-only shared payload parity: PASS", parity)
+
         release_gate = (ROOT / "docs/thick-generations-release-gate.md").read_text(
             encoding="utf-8"
         )
