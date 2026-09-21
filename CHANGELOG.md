@@ -32,6 +32,9 @@
 - Require exactly one explicit `VG_INTENT_CLEAR=PASS` record in the package
   upgrade gate. A checker regression that omits, duplicates or weakens this
   evidence cannot authorize Dual or Thick-only unpacking.
+- Exercise five-TiB allocation zeroing and a four-to-five-TiB interrupted
+  online resize in CI, asserting exact byte counts, sector counts and tail
+  offsets so large-volume paths cannot silently regress to 32-bit arithmetic.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

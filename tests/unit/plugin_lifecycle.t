@@ -436,6 +436,17 @@ subtest 'thick allocation zeroing offloads safely and has a complete fallback' =
     is(scalar(@commands), 2, 'each zero primitive is attempted at most once');
 
     reset_mocks();
+    my $five_tib = 5 * 1024 * 1024 * 1024 * 1024;
+    $command_failure = qr{/usr/sbin/blkdiscard};
+    is($class->_zero_new_thick_generation(
+        '/dev/testvg/exact-head', $five_tib, 'multi-terabyte test head',
+    ), 'direct-write-fallback', 'multi-terabyte zeroing preserves the exact 64-bit byte count');
+    is_deeply([command_lines()], [
+        "/usr/sbin/blkdiscard --zeroout --offset 0 --length $five_tib /dev/testvg/exact-head",
+        "/usr/bin/dd if=/dev/zero of=/dev/testvg/exact-head bs=4M count=$five_tib iflag=count_bytes oflag=direct conv=fsync,nocreat status=none",
+    ], 'multi-terabyte offload and fallback never truncate or round the range');
+
+    reset_mocks();
     eval { $class->_zero_new_thick_generation('/dev/testvg/exact-head', 513, 'test head') };
     like($@, qr/invalid thick-generation zero length/,
         'unaligned ranges are rejected before any block operation');
@@ -3360,8 +3371,8 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     my $head_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 0,
     )});
-    my $old = 4 * 1024 * 1024;
-    my $new = 8 * 1024 * 1024;
+    my $old = 4 * 1024 * 1024 * 1024 * 1024;
+    my $new = 5 * 1024 * 1024 * 1024 * 1024;
     my $old_inventory = { testvg => {
         $anchor => { tags => $anchor_tags, lv_size => $old },
         $head => { tags => $head_tags, lv_size => $old },
@@ -3501,10 +3512,10 @@ subtest 'online Thick resize recovery republishes only a proven zeroed tail' => 
     };
 
     is($class->_thick_recover_resize($cfg, $storeid, $volname),
-        'RESIZE_RECOVERED', 'interrupted online resize is recovered from authoritative sizes');
+        'RESIZE_RECOVERED', 'interrupted multi-terabyte resize is recovered from authoritative sizes');
     my @lines = command_lines();
     like(join("\n", @lines), qr{/usr/bin/dd .*seek=\Q$old\E count=\Q@{[$new - $old]}\E .*iflag=count_bytes},
-        'the complete unpublished byte range is zeroed again');
+        'the complete multi-terabyte unpublished byte range is zeroed again without truncation');
     like(join("\n", @lines), qr{/sbin/blockdev --flushbufs /dev/testvg/\Q$head\E},
         'the repeated tail initialization is flushed before publication');
     my ($reload) = grep { /dmsetup --verifyudev reload/ } @lines;

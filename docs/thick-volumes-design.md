@@ -205,6 +205,12 @@ Package upgrades and Dual/Thick-only profile switches require exactly one
 addition to the overall healthy and safe-for-mutation records. Missing or
 duplicated proof is an upgrade refusal before package files are replaced.
 
+Large-volume arithmetic is byte-exact on the supported 64-bit Proxmox host
+architecture. Regression fixtures cover a five-TiB full zero initialization
+and recovery of a four-to-five-TiB online grow, including the exact byte seek,
+count and resulting device-mapper sector boundary. These tests do not claim
+physical-array throughput qualification; that remains a disposable-lab gate.
+
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
 automatic and never searches by a similar name. After confirming that no PVE
