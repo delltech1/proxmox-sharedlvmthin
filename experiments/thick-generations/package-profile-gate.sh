@@ -162,7 +162,14 @@ observed_version=$(dpkg-query -W -f='${Version}' "$target_name")
     echo "installed package version does not match candidate" >&2
     exit 2
 }
-dpkg -V "$target_name"
+if ! verify_output=$(dpkg --verify-format=rpm --verify "$target_name"); then
+    echo "installed package integrity verification failed" >&2
+    exit 2
+fi
+[[ -z "$verify_output" ]] || {
+    echo "installed package files differ from the candidate manifest" >&2
+    exit 2
+}
 timeout --foreground --kill-after=10 300 sharedlvmthin compat-check
 timeout --foreground --kill-after=10 300 sharedlvmthin doctor --quick
 timeout --foreground --kill-after=10 1800 sharedlvmthin upgrade-check

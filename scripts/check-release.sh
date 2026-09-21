@@ -18,6 +18,22 @@ dpkg-deb --contents "$PACKAGE" >"$TMP/contents.txt"
 dpkg-deb --extract "$PACKAGE" "$TMP/root"
 dpkg-deb --control "$PACKAGE" "$TMP/control"
 
+if [ ! -s "$TMP/control/md5sums" ]; then
+    echo "package data-file checksum manifest is missing or empty" >&2
+    exit 1
+fi
+(cd "$TMP/root" && find . -type f -printf '%P\n' | LC_ALL=C sort) \
+    >"$TMP/payload-files.txt"
+cut -c35- "$TMP/control/md5sums" | LC_ALL=C sort >"$TMP/manifest-files.txt"
+if ! diff -u "$TMP/payload-files.txt" "$TMP/manifest-files.txt"; then
+    echo "package checksum manifest does not cover the exact data payload" >&2
+    exit 1
+fi
+if ! (cd "$TMP/root" && md5sum --strict -c "$TMP/control/md5sums" >/dev/null); then
+    echo "package checksum manifest does not match the extracted payload" >&2
+    exit 1
+fi
+
 for maintscript in preinst postinst prerm postrm; do
     if [ ! -f "$TMP/control/$maintscript" ]; then
         echo "required maintainer script is missing: $maintscript" >&2

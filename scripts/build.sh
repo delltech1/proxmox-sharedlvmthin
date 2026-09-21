@@ -92,6 +92,18 @@ do
     [ ! -e "$PROGRAM" ] || chmod 0755 "$PROGRAM"
 done
 
+# dpkg --verify can check only paths recorded in the package's md5sums control
+# file. Because this package is assembled directly with dpkg-deb rather than
+# debhelper, generate that manifest explicitly and deterministically for every
+# data-archive file in both package profiles.
+(
+    cd "$STAGE"
+    find . -type f ! -path './DEBIAN/*' -print | LC_ALL=C sort |
+        while IFS= read -r path; do md5sum "$path"; done |
+        sed 's#  \./#  #' >DEBIAN/md5sums
+)
+chmod 0644 "$STAGE/DEBIAN/md5sums"
+
 find "$STAGE" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 
 # Debian and Ubuntu currently choose different dpkg-deb default compressors.

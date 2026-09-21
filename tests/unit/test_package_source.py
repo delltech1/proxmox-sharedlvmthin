@@ -436,6 +436,8 @@ exit 0
         self.assertIn("dual-package documentation namespace leaked", release_check)
         self.assertIn("required shared Thick component is missing", release_check)
         self.assertIn("required program is not executable", release_check)
+        self.assertIn("checksum manifest does not cover the exact data payload", release_check)
+        self.assertIn('md5sum --strict -c "$TMP/control/md5sums"', release_check)
         self.assertIn("usr/share/perl5/PVE/SharedLvmThinThick.pm", release_check)
         self.assertIn("sharedlvmthin-thick-materialize", release_check)
 
@@ -454,6 +456,8 @@ exit 0
         self.assertIn("RESULT=EXECUTE_PASS", profile_gate)
         self.assertIn("dpkg --no-act -i", profile_gate)
         self.assertIn('dpkg -i "$package"', profile_gate)
+        self.assertIn("dpkg --verify-format=rpm --verify", profile_gate)
+        self.assertIn("installed package files differ", profile_gate)
         self.assertIn("dpkg database reports unfinished", profile_gate)
         self.assertIn("profile replacement requires identical package versions", profile_gate)
         self.assertNotIn(r"\${", profile_gate)
@@ -576,6 +580,8 @@ exit 0
     def test_build_writes_portable_checksum_manifest(self):
         build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
         self.assertIn('(cd "$OUT" && sha256sum "$PACKAGE" >SHA256SUMS)', build)
+        self.assertIn(">DEBIAN/md5sums", build)
+        self.assertIn('chmod 0644 "$STAGE/DEBIAN/md5sums"', build)
         self.assertNotIn('sha256sum "$OUT/$PACKAGE" >"$OUT/SHA256SUMS"', build)
 
     def test_build_pins_cross_distribution_deb_compression(self):

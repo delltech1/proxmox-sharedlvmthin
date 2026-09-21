@@ -64,6 +64,10 @@
 - Keep a refused package removal operationally side-effect free by evaluating
   the active ThinGuard/managed-object fence before stopping or disabling the
   diagnostics service.
+- Generate and validate a complete deterministic Debian data-file checksum
+  manifest for both package profiles, and reject post-install verification
+  output instead of treating an empty or unchecked `dpkg --verify` run as
+  evidence of package integrity.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
