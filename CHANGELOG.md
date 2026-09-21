@@ -2,6 +2,9 @@
 
 ## Unreleased — Thick Generations audit
 
+- Scope the Thick capacity probe to the pinned multipath WWID with LVM
+  `--devices`; a same-name local or stale VG can no longer supply admission
+  figures after storage identity was verified.
 - Bound aggregate dm-clone pressure per VG with
   `slt-tg-max-active-materializations` (default 4). Admission counts exact
   signed non-MATERIALIZED anchors under the canonical VG lock and refuses a

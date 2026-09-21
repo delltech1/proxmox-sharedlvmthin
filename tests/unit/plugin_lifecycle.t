@@ -2710,6 +2710,10 @@ subtest 'Thick-only package flavor shares the core but removes every Thin entry 
         'Thin HA option is absent from Thick-only schema');
     ok(exists($options->{'slt-tg-hydration-timeout'}),
         'Thick transition controls remain available');
+    ok(exists($properties->{'slt-tg-max-active-materializations'}),
+        'Thick-only schema exposes the VG-wide materialization ceiling');
+    ok(exists($options->{'slt-tg-max-active-materializations'}),
+        'Thick-only options accept the VG-wide materialization ceiling');
 };
 
 subtest 'thin and thick aliases over one pinned VG share one canonical mutation lock' => sub {
@@ -2834,6 +2838,9 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
         ['Thick frontend close timeout mismatch',
             { %$thick, 'slt-tg-close-timeout' => 90 },
             qr/same Thick frontend close timeout/],
+        ['Thick materialization concurrency mismatch',
+            { %$thick, 'slt-tg-max-active-materializations' => 8 },
+            qr/same Thick materialization concurrency limit/],
         ['Thin peer SSH connection timeout mismatch',
             { %$thick, 'slt-thin-peer-connect-timeout' => 30 },
             qr/same Thin peer SSH connection timeout/],
@@ -5898,6 +5905,24 @@ subtest 'Thick materialization admission is VG-wide and fail-closed' => sub {
     eval { $class->_thick_materialization_admission($cfg, $inventory) };
     like($@, qr/incomplete Thick Generations anchor/,
         'ambiguous owned-looking anchor fails closed');
+};
+
+subtest 'Thick capacity admission is scoped to the pinned device' => sub {
+    my $seen;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_numeric_fields = sub {
+        my ($command) = @_;
+        $seen = [@$command];
+        return (100 * 1024**3, 80 * 1024**3, 4 * 1024**2);
+    };
+    my $decision = $class->_thick_capacity_gate('thick-a', {
+        'slt-vgname' => 'testvg',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-percent' => 5,
+    }, 1024);
+    ok($decision->{allowed}, 'small allocation remains within the protected reserve');
+    like(join(' ', @$seen), qr{^/sbin/vgs --readonly --devices /dev/mapper/3600abcd },
+        'capacity query is pinned to the exact multipath device');
 };
 
 done_testing();

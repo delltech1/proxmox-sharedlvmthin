@@ -1803,9 +1803,11 @@ sub _thick_capacity_gate {
         if !defined($scfg->{'slt-vg-reserve-percent'})
         && !defined($scfg->{'slt-vg-reserve-gib'});
     my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my ($vg_size, $vg_free, $extent_size) = _allocation_numeric_fields(
         [
-            '/sbin/vgs', '--readonly', '--noheadings', '--units', 'b', '--nosuffix',
+            '/sbin/vgs', '--readonly', '--devices', $device,
+            '--noheadings', '--units', 'b', '--nosuffix',
             '--separator', '|', '-o', 'vg_size,vg_free,vg_extent_size', $vg,
         ],
         "reading thick-generations capacity of VG '$vg' failed", 3,
