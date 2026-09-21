@@ -27,7 +27,7 @@ class PackageSourceTests(unittest.TestCase):
             encoding="utf-8",
         )
         calls = root / "recovery.calls"
-        recovery = root / "recovery-check"
+        recovery = root / "sharedlvmthin-candidate-recovery-check"
         records = (
             "THICK_ANCHORS_HEALTHY=PASS\nVG_INTENT_CLEAR=PASS\n"
             "STATE=HEALTHY\nSAFE_FOR_MUTATION=YES\n"
@@ -56,9 +56,6 @@ class PackageSourceTests(unittest.TestCase):
         ).replace(
             "UPGRADE_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check",
             f"UPGRADE_CHECK={upgrade}",
-        ).replace(
-            "RECOVERY_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check",
-            f"RECOVERY_CHECK={recovery}",
         ).replace("STORAGECFG=/etc/pve/storage.cfg", f"STORAGECFG={storage}")
         source = source.replace(
             "# The Thick-only package must never silently strand",
@@ -442,7 +439,8 @@ exit 0
         self.assertIn("No package files were replaced", preinst)
         self.assertIn("ordinary upgrades as well as dual <-> Thick-only", preinst)
         self.assertIn("audit_disabled_storages", preinst)
-        self.assertIn("installed recovery checker is missing", preinst)
+        self.assertIn("candidate recovery checker is missing", preinst)
+        self.assertIn("sharedlvmthin-candidate-recovery-check", preinst)
         self.assertIn("disabled-storage configuration is ambiguous", preinst)
         self.assertIn("disabled storage '$sid' is not positively recovery-safe", preinst)
         self.assertIn("disabled-storage recovery fence refused", preinst)
@@ -778,6 +776,7 @@ exit 0
 
         self.assertTrue(checker.is_file())
         self.assertIn("sharedlvmthin-upgrade-check", build)
+        self.assertIn("sharedlvmthin-candidate-recovery-check", build)
         self.assertIn("sharedlvmthin-upgrade-check", postinst)
         self.assertIn("upgrade-check)", cli)
         self.assertIn("sharedlvmthin upgrade-check", cli)

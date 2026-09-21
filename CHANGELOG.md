@@ -13,10 +13,11 @@
   pre-unpack recovery gate. Disabling a configuration no longer hides an OPEN
   intent or incomplete Thick anchor from ordinary upgrades or package-profile
   replacement; unavailable or recovery-required state refuses before files are
-  replaced. The candidate `preinst` performs this check independently because
-  dpkg can only invoke the older, already-installed upgrade helper before
-  unpacking the candidate. Storage scoped exclusively to other nodes remains
-  not applicable.
+  replaced. The candidate `preinst` performs this check with the exact new
+  read-only checker shipped in its control archive, because dpkg has not yet
+  unpacked the payload and published TG32's installed checker lacks the signed
+  intent and disabled-storage semantics. Storage scoped exclusively to other
+  nodes remains not applicable.
 - Fail closed when asynchronous materialization scheduling is not positively
   confirmed. A `systemd-run` client/transport error may occur after the exact
   transaction worker was queued, so the snapshot callback no longer starts a

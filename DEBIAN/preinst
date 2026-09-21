@@ -9,8 +9,9 @@ fi
 INSTALLED_FLAVOR=$(sed -n '1p' \
     /usr/share/pve-sharedlvmthin/package-flavor 2>/dev/null || true)
 UPGRADE_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
-RECOVERY_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
 STORAGECFG=/etc/pve/storage.cfg
+PREINST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+CANDIDATE_RECOVERY_CHECK="$PREINST_DIR/sharedlvmthin-candidate-recovery-check"
 DISABLED_INVENTORY=
 DISABLED_RESULT=
 
@@ -23,17 +24,19 @@ cleanup_disabled_audit() {
 trap cleanup_disabled_audit EXIT
 trap 'cleanup_disabled_audit; exit 130' HUP INT TERM
 
-# The helper above is the version from the package that is still installed:
-# dpkg has not unpacked the candidate yet. Older helpers skipped disabled
-# storage, so the candidate preinst must independently close that transition
-# gap. This is read-only and applies only to disabled storage in local scope.
+# The ordinary helper above is the version from the package that is still
+# installed: dpkg has not unpacked the candidate yet. Published TG32 skipped
+# disabled storage and its checker did not yet expose the signed VG-intent
+# proof. The candidate therefore carries an executable copy of its new,
+# read-only recovery checker in the control archive. Use that copy here before
+# payload unpacking; never substitute the less strict installed checker.
 audit_disabled_storages() {
     [ -r "$STORAGECFG" ] || {
         echo "ERROR: SharedLvmThin upgrade refused: storage configuration is unreadable." >&2
         return 1
     }
-    [ -x "$RECOVERY_CHECK" ] || {
-        echo "ERROR: SharedLvmThin upgrade refused: installed recovery checker is missing." >&2
+    [ -x "$CANDIDATE_RECOVERY_CHECK" ] || {
+        echo "ERROR: SharedLvmThin upgrade refused: candidate recovery checker is missing." >&2
         return 1
     }
     DISABLED_INVENTORY=$(mktemp) || return 1
@@ -85,7 +88,7 @@ audit_disabled_storages() {
 
         DISABLED_RESULT=$(mktemp) || return 1
         if timeout --foreground --kill-after=10 150 \
-            "$RECOVERY_CHECK" "$sid" >"$DISABLED_RESULT" 2>&1; then
+            "$CANDIDATE_RECOVERY_CHECK" "$sid" >"$DISABLED_RESULT" 2>&1; then
             disabled_rc=0
         else
             disabled_rc=$?

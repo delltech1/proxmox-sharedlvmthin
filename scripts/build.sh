@@ -24,6 +24,12 @@ trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 mkdir -p "$OUT"
 cp -a "$ROOT/DEBIAN" "$ROOT/lib" "$ROOT/usr" "$STAGE/"
 cp "$CONTROL" "$STAGE/DEBIAN/control"
+# preinst runs before dpkg unpacks the payload and cannot safely rely on the
+# older installed recovery checker. Ship the exact candidate checker inside
+# the control archive so disabled-storage state is audited with candidate
+# semantics before any package file is replaced.
+cp "$ROOT/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check" \
+    "$STAGE/DEBIAN/sharedlvmthin-candidate-recovery-check"
 mkdir -p "$STAGE/usr/share/pve-sharedlvmthin"
 printf '%s\n' "$FLAVOR" >"$STAGE/usr/share/pve-sharedlvmthin/package-flavor"
 
@@ -66,6 +72,7 @@ find "$STAGE" -type d -exec chmod 0755 {} +
 find "$STAGE" -type f -exec chmod 0644 {} +
 for PROGRAM in \
     "$STAGE/DEBIAN/preinst" \
+    "$STAGE/DEBIAN/sharedlvmthin-candidate-recovery-check" \
     "$STAGE/DEBIAN/postinst" \
     "$STAGE/DEBIAN/postrm" \
     "$STAGE/DEBIAN/prerm" \
