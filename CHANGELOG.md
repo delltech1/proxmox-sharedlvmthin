@@ -50,6 +50,10 @@
 - Make JSON health monitoring fail, rather than merely report a null version,
   when the package-flavor marker is missing/invalid, contradicts the package
   identity or the installed package version cannot be read.
+- Validate the positive artifact manifest as well as Thin exclusions: both
+  package profiles must contain the shared Thick schema/plugin, materializer,
+  recovery, upgrade, compatibility and health entry points with executable
+  modes where required.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

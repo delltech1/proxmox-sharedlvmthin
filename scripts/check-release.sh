@@ -47,6 +47,36 @@ if [ ! -f "$DOC_DIR/copyright" ] || \
     exit 1
 fi
 
+for required_path in \
+    usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm \
+    usr/share/perl5/PVE/SharedLvmThinThick.pm \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json \
+    usr/sbin/sharedlvmthin
+do
+    if [ ! -f "$TMP/root/$required_path" ]; then
+        echo "required shared Thick component is missing: $required_path" >&2
+        exit 1
+    fi
+done
+
+for executable_path in \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
+    usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json \
+    usr/sbin/sharedlvmthin
+do
+    if [ ! -x "$TMP/root/$executable_path" ]; then
+        echo "required program is not executable: $executable_path" >&2
+        exit 1
+    fi
+done
+
 if [ "$FLAVOR" = "thick-only" ]; then
     if [ -e "$TMP/root/usr/share/doc/pve-sharedlvmthin" ]; then
         echo "dual-package documentation namespace leaked into Thick-only package" >&2

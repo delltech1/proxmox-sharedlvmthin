@@ -312,6 +312,10 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('DOC_DIR="$STAGE/usr/share/doc/$PACKAGE_NAME"', build)
         self.assertIn('DOC_DIR="$TMP/root/usr/share/doc/$PACKAGE_NAME"', release_check)
         self.assertIn("dual-package documentation namespace leaked", release_check)
+        self.assertIn("required shared Thick component is missing", release_check)
+        self.assertIn("required program is not executable", release_check)
+        self.assertIn("usr/share/perl5/PVE/SharedLvmThinThick.pm", release_check)
+        self.assertIn("sharedlvmthin-thick-materialize", release_check)
 
         release_gate = (ROOT / "docs/thick-generations-release-gate.md").read_text(
             encoding="utf-8"
