@@ -836,7 +836,7 @@ exit 0
         self.assertIn("sub _thick_verify_active_lv_identity", source)
         self.assertIn("'vg_uuid,lv_uuid,lv_name'", source)
         self.assertIn('my $expected_uuid = "LVM-$vg_uuid$lv_uuid"', source)
-        self.assertEqual(source.count("_thick_verify_active_lv_identity("), 5)
+        self.assertEqual(source.count("_thick_verify_active_lv_identity("), 4)
 
     def test_snapshot_delete_recovery_is_an_explicit_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
