@@ -878,6 +878,12 @@ subtest 'ownership ambiguity at mutation boundary fails closed' => sub {
 subtest 'VG loss during snapshot creation has no destructive fallback' => sub {
     reset_mocks();
     $command_failure = qr{/sbin/lvcreate};
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_snapshot_postcondition = sub {
+        my (undef, undef, undef, undef, $must_exist) = @_;
+        return 1 if !$must_exist;
+        die "snapshot create postcondition failed: VG unavailable\n";
+    };
     my $ok = eval {
         $class->volume_snapshot(
             $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
@@ -997,9 +1003,13 @@ subtest 'snapshot create ambiguity requires prior absence and exact new object' 
         push @must_exist, $_[4];
         return 1;
     };
-    ok($class->volume_snapshot(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
-    ), 'fresh exact snapshot classifies a committed create despite client error');
+    my $ok = eval {
+        $class->volume_snapshot(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        );
+        1;
+    };
+    ok($ok, 'fresh exact snapshot classifies a committed create despite client error');
     is_deeply(\@must_exist, [0, 1, 1],
         'absence precondition, creation proof and final invariant all run');
     is(scalar(grep { /lvcreate/ } command_lines()), 1,
@@ -1036,9 +1046,13 @@ subtest 'snapshot delete ambiguity accepts exact absence without retry' => sub {
         push @must_exist, $_[4];
         return 1;
     };
-    ok($class->volume_snapshot_delete(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
-    ), 'exact absence classifies a committed delete despite client error');
+    my $ok = eval {
+        $class->volume_snapshot_delete(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        );
+        1;
+    };
+    ok($ok, 'exact absence classifies a committed delete despite client error');
     is_deeply(\@must_exist, [1, 0], 'ownership precondition and absence postcondition both run');
     is(scalar(command_lines()), 1, 'ambiguous snapshot delete is never retried');
 };
@@ -2161,9 +2175,13 @@ subtest 'Thin resize ambiguity is classified by exact size without retry' => sub
         $verified++;
         return 1;
     };
-    ok($class->volume_resize(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 1073741824, 0, undef,
-    ), 'exact target size classifies an lvextend client error as completed');
+    my $ok = eval {
+        $class->volume_resize(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 1073741824, 0, undef,
+        );
+        1;
+    };
+    ok($ok, 'exact target size classifies an lvextend client error as completed');
     is($verified, 1, 'requested size was re-read exactly once');
     is(scalar(grep { /lvextend/ } command_lines()), 1, 'lvextend was never retried');
 
@@ -2481,9 +2499,13 @@ subtest 'rollback rename ambiguity accepts only the exact completed postconditio
         }
         return;
     };
-    ok($class->volume_snapshot_rollback(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
-    ), 'exact canonical origin plus absent temporary proves rename completion');
+    my $ok = eval {
+        $class->volume_snapshot_rollback(
+            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        );
+        1;
+    };
+    ok($ok, 'exact canonical origin plus absent temporary proves rename completion');
     is(scalar(grep { /lvrename/ } command_lines()), 1,
         'ambiguous rename is never retried');
     is_deeply(\@rollback_runtime,
