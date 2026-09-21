@@ -3249,6 +3249,7 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     my @intent_events;
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code) = @_;
         return $code->();
