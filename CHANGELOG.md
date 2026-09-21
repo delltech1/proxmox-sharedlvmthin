@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Strengthen the explicit disposable-node package gate after installation: it
+  now proves the opposite profile is absent, the installed flavor marker
+  matches package identity, and the recovery CLI contains
+  `thick-recover-prepare` before declaring the node candidate valid.
 - Require positive frontend absence after a successful stable `dmsetup remove`
   before deactivating the signed anchor and HEAD LVs. A misleading command
   success can no longer let teardown proceed against a surviving frontend.

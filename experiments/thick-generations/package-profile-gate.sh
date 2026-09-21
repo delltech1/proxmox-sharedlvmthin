@@ -47,7 +47,7 @@ done
     exit 2
 }
 
-for command in awk sha256sum dpkg dpkg-deb dpkg-query systemctl timeout; do
+for command in awk grep sed sha256sum dpkg dpkg-deb dpkg-query systemctl timeout; do
     command -v "$command" >/dev/null 2>&1 || {
         echo "required command is unavailable: $command" >&2
         exit 2
@@ -64,7 +64,8 @@ target_name=$(dpkg-deb -f "$package" Package)
 target_version=$(dpkg-deb -f "$package" Version)
 target_arch=$(dpkg-deb -f "$package" Architecture)
 case "$target_name" in
-    pve-sharedlvmthin|pve-sharedlvmthin-thick) ;;
+    pve-sharedlvmthin) target_flavor=dual; opposite_name=pve-sharedlvmthin-thick ;;
+    pve-sharedlvmthin-thick) target_flavor=thick-only; opposite_name=pve-sharedlvmthin ;;
     *) echo "unexpected package identity: $target_name" >&2; exit 2 ;;
 esac
 [[ "$target_arch" == "all" ]] || {
@@ -162,6 +163,21 @@ observed_version=$(dpkg-query -W -f='${Version}' "$target_name")
     echo "installed package version does not match candidate" >&2
     exit 2
 }
+opposite_status=$(dpkg-query -W -f='${db:Status-Abbrev}' "$opposite_name" 2>/dev/null || true)
+[[ "$opposite_status" != ii* ]] || {
+    echo "opposite package profile remains installed after replacement" >&2
+    exit 2
+}
+flavor_file=/usr/share/pve-sharedlvmthin/package-flavor
+[[ -f "$flavor_file" && ! -L "$flavor_file" ]] || {
+    echo "installed package flavor marker is missing or unsafe" >&2
+    exit 2
+}
+observed_flavor=$(sed -n '1p' "$flavor_file")
+[[ "$observed_flavor" == "$target_flavor" ]] || {
+    echo "installed package flavor marker does not match package identity" >&2
+    exit 2
+}
 if ! verify_output=$(dpkg --verify-format=rpm --verify "$target_name"); then
     echo "installed package integrity verification failed" >&2
     exit 2
@@ -171,6 +187,11 @@ fi
     exit 2
 }
 timeout --foreground --kill-after=10 300 sharedlvmthin compat-check
+help_output=$(sharedlvmthin help)
+grep -Fq 'thick-recover-prepare <storage-id> <volume>' <<<"$help_output" || {
+    echo "installed CLI is missing thick-recover-prepare" >&2
+    exit 2
+}
 timeout --foreground --kill-after=10 300 sharedlvmthin doctor --quick
 timeout --foreground --kill-after=10 1800 sharedlvmthin upgrade-check
 
