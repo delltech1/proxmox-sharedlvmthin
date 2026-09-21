@@ -280,6 +280,21 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('"plugin_package": plugin_package', health)
         self.assertNotIn('package_version("pve-sharedlvmthin")', health)
 
+        release_check = (ROOT / "scripts/check-release.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('dpkg-deb --control "$PACKAGE" "$TMP/control"', release_check)
+        self.assertIn('sh -n "$TMP/control/$maintscript"', release_check)
+        self.assertIn("package that builds but cannot configure", release_check)
+
+        release_gate = (ROOT / "docs/thick-generations-release-gate.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("| Thick-only clean install |", release_gate)
+        self.assertIn("| Package profile replacement |", release_gate)
+        self.assertIn("| Package rolling update |", release_gate)
+        self.assertIn("| Package removal fence |", release_gate)
+
     def test_public_support_claims_separate_thin_and_materialized_thick_mobility(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         migration = (ROOT / "docs/migration.md").read_text(encoding="utf-8")

@@ -1,8 +1,10 @@
 # Thick Generations release gate
 
-Thick Generations remains a release candidate. Every required software and
-available live integration gate below has positive evidence; a documented
-hardware boundary is not converted into a success claim.
+Thick Generations remains a release candidate. Existing lifecycle evidence is
+recorded below, but the newly separated Thick-only package profile has open
+installation and replacement gates. No source-level test or successful package
+build converts those open runtime gates into a success claim. A documented
+hardware boundary is likewise not converted into a success claim.
 
 Disruptive cluster and transport coverage is tracked separately in the
 [Thin and Thick Generations redundancy gate](thick-generations-redundancy-gate.md).
@@ -36,6 +38,11 @@ The executable order and remaining original-cluster work are defined in the
 | Physical petabyte storage | Representative array qualification | NOT TESTED |
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
 | Web and installer | Dual-mode configuration, authentication, monitoring and live rendering | PASS |
+| Thick-only clean install | Exact candidate installs/configures on every qualified PVE API version; no absent Thin helper is invoked | OPEN |
+| Package profile replacement | Dual-to-Thick-only and Thick-only-to-dual replacement refuse unsafe state and preserve healthy Thick guests | OPEN |
+| Package rolling update | Same-flavor upgrade one node at a time with active services, reboot and post-update guest I/O verification | OPEN |
+| Package removal fence | Active ThinGuard plus managed Thin objects positively refuses removal; empty audited inventory permits cleanup | OPEN |
+| Thick-only diagnostics | Package identity/version, Doctor and JSON health output match the installed Thick-only artifact on a live PVE node | OPEN |
 | Recovery monitoring | Live IN_PROGRESS, RECOVERY_REQUIRED and post-resume MATERIALIZED classification; scoped dmeventd requirement | PASS |
 | Regression | Python, Perl taint-mode, package content and privacy gates at accepted commit | PASS: 166 PYTHON CASES; 115 PERL SUBTESTS / 635 ASSERTIONS |
 
@@ -52,4 +59,8 @@ Thick Generations.
 Before publishing a package, repeat the full regression and package privacy
 checks against the exact commit used to build the release artifact. Install
 that identical artifact on every qualified PVE Storage API version, verify
-service health, and retain its checksum with the test evidence.
+service health, and retain its checksum with the test evidence. For the
+Thick-only profile, execute every package row marked `OPEN` above with both a
+quiescent cluster and deliberately injected refusal conditions. A refused
+unsafe transaction must leave the previously installed package and guest I/O
+intact; merely returning a non-zero dpkg status is insufficient evidence.

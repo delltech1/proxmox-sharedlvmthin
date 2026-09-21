@@ -16,6 +16,15 @@ trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 dpkg-deb --info "$PACKAGE" >/dev/null
 dpkg-deb --contents "$PACKAGE" >"$TMP/contents.txt"
 dpkg-deb --extract "$PACKAGE" "$TMP/root"
+dpkg-deb --control "$PACKAGE" "$TMP/control"
+
+for maintscript in preinst postinst prerm postrm; do
+    if [ ! -f "$TMP/control/$maintscript" ]; then
+        echo "required maintainer script is missing: $maintscript" >&2
+        exit 1
+    fi
+    sh -n "$TMP/control/$maintscript"
+done
 
 PACKAGE_NAME=$(dpkg-deb -f "$PACKAGE" Package)
 FLAVOR_FILE="$TMP/root/usr/share/pve-sharedlvmthin/package-flavor"
@@ -46,6 +55,21 @@ if [ "$FLAVOR" = "thick-only" ]; then
             exit 1
         fi
     done
+
+    # The Thick-only artifact intentionally removes both Perl Thin daemons.
+    # Its packaged postinst may syntax-check them only inside the exact dual
+    # flavor branch. This artifact-level invariant prevents a source/build
+    # mismatch from producing a package that builds but cannot configure.
+    if ! awk '
+        /if \[ "\$PACKAGE_FLAVOR" = "dual" \]; then/ { in_dual=1; next }
+        in_dual && /perl -c "\$MONITOR"/ { monitor=1 }
+        in_dual && /perl -c "\$THIN_GUARDD"/ { guard=1 }
+        in_dual && /^fi$/ { in_dual=0 }
+        END { exit (monitor && guard) ? 0 : 1 }
+    ' "$TMP/control/postinst"; then
+        echo "Thick-only postinst validates an absent Thin daemon outside its flavor guard" >&2
+        exit 1
+    fi
 fi
 
 for forbidden in \
