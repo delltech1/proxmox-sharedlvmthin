@@ -85,6 +85,9 @@
 - Scope the rollback source read-only probe to the configured pinned multipath
   device, preventing an unscoped duplicate-VG lookup from influencing the
   transition decision.
+- Make the final clone-to-linear cutover resumable when the frontend was
+  already suspended by an interrupted attempt, and revalidate complete `rw`
+  dm-clone status after I/O drains but before publishing the linear table.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

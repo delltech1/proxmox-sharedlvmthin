@@ -797,6 +797,22 @@ exit 0
             "_thick_verify_snapshot_readonly($vg, $source);", source
         )
 
+    def test_linear_pivot_is_resumable_from_an_already_suspended_clone(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        start = source.index("if ($tr->{state}->{phase} eq 'HYDRATION_COMPLETE')")
+        end = source.index("if ($tr->{state}->{phase} eq 'LINEAR_PIVOTED')", start)
+        pivot = source[start:end]
+        self.assertIn("my $already_suspended =", pivot)
+        self.assertIn("if (!$already_suspended)", pivot)
+        self.assertIn("did not enter suspended state before linear pivot", pivot)
+        self.assertGreaterEqual(pivot.count("_thick_verify_clone_status($front, 1)"), 2)
+        self.assertLess(
+            pivot.index("did not enter suspended state before linear pivot"),
+            pivot.rindex("_thick_verify_clone_status($front, 1)"),
+        )
+
     def test_snapshot_delete_recovery_is_an_explicit_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         worker = (

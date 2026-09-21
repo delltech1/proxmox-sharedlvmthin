@@ -4563,6 +4563,7 @@ sub _thick_volume_snapshot {
             new => $tr->{new}, source_map => $tr->{source_map},
         );
         $class->_thick_verify_clone_status($front, 1);
+        my $already_suspended = $class->_thick_mapper_is_suspended($front);
         my $sectors = int($tr->{size} / 512);
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'reload', $front, '--table',
@@ -4575,10 +4576,21 @@ sub _thick_volume_snapshot {
         );
         die "inactive linear pivot table postcondition failed\n"
             if @$inactive != 1 || $inactive->[0] !~ /^0\s+\Q$sectors\E\s+linear\s+/;
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
-            errmsg => "suspending hydrated frontend for linear pivot failed",
-        );
+        if (!$already_suspended) {
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $front],
+                errmsg => "suspending hydrated frontend for linear pivot failed",
+            );
+        }
+        die "hydrated frontend did not enter suspended state before linear pivot\n"
+            if !$class->_thick_mapper_is_suspended($front);
+        # Re-read the still-active clone target after I/O has drained and
+        # before the inactive linear table is published. This closes the race
+        # in which metadata could enter ro/Fail after the earlier completion
+        # observation. A crash here leaves an exactly classifiable suspended
+        # clone plus the deterministic inactive table; resume repeats no data
+        # mutation and can safely continue this boundary.
+        $class->_thick_verify_clone_status($front, 1);
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'resume', $front],
             errmsg => "publishing canonical linear frontend failed",

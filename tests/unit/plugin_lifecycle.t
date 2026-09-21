@@ -5297,7 +5297,11 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_frontend = sub { return 1; };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub { return (8, 8, 0); };
+    my $clone_status_checks = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub {
+        $clone_status_checks++;
+        return (8, 8, 0);
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_for_hydration = sub { push @events, 'HYDRATION_WAIT'; return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
         return ($materialized, { tags => $old_tags, lv_size => $size }, $anchor);
@@ -5319,11 +5323,11 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
         return shift @inventories;
     };
-    my $suspend_reads = 0;
+    my @suspend_states = qw(Active Suspended Active Suspended);
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
         my ($command) = @_;
         if (grep { $_ eq 'suspended' } @$command) {
-            return [++$suspend_reads == 1 ? 'Active' : 'Suspended'];
+            return [shift(@suspend_states) // 'Suspended'];
         }
         return ['0 65536 linear 253:7 0'];
     };
@@ -5352,6 +5356,10 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'clone cutover and linear pivot each use one explicit noflush suspend');
     is(scalar(grep { /dmsetup .*resume/ } @snapshot_commands), 2,
         'each suspended cutover has exactly one resume');
+    is($clone_status_checks, 4,
+        'clone completion and writable metadata are reverified after pivot suspension');
+    is(scalar(@suspend_states), 0,
+        'both cutover and pivot prove active and suspended runtime boundaries');
     my ($source_index) = grep { $snapshot_commands[$_] =~ /dmsetup .*create .*src-/ } 0 .. $#snapshot_commands;
     my ($cutover_suspend) = grep { $snapshot_commands[$_] =~ /dmsetup .*suspend --noflush/ } 0 .. $#snapshot_commands;
     my ($cutover_resume) = grep {

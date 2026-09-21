@@ -50,6 +50,13 @@ When hydration completes, the frontend is atomically pivoted back to a linear
 table whose only dependency is the destination generation. dm-clone is a
 transaction transport, not the permanent storage format.
 
+The pivot tolerates an exact already-suspended clone left by interruption. It
+loads and verifies the deterministic inactive linear table, proves the mapper
+is suspended, and then rechecks complete hydration plus writable dm-clone
+metadata before resume publishes the destination-only mapping. Unknown,
+read-only, failed, or geometrically inconsistent status remains suspended and
+fails closed rather than publishing the linear table.
+
 For a running guest, PVE keeps QEMU paused until the storage snapshot callback
 returns. Online materialization is therefore asynchronous by default. The
 callback may return only after it has persisted and positively verified the
