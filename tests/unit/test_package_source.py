@@ -1,3 +1,4 @@
+import hashlib
 import ipaddress
 import os
 import re
@@ -11,6 +12,83 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    def _run_package_profile_gate(self, *, active_units=""):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        temp_path = Path(temp.name)
+        package = temp_path / "candidate.deb"
+        package.write_bytes(b"qualification-candidate\n")
+        log = temp_path / "dpkg.log"
+
+        commands = {
+            "dpkg-deb": """#!/bin/sh
+case "$3" in
+    Package) printf '%s\\n' pve-sharedlvmthin-thick ;;
+    Version) printf '%s\\n' 0.9.0~rc5.11~tg32 ;;
+    Architecture) printf '%s\\n' all ;;
+    *) exit 2 ;;
+esac
+""",
+            "dpkg-query": "#!/bin/sh\nexit 1\n",
+            "systemctl": """#!/bin/sh
+if [ "$1" = list-units ]; then printf '%s' "$ACTIVE_UNITS"; exit 0; fi
+exit 2
+""",
+            "dpkg": """#!/bin/sh
+if [ "$1" = --audit ]; then exit 0; fi
+printf '%s\\n' "$*" >>"$DPKG_LOG"
+exit 0
+""",
+        }
+        for name, source in commands.items():
+            command = temp_path / name
+            command.write_text(source, encoding="utf-8")
+            command.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{temp.name}{os.pathsep}{env['PATH']}"
+        env["ACTIVE_UNITS"] = active_units
+        env["DPKG_LOG"] = str(log)
+        digest = hashlib.sha256(package.read_bytes()).hexdigest()
+        hostname = subprocess.run(
+            ["hostname"], text=True, capture_output=True, check=True
+        ).stdout.strip()
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                str(ROOT / "experiments/thick-generations/package-profile-gate.sh"),
+                "--package",
+                str(package),
+                "--sha256",
+                digest,
+                "--expect-host",
+                hostname,
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result, log
+
+    @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    def test_package_profile_gate_default_is_a_real_dry_run(self):
+        result, log = self._run_package_profile_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RESULT=DRY_RUN_PASS", result.stdout)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].startswith("--no-act -i "))
+
+    @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    def test_package_profile_gate_refuses_active_thick_unit_before_dpkg(self):
+        result, log = self._run_package_profile_gate(
+            active_units="pve-sharedlvmthin-tg-deadbeef.service loaded active running\n"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Thick transaction unit blocks package work", result.stderr)
+        self.assertFalse(log.exists())
+
     @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
     def test_refused_removal_does_not_stop_services(self):
         with tempfile.TemporaryDirectory() as temp:
