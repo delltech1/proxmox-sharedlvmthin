@@ -9,10 +9,11 @@
   path: only the PVE `active` status probe is not applicable; pinned identity,
   paths, quorum, D-state, VG intent, LVM flags and Thick anchors remain
   mandatory. Invalid disable syntax fails before any external probe.
-- Include explicitly disabled, locally scoped SharedLvmThin storage in the
-  pre-unpack recovery gate. Disabling a configuration no longer hides an OPEN
-  intent or incomplete Thick anchor from ordinary upgrades or package-profile
-  replacement; unavailable or recovery-required state refuses before files are
+- Re-audit every locally scoped SharedLvmThin storage with the candidate
+  recovery rules before unpacking. Neither an enabled nor disabled
+  configuration can hide an OPEN intent or incomplete Thick anchor from
+  ordinary upgrades or package-profile replacement; unavailable or
+  recovery-required state refuses before files are
   replaced. The candidate `preinst` performs this check with the exact new
   read-only checker shipped in its control archive, because dpkg has not yet
   unpacked the payload and published TG32's installed checker lacks the signed

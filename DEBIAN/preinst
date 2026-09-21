@@ -12,25 +12,26 @@ UPGRADE_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
 STORAGECFG=/etc/pve/storage.cfg
 PREINST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 CANDIDATE_RECOVERY_CHECK="$PREINST_DIR/sharedlvmthin-candidate-recovery-check"
-DISABLED_INVENTORY=
-DISABLED_RESULT=
+CANDIDATE_INVENTORY=
+CANDIDATE_RESULT=
 
 # Invoked indirectly by the EXIT and signal traps below.
 # shellcheck disable=SC2317
-cleanup_disabled_audit() {
-    [ -z "$DISABLED_INVENTORY" ] || rm -f -- "$DISABLED_INVENTORY"
-    [ -z "$DISABLED_RESULT" ] || rm -f -- "$DISABLED_RESULT"
+cleanup_candidate_audit() {
+    [ -z "$CANDIDATE_INVENTORY" ] || rm -f -- "$CANDIDATE_INVENTORY"
+    [ -z "$CANDIDATE_RESULT" ] || rm -f -- "$CANDIDATE_RESULT"
 }
-trap cleanup_disabled_audit EXIT
-trap 'cleanup_disabled_audit; exit 130' HUP INT TERM
+trap cleanup_candidate_audit EXIT
+trap 'cleanup_candidate_audit; exit 130' HUP INT TERM
 
 # The ordinary helper above is the version from the package that is still
 # installed: dpkg has not unpacked the candidate yet. Published TG32 skipped
 # disabled storage and its checker did not yet expose the signed VG-intent
-# proof. The candidate therefore carries an executable copy of its new,
+# proof for enabled storage either. The candidate therefore carries an
+# executable copy of its new,
 # read-only recovery checker in the control archive. Use that copy here before
 # payload unpacking; never substitute the less strict installed checker.
-audit_disabled_storages() {
+audit_candidate_storages() {
     [ -r "$STORAGECFG" ] || {
         echo "ERROR: SharedLvmThin upgrade refused: storage configuration is unreadable." >&2
         return 1
@@ -39,26 +40,25 @@ audit_disabled_storages() {
         echo "ERROR: SharedLvmThin upgrade refused: candidate recovery checker is missing." >&2
         return 1
     }
-    DISABLED_INVENTORY=$(mktemp) || return 1
+    CANDIDATE_INVENTORY=$(mktemp) || return 1
     if ! awk '
         function emit() {
-            if (inside && disabled) print sid "|" mode "|" nodes
+            if (inside) print sid "|" mode "|" nodes
         }
         /^sharedlvmthin:[[:space:]]+/ {
-            emit(); inside=1; sid=$2; disabled=0; mode="thin"; nodes=""; next
+            emit(); inside=1; sid=$2; mode="thin"; nodes=""; next
         }
         /^[^[:space:]]/ { emit(); inside=0; next }
         inside && $1 == "disable" {
             value=(NF == 1 ? "1" : tolower($2))
-            if (value ~ /^(1|yes|on|true)$/) disabled=1
-            else if (value !~ /^(0|no|off|false)$/) exit 2
+            if (value !~ /^(0|no|off|false|1|yes|on|true)$/) exit 2
             next
         }
         inside && $1 == "slt-allocation-mode" { mode=$2; next }
         inside && $1 == "nodes" { nodes=$2; next }
         END { emit() }
-    ' "$STORAGECFG" >"$DISABLED_INVENTORY"; then
-        echo "ERROR: SharedLvmThin upgrade refused: disabled-storage configuration is ambiguous." >&2
+    ' "$STORAGECFG" >"$CANDIDATE_INVENTORY"; then
+        echo "ERROR: SharedLvmThin upgrade refused: candidate storage configuration is ambiguous." >&2
         return 1
     fi
 
@@ -70,7 +70,7 @@ audit_disabled_storages() {
         [ -n "$sid" ] || continue
         case "$sid" in
             *[!A-Za-z0-9_.-]*|'')
-                echo "ERROR: SharedLvmThin upgrade refused: disabled storage identifier is invalid." >&2
+                echo "ERROR: SharedLvmThin upgrade refused: storage identifier is invalid." >&2
                 return 1
                 ;;
         esac
@@ -81,34 +81,34 @@ audit_disabled_storages() {
         case "$mode" in
             thin|thick-generations) ;;
             *)
-                echo "ERROR: SharedLvmThin upgrade refused: disabled storage '$sid' has an unsupported allocation mode." >&2
+                echo "ERROR: SharedLvmThin upgrade refused: storage '$sid' has an unsupported allocation mode." >&2
                 return 1
                 ;;
         esac
 
-        DISABLED_RESULT=$(mktemp) || return 1
+        CANDIDATE_RESULT=$(mktemp) || return 1
         if timeout --foreground --kill-after=10 150 \
-            "$CANDIDATE_RECOVERY_CHECK" "$sid" >"$DISABLED_RESULT" 2>&1; then
-            disabled_rc=0
+            "$CANDIDATE_RECOVERY_CHECK" "$sid" >"$CANDIDATE_RESULT" 2>&1; then
+            candidate_rc=0
         else
-            disabled_rc=$?
+            candidate_rc=$?
         fi
-        cat "$DISABLED_RESULT"
-        disabled_healthy=$(grep -c '^STATE=HEALTHY$' "$DISABLED_RESULT" || true)
-        disabled_safe=$(grep -c '^SAFE_FOR_MUTATION=YES$' "$DISABLED_RESULT" || true)
-        disabled_anchors=$(grep -c '^THICK_ANCHORS_HEALTHY=PASS$' "$DISABLED_RESULT" || true)
-        disabled_intent=$(grep -c '^VG_INTENT_CLEAR=PASS$' "$DISABLED_RESULT" || true)
-        rm -f -- "$DISABLED_RESULT"
-        DISABLED_RESULT=
-        if [ "$disabled_rc" -ne 0 ] || [ "$disabled_healthy" -ne 1 ] || \
-           [ "$disabled_safe" -ne 1 ] || [ "$disabled_anchors" -ne 1 ] || \
-           [ "$disabled_intent" -ne 1 ]; then
-            echo "ERROR: SharedLvmThin upgrade refused: disabled storage '$sid' is not positively recovery-safe." >&2
+        cat "$CANDIDATE_RESULT"
+        candidate_healthy=$(grep -c '^STATE=HEALTHY$' "$CANDIDATE_RESULT" || true)
+        candidate_safe=$(grep -c '^SAFE_FOR_MUTATION=YES$' "$CANDIDATE_RESULT" || true)
+        candidate_anchors=$(grep -c '^THICK_ANCHORS_HEALTHY=PASS$' "$CANDIDATE_RESULT" || true)
+        candidate_intent=$(grep -c '^VG_INTENT_CLEAR=PASS$' "$CANDIDATE_RESULT" || true)
+        rm -f -- "$CANDIDATE_RESULT"
+        CANDIDATE_RESULT=
+        if [ "$candidate_rc" -ne 0 ] || [ "$candidate_healthy" -ne 1 ] || \
+           [ "$candidate_safe" -ne 1 ] || [ "$candidate_anchors" -ne 1 ] || \
+           [ "$candidate_intent" -ne 1 ]; then
+            echo "ERROR: SharedLvmThin upgrade refused: storage '$sid' is not positively recovery-safe under candidate rules." >&2
             return 1
         fi
-    done <"$DISABLED_INVENTORY"
-    rm -f -- "$DISABLED_INVENTORY"
-    DISABLED_INVENTORY=
+    done <"$CANDIDATE_INVENTORY"
+    rm -f -- "$CANDIDATE_INVENTORY"
+    CANDIDATE_INVENTORY=
 }
 
 # Replacing shared plugin code while an asynchronous Thick transaction is
@@ -150,8 +150,8 @@ if [ -n "$INSTALLED_FLAVOR" ] || [ -x "$UPGRADE_CHECK" ]; then
         echo "recovery/upgrade gate. No package files were replaced." >&2
         exit 1
     fi
-    if ! audit_disabled_storages; then
-        echo "ERROR: disabled-storage recovery fence refused the package transaction." >&2
+    if ! audit_candidate_storages; then
+        echo "ERROR: candidate recovery fence refused the package transaction." >&2
         echo "No package files were replaced." >&2
         exit 1
     fi

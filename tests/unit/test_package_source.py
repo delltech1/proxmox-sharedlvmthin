@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
-    def _run_preinst_disabled_audit(self, *, recovery_safe=True):
+    def _run_preinst_candidate_audit(self, *, recovery_safe=True, disabled=True):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
@@ -21,9 +21,9 @@ class PackageSourceTests(unittest.TestCase):
         storage = root / "storage.cfg"
         storage.write_text(
             "sharedlvmthin: disabled-thick\n"
-            "        disable 1\n"
-            "        vgname shared-vg\n"
-            "        slt-allocation-mode thick-generations\n",
+            + ("        disable 1\n" if disabled else "")
+            + "        vgname shared-vg\n"
+            + "        slt-allocation-mode thick-generations\n",
             encoding="utf-8",
         )
         calls = root / "recovery.calls"
@@ -189,19 +189,28 @@ exit 0
             self.assertNotIn("disable ", calls)
 
     @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
-    def test_preinst_audits_disabled_storage_with_installed_checker(self):
-        result, invoked = self._run_preinst_disabled_audit(recovery_safe=True)
+    def test_preinst_audits_disabled_storage_with_candidate_checker(self):
+        result, invoked = self._run_preinst_candidate_audit(recovery_safe=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(invoked, ["disabled-thick"])
         self.assertIn("STATE=HEALTHY", result.stdout)
 
     @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
     def test_preinst_refuses_unsafe_disabled_storage_before_unpack(self):
-        result, invoked = self._run_preinst_disabled_audit(recovery_safe=False)
+        result, invoked = self._run_preinst_candidate_audit(recovery_safe=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(invoked, ["disabled-thick"])
-        self.assertIn("disabled storage 'disabled-thick' is not positively recovery-safe", result.stderr)
+        self.assertIn("not positively recovery-safe under candidate rules", result.stderr)
         self.assertIn("No package files were replaced", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_preinst_refuses_unsafe_enabled_storage_under_candidate_rules(self):
+        result, invoked = self._run_preinst_candidate_audit(
+            recovery_safe=False, disabled=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(invoked, ["disabled-thick"])
+        self.assertIn("candidate recovery fence refused", result.stderr)
 
     def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
         helper = (
@@ -438,16 +447,16 @@ exit 0
         self.assertIn("sharedlvmthin-upgrade-check", preinst)
         self.assertIn("No package files were replaced", preinst)
         self.assertIn("ordinary upgrades as well as dual <-> Thick-only", preinst)
-        self.assertIn("audit_disabled_storages", preinst)
+        self.assertIn("audit_candidate_storages", preinst)
         self.assertIn("candidate recovery checker is missing", preinst)
         self.assertIn("sharedlvmthin-candidate-recovery-check", preinst)
-        self.assertIn("disabled-storage configuration is ambiguous", preinst)
-        self.assertIn("disabled storage '$sid' is not positively recovery-safe", preinst)
-        self.assertIn("disabled-storage recovery fence refused", preinst)
+        self.assertIn("candidate storage configuration is ambiguous", preinst)
+        self.assertIn("not positively recovery-safe under candidate rules", preinst)
+        self.assertIn("candidate recovery fence refused", preinst)
         self.assertIn("THICK_ANCHORS_HEALTHY=PASS", preinst)
         self.assertIn("VG_INTENT_CLEAR=PASS", preinst)
         self.assertLess(
-            preinst.index("if ! audit_disabled_storages"),
+            preinst.index("if ! audit_candidate_storages"),
             preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
         )
         self.assertLess(
