@@ -849,7 +849,7 @@ exit 0
         self.assertEqual(source.count("_thick_activate_exact_lvs("), 11)
         self.assertEqual(source.count("_thick_verify_active_lv_identity("), 4)
         self.assertEqual(source.count("['/sbin/lvchange', '--devices', $device, '-an'"), 1)
-        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 11)
+        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 12)
 
     def test_post_pivot_cleanup_deactivates_before_destructive_remove(self):
         source = (
