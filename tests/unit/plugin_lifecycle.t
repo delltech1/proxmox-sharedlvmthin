@@ -5465,6 +5465,10 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
     my $new_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 1,
     )});
+    my $meta_tags = join(',', @{PVE::SharedLvmThinThick::transition_tags(
+        sid => $storeid, vol => $volname, tx => $new_tx,
+        kind => 'metadata', generation => 1, region => 8,
+    )});
     my $inventory = { testvg => {
         $anchor => { tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$state)}) },
         $old => { tags => '', lv_size => $size },
@@ -5678,7 +5682,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         $anchor => { tags => $anchor_tags_prepared },
         $old => { tags => $old_tags, lv_size => $size, lv_attr => '-wi-XX---k' },
         $new => { tags => $new_tags, lv_size => $size },
-        $meta => { tags => '', lv_size => 24 * 1024 * 1024 },
+        $meta => { tags => $meta_tags, lv_size => 24 * 1024 * 1024 },
     } };
     my $hydrating_inventory = { testvg => {
         %{$prepared_inventory->{testvg}},
@@ -5791,6 +5795,15 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my @snapshot_commands = command_lines();
     is(scalar(grep { /lvcreate/ } @snapshot_commands), 2,
         'snapshot creates exactly one destination and one metadata LV');
+    is(scalar(grep { /lvcreate .* --setautoactivation n .* --addtag slt_tg/ }
+        @snapshot_commands), 2,
+        'both transition LVs receive ownership and no-autoactivation atomically at creation');
+    is(scalar(grep { /lvcreate .* --addtag slt_tgo_sha256=/ }
+        @snapshot_commands), 1,
+        'destination creation includes its signed generation digest');
+    is(scalar(grep { /lvcreate .* --addtag slt_tgt_sha256=/ }
+        @snapshot_commands), 1,
+        'metadata creation includes its signed transition digest');
     like(join("\n", @snapshot_commands), qr{lvcreate .* -L 20971520B -n \Q$meta\E},
         'metadata capacity comes from persisted geometry, not a fixed 16 MiB value');
     my ($zero_index) = grep {
@@ -5818,7 +5831,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'destination zero initialization finishes before the source/clone runtime exists');
     ok(defined($cutover_resume) && defined($readonly_index) && $readonly_index > $cutover_resume,
         'persistent snapshot LV becomes read-only only after the frontend is resumed');
-    is(scalar(@scoped_devices), 10,
+    is(scalar(@scoped_devices), 8,
         'every transition tag mutation carries an explicit device scope');
     ok(!scalar(grep { $_ ne '/dev/mapper/3600abcd' } @scoped_devices),
         'every scoped metadata mutation uses the pinned multipath device');

@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Eliminate the unowned transition-LV crash window. Snapshot/rollback
+  destination and dm-clone metadata LVs now receive their complete signed
+  ownership tags plus `autoactivation=n` in the atomic `lvcreate` command,
+  matching the already-hardened initial-allocation path.
 - Add explicit, reference-gated recovery for interrupted whole-volume deletes.
   It derives authority from the exact signed `OPEN REMOVE` intent and canonical
   anchor, safely continues with both objects or an anchor left after HEAD

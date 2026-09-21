@@ -116,6 +116,12 @@ During asynchronous materialization:
 - any ambiguous identity, table, status, or intent fails closed;
 - failure to schedule the worker falls back to synchronous completion.
 
+Destination and dm-clone metadata LVs are born with their complete signed
+ownership tags and `autoactivation=n` in the same `lvcreate` operation. A host
+loss can therefore leave no object, one signed object, both signed objects, or
+the signed PREPARED anchor, but this version never creates a transition LV
+whose ownership must later be inferred from its deterministic name.
+
 The optional `slt-tg-online-materialization synchronous` setting exists for
 diagnostic qualification. It intentionally keeps the PVE snapshot callback
 open until hydration completes and is not the normal online mode.

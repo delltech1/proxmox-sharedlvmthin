@@ -1133,6 +1133,29 @@ exit 0
         self.assertNotIn("_change_exact_tags", prepared)
         self.assertNotIn("_disable_and_verify_autoactivation", prepared)
 
+    def test_thick_transition_objects_are_owned_atomically_at_lvcreate(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r"sub _thick_volume_snapshot \{(?P<body>.*?)(?=\nsub _thick_free_image)",
+            source,
+            flags=re.S,
+        )
+        self.assertIsNotNone(match)
+        before_c2 = match.group("body")[:match.group("body").index(
+            "$class->_thick_fault_point('C2'"
+        )]
+        self.assertGreaterEqual(before_c2.count("'--setautoactivation', 'n'"), 2)
+        self.assertIn(
+            "push @new_create, map { ('--addtag', $_) } @$new_tags", before_c2
+        )
+        self.assertIn(
+            "push @meta_create, map { ('--addtag', $_) } @$meta_tags", before_c2
+        )
+        self.assertNotIn("tagging thick snapshot destination", before_c2)
+        self.assertNotIn("tagging dm-clone metadata", before_c2)
+
     def test_package_prunes_only_initramfs_staging_lvm_recovery_copies(self):
         hook = ROOT / "usr/share/initramfs-tools/hooks/zz-pve-sharedlvmthin-lvm-prune"
         source = hook.read_text(encoding="utf-8")

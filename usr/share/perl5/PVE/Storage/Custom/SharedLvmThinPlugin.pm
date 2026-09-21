@@ -4458,31 +4458,37 @@ sub _thick_volume_snapshot {
         );
         $class->_set_vg_intent($vg, %intent, _device => $device);
         $class->_thick_fault_point('C1', $operation, $storeid, $volname);
+        my $new_tags = PVE::SharedLvmThinThick::generation_tags(
+            sid => $storeid, vol => $volname, role => 'head',
+            generation => $new_gen,
+        );
+        my @new_create = (
+            '/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+            '--devices', $device, '-L', "${size}B", '-n', $new,
+            '--setactivationskip', 'y', '--setautoactivation', 'n',
+        );
+        push @new_create, map { ('--addtag', $_) } @$new_tags;
+        push @new_create, $vg;
         run_command(
-            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
-                '--devices', $device, '-L', "${size}B", '-n', $new,
-                '--setactivationskip', 'y', $vg],
+            \@new_create,
             errmsg => "creating thick snapshot destination '$vg/$new' failed",
         );
+        my $meta_tags = transition_tags(
+            sid => $storeid, vol => $volname, tx => $intent{tx},
+            kind => 'metadata', generation => $new_gen,
+            region => $geometry->{region_sectors},
+        );
+        my @meta_create = (
+            '/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
+            '--devices', $device,
+            '-L', $geometry->{metadata_bytes} . 'B', '-n', $meta,
+            '--setactivationskip', 'y', '--setautoactivation', 'n',
+        );
+        push @meta_create, map { ('--addtag', $_) } @$meta_tags;
+        push @meta_create, $vg;
         run_command(
-            ['/sbin/lvcreate', '--yes', '--wipesignatures', 'y', '--ignoreactivationskip',
-                '--devices', $device,
-                '-L', $geometry->{metadata_bytes} . 'B', '-n', $meta,
-                '--setactivationskip', 'y', $vg],
+            \@meta_create,
             errmsg => "creating dm-clone metadata '$vg/$meta' failed",
-        );
-        $class->_change_exact_tags(
-            $vg, $new, [], PVE::SharedLvmThinThick::generation_tags(
-                sid => $storeid, vol => $volname, role => 'head',
-                generation => $new_gen,
-            ), "tagging thick snapshot destination '$vg/$new' failed", $device,
-        );
-        $class->_change_exact_tags(
-            $vg, $meta, [], transition_tags(
-                sid => $storeid, vol => $volname, tx => $intent{tx},
-                kind => 'metadata', generation => $new_gen,
-                region => $geometry->{region_sectors},
-            ), "tagging dm-clone metadata '$vg/$meta' failed", $device,
         );
         $class->_disable_and_verify_autoactivation($vg, $new, $device);
         $class->_disable_and_verify_autoactivation($vg, $meta, $device);
