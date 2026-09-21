@@ -3527,6 +3527,57 @@ subtest 'online Thick resize recovery republishes only a proven zeroed tail' => 
         'frontend identity is proved before recovery, before cutover, and after publication');
     is_deeply(\@events, [qw(IDENTITY CLEAR)],
         'raw-write identity is proved and the exact intent clears last');
+
+    {
+        reset_mocks();
+        @events = ();
+        @verified_sizes = ();
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+            return ["0 " . int($new / 512) . " linear 253:7 0"];
+        };
+        is($class->_thick_recover_resize($cfg, $storeid, $volname),
+            'RESIZE_RECOVERED', 'already-published resize finalizes idempotently');
+        is_deeply([command_lines()], [],
+            'already-published resize performs no zero, reload, suspend, or resume');
+        is_deeply(\@verified_sizes, [undef],
+            'already-published resize still proves the exact canonical frontend');
+        is_deeply(\@events, ['CLEAR'],
+            'already-published resize clears only its exact remaining intent');
+    }
+
+    {
+        reset_mocks();
+        @events = ();
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { return 0; };
+        eval { $class->_thick_recover_resize($cfg, $storeid, $volname) };
+        like($@, qr/requires the exact active frontend/,
+            'offline resize recovery refuses to infer the old published boundary');
+        is_deeply([command_lines()], [], 'missing-frontend refusal performs no mutation');
+        is_deeply(\@events, [], 'missing-frontend refusal preserves the OPEN intent');
+    }
+
+    {
+        reset_mocks();
+        @events = ();
+        @verified_sizes = ();
+        my @already_suspended = qw(Suspended Suspended);
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+            my ($command) = @_;
+            return [shift(@already_suspended)] if grep { $_ eq 'suspended' } @$command;
+            return ["0 " . int($new / 512) . " linear 253:7 0"]
+                if grep { $_ eq '--inactive' } @$command;
+            return ["0 " . int($old / 512) . " linear 253:7 0"];
+        };
+        is($class->_thick_recover_resize($cfg, $storeid, $volname),
+            'RESIZE_RECOVERED', 'already-suspended publication boundary is resumable');
+        my @suspended_lines = command_lines();
+        is(scalar(grep { /dmsetup --verifyudev suspend/ } @suspended_lines), 0,
+            'already-suspended recovery never issues a second suspend');
+        is(scalar(grep { /dmsetup --verifyudev resume/ } @suspended_lines), 1,
+            'already-suspended recovery publishes with one exact resume');
+        is_deeply(\@events, [qw(IDENTITY CLEAR)],
+            'already-suspended recovery retains raw-write proof and clear-last ordering');
+    }
 };
 
 subtest 'thick clone frontend and hydration wait require exact evidence' => sub {

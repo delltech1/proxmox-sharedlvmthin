@@ -211,6 +211,13 @@ and recovery of a four-to-five-TiB online grow, including the exact byte seek,
 count and resulting device-mapper sector boundary. These tests do not claim
 physical-array throughput qualification; that remains a disposable-lab gate.
 
+Resize recovery is explicitly idempotent at its final boundaries. A frontend
+already published at the authoritative HEAD size is verified and only the
+matching intent is cleared. A frontend already suspended after loading the new
+inactive table is verified and resumed without a second suspend. Absence of the
+frontend leaves the intent untouched because the old published boundary cannot
+be derived safely from persistent v1 evidence alone.
+
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
 automatic and never searches by a similar name. After confirming that no PVE

@@ -35,6 +35,10 @@
 - Exercise five-TiB allocation zeroing and a four-to-five-TiB interrupted
   online resize in CI, asserting exact byte counts, sector counts and tail
   offsets so large-volume paths cannot silently regress to 32-bit arithmetic.
+- Cover every resize-recovery publication boundary: an already-published map
+  clears only the exact intent without repeating I/O, a missing frontend fails
+  before mutation, and an already-suspended frontend resumes without issuing a
+  second suspend.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming
