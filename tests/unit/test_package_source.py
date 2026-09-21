@@ -786,6 +786,17 @@ exit 0
         self.assertNotIn("lvremove", worker)
         self.assertNotIn("pvcreate", worker)
 
+    def test_thick_rollback_snapshot_permission_probe_is_device_scoped(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "_thick_verify_snapshot_readonly($vg, $source, $device)", source
+        )
+        self.assertNotIn(
+            "_thick_verify_snapshot_readonly($vg, $source);", source
+        )
+
     def test_snapshot_delete_recovery_is_an_explicit_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         worker = (

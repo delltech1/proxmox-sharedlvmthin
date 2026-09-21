@@ -82,6 +82,9 @@
 - Make explicit `thick-resume` cover every persisted transition phase from
   `PREPARED` through `LINEAR_PIVOTED`, and reconstruct a reboot-lost frontend
   after the pivot as a canonical linear map to the signed new HEAD only.
+- Scope the rollback source read-only probe to the configured pinned multipath
+  device, preventing an unscoped duplicate-VG lookup from influencing the
+  transition decision.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

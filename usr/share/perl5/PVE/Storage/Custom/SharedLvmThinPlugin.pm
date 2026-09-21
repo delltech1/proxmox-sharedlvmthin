@@ -4184,7 +4184,7 @@ sub _thick_volume_snapshot {
             ($source, $source_gen, $source_info) = $class->_thick_find_snapshot(
                 $storeid, $scfg, $volname, $snap, $lvs,
             );
-            $class->_thick_verify_snapshot_readonly($vg, $source);
+            $class->_thick_verify_snapshot_readonly($vg, $source, $device);
             $class->_verify_autoactivation_disabled($vg, $source, $device);
         }
         my $new_gen = $old_gen + 1;
