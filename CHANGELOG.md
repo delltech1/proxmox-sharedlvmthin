@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — Thick Generations audit
+
+- Treat kernel `dm-clone` metadata mode as mandatory transition evidence.
+  `ro`, `Fail`, or a missing mode now stops hydration/recovery immediately and
+  preserves the transaction instead of being misclassified as ordinary slow
+  progress until the no-progress timeout.
+
 ## RC5.11 TG32 — experimental timing and scale hardening
 
 - Clarify the public migration contract without changing behavior: a running

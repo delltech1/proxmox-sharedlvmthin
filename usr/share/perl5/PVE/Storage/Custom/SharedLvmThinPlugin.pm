@@ -742,10 +742,18 @@ sub _thick_verify_clone_status {
         "reading dm-clone status for '$mapper' failed",
     );
     die "dm-clone status for '$mapper' is ambiguous\n" if @$lines != 1;
+    my $status = $lines->[0];
+    die "dm-clone frontend '$mapper' entered the kernel Fail metadata state; automatic hydration or pivot is unsafe\n"
+        if $status =~ /^0\s+\d+\s+clone\s+Fail\s*$/i;
     my ($hydrated, $total, $hydrating) =
-        $lines->[0] =~ /^0\s+\d+\s+clone\s+\S+\s+\S+\s+\S+\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
+        $status =~ /^0\s+\d+\s+clone\s+\S+\s+\S+\s+\S+\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
     die "dm-clone status for '$mapper' is malformed\n"
         if !defined($hydrated) || !$total || !defined($hydrating);
+    my ($metadata_mode) = $status =~ /\s+(rw|ro)\s*$/i;
+    die "dm-clone status for '$mapper' does not report an authoritative metadata mode\n"
+        if !defined($metadata_mode);
+    die "dm-clone frontend '$mapper' metadata is read-only; automatic hydration or pivot is unsafe\n"
+        if lc($metadata_mode) ne 'rw';
     die "dm-clone hydration for '$mapper' is incomplete ($hydrated/$total, $hydrating active)\n"
         if $must_be_complete && ($hydrated != $total || $hydrating != 0);
     return (int($hydrated), int($total), int($hydrating));

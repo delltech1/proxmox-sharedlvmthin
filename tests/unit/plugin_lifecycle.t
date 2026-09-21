@@ -3345,6 +3345,25 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
     ), 'clone frontend identity, table, and exact dependency set pass');
     is(scalar(@reads), 0, 'all exact clone evidence was consumed');
 
+    @reads = (['0 8192 clone 8 70/5120 8 4/8 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 rw']);
+    is_deeply([$class->_thick_verify_clone_status($mapper, 0)], [4, 8, 1],
+        'clone status accepts exact writable metadata evidence');
+
+    @reads = (['0 8192 clone 8 70/5120 8 4/8 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 ro']);
+    eval { $class->_thick_verify_clone_status($mapper, 0) };
+    like($@, qr/metadata is read-only; automatic hydration or pivot is unsafe/,
+        'read-only clone metadata fails immediately instead of looking like slow hydration');
+
+    @reads = (['0 8192 clone Fail']);
+    eval { $class->_thick_verify_clone_status($mapper, 0) };
+    like($@, qr/kernel Fail metadata state; automatic hydration or pivot is unsafe/,
+        'kernel Fail state receives a distinct fail-closed classification');
+
+    @reads = (['0 8192 clone 8 70/5120 8 4/8 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32']);
+    eval { $class->_thick_verify_clone_status($mapper, 0) };
+    like($@, qr/does not report an authoritative metadata mode/,
+        'missing metadata mode is ambiguous and fails closed');
+
     my @status = ([8, 8, 0]);
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub {
         my (undef, undef, $must_be_complete) = @_;
