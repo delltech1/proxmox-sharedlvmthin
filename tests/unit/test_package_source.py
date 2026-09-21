@@ -1221,6 +1221,9 @@ exit 0
         self.assertIn("sharedlvmthin-compat-check", build)
         self.assertIn("volume_snapshot_needs_fsfreeze", source)
         self.assertIn("compat-check)", cli)
+        self.assertIn("modprobe --dry-run --show-depends dm-clone", source)
+        self.assertIn("dmsetup targets", source)
+        self.assertIn("unsupported-version", source)
 
     def test_hard_failover_audit_is_exact_read_only_and_pipefail_safe(self):
         audit = (

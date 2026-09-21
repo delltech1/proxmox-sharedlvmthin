@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Extend the read-only compatibility gate with a dry-run proof that the
+  running kernel can load `dm-clone` after reboot. If the target is already
+  registered, require the supported v1 interface and fail on unavailable or
+  ambiguous target inventory.
 - Strengthen the explicit disposable-node package gate after installation: it
   now proves the opposite profile is absent, the installed flavor marker
   matches package identity, and the recovery CLI contains

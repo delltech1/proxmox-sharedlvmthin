@@ -75,6 +75,55 @@ for command in perl python3 pvesm pvesh qm lvs vgs pvs lvcreate lvremove \
     fi
 done
 
+thick_required=0
+[ "$(sed -n '1p' /usr/share/pve-sharedlvmthin/package-flavor 2>/dev/null)" != "thick-only" ] \
+    || thick_required=1
+if awk '
+    function emit() {
+        if (inside && disabled !~ /^(1|yes|on|true)$/ && mode == "thick-generations") found=1
+    }
+    /^sharedlvmthin:[[:space:]]+/ { emit(); inside=1; disabled="0"; mode="thin"; next }
+    /^[^[:space:]]/ { emit(); inside=0; next }
+    inside && $1=="disable" { disabled=(NF==1?"1":tolower($2)); next }
+    inside && $1=="slt-allocation-mode" { mode=$2; next }
+    END { emit(); exit found ? 0 : 1 }
+' /etc/pve/storage.cfg; then
+    thick_required=1
+fi
+
+if [ "$thick_required" -eq 1 ]; then
+    # Prove the running kernel can load the experimental target after a reboot
+    # without loading it as a side effect of this read-only compatibility check.
+    if command -v modprobe >/dev/null 2>&1; then
+        echo "PASS=command:modprobe"
+        pass=$((pass + 1))
+        check dm-clone-module-available modprobe --dry-run --show-depends dm-clone
+    else
+        echo "FAIL=command:modprobe"
+        fail=$((fail + 1))
+    fi
+
+    if targets=$(timeout --foreground --kill-after=5 60 dmsetup targets 2>/dev/null); then
+        clone_target=$(awk '$1 == "clone" { print $2 }' <<<"$targets")
+        if [ -z "$clone_target" ]; then
+            echo "PASS=dm-clone-target:not-loaded-module-available"
+            pass=$((pass + 1))
+        elif [[ "$clone_target" =~ ^v1([.]|$) ]]; then
+            echo "PASS=dm-clone-target:$clone_target"
+            pass=$((pass + 1))
+        else
+            echo "FAIL=dm-clone-target:unsupported-version:${clone_target:-ambiguous}"
+            fail=$((fail + 1))
+        fi
+    else
+        echo "FAIL=dm-clone-target:inventory-unavailable"
+        fail=$((fail + 1))
+    fi
+else
+    echo "PASS=dm-clone-target:not-required-by-enabled-storage"
+    pass=$((pass + 1))
+fi
+
 check perl-module-load perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e 1
 check api-and-hook-contract perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e '
     my $api = PVE::Storage::APIVER();
