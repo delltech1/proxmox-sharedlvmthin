@@ -1098,7 +1098,7 @@ sub _thick_schedule_materialization {
     run_command(
         ['/usr/bin/systemd-run', '--quiet', '--collect', "--unit=$unit",
             '--on-active=3s', '--timer-property=AccuracySec=100ms',
-            '--property=Type=exec', '--property=Nice=10',
+            '--property=Type=exec', '--property=Restart=no', '--property=Nice=10',
             '--property=IOSchedulingClass=best-effort', '--property=IOSchedulingPriority=7',
             '--property=TimeoutStartSec=infinity',
             $worker, $storeid, $volname, $snap, $operation, $tx],

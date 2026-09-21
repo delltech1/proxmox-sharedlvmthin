@@ -7,6 +7,8 @@
   transaction worker was queued, so the snapshot callback no longer starts a
   competing synchronous owner; it preserves recovery evidence and requires an
   explicit `thick-resume` after inspecting the transaction service and timer.
+  The transient worker also pins `Restart=no`, preventing systemd policy from
+  replaying a failed storage mutation without fresh persistent-state checks.
 - Separate historical cluster evidence from the current audit delta. The
   release gate now requires explicit physical tests for package profiles,
   PREPARE cleanup, VG-wide concurrency admission, device-scoped capacity,

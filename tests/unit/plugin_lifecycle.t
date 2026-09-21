@@ -3924,7 +3924,8 @@ subtest 'online materialization mode and worker scheduling are exact' => sub {
     is_deeply([command_lines()], [
         "/usr/bin/systemd-run --quiet --collect --unit=pve-sharedlvmthin-tg-$tx "
             . "--on-active=3s --timer-property=AccuracySec=100ms --property=Type=exec "
-            . "--property=Nice=10 --property=IOSchedulingClass=best-effort "
+            . "--property=Restart=no --property=Nice=10 "
+            . "--property=IOSchedulingClass=best-effort "
             . "--property=IOSchedulingPriority=7 --property=TimeoutStartSec=infinity "
             . "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize "
             . "thick-test vm-900001-disk-0 snap1 SNAPSHOT $tx",
