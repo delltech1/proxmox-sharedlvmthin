@@ -220,7 +220,6 @@ class PackageSourceTests(unittest.TestCase):
         preinst = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
         self.assertIn("Package: pve-sharedlvmthin\n", dual)
         self.assertIn("Conflicts: pve-sharedlvmthin-thick", dual)
@@ -236,7 +235,7 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("$1 ~ /pve-slt-sid-/", preinst)
         self.assertIn("Thick-only package: Thin autogrow policy", postinst)
         self.assertIn("require_dual_mode", cli)
-        self.assertIn("sh scripts/build.sh dist-thick thick-only", workflow)
+        self.assertIn("thick-only) CONTROL=", build)
         worker = (
             ROOT
             / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
