@@ -839,7 +839,7 @@ exit 0
         self.assertIn('my $expected_uuid = "LVM-$vg_uuid$lv_uuid"', source)
         self.assertEqual(source.count("['/sbin/lvchange', '--devices', $device, '-ay'"), 1)
         self.assertEqual(source.count("_thick_activate_exact_lvs("), 11)
-        self.assertEqual(source.count("_thick_verify_active_lv_identity("), 3)
+        self.assertEqual(source.count("_thick_verify_active_lv_identity("), 4)
         self.assertEqual(source.count("['/sbin/lvchange', '--devices', $device, '-an'"), 1)
         self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 11)
 
@@ -883,6 +883,23 @@ exit 0
         self.assertIn('--recover-delete "$2" "$3"', cli)
         self.assertIn("_thick_recover_snapshot_delete", worker)
         self.assertIn("SNAPSHOT_DELETE_RECOVERY_START", worker)
+
+    def test_resize_recovery_is_an_explicit_derived_command(self):
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        plugin = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        self.assertIn("thick-recover-resize <storage-id> <volume>", cli)
+        self.assertIn('--recover-resize "$2" "$3"', cli)
+        self.assertIn("RESIZE_RECOVERY_START", worker)
+        self.assertIn("_thick_recover_resize", worker)
+        self.assertIn("sub _thick_recover_resize", plugin)
+        self.assertNotIn("<old-size>", cli)
+        self.assertNotIn("<new-size>", cli)
 
     def test_snapshot_delete_recovery_explains_stale_cluster_lock(self):
         worker = (

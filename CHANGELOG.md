@@ -17,6 +17,11 @@
 - Require that proof immediately before deleting detached dm-clone metadata,
   a superseded rollback HEAD, or a signed snapshot. Snapshot deletion no longer
   treats a missing udev pathname as evidence that the kernel mapper is absent.
+- Add idempotent online Thick resize recovery without changing persistent tag
+  formats. It derives the old published size from the exact verified linear
+  frontend and the target from the signed HEAD LV, repeats and flushes the full
+  unpublished zero tail, atomically republishes it, and clears only the exact
+  `OPEN EXTEND` intent. Missing or contradictory runtime evidence fails closed.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

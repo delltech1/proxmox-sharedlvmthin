@@ -5229,6 +5229,120 @@ sub _free_image_locked {
     return undef;
 }
 
+sub _thick_recover_resize {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    my %resume;
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "volume '$storeid:$volname' has no recoverable OPEN EXTEND intent\n"
+            if !$intent || $intent->{state} ne 'OPEN' || $intent->{op} ne 'EXTEND';
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        die "resize recovery intent targets another object\n"
+            if $intent->{object} ne $anchor;
+        die "resize recovery requires a materialized authoritative HEAD\n"
+            if $state->{phase} ne 'MATERIALIZED';
+        $class->_require_exact_vg_intent($vg, %$intent, _device => $device);
+        die "resize recovery requires the exact active frontend\n"
+            if !$class->_thick_frontend_present($scfg, $volname);
+        $class->_thick_verify_frontend($scfg, $volname, $state->{head});
+        my $table = _command_lines(
+            ['/sbin/dmsetup', 'table', $mapper],
+            "reading published frontend size for resize recovery failed",
+        );
+        die "resize recovery frontend table is not the exact canonical linear map\n"
+            if @$table != 1
+            || $table->[0] !~ /^0\s+(\d+)\s+linear\s+\S+\s+0$/;
+        my $published = int($1) * 512;
+        my $target = $head_info->{lv_size};
+        die "resize recovery HEAD size is invalid\n"
+            if !defined($target) || $target !~ /^\d+$/ || !$target || $target % 512;
+        die "resize recovery refuses a backing LV smaller than the published frontend\n"
+            if $target < $published;
+        $class->_verify_autoactivation_disabled($vg, $state->{head}, $device);
+        if ($target == $published) {
+            $class->_clear_vg_intent($vg, %$intent, _device => $device);
+            return;
+        }
+        %resume = (
+            intent => $intent, anchor => $anchor, head => $state->{head},
+            old_size => $published, new_size => int($target),
+        );
+        return;
+    }, $device);
+    return 'RESIZE_RECOVERED' if !%resume;
+
+    # Repeating the complete unpublished tail is idempotent.  The stable
+    # frontend still exposes only old_size, so no guest can observe a partial
+    # retry.  Exact UUID proof prevents a stale /dev pathname redirect.
+    $class->_thick_verify_active_lv_identity($vg, $resume{head}, $device);
+    my $length = $resume{new_size} - $resume{old_size};
+    run_command(
+        ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$resume{head}", 'bs=4M',
+            "seek=$resume{old_size}", "count=$length", 'iflag=count_bytes',
+            'oflag=seek_bytes,direct', 'conv=fsync,nocreat', 'status=none'],
+        errmsg => "zero-initializing unpublished resize tail failed",
+    );
+    run_command(
+        ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$resume{head}"],
+        errmsg => "flushing recovered resize tail failed",
+    );
+
+    $class->_with_vg_lock($storeid, $scfg, sub {
+        my %intent = %{$resume{intent}};
+        $class->_require_exact_vg_intent($vg, %intent, _device => $device);
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        die "resize recovery authority changed while zeroing\n"
+            if $anchor ne $resume{anchor} || $state->{phase} ne 'MATERIALIZED'
+            || $state->{head} ne $resume{head}
+            || ($head_info->{lv_size} // -1) != $resume{new_size};
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $resume{head}, int($resume{old_size} / 512),
+        );
+        my $new_sectors = int($resume{new_size} / 512);
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'reload', $mapper, '--table',
+                "0 $new_sectors linear /dev/$vg/$resume{head} 0"],
+            errmsg => "loading recovered thick-generations frontend failed",
+        );
+        my $inactive = _command_lines(
+            ['/sbin/dmsetup', 'table', '--inactive', $mapper],
+            "reading recovered inactive frontend table failed",
+        );
+        die "resize recovery inactive frontend table postcondition failed\n"
+            if @$inactive != 1
+            || $inactive->[0] !~ /^0\s+\Q$new_sectors\E\s+linear\s+/;
+        my $already_suspended = $class->_thick_mapper_is_suspended($mapper);
+        if (!$already_suspended) {
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'suspend', '--noflush', $mapper],
+                errmsg => "suspending recovered thick-generations frontend failed",
+            );
+        }
+        die "resize recovery frontend did not enter suspended state\n"
+            if !$class->_thick_mapper_is_suspended($mapper);
+        run_command(
+            ['/sbin/dmsetup', '--verifyudev', 'resume', $mapper],
+            errmsg => "publishing recovered thick-generations frontend failed",
+        );
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $resume{head}, $new_sectors,
+        );
+        $class->_clear_vg_intent($vg, %intent, _device => $device);
+        return;
+    }, $device);
+    return 'RESIZE_RECOVERED';
+}
+
 sub _thick_volume_resize {
     my ($class, $scfg, $storeid, $volname, $size, $running, $snapname) = @_;
     die "resizing thick-generations snapshots is not supported\n" if defined($snapname);

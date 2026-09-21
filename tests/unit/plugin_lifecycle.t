@@ -3447,6 +3447,76 @@ subtest 'thick resize is grow-only and publishes zeroed capacity after exact pro
     }
 };
 
+subtest 'online Thick resize recovery republishes only a proven zeroed tail' => sub {
+    reset_mocks();
+    my $storeid = 'thick-test';
+    my $volname = 'vm-900001-disk-0';
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $anchor = PVE::SharedLvmThinThick::anchor_name('vg-uuid', $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name('vg-uuid', $volname, 0);
+    my $old = 4 * 1024 * 1024;
+    my $new = 8 * 1024 * 1024;
+    my $state = { phase => 'MATERIALIZED', head => $head };
+    my $intent = {
+        v => 1, tx => ('4' x 32), state => 'OPEN', op => 'EXTEND',
+        object => $anchor, before => ('b' x 32),
+    };
+    my @verified_sizes;
+    my @suspend_states = qw(Active Suspended);
+    my @events;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_; return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { return $intent; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_exact_vg_intent = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {}; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
+        return ($state, { lv_size => $new }, $anchor);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
+        push @verified_sizes, $_[4]; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub {
+        push @events, 'IDENTITY'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        push @events, 'CLEAR'; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        my ($command) = @_;
+        return [shift(@suspend_states)] if grep { $_ eq 'suspended' } @$command;
+        return ["0 " . int($new / 512) . " linear 253:7 0"]
+            if grep { $_ eq '--inactive' } @$command;
+        return ["0 " . int($old / 512) . " linear 253:7 0"];
+    };
+
+    is($class->_thick_recover_resize($cfg, $storeid, $volname),
+        'RESIZE_RECOVERED', 'interrupted online resize is recovered from authoritative sizes');
+    my @lines = command_lines();
+    like(join("\n", @lines), qr{/usr/bin/dd .*seek=\Q$old\E count=\Q@{[$new - $old]}\E .*iflag=count_bytes},
+        'the complete unpublished byte range is zeroed again');
+    like(join("\n", @lines), qr{/sbin/blockdev --flushbufs /dev/testvg/\Q$head\E},
+        'the repeated tail initialization is flushed before publication');
+    my ($reload) = grep { /dmsetup --verifyudev reload/ } @lines;
+    my ($suspend) = grep { /dmsetup --verifyudev suspend --noflush/ } @lines;
+    my ($resume) = grep { /dmsetup --verifyudev resume/ } @lines;
+    ok(defined($reload) && defined($suspend) && defined($resume),
+        'recovery publishes through verified reload, suspend, and resume');
+    is_deeply(\@verified_sizes, [undef, int($old / 512), int($new / 512)],
+        'frontend identity is proved before recovery, before cutover, and after publication');
+    is_deeply(\@events, [qw(IDENTITY CLEAR)],
+        'raw-write identity is proved and the exact intent clears last');
+};
+
 subtest 'thick clone frontend and hydration wait require exact evidence' => sub {
     reset_mocks();
     my $cfg = {

@@ -170,6 +170,23 @@ pathname presence, verifies the canonical HEAD, and clears only the
 matching intent. If the object is already absent after the verified rebase, it
 performs finalize-only recovery without retrying removal.
 
+An interrupted online grow remains fenced by its `OPEN EXTEND` intent. When
+the exact stable linear frontend is still present, recovery is available with:
+
+```text
+sharedlvmthin thick-recover-resize <storage-id> <volume>
+```
+
+The command accepts no size from the operator. It derives the previously
+published byte boundary from the UUID- and dependency-verified linear frontend
+and the target boundary from the signed authoritative HEAD LV. If the target is
+larger, it repeats and flushes the complete unpublished zero tail, revalidates
+the intent and object identities, then publishes the larger linear table via a
+verified suspend/resume cutover. If publication already completed, it only
+verifies the final map and clears the matching intent. A missing frontend,
+smaller backing LV, non-linear table, identity mismatch, or changed authority
+is ambiguous and remains fail-closed for manual investigation.
+
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
 automatic and never searches by a similar name. After confirming that no PVE
