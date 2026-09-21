@@ -485,8 +485,12 @@ exit 0
         self.assertIn("| Package removal fence |", release_gate)
         self.assertIn("Published TG32 versus audit candidate", release_gate)
         self.assertIn("not rebuilt or silently replaced", release_gate)
-        self.assertIn("211 PYTHON TESTS", release_gate)
-        self.assertIn("21 PERL FILES / 823 ASSERTIONS", release_gate)
+        self.assertIn("| PREPARE cleanup recovery |", release_gate)
+        self.assertIn("| Materialization admission |", release_gate)
+        self.assertIn("| Device-scoped capacity |", release_gate)
+        self.assertIn("| Frontend-removal postcondition |", release_gate)
+        self.assertIn("| Kernel dm-clone gate |", release_gate)
+        self.assertIn("RUNTIME ROWS REMAIN OPEN", release_gate)
 
     def test_public_support_claims_separate_thin_and_materialized_thick_mobility(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
