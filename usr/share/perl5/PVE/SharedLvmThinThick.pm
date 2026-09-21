@@ -13,7 +13,7 @@ our @EXPORT_OK = qw(
     anchor_name anchor_tags decode_anchor_tags generation_name generation_tags
     decode_generation_tags mapper_name object_key validate_generation_tags vg_intent_tags
     decode_vg_intent_tags validate_anchor_transition clone_geometry
-    transition_tags validate_transition_tags classify_recovery materialized_rebase_state
+    transition_tags decode_transition_tags validate_transition_tags classify_recovery materialized_rebase_state
 );
 
 my @ANCHOR_FIELDS = qw(v sid vol phase tx op snapshot source old new head generation region);
@@ -359,14 +359,38 @@ sub transition_tags {
 
 sub validate_transition_tags {
     my ($tags, %expected) = @_;
-    my @observed = ref($tags) eq 'ARRAY' ? @$tags : split(/,/, $tags // '');
-    @observed = map { s/^\s+|\s+$//gr } grep { /^\s*slt_tgt_/ } @observed;
-    my $wanted = transition_tags(%expected);
-    die "transition artifact ownership tag count mismatch\n" if @observed != @$wanted;
-    my %observed = map { $_ => 1 } @observed;
+    my $observed = decode_transition_tags($tags);
+    my $wanted = decode_transition_tags(transition_tags(%expected));
     die "transition artifact ownership proof mismatch\n"
-        if grep { !$observed{$_} } @$wanted;
+        if grep { !exists($observed->{$_}) || "$observed->{$_}" ne "$wanted->{$_}" }
+            keys %$wanted;
     return 1;
+}
+
+sub decode_transition_tags {
+    my ($tags) = @_;
+    my @tags = ref($tags) eq 'ARRAY' ? @$tags : split(/,/, $tags // '');
+    my %values;
+    for my $tag (@tags) {
+        $tag =~ s/^\s+|\s+$//g;
+        next if $tag !~ /^slt_tgt_/;
+        die "malformed transition artifact ownership tag\n"
+            if $tag !~ /^slt_tgt_([A-Za-z0-9_]+)=($TOKEN)$/;
+        my ($field, $value) = ($1, $2);
+        die "duplicate transition artifact ownership field '$field'\n"
+            if exists($values{$field});
+        die "unknown transition artifact ownership field '$field'\n"
+            if !grep { $_ eq $field } qw(v sid vol tx kind generation region sha256);
+        $values{$field} = $value;
+    }
+    my @required = qw(v sid vol tx kind generation region sha256);
+    die "incomplete transition artifact ownership proof\n"
+        if keys(%values) != @required || grep { !exists($values{$_}) } @required;
+    my $wanted = transition_tags(%values);
+    my ($digest) = map { /^slt_tgt_sha256=(.*)$/ ? $1 : () } @$wanted;
+    die "transition artifact ownership digest mismatch\n"
+        if $values{sha256} ne $digest;
+    return \%values;
 }
 
 sub classify_recovery {

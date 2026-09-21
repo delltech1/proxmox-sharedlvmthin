@@ -496,6 +496,13 @@ def vg_intent_health(output, sid, expected_vg):
             "references run "
             f"sharedlvmthin thick-recover-volume-delete {sid} <volume>"
         ]
+    if values["op"] in {"DM_CUTOVER", "DM_PIVOT"}:
+        return False, [
+            f"OPEN {values['op']} intent blocks mutation; if the authoritative anchor "
+            "is still MATERIALIZED and the transition was never published, run "
+            f"sharedlvmthin thick-recover-prepare {sid} <volume>; otherwise use the "
+            "state-specific thick-resume workflow"
+        ]
     return False, [f"OPEN {values['op']} intent blocks mutation and requires exact recovery"]
 
 

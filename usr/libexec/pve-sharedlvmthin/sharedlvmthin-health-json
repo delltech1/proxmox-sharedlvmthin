@@ -528,6 +528,9 @@ def evaluate_vg_mutation_intent(vg, output):
         reason += "; use the explicit thick-recover-resize workflow when its runtime proof is available"
     elif values["op"] == "REMOVE":
         reason += "; use the explicit reference-gated thick-recover-volume-delete workflow"
+    elif values["op"] in {"DM_CUTOVER", "DM_PIVOT"}:
+        reason += ("; use thick-recover-prepare only for a still-MATERIALIZED anchor "
+                   "whose transition was never published, otherwise use thick-resume")
     return "FAIL", reason, values["op"]
 
 

@@ -1431,6 +1431,14 @@ case "${1:-doctor}" in
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
             --recover-volume-delete "$2" "$3"
         ;;
+    thick-recover-prepare)
+        if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
+            echo "Usage: sharedlvmthin thick-recover-prepare <storage-id> <volume>" >&2
+            exit 64
+        fi
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
+            --recover-prepare "$2" "$3"
+        ;;
     thick-recover-resize)
         if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
             echo "Usage: sharedlvmthin thick-recover-resize <storage-id> <volume>" >&2
@@ -1523,6 +1531,7 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-volume-delete <storage-id> <volume>"
+        echo "  sharedlvmthin thick-recover-prepare <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-resize <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-empty-alloc <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>"

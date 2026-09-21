@@ -849,7 +849,7 @@ exit 0
         self.assertEqual(source.count("_thick_activate_exact_lvs("), 11)
         self.assertEqual(source.count("_thick_verify_active_lv_identity("), 4)
         self.assertEqual(source.count("['/sbin/lvchange', '--devices', $device, '-an'"), 1)
-        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 12)
+        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 13)
 
     def test_post_pivot_cleanup_deactivates_before_destructive_remove(self):
         source = (
@@ -908,6 +908,21 @@ exit 0
         self.assertIn("VOLUME_DELETE_RECOVERY_START", worker)
         self.assertIn("_thick_recover_volume_delete", worker)
         self.assertIn("sub _thick_recover_volume_delete", plugin)
+
+    def test_unpublished_prepare_recovery_is_an_explicit_derived_command(self):
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        plugin = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        self.assertIn("thick-recover-prepare <storage-id> <volume>", cli)
+        self.assertIn('--recover-prepare "$2" "$3"', cli)
+        self.assertIn("UNPUBLISHED_PREPARE_RECOVERY_START", worker)
+        self.assertIn("_thick_recover_unpublished_prepare", worker)
+        self.assertIn("sub _thick_recover_unpublished_prepare", plugin)
 
     def test_resize_recovery_is_an_explicit_derived_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")

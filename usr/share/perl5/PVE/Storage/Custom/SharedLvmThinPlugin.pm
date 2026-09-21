@@ -19,7 +19,7 @@ use PVE::SharedLvmThinSafety;
 use PVE::SharedLvmThinPeerAudit qw(select_peer_nodes evaluate_peer_mapper_evidence);
 use PVE::SharedLvmThinGuardClient;
 use PVE::SharedLvmThinThick qw(
-    anchor_name clone_geometry decode_anchor_tags decode_generation_tags
+    anchor_name clone_geometry decode_anchor_tags decode_generation_tags decode_transition_tags
     generation_name mapper_name object_key
     materialized_rebase_state validate_anchor_transition validate_generation_tags
     vg_intent_tags decode_vg_intent_tags
@@ -2182,6 +2182,129 @@ sub _thick_recover_volume_delete {
             . $command_error if $command_error;
         $class->_clear_vg_intent($vg, %expected, _device => $device);
         return 'VOLUME_DELETE_RECOVERED';
+    }, $device);
+}
+
+sub _thick_recover_unpublished_prepare {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my (undef, $name) = $class->parse_volname($volname);
+    die "unpublished-prepare recovery requires the canonical volume name\n"
+        if $name ne $volname;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $namespace = $class->_thick_namespace($scfg);
+    my $expected_anchor = anchor_name($namespace, $volname);
+    my $key = object_key($namespace, $volname);
+    my $front = mapper_name($namespace, $volname);
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        my $intent = $class->_read_vg_intent($vg, $device);
+        die "VG '$vg' has no unpublished transition prepare to recover\n" if !$intent;
+        die "VG '$vg' intent is not an exact OPEN unpublished transition for '$volname'\n"
+            if $intent->{state} ne 'OPEN'
+            || ($intent->{op} ne 'DM_CUTOVER' && $intent->{op} ne 'DM_PIVOT')
+            || $intent->{object} ne $expected_anchor;
+        my %expected_intent = %$intent;
+        $class->_require_exact_vg_intent(
+            $vg, %expected_intent, _device => $device,
+        );
+
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        die "unpublished-prepare recovery cannot see VG '$vg'\n" if !$lvs->{$vg};
+        my ($state, $head_info, $anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        die "unpublished-prepare recovery found a non-materialized anchor\n"
+            if $state->{phase} ne 'MATERIALIZED';
+        die "unpublished-prepare recovery intent was already recorded in the anchor\n"
+            if $state->{tx} eq $intent->{tx};
+        die "unpublished-prepare recovery anchor identity mismatch\n"
+            if $anchor ne $expected_anchor;
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $state->{head}, int($head_info->{lv_size} / 512),
+        );
+        die "unpublished-prepare recovery refused: stable frontend is suspended\n"
+            if $class->_thick_mapper_is_suspended($front);
+        my $dm = _dm_kernel_inventory();
+        die "unpublished-prepare recovery found transition runtime before PREPARED\n"
+            if grep { /^\Q$front\E-src-\d{8}$/ } keys %$dm;
+
+        my $generation = int($state->{generation}) + 1;
+        die "unpublished-prepare recovery generation is outside the supported range\n"
+            if $generation > 99_999_999;
+        my $new = generation_name($namespace, $volname, $generation);
+        my $meta = sprintf('sltg-m-%s-%08d', $key, $generation);
+        my $objects = $lvs->{$vg};
+        for my $object (grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %$objects) {
+            next if $object eq $state->{head} || $object eq $new;
+            my $owned = decode_generation_tags($objects->{$object}->{tags} // '');
+            die "unpublished-prepare recovery found an ambiguous generation\n"
+                if $owned->{sid} ne $storeid || $owned->{vol} ne $volname
+                || $owned->{role} ne 'snapshot'
+                || generation_name($namespace, $volname, $owned->{generation}) ne $object;
+        }
+        my @metadata = grep { /^sltg-m-\Q$key\E-/ } keys %$objects;
+        die "unpublished-prepare recovery found foreign transition metadata\n"
+            if grep { $_ ne $meta } @metadata;
+        if (exists($objects->{$new})) {
+            validate_generation_tags(
+                $objects->{$new}->{tags} // '', sid => $storeid, vol => $volname,
+                role => 'head', generation => $generation,
+            );
+        }
+        if (exists($objects->{$meta})) {
+            my $owned = decode_transition_tags($objects->{$meta}->{tags} // '');
+            die "unpublished-prepare metadata ownership does not match the exact intent\n"
+                if $owned->{sid} ne $storeid || $owned->{vol} ne $volname
+                || $owned->{tx} ne $intent->{tx} || $owned->{kind} ne 'metadata'
+                || int($owned->{generation}) != $generation;
+        }
+
+        my @remaining = grep { exists($objects->{$_}) } ($meta, $new);
+        for my $object (@remaining) {
+            $class->_verify_autoactivation_disabled($vg, $object, $device);
+        }
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating unpublished transition objects for '$vg/$volname' failed",
+            @remaining,
+        ) if @remaining;
+        my $command_error = '';
+        eval {
+            for my $object ($meta, $new) {
+                next if !exists($objects->{$object});
+                run_command(
+                    ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$object"],
+                    errmsg => "removing unpublished transition object '$vg/$object' failed",
+                );
+            }
+        };
+        $command_error = $@ if $@;
+
+        $class->_verify_storage_identity($storeid, $scfg, $device);
+        my $after = $class->_thick_list_volumes_scoped($vg, $device);
+        die "unpublished-prepare recovery cannot confirm VG '$vg' after cleanup\n"
+            if !$after->{$vg};
+        die "unpublished-prepare recovery left exact transition objects; intent preserved"
+            . ($command_error ? ": $command_error" : "\n")
+            if exists($after->{$vg}->{$new}) || exists($after->{$vg}->{$meta});
+        my ($final, $final_head, $final_anchor) =
+            $class->_thick_anchor($storeid, $scfg, $volname, $after);
+        die "unpublished-prepare recovery changed the authoritative anchor\n"
+            if $final_anchor ne $anchor
+            || join('|', @{PVE::SharedLvmThinThick::anchor_tags(%$final)})
+                ne join('|', @{PVE::SharedLvmThinThick::anchor_tags(%$state)});
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $final->{head}, int($final_head->{lv_size} / 512),
+        );
+        warn "unpublished-prepare cleanup command reported an error, but exact postconditions "
+            . "prove cleanup complete; clearing the matching intent without retry: "
+            . $command_error if $command_error;
+        $class->_clear_vg_intent(
+            $vg, %expected_intent, _device => $device,
+        );
+        return 'UNPUBLISHED_PREPARE_RECOVERED';
     }, $device);
 }
 

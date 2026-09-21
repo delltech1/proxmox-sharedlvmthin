@@ -8,7 +8,7 @@ use Test::More;
 use PVE::SharedLvmThinThick qw(
     anchor_tags decode_anchor_tags generation_tags validate_anchor_transition
     validate_generation_tags vg_intent_tags decode_vg_intent_tags clone_geometry
-    transition_tags validate_transition_tags materialized_rebase_state
+    transition_tags decode_transition_tags validate_transition_tags materialized_rebase_state
     classify_recovery
 );
 
@@ -148,6 +148,14 @@ my $transition = transition_tags(
     sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
     kind => 'metadata', generation => 1, region => 8,
 );
+is_deeply(
+    decode_transition_tags($transition),
+    {
+        v => 1, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
+        kind => 'metadata', generation => 1, region => 8,
+    },
+    'transition ownership proof round-trips through the strict decoder',
+);
 ok(validate_transition_tags(
     $transition, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
     kind => 'metadata', generation => 1, region => 8,
@@ -157,6 +165,12 @@ eval { validate_transition_tags(
     kind => 'metadata', generation => 1, region => 8,
 ) };
 like($@, qr/ownership proof mismatch/, 'foreign transition metadata is rejected');
+my @tampered_transition = @$transition;
+$tampered_transition[2] = 'slt_tgt_vol=vm-999-disk-0';
+eval { decode_transition_tags(\@tampered_transition) };
+like($@, qr/digest mismatch/, 'tampered transition ownership proof fails closed');
+eval { decode_transition_tags([@$transition, 'slt_tgt_kind=metadata']) };
+like($@, qr/duplicate/, 'duplicate transition ownership field fails closed');
 
 my $intent = vg_intent_tags(
     tx => $tx, state => 'OPEN', op => 'DM_CUTOVER', object => 'sltg-a-test',

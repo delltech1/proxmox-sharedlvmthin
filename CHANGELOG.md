@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Add explicit idempotent cleanup for a snapshot/rollback PREPARE that never
+  reached the signed anchor. `thick-recover-prepare` accepts only the exact
+  OPEN intent, unchanged MATERIALIZED anchor/frontend and correctly signed
+  destination/metadata remainder; ambiguity preserves every object and intent.
 - Eliminate the unowned transition-LV crash window. Snapshot/rollback
   destination and dm-clone metadata LVs now receive their complete signed
   ownership tags plus `autoactivation=n` in the atomic `lvcreate` command,
