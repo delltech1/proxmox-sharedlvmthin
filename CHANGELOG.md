@@ -2,6 +2,11 @@
 
 ## Unreleased — Thick Generations audit
 
+- Fully zero every new snapshot/rollback destination before a dm-clone
+  frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
+  semantics deterministic and prevents old free-extent contents from becoming
+  readable when discard passdown is disabled. Interrupted `PREPARED` recovery
+  repeats the entire exact zero range before advancing.
 - Classify an exact, complete clone left suspended at the final pivot boundary
   as explicitly recoverable `PIVOT_READY` evidence. It still blocks unrelated
   mutation and may proceed only after the resume path revalidates the signed

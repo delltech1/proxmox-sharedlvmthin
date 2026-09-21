@@ -813,6 +813,22 @@ exit 0
             pivot.rindex("_thick_verify_clone_status($front, 1)"),
         )
 
+    def test_thick_clone_destination_is_zeroed_before_publication(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        start = source.index("if ($tr->{state}->{phase} eq 'PREPARED')")
+        end = source.index("if ($tr->{state}->{phase} eq 'SOURCE_READY')", start)
+        prepared = source[start:end]
+        self.assertIn("_zero_new_thick_generation(", prepared)
+        self.assertIn('int($tr->{size})', prepared)
+        self.assertIn("/sbin/blockdev', '--flushbufs'", prepared)
+        self.assertLess(
+            prepared.index("_zero_new_thick_generation("),
+            prepared.index("phase => 'SOURCE_READY'"),
+        )
+        self.assertIn("no_discard_passdown", source)
+
     def test_snapshot_delete_recovery_is_an_explicit_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         worker = (

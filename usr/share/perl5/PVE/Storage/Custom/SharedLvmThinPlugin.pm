@@ -4283,6 +4283,30 @@ sub _thick_volume_snapshot {
 
     if ($tr->{state}->{phase} eq 'PREPARED') {
         eval {
+            # dm-clone treats a DISCARD covering an unhydrated region as a
+            # request to mark that region hydrated without copying the source.
+            # We deliberately disable discard passdown so a guest cannot make
+            # storage-specific discard semantics part of correctness.  The
+            # destination must therefore contain deterministic zeroes before
+            # the clone frontend can ever be published.  PREPARED is an
+            # idempotent boundary: after interruption the whole exact range is
+            # zeroed again, never assumed complete from a partial attempt.
+            run_command(
+                ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{new}"],
+                errmsg => "activating thick snapshot destination for zeroing failed",
+            );
+            $class->_zero_new_thick_generation(
+                "/dev/$vg/$tr->{new}", int($tr->{size}),
+                "thick snapshot destination '$vg/$tr->{new}'",
+            );
+            run_command(
+                ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$tr->{new}"],
+                errmsg => "flushing zeroed thick snapshot destination failed",
+            );
+            run_command(
+                ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$tr->{new}"],
+                errmsg => "deactivating zeroed thick snapshot destination failed",
+            );
             run_command(
                 ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{meta}"],
                 errmsg => "activating dm-clone metadata failed",

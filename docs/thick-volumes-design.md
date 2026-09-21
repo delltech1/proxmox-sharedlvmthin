@@ -46,6 +46,16 @@ A snapshot transition temporarily becomes:
 immutable source + persistent dm-clone metadata -> writable destination HEAD
 ```
 
+Before that frontend is published, the complete destination HEAD is explicitly
+zeroed and flushed. This is a correctness and data-isolation requirement:
+dm-clone marks an unhydrated region valid when it receives a DISCARD, while the
+table deliberately uses `no_discard_passdown`. A destination containing old
+free-extent data would therefore be unsafe. If zeroing is interrupted, the
+persisted `PREPARED` phase repeats the full exact range; it never resumes from
+an unproven offset. Hardware BLKZEROOUT is preferred and a full direct-zero
+write is the fail-safe fallback, so large or slow destinations can extend the
+snapshot callback duration before any guest-visible cutover.
+
 When hydration completes, the frontend is atomically pivoted back to a linear
 table whose only dependency is the destination generation. dm-clone is a
 transaction transport, not the permanent storage format.

@@ -5352,6 +5352,11 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'snapshot creates exactly one destination and one metadata LV');
     like(join("\n", @snapshot_commands), qr{lvcreate .* -L 20971520B -n \Q$meta\E},
         'metadata capacity comes from persisted geometry, not a fixed 16 MiB value');
+    my ($zero_index) = grep {
+        $snapshot_commands[$_] =~ m{/usr/sbin/blkdiscard --zeroout --offset 0 --length \Q$size\E /dev/testvg/\Q$new\E}
+    } 0 .. $#snapshot_commands;
+    ok(defined($zero_index),
+        'the complete new HEAD is deterministically zeroed before dm-clone publication');
     is(scalar(grep { /dmsetup .*suspend --noflush/ } @snapshot_commands), 2,
         'clone cutover and linear pivot each use one explicit noflush suspend');
     is(scalar(grep { /dmsetup .*resume/ } @snapshot_commands), 2,
@@ -5368,6 +5373,8 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     my ($readonly_index) = grep { $snapshot_commands[$_] =~ /lvchange .* -pr/ } 0 .. $#snapshot_commands;
     ok(defined($source_index) && defined($cutover_suspend) && $source_index < $cutover_suspend,
         'read-only source mapper is prepared before the atomic cutover');
+    ok(defined($zero_index) && defined($source_index) && $zero_index < $source_index,
+        'destination zero initialization finishes before the source/clone runtime exists');
     ok(defined($cutover_resume) && defined($readonly_index) && $readonly_index > $cutover_resume,
         'persistent snapshot LV becomes read-only only after the frontend is resumed');
     is(scalar(@scoped_devices), 10,
