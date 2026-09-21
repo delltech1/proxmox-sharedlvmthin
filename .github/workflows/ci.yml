@@ -34,6 +34,11 @@ jobs:
         run: sh scripts/build.sh dist/dual dual
       - name: Reproducible Thick-only package build
         run: sh scripts/build.sh dist/thick-only thick-only
+      - name: Verify dual and Thick-only shared payload parity
+        run: |
+          dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
+          thick=$(find dist/thick-only -maxdepth 1 -name '*.deb' -print -quit)
+          sh scripts/compare-package-profiles.sh "$dual" "$thick"
       - name: Verify package identities and mutual exclusion
         run: |
           dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
