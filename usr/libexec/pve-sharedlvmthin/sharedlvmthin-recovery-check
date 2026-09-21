@@ -518,10 +518,12 @@ def vg_intent_health(output, sid, expected_vg):
 
 def main(argv=None):
     argv = argv or sys.argv[1:]
-    if len(argv) != 1 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", argv[0]):
-        print("Usage: sharedlvmthin recovery-check <storage-id>", file=sys.stderr)
+    preinstall = len(argv) == 2 and argv[0] == "--preinstall"
+    sid_arg = argv[1] if preinstall else (argv[0] if len(argv) == 1 else "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sid_arg):
+        print("Usage: sharedlvmthin recovery-check [--preinstall] <storage-id>", file=sys.stderr)
         return 64
-    sid = argv[0]
+    sid = sid_arg
     try:
         cfg = storage_config(sid)
     except RuntimeError as exc:
@@ -568,7 +570,7 @@ def main(argv=None):
         # flags. --readonly suppresses that runtime query and yields X/unknown.
         ("POOL", ["/sbin/lvs", *lvm_scope, "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent", vg]),
     ]
-    if not storage_disabled:
+    if not storage_disabled and not preinstall:
         probes.append(("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]))
     evidence = {}
     for label, command in probes:
@@ -700,6 +702,9 @@ def main(argv=None):
     if storage_disabled:
         results["PVE_STORAGE_HEALTH"] = "PASS"
         details.append("PVE active-status gate is not applicable to explicitly disabled storage")
+    elif preinstall:
+        results["PVE_STORAGE_HEALTH"] = "PASS"
+        details.append("PVE active-status gate is not applicable before first local plugin unpack")
     else:
         pve_out = evidence.get("PVE", {}).get("out", "")
         results["PVE_STORAGE_HEALTH"] = "PASS" if evidence.get("PVE", {}).get("status") == "PASS" and re.search(

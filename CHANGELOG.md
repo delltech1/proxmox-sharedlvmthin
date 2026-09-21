@@ -25,7 +25,9 @@
   select the audit, and duplicate storage identifiers fail before probing. A
   first local install also runs the candidate audit whenever cluster
   `storage.cfg` already contains SharedLvmThin storage, covering a new node
-  joining an existing data-bearing cluster.
+  joining an existing data-bearing cluster. Its explicit `--preinstall` mode
+  skips only the PVE active-status probe that cannot work before the local
+  plugin is unpacked; every storage and recovery invariant remains mandatory.
 - Fail closed when asynchronous materialization scheduling is not positively
   confirmed. A `systemd-run` client/transport error may occur after the exact
   transaction worker was queued, so the snapshot callback no longer starts a

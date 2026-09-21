@@ -317,6 +317,41 @@ sharedlvmthin: two
         self.assertIn("not applicable to explicitly disabled storage", output)
         self.assertIn("SAFE_FOR_MUTATION=YES", output)
 
+    def test_preinstall_skips_only_unavailable_pve_plugin_probe(self):
+        commands = []
+        cfg = {
+            "slt-vgname": "testvg", "slt-expected-vg-uuid": "vg-uuid",
+            "slt-expected-pv-uuid": "pv-uuid", "slt-expected-wwid": "3600abcd",
+            "slt-expected-min-paths": "2", "slt-allocation-mode": "thin",
+        }
+
+        def probe(command):
+            commands.append(command)
+            if command[0].endswith("vgs"):
+                out = "testvg|" if "vg_name,vg_tags" in command else "vg-uuid"
+            elif command[0].endswith("pvs"):
+                out = "pv-uuid|/dev/mapper/3600abcd"
+            elif command[0].endswith("lvs"):
+                out = ""
+            elif command[0].endswith("multipath"):
+                out = "|- active ready running\n`- active ready running"
+            elif command[0].endswith("pvecm"):
+                out = "Quorate: Yes"
+            else:
+                out = ""
+            return {"status": "PASS", "rc": 0, "out": out, "err": "", "pid": 1, "state": None}
+
+        with mock.patch.object(self.checker, "storage_config", return_value=cfg), \
+             mock.patch.object(self.checker, "bounded_probe", side_effect=probe), \
+             mock.patch.object(self.checker, "settled_dstate_evidence", return_value=("PASS", [], [], 0)), \
+             mock.patch.object(self.checker, "pve_snapshot_references", return_value=set()), \
+             redirect_stdout(StringIO()) as output:
+            rc = self.checker.main(["--preinstall", "test"])
+        self.assertEqual(rc, 0, output.getvalue())
+        self.assertFalse(any(command[0].endswith("pvesm") for command in commands))
+        self.assertIn("PVE_STORAGE_HEALTH=PASS", output.getvalue())
+        self.assertIn("before first local plugin unpack", output.getvalue())
+
     def test_invalid_disable_value_fails_without_probes(self):
         commands = []
         cfg = {

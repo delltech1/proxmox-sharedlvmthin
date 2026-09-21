@@ -11,6 +11,8 @@ INSTALLED_FLAVOR=$(sed -n '1p' \
 STORAGECFG=/etc/pve/storage.cfg
 PREINST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 CANDIDATE_RECOVERY_CHECK="$PREINST_DIR/sharedlvmthin-candidate-recovery-check"
+CANDIDATE_PREINSTALL=0
+[ "${1:-}" != "upgrade" ] && [ -z "$INSTALLED_FLAVOR" ] && CANDIDATE_PREINSTALL=1
 CANDIDATE_INVENTORY=
 CANDIDATE_RESULT=
 
@@ -88,8 +90,17 @@ audit_candidate_storages() {
         esac
 
         CANDIDATE_RESULT=$(mktemp) || return 1
+        if [ "$CANDIDATE_PREINSTALL" -eq 1 ]; then
+            candidate_args="--preinstall"
+        else
+            candidate_args=
+        fi
+        # candidate_args has only the fixed value above or is empty; deliberate
+        # word splitting supplies the optional flag as one argument.
+        # shellcheck disable=SC2086
         if timeout --foreground --kill-after=10 150 \
-            "$CANDIDATE_RECOVERY_CHECK" "$sid" >"$CANDIDATE_RESULT" 2>&1; then
+            "$CANDIDATE_RECOVERY_CHECK" $candidate_args "$sid" \
+            >"$CANDIDATE_RESULT" 2>&1; then
             candidate_rc=0
         else
             candidate_rc=$?

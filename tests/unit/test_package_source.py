@@ -47,7 +47,7 @@ class PackageSourceTests(unittest.TestCase):
         )
         recovery.write_text(
             "#!/bin/sh\n"
-            f"printf '%s\\n' \"$1\" >>'{calls}'\n"
+            f"printf '%s\\n' \"$*\" >>'{calls}'\n"
             f"printf '%s' '{records}'\n"
             f"exit {0 if recovery_safe else 2}\n",
             encoding="utf-8",
@@ -229,7 +229,7 @@ exit 0
             installed_marker=False, action="install", recovery_safe=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(invoked, ["disabled-thick"])
+        self.assertEqual(invoked, ["--preinstall disabled-thick"])
 
     def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
         helper = (
@@ -470,6 +470,7 @@ exit 0
         self.assertIn("sharedlvmthin-candidate-recovery-check", preinst)
         self.assertIn('"${1:-}" = "upgrade"', preinst)
         self.assertIn("grep -q '^sharedlvmthin:[[:space:]]'", preinst)
+        self.assertIn('candidate_args="--preinstall"', preinst)
         self.assertIn("if ($2 in seen) exit 3", preinst)
         self.assertIn("candidate storage configuration is ambiguous", preinst)
         self.assertIn("not positively recovery-safe under candidate rules", preinst)
