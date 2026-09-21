@@ -774,6 +774,11 @@ exit 0
         self.assertIn('--resume "$2" "$3"', cli)
         self.assertIn("_thick_read_anchor", worker)
         self.assertIn("has no resumable materialization transition", worker)
+        for phase in (
+            "PREPARED", "SOURCE_READY", "COMMITTED", "HYDRATING",
+            "HYDRATION_COMPLETE", "LINEAR_PIVOTED",
+        ):
+            self.assertIn(f"$phase ne '{phase}'", worker)
         self.assertIn("anchor-scoped materialization does not match transaction", worker)
         self.assertIn("a different VG intent targets this materialization anchor", worker)
         self.assertIn("$operation ne 'SNAPSHOT' && $operation ne 'ROLLBACK'", worker)

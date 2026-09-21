@@ -88,15 +88,20 @@ sharedlvmthin thick-resume <storage-id> <volume>
 The command accepts no caller-supplied snapshot or transaction identity. It
 derives those fields from the signed persistent state, requires either its
 exact VG intent or the exact anchor-scoped handoff, and reconstructs runtime
-tables only when all transition mappers are absent. A partial runtime is
-ambiguous and is refused. Successful resumption continues persistent dm-clone
+tables only when their persisted phase and exact dependencies permit it.
+`PREPARED`, `SOURCE_READY`, `COMMITTED`, `HYDRATING`,
+`HYDRATION_COMPLETE`, and `LINEAR_PIVOTED` are explicit resume inputs. A
+partial pre-pivot runtime is ambiguous and is refused. Successful resumption
+continues persistent dm-clone
 progress, completes the linear pivot, and clears only the exact transition
 metadata and any matching intent. `LINEAR_PIVOTED` is itself persistent
 authority: recovery first proves that the stable frontend maps only the signed
 new HEAD, then idempotently finishes any remaining source-mapper, metadata-LV
 and superseded rollback-HEAD cleanup. An already absent cleanup object is
 accepted only in that post-pivot phase; a present object is revalidated before
-its single removal attempt.
+its single removal attempt. If a reboot removed the frontend after the recorded
+pivot, recovery activates only the signed new HEAD and reconstructs its exact
+linear frontend; it never recreates dm-clone metadata or a source mapper.
 
 The same command also resumes a persisted `ROLLBACK` transition. The operation
 type is derived exclusively from the signed anchor; callers cannot select or

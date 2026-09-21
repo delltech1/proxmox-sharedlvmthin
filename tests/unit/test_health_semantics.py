@@ -556,6 +556,23 @@ class ThickAnchorReferenceTests(unittest.TestCase):
         self.assertIn("thick-resume", result[0]["reason"])
         self.assertIn("no automatic repair", result[0]["reason"])
 
+    def test_every_persisted_transition_phase_is_reported_as_resumable(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        for phase in (
+            "PREPARED", "SOURCE_READY", "COMMITTED", "HYDRATING",
+            "HYDRATION_COMPLETE", "LINEAR_PIVOTED",
+        ):
+            with self.subTest(phase=phase):
+                result = evaluate("thick", [{
+                    "name": "sltg-a-key", "volume": "vm-100-disk-0",
+                    "phase": phase, "transaction": "d" * 32,
+                }], lambda _transaction, _sid, _volume: "ABSENT")
+                self.assertEqual(result[0]["status"], "FAIL")
+                self.assertEqual(
+                    result[0]["materialization_state"], "RECOVERY_REQUIRED"
+                )
+                self.assertIn("thick-resume", result[0]["reason"])
+
     def test_ambiguous_materialization_phase_fails_closed(self):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
         result = evaluate("thick", [{

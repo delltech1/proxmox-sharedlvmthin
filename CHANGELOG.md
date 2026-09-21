@@ -79,6 +79,9 @@
 - Explicitly deactivate the exact signed Thick HEAD and anchor before deletion
   even when the stable frontend is already absent, instead of delegating that
   decision to `lvremove -f`.
+- Make explicit `thick-resume` cover every persisted transition phase from
+  `PREPARED` through `LINEAR_PIVOTED`, and reconstruct a reboot-lost frontend
+  after the pivot as a canonical linear map to the signed new HEAD only.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

@@ -141,7 +141,10 @@ if ($derive) {
     my ($state) = $class->_thick_read_anchor($storeid, $scfg, $volname);
     my $phase = $state->{phase} // '';
     die "volume '$storeid:$volname' has no resumable materialization transition\n"
-        if $phase ne 'HYDRATING'
+        if $phase ne 'PREPARED'
+        && $phase ne 'SOURCE_READY'
+        && $phase ne 'COMMITTED'
+        && $phase ne 'HYDRATING'
         && $phase ne 'HYDRATION_COMPLETE'
         && $phase ne 'LINEAR_PIVOTED';
     $snapshot = $state->{snapshot};

@@ -688,7 +688,10 @@ def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
             )
             item["worker_state"] = observed_worker
             if (
-                phase not in {"PREPARED", "HYDRATING", "HYDRATION_COMPLETE", "LINEAR_PIVOTED"}
+                phase not in {
+                    "PREPARED", "SOURCE_READY", "COMMITTED", "HYDRATING",
+                    "HYDRATION_COMPLETE", "LINEAR_PIVOTED",
+                }
                 or not transaction
                 or not re.fullmatch(r"[0-9a-f]{32}", transaction)
             ):
