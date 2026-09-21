@@ -5465,10 +5465,6 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
     my $new_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 1,
     )});
-    my $meta_tags = join(',', @{PVE::SharedLvmThinThick::transition_tags(
-        sid => $storeid, vol => $volname, tx => $new_tx,
-        kind => 'metadata', generation => 1, region => 8,
-    )});
     my $inventory = { testvg => {
         $anchor => { tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$state)}) },
         $old => { tags => '', lv_size => $size },
@@ -5673,6 +5669,10 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     )});
     my $new_tags = join(',', @{PVE::SharedLvmThinThick::generation_tags(
         sid => $storeid, vol => $volname, role => 'head', generation => 1,
+    )});
+    my $meta_tags = join(',', @{PVE::SharedLvmThinThick::transition_tags(
+        sid => $storeid, vol => $volname, tx => $new_tx,
+        kind => 'metadata', generation => 1, region => 8,
     )});
     my $initial = { testvg => {
         $anchor => { tags => join(',', @{PVE::SharedLvmThinThick::anchor_tags(%$materialized)}) },
