@@ -447,6 +447,31 @@ subtest 'thick allocation zeroing offloads safely and has a complete fallback' =
     is(scalar(@commands), 0, 'invalid block path performs no command');
 };
 
+subtest 'active Thick LV raw-write identity is pinned to the scoped LVM UUID' => sub {
+    my @answers = (
+        [' vg-uuid | lv-uuid | exact-head '],
+        [' LVM-vguuidlvuuid '],
+    );
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        return shift @answers;
+    };
+    ok($class->_thick_verify_active_lv_identity(
+        'testvg', 'exact-head', '/dev/mapper/3600abcd',
+    ), 'matching scoped LVM and kernel DM UUIDs authorize the raw write');
+    is(scalar(@answers), 0, 'identity verifier consumed both authoritative probes');
+
+    @answers = (
+        ['vg-uuid|lv-uuid|exact-head'],
+        ['LVM-different'],
+    );
+    eval { $class->_thick_verify_active_lv_identity(
+        'testvg', 'exact-head', '/dev/mapper/3600abcd',
+    ) };
+    like($@, qr/does not match its scoped LVM UUID/,
+        'stale or colliding kernel mapper fails before any raw write');
+};
+
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
     for my $case (
         ['twi-aotz--|||20.00', 1, 'healthy'],
@@ -5293,6 +5318,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_transition_metadata = sub { return 1; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { return 1; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_source_mapper = sub { return 1; };

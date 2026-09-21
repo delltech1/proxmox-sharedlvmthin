@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Before any direct zero/metadata write through an LVM pathname, compare the
+  exact device-scoped VG/LV UUID pair with the active kernel DM UUID. A stale
+  mapper or duplicate-name collision now fails before it can redirect a raw
+  write to an unrelated device.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

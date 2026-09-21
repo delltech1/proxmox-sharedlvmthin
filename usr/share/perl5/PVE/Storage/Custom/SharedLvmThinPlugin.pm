@@ -761,6 +761,50 @@ sub _thick_mapper_is_suspended {
     die "device-mapper suspend state for '$mapper' is unknown: '$value'\n";
 }
 
+sub _thick_verify_active_lv_identity {
+    my ($class, $vg, $lv, $device) = @_;
+    die "active Thick LV identity requires a valid VG/LV name\n"
+        if !defined($vg) || $vg !~ /^[A-Za-z0-9+_.-]+$/
+        || !defined($lv) || $lv !~ /^[A-Za-z0-9+_.-]+$/;
+    die "active Thick LV identity requires an exact mapper device\n"
+        if !defined($device) || $device !~ m{^/dev/mapper/[0-9A-Fa-f]+$};
+
+    my $identity = _command_lines(
+        ['/sbin/lvs', '--readonly', '--devices', $device, '--noheadings',
+            '--separator', '|', '-o', 'vg_uuid,lv_uuid,lv_name', "$vg/$lv"],
+        "reading active Thick LV identity of '$vg/$lv' failed",
+    );
+    die "active Thick LV identity of '$vg/$lv' is ambiguous\n" if @$identity != 1;
+    my ($vg_uuid, $lv_uuid, $actual_name) = split(/\|/, $identity->[0], -1);
+    for ($vg_uuid, $lv_uuid, $actual_name) {
+        $_ //= '';
+        s/^\s+|\s+$//g;
+    }
+    die "active Thick LV identity returned unexpected object '$actual_name'\n"
+        if $actual_name ne $lv;
+    for ($vg_uuid, $lv_uuid) {
+        die "active Thick LV identity contains an invalid UUID\n"
+            if !/^[A-Za-z0-9-]+$/;
+        s/-//g;
+    }
+
+    my $vg_dm = $vg;
+    my $lv_dm = $lv;
+    $vg_dm =~ s/-/--/g;
+    $lv_dm =~ s/-/--/g;
+    my $kernel = _command_lines(
+        ['/sbin/dmsetup', 'info', '-c', '--noheadings', '-o', 'uuid', "$vg_dm-$lv_dm"],
+        "reading kernel identity of active Thick LV '$vg/$lv' failed",
+    );
+    die "kernel identity of active Thick LV '$vg/$lv' is ambiguous\n" if @$kernel != 1;
+    my $actual_uuid = $kernel->[0];
+    $actual_uuid =~ s/^\s+|\s+$//g;
+    my $expected_uuid = "LVM-$vg_uuid$lv_uuid";
+    die "kernel identity of active Thick LV '$vg/$lv' does not match its scoped LVM UUID\n"
+        if $actual_uuid ne $expected_uuid;
+    return 1;
+}
+
 # Intentionally inert production hook. Qualification drivers may locally
 # override this method to terminate only their own disposable worker at an
 # exact persisted crash boundary. No configuration or environment variable can
@@ -2083,6 +2127,7 @@ sub _thick_alloc_image {
             ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$head"],
             errmsg => "activating new thick generation '$vg/$head' for zeroing failed",
         );
+        $class->_thick_verify_active_lv_identity($vg, $head, $device);
         my $zero_bytes = int($size) * 1024;
         $class->_zero_new_thick_generation(
             "/dev/$vg/$head", $zero_bytes, "new thick generation '$vg/$head'",
@@ -4295,6 +4340,7 @@ sub _thick_volume_snapshot {
                 ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{new}"],
                 errmsg => "activating thick snapshot destination for zeroing failed",
             );
+            $class->_thick_verify_active_lv_identity($vg, $tr->{new}, $device);
             $class->_zero_new_thick_generation(
                 "/dev/$vg/$tr->{new}", int($tr->{size}),
                 "thick snapshot destination '$vg/$tr->{new}'",
@@ -4311,6 +4357,7 @@ sub _thick_volume_snapshot {
                 ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{meta}"],
                 errmsg => "activating dm-clone metadata failed",
             );
+            $class->_thick_verify_active_lv_identity($vg, $tr->{meta}, $device);
             run_command(
                 ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$tr->{meta}",
                     'bs=4096', 'count=1', 'conv=fsync,nocreat', 'status=none'],
@@ -5199,6 +5246,7 @@ sub _thick_volume_resize {
             ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$resize{head}"],
             errmsg => "activating extended thick generation '$vg/$resize{head}' failed",
         ) if !$resize{frontend};
+        $class->_thick_verify_active_lv_identity($vg, $resize{head}, $device);
         my $length = $resize{new_size} - $resize{old_size};
         run_command(
             ['/usr/bin/dd', 'if=/dev/zero', "of=/dev/$vg/$resize{head}", 'bs=4M',

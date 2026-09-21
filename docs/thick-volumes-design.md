@@ -56,6 +56,11 @@ an unproven offset. Hardware BLKZEROOUT is preferred and a full direct-zero
 write is the fail-safe fallback, so large or slow destinations can extend the
 snapshot callback duration before any guest-visible cutover.
 
+Every direct zero or metadata write additionally proves that the kernel DM
+node's `LVM-<VG UUID><LV UUID>` identity matches the exact LV returned by a
+device-scoped LVM query. Names alone never authorize a raw write, so a stale
+mapper or duplicate-VG name cannot redirect initialization to another device.
+
 When hydration completes, the frontend is atomically pivoted back to a linear
 table whose only dependency is the destination generation. dm-clone is a
 transaction transport, not the permanent storage format.
