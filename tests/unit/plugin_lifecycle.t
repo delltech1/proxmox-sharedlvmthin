@@ -5323,7 +5323,7 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
         return shift @inventories;
     };
-    my @suspend_states = qw(Active Suspended Active Suspended);
+    my @suspend_states = qw(Active Suspended Suspended Active Suspended);
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
         my ($command) = @_;
         if (grep { $_ eq 'suspended' } @$command) {
