@@ -31,6 +31,12 @@ unpacked and refuses an ambiguous or unsafe switch. A Thin pool must be
 migrated or deliberately removed with the dual-mode package; uninstalling its
 runtime is never a migration procedure.
 
+When an older SharedLvmThin package is present, the pre-install script also
+runs its bounded read-only upgrade gate and refuses any pending, active or
+failed transient Thick materialization unit. A package replacement therefore
+cannot remove entry points while a known asynchronous worker is unfinished.
+The gate never resumes, repairs or deletes a transaction.
+
 Run `sharedlvmthin upgrade-check` immediately before every rolling package
 change. Every Thick anchor must be positively verified as `MATERIALIZED`; do
 not replace plugin code while a hydration, rollback, deletion or recovery

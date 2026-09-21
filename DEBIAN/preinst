@@ -10,6 +10,36 @@ fi
 # managed Thin pool. Refuse before unpacking, while the previous package is
 # still intact and recoverable.
 if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    # A flavor replacement removes Thin entry points and changes the exposed
+    # schema. Do not perform it underneath a scheduled/running/failed
+    # asynchronous Thick worker. A failed transient unit is evidence that its
+    # signed anchor may still require explicit recovery, not stale clutter.
+    if command -v systemctl >/dev/null 2>&1; then
+        if ! THICK_UNITS=$(systemctl list-units --all --no-legend \
+            --state=active,activating,deactivating,failed \
+            'pve-sharedlvmthin-tg-*' 2>/dev/null); then
+            echo "ERROR: Thick-only package installation refused: transient" >&2
+            echo "Thick materialization units could not be enumerated." >&2
+            exit 1
+        fi
+        if printf '%s\n' "$THICK_UNITS" | grep -q '[^[:space:]]'; then
+            echo "ERROR: Thick-only package installation refused: a Thick" >&2
+            echo "materialization unit is pending, active or failed." >&2
+            echo "Complete and verify recovery before replacing the package flavor." >&2
+            exit 1
+        fi
+    fi
+
+    # When a SharedLvmThin package is already installed, use its read-only
+    # recovery gate before unpacking the replacement. The checker is bounded
+    # per storage and positively requires healthy, mutation-safe anchors.
+    UPGRADE_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
+    if [ -x "$UPGRADE_CHECK" ] && ! "$UPGRADE_CHECK"; then
+        echo "ERROR: Thick-only package installation refused by the existing" >&2
+        echo "SharedLvmThin recovery/upgrade gate. No package files were replaced." >&2
+        exit 1
+    fi
+
     if [ -r /etc/pve/storage.cfg ]; then
         if awk '
             BEGIN { in_slt=0; mode="thin"; bad=0 }

@@ -14,6 +14,9 @@
 - Make Doctor package-aware: Thick-only installations verify their own package,
   treat absent Thin services and autogrow policy as intentional, and use the
   Thick Generations default when the fixed allocation property is omitted.
+- Refuse a dual-to-Thick package replacement while a transient Thick worker is
+  pending, active or failed, or while the installed read-only upgrade gate
+  cannot positively prove a healthy mutation-safe state.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
