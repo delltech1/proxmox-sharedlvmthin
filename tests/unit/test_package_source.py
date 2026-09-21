@@ -221,6 +221,7 @@ class PackageSourceTests(unittest.TestCase):
         preinst = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
         prerm = (ROOT / "DEBIAN/prerm").read_text(encoding="utf-8")
+        postrm = (ROOT / "DEBIAN/postrm").read_text(encoding="utf-8")
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
 
         self.assertIn("Package: pve-sharedlvmthin\n", dual)
@@ -259,6 +260,12 @@ class PackageSourceTests(unittest.TestCase):
             prerm.index("pve-slt-sid-"),
             prerm.index('systemctl stop "$THIN_GUARD_SERVICE"'),
         )
+        self.assertIn("PURGED_FLAVOR=dual", postrm)
+        self.assertIn('ACTIVE_FLAVOR=$(sed -n', postrm)
+        self.assertIn('if [ "$ACTIVE_FLAVOR" != "$PURGED_FLAVOR" ]', postrm)
+        preserve = postrm.index("preserving state owned by active")
+        cleanup = postrm.index("rm -rf /etc/pve-sharedlvmthin")
+        self.assertLess(preserve, cleanup)
         self.assertIn("require_dual_mode", cli)
         self.assertIn("pve-sharedlvmthin-thick", cli)
         self.assertIn(

@@ -49,6 +49,13 @@ profile, dpkg also stops and disables ThinGuard so no orphaned in-memory
 guardian can remain after its executable and unit are removed. This service
 cleanup is not a storage mutation and does not deactivate guest volumes.
 
+If the replaced package remains as a Debian `config-files` entry, subsequently
+purging that residual entry detects the currently installed package-flavor
+marker and preserves the active profile's shared configuration, recovery state
+and LVM policy. An invalid marker also preserves state rather than guessing
+ownership. Purging the actually active/removed profile retains the normal
+scoped cleanup behavior.
+
 Run `sharedlvmthin upgrade-check` immediately before every rolling package
 change. Every Thick anchor must be positively verified as `MATERIALIZED`; do
 not replace plugin code while a hydration, rollback, deletion or recovery

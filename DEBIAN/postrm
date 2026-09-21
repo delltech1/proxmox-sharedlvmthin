@@ -11,6 +11,33 @@ case "$1" in
 esac
 
 if [ "$1" = "purge" ]; then
+    PURGED_FLAVOR=dual
+    if [ "${DPKG_MAINTSCRIPT_PACKAGE:-}" = "pve-sharedlvmthin-thick" ]; then
+        PURGED_FLAVOR=thick-only
+    fi
+    ACTIVE_FLAVOR=$(sed -n '1p' \
+        /usr/share/pve-sharedlvmthin/package-flavor 2>/dev/null || true)
+
+    # After a Conflicts/Replaces switch, the old package can remain only as a
+    # residual config-files entry. Purging that obsolete entry must never
+    # delete configuration or recovery state owned by the active opposite
+    # profile. The installed flavor marker is shipped by, and therefore
+    # authoritative for, the currently active binary package.
+    case "$ACTIVE_FLAVOR" in
+        dual|thick-only)
+            if [ "$ACTIVE_FLAVOR" != "$PURGED_FLAVOR" ]; then
+                echo "Residual $PURGED_FLAVOR package purge: preserving state owned by active $ACTIVE_FLAVOR profile."
+                exit 0
+            fi
+            ;;
+        '')
+            ;;
+        *)
+            echo "WARNING: invalid active SharedLvmThin package flavor; preserving shared state." >&2
+            exit 0
+            ;;
+    esac
+
     LVMLOCAL=/etc/lvm/lvmlocal.conf
     if [ -f "$LVMLOCAL" ]; then
         sed -i '/^# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW$/,/^# END PVE-SHAREDLVMTHIN MANAGED AUTOGROW$/d' "$LVMLOCAL"

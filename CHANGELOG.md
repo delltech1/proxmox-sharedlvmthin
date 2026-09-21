@@ -40,6 +40,9 @@
   names and every signed Thick anchor, generation, transition and VG-intent
   tag sequence. Package-profile maintenance now fails CI if it silently
   changes the shared on-disk format.
+- Prevent a later purge of the replaced profile's residual Debian
+  `config-files` entry from deleting configuration, recovery state or LVM
+  policy owned by the currently installed opposite package profile.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
