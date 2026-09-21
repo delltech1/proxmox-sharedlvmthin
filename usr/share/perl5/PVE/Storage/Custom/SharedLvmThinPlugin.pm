@@ -3977,6 +3977,30 @@ sub _thick_reconstruct_missing_transition_runtime {
     my $source_map = $tr->{source_map};
     my $front_exists = _block_device_exists("/dev/mapper/$front");
     my $source_exists = _block_device_exists("/dev/mapper/$source_map");
+
+    # Once LINEAR_PIVOTED is durably recorded, the new signed HEAD is the sole
+    # data authority. A reboot may remove the transient stable frontend after
+    # the pivot while cleanup objects are present, partially removed, or fully
+    # absent. Reconstruct only the canonical linear frontend; never recreate a
+    # clone table or already-cleaned transition artifact in this phase.
+    if ($phase eq 'LINEAR_PIVOTED') {
+        my $sectors = int($tr->{size} / 512);
+        if (!$front_exists) {
+            run_command(
+                ['/sbin/lvchange', '--devices', $device, '-ay', '-K', "$vg/$tr->{new}"],
+                errmsg => "activating linear-pivoted Thick Generations HEAD failed",
+            );
+            my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'create', $front, '--uuid', $uuid,
+                    '--table', "0 $sectors linear /dev/$vg/$tr->{new} 0"],
+                errmsg => "reconstructing linear-pivoted Thick Generations frontend failed",
+            );
+        }
+        $class->_thick_verify_frontend($scfg, $volname, $tr->{new}, $sectors);
+        return 1;
+    }
+
     return 1 if $front_exists && $source_exists;
     die "$phase transition runtime is partial; refusing reconstruction\n"
         if $front_exists || $source_exists;

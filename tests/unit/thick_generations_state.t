@@ -341,6 +341,30 @@ for my $case (
     is($classification->{safe_for_mutation}, 0, "rollback $phase remains fail-closed");
 }
 
+my $post_pivot_partial_cleanup = classify_recovery(
+    anchor => { %$rollback_recovery, phase => 'LINEAR_PIVOTED', head => 'g2', generation => 2 },
+    intent => $rollback_intent,
+    objects => { head => 1, source => 1, new => 1 },
+    runtime => 'linear-new', clone_status => 'none', clone_source => 'none',
+    expected_anchor => $anchor_object,
+);
+is($post_pivot_partial_cleanup->{data_state}, 'VALID',
+    'linear-pivoted rollback remains deterministic after metadata and old HEAD cleanup');
+is($post_pivot_partial_cleanup->{action}, 'FINALIZE_READY',
+    'post-pivot partial cleanup can finalize without recreating removed objects');
+
+my $post_pivot_reboot = classify_recovery(
+    anchor => { %$rollback_recovery, phase => 'LINEAR_PIVOTED', head => 'g2', generation => 2 },
+    intent => $rollback_intent,
+    objects => { head => 1, source => 1, new => 1 },
+    runtime => 'absent', clone_status => 'none', clone_source => 'none',
+    expected_anchor => $anchor_object,
+);
+is($post_pivot_reboot->{data_state}, 'VALID',
+    'linear-pivoted rollback retains deterministic authority after host reboot');
+is($post_pivot_reboot->{action}, 'RECONSTRUCT_REQUIRED',
+    'post-pivot reboot requires exact linear frontend reconstruction before cleanup');
+
 my $rollback_materialized = {
     %$rollback_recovery, phase => 'MATERIALIZED', head => 'g2', generation => 2,
 };

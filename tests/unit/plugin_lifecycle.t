@@ -4534,6 +4534,29 @@ subtest 'host-loss recovery reconstructs only the exact persisted clone runtime'
     ) };
     like($@, qr/runtime is partial; refusing reconstruction/,
         'a partial runtime is never guessed or overwritten');
+
+    reset_mocks();
+    $tr->{state} = { phase => 'LINEAR_PIVOTED' };
+    my $linear_verified = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
+        $linear_verified++;
+        is($_[3], 'new', 'post-pivot reconstruction targets only the authoritative new HEAD');
+        is($_[4], 8, 'post-pivot reconstruction preserves exact sector geometry');
+        return 1;
+    };
+    ok($class->_thick_reconstruct_missing_transition_runtime(
+        $cfg, 'vm-900001-disk-0', $tr, { tx => $tx },
+    ), 'host-loss after a recorded linear pivot reconstructs only the canonical linear frontend');
+    is($linear_verified, 1, 'reconstructed linear frontend is positively verified');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -ay -K testvg/new',
+        '/sbin/dmsetup --verifyudev create sltg-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
+            ' --uuid SLT-TG2-' .
+            PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
+            ' --table 0 8 linear /dev/testvg/new 0',
+    ], 'post-pivot reboot recovery does not recreate clone metadata or a source mapper');
 };
 
 subtest 'anchor-scoped hydration permits an unrelated VG transaction only' => sub {

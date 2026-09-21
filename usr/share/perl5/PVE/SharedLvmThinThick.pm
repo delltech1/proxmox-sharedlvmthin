@@ -504,8 +504,11 @@ sub classify_recovery {
         if $intent->{op} ne $expected_op;
     return $blocked->('VG intent refers to another anchor')
         if !defined($expected_anchor) || $intent->{object} ne $expected_anchor;
-    return $blocked->('transition source, old HEAD, or destination is missing')
-        if !$objects->{source} || !$objects->{old} || !$objects->{new};
+    return $blocked->('transition source or destination is missing')
+        if !$objects->{source} || !$objects->{new};
+    return $blocked->('transition old HEAD is missing before post-pivot rollback cleanup')
+        if !$objects->{old}
+        && !($anchor->{phase} eq 'LINEAR_PIVOTED' && $anchor->{op} eq 'ROLLBACK');
 
     if ($anchor->{phase} eq 'PREPARED') {
         return $blocked->('PREPARED transition metadata is missing') if !$objects->{meta};
@@ -567,6 +570,9 @@ sub classify_recovery {
         return $blocked->('linear-pivoted transition has an unexpected runtime mapping')
             if $runtime !~ /^(?:absent|linear-new|linear-head)$/;
         return $blocked->('linear-pivoted frontend is suspended') if $runtime_suspended;
+        return $result->('RECOVERY_REQUIRED', 'LINEAR_PIVOTED', 'RECONSTRUCT_REQUIRED',
+            'destination is authoritative; canonical linear frontend must be reconstructed before cleanup')
+            if $runtime eq 'absent';
         return $result->('RECOVERY_REQUIRED', 'LINEAR_PIVOTED', 'FINALIZE_READY',
             'destination is authoritative; detached transition artifacts require exact cleanup');
     }
