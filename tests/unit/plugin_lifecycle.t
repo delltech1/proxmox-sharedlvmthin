@@ -3711,6 +3711,7 @@ subtest 'thick deactivate removes kernel mapper even when its udev node vanished
         return ($state, {}, 'anchor-lv');
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub {
         $verified++; return 1;
