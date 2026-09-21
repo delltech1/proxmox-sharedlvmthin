@@ -821,6 +821,43 @@ sub _thick_activate_exact_lvs {
     return 1;
 }
 
+sub _thick_lv_mapper_name {
+    my ($vg, $lv) = @_;
+    my $vg_dm = $vg;
+    my $lv_dm = $lv;
+    $vg_dm =~ s/-/--/g;
+    $lv_dm =~ s/-/--/g;
+    return "$vg_dm-$lv_dm";
+}
+
+sub _thick_deactivate_exact_lvs {
+    my ($class, $vg, $device, $errmsg, @lvs) = @_;
+    die "exact Thick deactivation requires at least one LV\n" if !@lvs;
+    my %seen;
+    for my $lv (@lvs) {
+        die "exact Thick deactivation contains an invalid or duplicate LV name\n"
+            if !defined($lv) || $lv !~ /^[A-Za-z0-9+_.-]+$/ || $seen{$lv}++;
+    }
+
+    my $before = _dm_kernel_inventory();
+    for my $lv (@lvs) {
+        my $mapper = _thick_lv_mapper_name($vg, $lv);
+        $class->_thick_verify_active_lv_identity($vg, $lv, $device)
+            if exists($before->{$mapper});
+    }
+    run_command(
+        ['/sbin/lvchange', '--devices', $device, '-an', map { "$vg/$_" } @lvs],
+        errmsg => $errmsg,
+    );
+    my $after = _dm_kernel_inventory();
+    for my $lv (@lvs) {
+        my $mapper = _thick_lv_mapper_name($vg, $lv);
+        die "exact Thick LV '$vg/$lv' remains active after deactivation\n"
+            if exists($after->{$mapper});
+    }
+    return 1;
+}
+
 # Intentionally inert production hook. Qualification drivers may locally
 # override this method to terminate only their own disposable worker at an
 # exact persisted crash boundary. No configuration or environment variable can
@@ -1122,9 +1159,10 @@ sub _thick_deactivate_volume {
         );
         my $vg = $scfg->{'slt-vgname'};
         $class->_thick_verify_snapshot_readonly($vg, $snapshot, $device);
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
-            errmsg => "deactivating thick-generations snapshot '$vg/$snapshot' failed",
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating thick-generations snapshot '$vg/$snapshot' failed",
+            $snapshot,
         );
         return 1;
     }
@@ -1174,10 +1212,10 @@ sub _thick_deactivate_volume {
             errmsg => "removing stable thick-generations frontend '$mapper' failed",
         );
     }
-    run_command(
-        ['/sbin/lvchange', '--devices', $device, '-an',
-            "$vg/$anchor", "$vg/$state->{head}"],
-        errmsg => "deactivating thick-generations state for '$vg/$volname' failed",
+    $class->_thick_deactivate_exact_lvs(
+        $vg, $device,
+        "deactivating thick-generations state for '$vg/$volname' failed",
+        $anchor, $state->{head},
     );
     return 1;
 }
@@ -1981,9 +2019,10 @@ sub _thick_recover_partial_allocation {
             die "partial-allocation recovery refused: '$vg/$object' active state is ambiguous\n"
                 if @$active != 1 || $active->[0] !~ /^....([a-]).*$/;
             if ($1 eq 'a') {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$object"],
-                    errmsg => "deactivating partial-allocation object '$vg/$object' failed",
+                $class->_thick_deactivate_exact_lvs(
+                    $vg, $device,
+                    "deactivating partial-allocation object '$vg/$object' failed",
+                    $object,
                 );
                 my $after = _command_lines(
                     ['/sbin/lvs', '--noheadings', '--devices', $device,
@@ -2153,9 +2192,10 @@ sub _thick_alloc_image {
             ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$head"],
             errmsg => "flushing new thick generation '$vg/$head' failed",
         );
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$head"],
-            errmsg => "deactivating zeroed thick generation '$vg/$head' failed",
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating zeroed thick generation '$vg/$head' failed",
+            $head,
         );
     };
     if (my $error = $@) {
@@ -4367,9 +4407,10 @@ sub _thick_volume_snapshot {
                 ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$tr->{new}"],
                 errmsg => "flushing zeroed thick snapshot destination failed",
             );
-            run_command(
-                ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$tr->{new}"],
-                errmsg => "deactivating zeroed thick snapshot destination failed",
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating zeroed thick snapshot destination failed",
+                $tr->{new},
             );
             $class->_thick_activate_exact_lvs(
                 $vg, $device,
@@ -4843,9 +4884,10 @@ sub _thick_free_image {
         # semantics decide that case.  Deactivate the two exact, signed objects
         # explicitly and device-scoped before recording a destructive intent.
         # Repeating -an for already inactive LVs is deliberately idempotent.
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$anchor", "$vg/$head"],
-            errmsg => "deactivating thick-generations state for '$vg/$volname' before delete failed",
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating thick-generations state for '$vg/$volname' before delete failed",
+            $anchor, $head,
         );
 
         my $tx = $class->_new_transaction_id();
@@ -5278,9 +5320,10 @@ sub _thick_volume_resize {
             ['/sbin/blockdev', '--flushbufs', "/dev/$vg/$resize{head}"],
             errmsg => "flushing extended thick generation '$vg/$resize{head}' failed",
         );
-        run_command(
-            ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$resize{head}"],
-            errmsg => "deactivating extended thick generation '$vg/$resize{head}' failed",
+        $class->_thick_deactivate_exact_lvs(
+            $vg, $device,
+            "deactivating extended thick generation '$vg/$resize{head}' failed",
+            $resize{head},
         ) if !$resize{frontend};
     };
     $zero_error = $@ if $@;
@@ -5517,9 +5560,10 @@ sub _thick_volume_snapshot_delete {
             );
             $class->_thick_fault_point('D2', 'REMOVE_SNAPSHOT', $storeid, $volname);
             if (_block_device_exists($path)) {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
-                    errmsg => "deactivating snapshot '$vg/$snapshot' before delete failed",
+                $class->_thick_deactivate_exact_lvs(
+                    $vg, $device,
+                    "deactivating snapshot '$vg/$snapshot' before delete failed",
+                    $snapshot,
                 );
             }
             run_command(
@@ -5690,9 +5734,10 @@ sub _thick_recover_snapshot_delete {
             $verify_snapshot_inactive->();
             my $path = "/dev/$vg/$snapshot";
             if (_block_device_exists($path)) {
-                run_command(
-                    ['/sbin/lvchange', '--devices', $device, '-an', "$vg/$snapshot"],
-                    errmsg => "deactivating snapshot '$vg/$snapshot' during recovery failed",
+                $class->_thick_deactivate_exact_lvs(
+                    $vg, $device,
+                    "deactivating snapshot '$vg/$snapshot' during recovery failed",
+                    $snapshot,
                 );
             }
             run_command(

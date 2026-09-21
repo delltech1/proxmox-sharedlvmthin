@@ -10,6 +10,10 @@
   Each requested LV receives an individual post-activation kernel UUID check;
   direct unverified `lvchange -ay` call sites are prohibited by regression
   tests, including read-only snapshot and runtime-reconstruction paths.
+- Route every Thick LV deactivation through a symmetric prove-and-deactivate
+  primitive. Any pre-existing mapper must match the scoped LVM UUID, and the
+  exact kernel mapper must be absent after `lvchange -an`; already-inactive
+  objects remain an idempotent success case.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

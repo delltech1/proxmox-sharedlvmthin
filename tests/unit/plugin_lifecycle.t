@@ -501,6 +501,41 @@ subtest 'every Thick LV activation proves each exact kernel identity' => sub {
     is(scalar(@commands), 0, 'invalid activation performs no command');
 };
 
+subtest 'every Thick LV deactivation proves identity and kernel absence' => sub {
+    reset_mocks();
+    my @inventories = (
+        { 'testvg-head' => 'LVM-vguuidlvuuid' },
+        {},
+    );
+    my @verified;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub {
+        return shift @inventories;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_active_lv_identity = sub {
+        my (undef, $vg, $lv, $device) = @_;
+        push @verified, "$vg|$lv|$device";
+        return 1;
+    };
+    ok($class->_thick_deactivate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'deactivation failed', 'head',
+    ), 'an exact active LV is proved before deactivation and absent afterward');
+    is_deeply([command_lines()], [
+        '/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/head',
+    ], 'deactivation targets only the requested device-scoped LV');
+    is_deeply(\@verified, ['testvg|head|/dev/mapper/3600abcd'],
+        'a present pre-command mapper receives an exact UUID proof');
+    is(scalar(@inventories), 0, 'both pre- and post-command inventories were consumed');
+
+    reset_mocks();
+    @inventories = ({}, { 'testvg-head' => 'LVM-vguuidlvuuid' });
+    eval { $class->_thick_deactivate_exact_lvs(
+        'testvg', '/dev/mapper/3600abcd', 'deactivation failed', 'head',
+    ) };
+    like($@, qr/remains active after deactivation/,
+        'a successful command cannot hide a remaining kernel mapper');
+};
+
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
     for my $case (
         ['twi-aotz--|||20.00', 1, 'healthy'],

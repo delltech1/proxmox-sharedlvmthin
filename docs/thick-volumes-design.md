@@ -63,6 +63,9 @@ mapper or duplicate-VG name cannot redirect initialization to another device.
 The same rule protects reads and device-mapper table construction: all Thick
 LV activation is centralized in an activate-and-prove primitive that validates
 every requested LV separately before any caller can use its pathname.
+Deactivation is symmetric: an existing mapper is UUID-proved before the LVM
+command, and authoritative kernel inventory must show every exact mapper
+absent afterward. An already-inactive LV can be repeated safely.
 
 When hydration completes, the frontend is atomically pivoted back to a linear
 table whose only dependency is the destination generation. dm-clone is a
