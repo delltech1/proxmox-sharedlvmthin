@@ -220,17 +220,20 @@ sharedlvmthin: two
 
     def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
                  allocation_mode="thin", lvs_output=None, referenced=True,
-                 vg_tags=""):
+                 vg_tags="", observed_commands=None,
+                 expected_wwid="3600abcd"):
         cfg = {
             "slt-vgname": "testvg",
             "slt-expected-vg-uuid": "vg-uuid",
             "slt-expected-pv-uuid": "pv-uuid",
-            "slt-expected-wwid": "3600abcd",
+            "slt-expected-wwid": expected_wwid,
             "slt-expected-min-paths": "2",
             "slt-allocation-mode": allocation_mode,
         }
 
         def probe(command):
+            if observed_commands is not None:
+                observed_commands.append(command)
             joined = " ".join(command)
             out = ""
             if command[0].endswith("vgs"):
@@ -268,6 +271,30 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("STATE=HEALTHY", output)
         self.assertIn("SAFE_FOR_MUTATION=YES", output)
+
+    def test_all_lvm_inventory_is_scoped_to_pinned_wwid(self):
+        commands = []
+        rc, _ = self.run_main(observed_commands=commands)
+        self.assertEqual(rc, 0)
+        lvm_commands = [
+            command for command in commands
+            if command[0] in {"/sbin/vgs", "/sbin/pvs", "/sbin/lvs"}
+        ]
+        self.assertEqual(len(lvm_commands), 4)
+        for command in lvm_commands:
+            position = command.index("--devices")
+            self.assertEqual(command[position + 1], "/dev/mapper/3600abcd")
+
+    def test_invalid_wwid_runs_no_unscoped_lvm_probe(self):
+        commands = []
+        rc, output = self.run_main(
+            expected_wwid="not-a-wwid", observed_commands=commands,
+        )
+        self.assertEqual(rc, 2)
+        self.assertEqual(commands, [])
+        self.assertIn("VG_INTENT_CLEAR=FAIL", output)
+        self.assertIn("THICK_ANCHORS_HEALTHY=FAIL", output)
+        self.assertIn("no LVM probe was run", output)
 
     def test_nearly_full_thin_pool_is_scoped_capacity_warning(self):
         rc, output = self.run_main(lvs_output=(

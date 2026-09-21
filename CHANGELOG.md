@@ -2,6 +2,9 @@
 
 ## Unreleased — Thick Generations audit
 
+- Scope every LVM probe in the read-only recovery/upgrade checker to the pinned
+  `/dev/mapper/<WWID>`. VG, intent, PV and LV evidence can no longer be sourced
+  from an unrelated same-name local or stale VG before the identity comparison.
 - Include explicitly disabled, locally scoped SharedLvmThin storage in the
   pre-unpack recovery gate. Disabling a configuration no longer hides an OPEN
   intent or incomplete Thick anchor from ordinary upgrades or package-profile

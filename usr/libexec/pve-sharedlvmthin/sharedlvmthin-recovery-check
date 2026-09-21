@@ -524,6 +524,16 @@ def main(argv=None):
     expected_wwid = clean(cfg.get("slt-expected-wwid")).lower()
     expected_paths = clean(cfg.get("slt-expected-min-paths"))
     allocation_mode = clean(cfg.get("slt-allocation-mode") or "thin")
+    if not re.fullmatch(r"[0-9a-f]+", expected_wwid):
+        print(f"STORAGE_ID={sid}")
+        print("VG_INTENT_CLEAR=FAIL")
+        print("THICK_ANCHORS_HEALTHY=FAIL")
+        print("STATE=RECOVERY_REQUIRED")
+        print("SAFE_FOR_MUTATION=NO")
+        print("DETAIL=expected multipath WWID is missing or non-canonical; no LVM probe was run")
+        return 2
+    device = f"/dev/mapper/{expected_wwid}"
+    lvm_scope = ["--devices", device]
     results = {}
     details = []
 
@@ -531,12 +541,12 @@ def main(argv=None):
     # one outstanding LVM/PVE probe maximum and prevents the checker itself
     # from accumulating tasks during a storage incident.
     probes = [
-        ("VG", ["/sbin/vgs", "--readonly", "--noheadings", "--separator", "|", "-o", "vg_uuid", vg]),
-        ("INTENT", ["/sbin/vgs", "--readonly", "--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg]),
-        ("PV", ["/sbin/pvs", "--readonly", "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
+        ("VG", ["/sbin/vgs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "vg_uuid", vg]),
+        ("INTENT", ["/sbin/vgs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg]),
+        ("PV", ["/sbin/pvs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
-        ("POOL", ["/sbin/lvs", "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent", vg]),
+        ("POOL", ["/sbin/lvs", *lvm_scope, "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent", vg]),
         ("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]),
     ]
     evidence = {}
