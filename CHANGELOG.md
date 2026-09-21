@@ -2,6 +2,9 @@
 
 ## Unreleased — Thick Generations audit
 
+- Hide every Thin recovery/metadata command from Thick-only CLI help while
+  retaining the independent runtime rejection if a caller invokes a Thin
+  command name directly.
 - Make transient Thick-worker enumeration mandatory before every audited
   upgrade/profile replacement.  Missing `systemctl` no longer skips the gate;
   both package profiles pre-depend on its owning `systemd` package and refuse

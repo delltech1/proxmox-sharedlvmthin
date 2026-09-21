@@ -1537,10 +1537,12 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin thick-recover-partial-alloc <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-orphan-alloc <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-orphan-tree <storage-id> <volume>"
-        echo "  sharedlvmthin thin-recover-orphan <storage-id> <volume>"
-        echo "  sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>"
-        echo "  sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE"
-        echo "  sharedlvmthin thin-metadata-check <storage-id> <volume>"
+        if [ "$PACKAGE_FLAVOR" = dual ]; then
+            echo "  sharedlvmthin thin-recover-orphan <storage-id> <volume>"
+            echo "  sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>"
+            echo "  sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE"
+            echo "  sharedlvmthin thin-metadata-check <storage-id> <volume>"
+        fi
         echo "  sharedlvmthin version"
         exit 64
         ;;

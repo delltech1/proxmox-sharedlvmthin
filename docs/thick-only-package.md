@@ -26,7 +26,9 @@ bridge from the binary package. Its plugin schema defaults to
 `thick-generations`, does not advertise Thin-only properties, and rejects an
 explicit Thin allocation mode. The public CLI and the internal recovery worker
 also reject Thin operations so a direct helper invocation cannot bypass the
-package boundary.
+package boundary. Thick-only CLI help advertises only common diagnostics and
+Thick recovery commands; Thin command names remain visible only in the Dual
+profile.
 
 ## Switching from the dual-mode package
 
