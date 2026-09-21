@@ -4898,6 +4898,7 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     );
     my @events;
     no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code) = @_; return $code->();
     };
@@ -5013,8 +5014,9 @@ subtest 'thick snapshot-delete recovery deterministically resumes prepared and f
         { testvg => { $head => {}, $anchor => {} } },
     );
     my @states = ($prepared, $rebased);
-    my @events;
     no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { return {}; };
+    my @events;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code, $device) = @_;
