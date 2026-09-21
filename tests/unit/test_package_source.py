@@ -39,6 +39,10 @@ class PackageSourceTests(unittest.TestCase):
             / "lib/systemd/system/pve-sharedlvmthin-thin-guard.service"
         ).read_text(encoding="utf-8")
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        inventory = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory"
+        ).read_text(encoding="utf-8")
         self.assertIn("allow_real_watchdog => 1", daemon)
         self.assertIn("protected Thin runtime predates this process", daemon)
         self.assertIn("STOP_WATCHDOG_REFRESH", daemon)
@@ -49,6 +53,34 @@ class PackageSourceTests(unittest.TestCase):
         self.assertNotIn("start pve-sharedlvmthin-thin-guard", postinst)
         self.assertNotIn('restart "$THIN_GUARD_SERVICE"', postinst)
         self.assertIn("Active ThinGuard preserved without restart", postinst)
+        self.assertIn("slt-thin-peer-connect-timeout", inventory)
+        self.assertIn("slt-thin-peer-probe-timeout", inventory)
+        self.assertIn("BatchMode=yes", inventory)
+        self.assertIn("NumberOfPasswordPrompts=0", inventory)
+        self.assertNotIn("ConnectTimeout=5'", inventory)
+        self.assertIn("capture_json(1300", daemon)
+
+    def test_timing_hardening_is_fail_closed_and_documented(self):
+        plugin = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        helper = (ROOT / "lab/fix2-rolling-node-cycle.sh").read_text(
+            encoding="utf-8"
+        )
+        timing = (ROOT / "docs/TIMING-AND-SCALE-SAFETY.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("sub _thin_peer_probe_timing", plugin)
+        self.assertIn("timeout => $probe_timeout", plugin)
+        self.assertIn("sub _thick_close_timeout", plugin)
+        self.assertIn("after ${close_timeout}s close wait", plugin)
+        self.assertNotIn("per_vm_timeout", helper)
+        self.assertNotIn("timeout --foreground", helper)
+        self.assertIn("A timeout is never fencing", timing)
+        self.assertIn("no arbitrary total wall-clock deadline", timing)
+        self.assertIn("rollback outcome is UNKNOWN", plugin)
+        self.assertIn("continuing without retry", plugin)
+        self.assertNotIn("if ($origin_removed)", plugin)
 
     def test_materialized_migration_bridge_uses_supported_fail_closed_path(self):
         source = (ROOT / "usr/sbin/sharedlvmthin-migrate-bridge").read_text(
@@ -61,9 +93,9 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("MATERIALIZED_THICK", source)
         self.assertIn("MIGRATED_THICK", source)
         self.assertIn("sharedlvmthin-bridge-admission", source)
-        self.assertIn("sharedlvmthin-migrate-bridge inspect <vmid>", source)
-        self.assertIn("sharedlvmthin-migrate-bridge resume <vmid>", source)
-        self.assertIn("sharedlvmthin-migrate-bridge plan <vmid>", source)
+        self.assertIn("sharedlvmthin-migrate-bridge inspect <vmid> [transaction]", source)
+        self.assertIn("sharedlvmthin-migrate-bridge resume <vmid> [transaction]", source)
+        self.assertIn("sharedlvmthin-migrate-bridge plan <vmid> [transaction]", source)
         self.assertIn("RECOVERY_PLAN=FINALIZE_THIN", source)
         self.assertIn("target disk topology is not exactly finalizable Thin", source)
         self.assertIn("BRIDGE_ADMISSION_ACTIVE=NO", source)
@@ -88,6 +120,11 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("bridge state updated_at is in the future", source)
         self.assertIn("run_progress_move", source)
         self.assertIn("PIPESTATUS[0]", source)
+        self.assertIn("ambiguous bridge recovery", source)
+        self.assertIn('${#resume_files[@]}" -eq 1', source)
+        self.assertNotIn("-printf '%T@ %p", source)
+        self.assertIn("BRIDGE_STATE=AMBIGUOUS", source)
+        self.assertIn("bridge state transaction does not match", source)
         self.assertIn("now - last_persist", source)
         self.assertIn("sharedlvmthin-qmp-path-check", source)
         self.assertIn("RUNTIME_CONFIG_DIVERGENCE", source)
@@ -110,6 +147,9 @@ class PackageSourceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("dmsetup ls --target thin-pool", source)
         self.assertIn("dmsetup info", source)
+        self.assertIn('-o uuid "$name"', source)
+        self.assertIn('"$observed" = "$expected_uuid"', source)
+        self.assertNotIn('-o uuid "$mapper"', source)
         for mutation in ("lvchange", "lvcreate", "lvremove", "dmsetup remove"):
             self.assertNotIn(mutation, source)
 

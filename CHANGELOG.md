@@ -1,5 +1,50 @@
 # Changelog
 
+## RC5.11 TG32 — experimental timing and scale hardening
+
+- Make Thin peer SSH-connect and whole-evidence deadlines independently
+  configurable, bounded, internally consistent and identical across same-VG
+  Thin/Thick aliases. Expiry remains `UNKNOWN` and refuses activation.
+- Prevent the disposable rolling-cycle helper from killing or retrying a
+  potentially still-running native PVE start/stop task at a wall-clock limit.
+- Replace the fixed roughly two-second Thick frontend close loop with a
+  configurable monotonic observation window; expiry preserves the mapper.
+- Classify every failed Thin rollback create/remove/rename from a fresh exact
+  VG inventory instead of trusting the command exit. Never retry; accept an
+  ambiguous rename only when the canonical completed postcondition is proven.
+- Apply the same single-attempt/postcondition rule to Thin resize and snapshot
+  create/delete. Snapshot creation now proves same-name absence before the
+  command so a pre-existing object can never be adopted after an error.
+- Refuse migration-bridge inspect/plan/resume when more than one state file
+  exists for the VM unless the exact transaction is supplied. Modification
+  time is no longer treated as transaction authority.
+- Document the two-audit Thin latency envelope and the progress-driven,
+  unbounded-total-time behavior required for large Thick disks.
+
+## RC5.11 TG32 — additional hardening incorporated after TG31+fix2
+
+- Add a prominent, consistent experimental/disposable-lab risk and no-support
+  boundary to the README, security policy and installation guide. The new
+  detailed risk document distinguishes GPL code rights, operational warnings,
+  absence of support/SLA/warranty promises, and non-excludable local-law
+  obligations.
+- Add a dry-run-by-default disposable-lab rolling node helper. Mutations
+  require an explicit VMID list, `--execute`, and exact hostname confirmation;
+  host reboot remains an operator-controlled change-management step.
+
+- Re-audit every configured peer when an existing owner epoch names the local
+  node; a durable tag is no longer accepted as proof that no stale remote
+  kernel mapper exists.
+- Add an activation commit barrier immediately before `lvchange -ay`: repeat
+  the peer mapper audit and prove the exact local owner epoch did not change.
+- Identify remote thin-pool mappings by immutable kernel DM UUID across every
+  enumerated `thin-pool` target. A renamed/aliased mapper can no longer evade
+  the remote audit, while a canonical-name/UUID mismatch fails closed.
+- At qualification time these changes were local, uncommitted, not installed,
+  and not published.
+  They do not enable overlapping Thin activation or change Thick Generations
+  activation semantics.
+
 ## `0.9.0~rc5.10~tg31+fix2` (hotfix pre-release)
 
 - Preserve Thin ownership during additional-disk allocation: an unowned

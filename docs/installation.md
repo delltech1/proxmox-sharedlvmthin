@@ -1,11 +1,21 @@
 # Installation
 
+> [!CAUTION]
+> **Disposable lab installation only. BOTH THIN AND THICK GENERATIONS ARE
+> EXPERIMENTAL.** This release candidate
+> can cause data loss, corruption, or prolonged unavailability. Do not attach
+> production workloads or irreplaceable data. Before installation, verify an
+> independent backup and recovery path, fencing, quorum, stable device
+> identity, and bounded all-path-loss behavior. The operator assumes the risk
+> of installation and operation to the maximum extent permitted by applicable
+> law; see GPLv3 sections 15–17 and the risk notice in `README.md`.
+
 SharedLvmThin consumes an **existing shared block device and an existing
 dedicated LVM VG**. It does not turn local disks into shared storage and it
 does not configure a SAN. Complete the storage preparation below before
 installing or registering the plugin.
 
-For the TG31+fix1 candidate's same-VG Thin/Thick waiting behavior and the
+For the same-VG Thin/Thick waiting behavior and the
 `slt-mutation-admission-timeout` setting, see [mutation admission](mutation-admission.md).
 This does not replace the rolling-update checks below.
 
@@ -140,7 +150,8 @@ to a subset of the cluster. Do not mark a locally attached VG as shared. The
 identity pins are strongly recommended: they make a wrong LUN, PV or VG fail
 closed before mutation.
 
-For new production deployments, configure `elastic` absolute headroom so that
+For disposable-lab evaluation of prospective deployments, configure `elastic`
+absolute headroom so that
 multi-terabyte virtual disks do not reserve a proportional fraction of their
 logical size:
 
@@ -236,6 +247,11 @@ can absorb a fast clone/restore. `proportional` adds
 admits live used bytes plus the complete new disk and fails closed if an
 explicit maximum is insufficient. See `clone-restore-burst-capacity.md`.
 Mark genuinely shared storage as shared and restrict nodes when appropriate.
+For loaded clusters, configure Thin peer connect/probe bounds and the Thick
+frontend close observation window only from measured latency. Their exact
+semantics, same-VG alias requirements and large-disk behavior are documented
+in [TIMING-AND-SCALE-SAFETY.md](TIMING-AND-SCALE-SAFETY.md). A timeout never
+constitutes fencing and must not trigger an automatic mutation retry.
 
 The package installs a marked dmeventd autogrow fragment in
 `/etc/lvm/lvmlocal.conf` only when no administrator-owned thin command or

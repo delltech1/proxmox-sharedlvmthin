@@ -10,6 +10,17 @@ the GPL, including preservation of applicable copyright and license notices,
 clear identification of modified versions, and provision of Corresponding
 Source as required by the license.
 
+Both Thin mode and Thick Generations mode are experimental and intended only
+for disposable laboratory systems, disposable storage, and disposable data.
+Neither mode is production-ready, supported, certified, or warranted. Use can
+cause data loss, corruption, unavailability, failed migration or recovery, and
+host or cluster downtime. No support, maintenance, service level, update
+schedule, compatibility commitment, or duty to fix is offered. The operator
+is responsible for fencing, backups, recovery, configuration, change control,
+and all use decisions. See docs/RISK-AND-SUPPORT-BOUNDARY.md and GNU GPLv3
+sections 15 through 17. Nothing in this notice excludes a right or liability
+that applicable law does not permit to be excluded.
+
 The SharedLvmThin name does not imply endorsement of modified or third-party
 distributions. This project is independent community software and is not
 affiliated with or endorsed by Proxmox Server Solutions GmbH.

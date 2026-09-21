@@ -17,6 +17,13 @@ trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 mkdir -p "$OUT"
 cp -a "$ROOT/DEBIAN" "$ROOT/lib" "$ROOT/usr" "$STAGE/"
 
+# Ship the same risk/support boundary and project notice inside the binary
+# package so the warning remains available after an offline installation.
+install -m 0644 "$ROOT/docs/RISK-AND-SUPPORT-BOUNDARY.md" \
+    "$STAGE/usr/share/doc/pve-sharedlvmthin/RISK-AND-SUPPORT-BOUNDARY.md"
+install -m 0644 "$ROOT/NOTICE" \
+    "$STAGE/usr/share/doc/pve-sharedlvmthin/NOTICE"
+
 # Syntax tests can leave bytecode in a development tree. Binary packages
 # must be built only from authoritative source files.
 find "$STAGE" -type f -name '*.pyc' -delete

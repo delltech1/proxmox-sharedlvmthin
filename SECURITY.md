@@ -1,9 +1,18 @@
 # Security policy
 
-## Supported version
+> [!CAUTION]
+> Both Thin and Thick Generations in this release candidate are experimental
+> and intended only for disposable lab systems and disposable data. Neither
+> mode is a supported, certified, or production-ready storage product. The
+> operator must independently provide fencing, backups, recovery
+> testing, SAN identity validation, and safe change control. See `LICENSE`
+> sections 15–17 and the operational risk notice in `README.md`.
 
-Security fixes target the latest published release-candidate branch. Older
-candidates may not receive fixes.
+## Security-report handling
+
+Security reports may be evaluated for the latest published release-candidate
+branch. No fix, response time, continued maintenance, or support commitment is
+promised. Older candidates may never receive fixes.
 
 ## Reporting a vulnerability
 
@@ -18,5 +27,6 @@ forwarded only to the local PVE authentication API for login and are not
 stored. PVE tickets are not sent to browser JavaScript.
 
 The storage plugin runs privileged LVM commands. Install only a
-checksum-verified release and validate SAN identity, quorum, fencing and
-multipath behavior before production use.
+checksum-verified release in a disposable lab and validate SAN identity,
+quorum, fencing and multipath behavior. Successful validation does not convert
+this release candidate into a supported or certified production product.

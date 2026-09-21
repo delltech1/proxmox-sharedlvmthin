@@ -24,9 +24,18 @@ present=0
 while IFS= read -r line; do
     [ -n "$line" ] || continue
     name="${line%%[[:space:]]*}"
-    if [ "$name" = "$mapper" ]; then
+    case "$name" in
+        ''|*[!A-Za-z0-9_.+-]*) exit 71 ;;
+    esac
+    observed="$(dmsetup info -c --noheadings -o uuid "$name" 2>/dev/null | tr -d '[:space:]')" || exit 72
+
+    # The kernel DM UUID is the durable LVM identity.  Do not let an older
+    # helper, manual dmsetup invocation, or renamed mapper hide the same
+    # thin-pool metadata behind a non-canonical device name.
+    if [ "$observed" = "$expected_uuid" ]; then
         present=$((present + 1))
     fi
+    [ "$name" != "$mapper" ] || [ "$observed" = "$expected_uuid" ] || exit 73
 done <<EOF
 $inventory
 EOF
@@ -36,7 +45,4 @@ if [ "$present" -eq 0 ]; then
     exit 0
 fi
 [ "$present" -eq 1 ] || exit 71
-
-observed="$(dmsetup info -c --noheadings -o uuid "$mapper" 2>/dev/null | tr -d '[:space:]')" || exit 72
-[ "$observed" = "$expected_uuid" ] || exit 73
-printf 'BASTRIX_REMOTE_THIN_V1|PRESENT|%s|%s\n' "$mapper" "$observed"
+printf 'BASTRIX_REMOTE_THIN_V1|PRESENT|%s|%s\n' "$mapper" "$expected_uuid"

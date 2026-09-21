@@ -130,6 +130,19 @@ completed disk count and a positive target recovery check:
 sharedlvmthin-migrate-bridge resume <vmid>
 ```
 
+If historical state files make the VMID ambiguous, no file is selected by
+mtime. Inspect the files and provide the exact recorded transaction explicitly:
+
+```bash
+sharedlvmthin-migrate-bridge plan <vmid> <32-hex-transaction>
+sharedlvmthin-migrate-bridge resume <vmid> <32-hex-transaction>
+```
+
+The same rule applies to inspection: `inspect <vmid>` requires a unique state
+file, while `inspect <vmid> <32-hex-transaction>` selects only that exact
+root-owned state. Inspection never silently presents the newest file as the
+authoritative recovery transaction.
+
 All earlier or mixed phases are deliberately refused. `resume` never guesses,
 deletes storage, retries an ambiguous copy, or rewrites VM configuration.
 The bridge-admission helper also exposes a read-only exact state inspection;

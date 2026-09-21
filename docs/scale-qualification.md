@@ -118,6 +118,10 @@ The direct A/B result for the second fix was:
 
 ## Operational scaling observations
 
+The current timing model and the distinction between control-plane deadlines
+and progress-driven large-disk work are specified in
+[TIMING-AND-SCALE-SAFETY.md](TIMING-AND-SCALE-SAFETY.md).
+
 - Per-VM pool creation generates several LVM metadata transactions.  Large VG
   inventories and accumulated `/etc/lvm/archive` files materially increase
   latency and can expose bounded lock timeouts.
@@ -226,11 +230,11 @@ must not be represented as 500 GB--8 TB data-movement qualification.
 ## 2026-09-18 externally fenced 50-VM Thin HA gate
 
 The fenced gate was repeated with 50 simultaneously running, HA-managed Thin
-VMs on `DEV-PRXZFS01`. The only non-test workload on that host was stopped
+VMs on anonymized `lab-node-a`. The only non-test workload on that host was stopped
 before the test. At `2026-09-18T03:41:32Z`, the complete PVE host was hard
 powered off from its external hypervisor. The two surviving nodes remained
 quorate. PVE HA first placed all 50 resources in `fence`, then distributed
-their recovery between `DEV-PRXZFS02` and `DEV-PRXZFS03`; all 50 reached
+their recovery between anonymized `lab-node-b` and `lab-node-c`; all 50 reached
 `started` without manually changing any owner tag.
 
 The exact read-only post-fence audit passed 50/50. For every manifest VM it
