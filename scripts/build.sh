@@ -42,6 +42,17 @@ if [ "$FLAVOR" = "thick-only" ]; then
         "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check" \
         "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence" \
         "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinGuard.pm" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinGuardEngine.pm" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinGuardInventory.pm" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinGuardProtocol.pm" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinGuardState.pm" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinMobility.pm" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinRelay.pm" \
+        "$STAGE/usr/share/perl5/PVE/SharedLvmThinWatchdog.pm" \
         "$STAGE/usr/sbin/sharedlvmthin-migrate-bridge"
 
     # Debian package documentation belongs under the binary package name.

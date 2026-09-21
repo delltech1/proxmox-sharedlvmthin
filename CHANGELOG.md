@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Remove the migration-bridge admission/planning/QMP helpers and daemon-only
+  ThinGuard/mobility Perl modules from the Thick-only payload, not merely their
+  public executables.  Artifact validation rejects any of these dormant Thin
+  operational components if they reappear.
 - Hide every Thin recovery/metadata command from Thick-only CLI help while
   retaining the independent runtime rejection if a caller invokes a Thin
   command name directly.

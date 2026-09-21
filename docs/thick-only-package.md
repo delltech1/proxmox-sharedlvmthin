@@ -22,7 +22,9 @@ The profiles are mutually exclusive:
   shared plugin files simultaneously.
 
 The Thick-only profile removes Thin runtime services, helpers and migration
-bridge from the binary package. Its plugin schema defaults to
+bridge from the binary package. It also omits bridge-only helpers and the
+daemon-only ThinGuard/mobility Perl modules, rather than shipping dormant
+operational components. Its plugin schema defaults to
 `thick-generations`, does not advertise Thin-only properties, and rejects an
 explicit Thin allocation mode. The public CLI and the internal recovery worker
 also reject Thin operations so a direct helper invocation cannot bypass the

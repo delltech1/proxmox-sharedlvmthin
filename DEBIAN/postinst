@@ -37,13 +37,13 @@ chmod 0755 "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
 
 if [ "$PACKAGE_FLAVOR" = "dual" ]; then
     chmod 0755 "$MONITOR" "$THIN_GUARDD" \
-        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check
 fi
 
 # Install the tested dmeventd policy only when the administrator has not

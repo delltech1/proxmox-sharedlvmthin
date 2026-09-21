@@ -126,6 +126,17 @@ if [ "$FLAVOR" = "thick-only" ]; then
         usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
         usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence \
         usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
+        usr/share/perl5/PVE/SharedLvmThinGuard.pm \
+        usr/share/perl5/PVE/SharedLvmThinGuardEngine.pm \
+        usr/share/perl5/PVE/SharedLvmThinGuardInventory.pm \
+        usr/share/perl5/PVE/SharedLvmThinGuardProtocol.pm \
+        usr/share/perl5/PVE/SharedLvmThinGuardState.pm \
+        usr/share/perl5/PVE/SharedLvmThinMobility.pm \
+        usr/share/perl5/PVE/SharedLvmThinRelay.pm \
+        usr/share/perl5/PVE/SharedLvmThinWatchdog.pm \
         usr/sbin/sharedlvmthin-migrate-bridge
     do
         if [ -e "$TMP/root/$forbidden_path" ]; then

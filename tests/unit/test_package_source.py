@@ -622,6 +622,7 @@ exit 0
         dual = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
         thick = (ROOT / "packaging/thick-only/control").read_text(encoding="utf-8")
         build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        release_gate = (ROOT / "scripts/check-release.sh").read_text(encoding="utf-8")
         plugin = (
             ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
         ).read_text(encoding="utf-8")
@@ -647,6 +648,18 @@ exit 0
         self.assertIn("FLAVOR=${2:-${PACKAGE_FLAVOR:-dual}}", build)
         self.assertIn('printf \'%s\\n\' "$FLAVOR"', build)
         self.assertIn("sharedlvmthin-migrate-bridge", build)
+        for excluded in (
+            "sharedlvmthin-bridge-admission",
+            "sharedlvmthin-bridge-plan",
+            "sharedlvmthin-qmp-path-check",
+            "SharedLvmThinGuardEngine.pm",
+            "SharedLvmThinMobility.pm",
+            "SharedLvmThinRelay.pm",
+            "SharedLvmThinWatchdog.pm",
+        ):
+            self.assertIn('"$STAGE/usr', build)
+            self.assertIn(excluded, build)
+            self.assertIn(excluded, release_gate)
         self.assertIn("sub _package_flavor", plugin)
         self.assertIn("Thin allocation mode is unavailable", plugin)
         self.assertIn('if [ "$PACKAGE_FLAVOR" = dual ]; then', cli)
@@ -690,6 +703,11 @@ exit 0
         self.assertIn("Administrator-owned LVM settings were not modified", postinst)
         self.assertIn("lvmlocal.conf.before-thick-only", postinst)
         self.assertIn("malformed SharedLvmThin-managed LVM policy markers", postinst)
+        common_chmod = postinst.index('chmod 0755 "$MATERIALIZER"')
+        dual_chmod = postinst.index('chmod 0755 "$MONITOR"')
+        qmp_chmod = postinst.index("sharedlvmthin-qmp-path-check")
+        self.assertGreater(qmp_chmod, dual_chmod)
+        self.assertGreater(dual_chmod, common_chmod)
         self.assertIn("if (open || seen) exit 2", postinst)
         thick_branch = postinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]')
         managed_cleanup = postinst.index('sed -i "/^$LVM_BEGIN$/,/^$LVM_END$/d"')
