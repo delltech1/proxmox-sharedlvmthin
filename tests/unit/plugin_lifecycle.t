@@ -534,6 +534,7 @@ subtest 'every Thick LV deactivation proves identity and kernel absence' => sub 
     ) };
     like($@, qr/remains active after deactivation/,
         'a successful command cannot hide a remaining kernel mapper');
+    reset_mocks();
 };
 
 subtest 'thin-pool health gate blocks mutation before repair or mutation commands' => sub {
