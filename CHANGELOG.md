@@ -2,6 +2,11 @@
 
 ## Unreleased — Thick Generations audit
 
+- Separate historical cluster evidence from the current audit delta. The
+  release gate now requires explicit physical tests for package profiles,
+  PREPARE cleanup, VG-wide concurrency admission, device-scoped capacity,
+  frontend-removal postconditions, health telemetry and the post-reboot
+  dm-clone kernel target before an audit artifact can be published.
 - Extend the read-only compatibility gate with a dry-run proof that the
   running kernel can load `dm-clone` after reboot. If the target is already
   registered, require the supported v1 interface and fail on unavailable or

@@ -56,8 +56,14 @@ The executable order and remaining original-cluster work are defined in the
 | Package rolling update | Same-flavor upgrade one node at a time with active services, reboot and post-update guest I/O verification | OPEN |
 | Package removal fence | Active ThinGuard plus managed Thin objects positively refuses removal; empty audited inventory permits cleanup | OPEN |
 | Thick-only diagnostics | Package identity/version, Doctor and JSON health output match the installed Thick-only artifact on a live PVE node | OPEN |
+| PREPARE cleanup recovery | Intent-only, partial signed remnants, complete signed pair and ambiguity refusal with guest hashes and idempotent retry | OPEN |
+| Materialization admission | Per-VG saturation refuses before intent/LV creation, preserves active workers and admits work after capacity returns | OPEN |
+| Admission health telemetry | Exact active/limit/available values for AVAILABLE and SATURATED states; invalid or conflicting policy fails closed | OPEN |
+| Device-scoped capacity | Capacity query is pinned to the configured multipath WWID and cannot accept a same-name local/stale VG | OPEN |
+| Frontend-removal postcondition | A surviving mapper after reported removal prevents lower signed-LV deactivation and preserves recovery evidence | OPEN |
+| Kernel dm-clone gate | Module dry-run succeeds before/after reboot and a controlled transition proves the registered `clone` v1.x target | OPEN |
 | Recovery monitoring | Live IN_PROGRESS, RECOVERY_REQUIRED and post-resume MATERIALIZED classification; scoped dmeventd requirement | PASS |
-| Regression | Python, Perl taint-mode, package content, privacy, reproducibility and profile-parity gates at accepted commit | PASS: CI RUN 199 AT `71eb487`; 211 PYTHON TESTS; 21 PERL FILES / 823 ASSERTIONS |
+| Regression | Python, Perl taint-mode, package content, privacy, reproducibility and profile-parity gates at current audit commit | PASS: CI RUN 303 AT `7097b3a`; RUNTIME ROWS REMAIN OPEN |
 
 `PASS` means the evidence is recorded in
 [`thick-generations-poc-status.md`](thick-generations-poc-status.md). A current

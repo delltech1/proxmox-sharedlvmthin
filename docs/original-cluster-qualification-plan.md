@@ -1,14 +1,69 @@
 # Original cluster qualification plan
 
-This document defines the qualification work for the local
-`0.9.0~rc5.4~tg24` Thick Generations candidate. It is a test plan, not a support
-claim. Record exact package checksums, PVE versions, Storage API versions,
-storage identities and results before changing any state.
+This document preserves the completed qualification record for the historical
+`0.9.0~rc5.4~tg24` Thick Generations candidate and defines the additional gate
+for the current unreleased Thick audit. Historical check marks are evidence for
+the named older candidate only. They do not qualify a new commit, package or
+profile. This is a test plan, not a support claim. Record exact commit, package
+checksums, PVE versions, Storage API versions, storage identities and results
+before changing any state.
 
 The ESXi datastore that produced SATA command failures, controller resets and
 VMFS heartbeat timeouts is excluded from all further load and fault testing.
 Its interrupted run is infrastructure-failure evidence, not a plugin failure
 and not an endurance pass.
+
+## 0. Unreleased Thick audit delta (PR #4)
+
+Every item in this section is a release blocker for the current audit
+candidate. Run it only on disposable storage and test guests. Attach sanitized
+command output, timestamps, package SHA256 values and before/after guest hashes
+to the evidence record. A CI pass, package build or historical check mark below
+cannot close any of these runtime items.
+
+- [ ] Build Dual and Thick-only packages twice from the exact accepted commit;
+      prove byte-identical artifacts and record both SHA256 values.
+- [ ] On each qualified PVE Storage API version, run the package profile gate
+      before mutation, then exercise same-flavor upgrades and both
+      Dual-to-Thick-only and Thick-only-to-Dual replacement. After every
+      transaction prove the opposite package is absent, the flavor marker and
+      CLI match the installed package, and existing guest I/O is unchanged.
+- [ ] Perform the rolling update one node at a time, including a reboot and
+      post-reboot identity, quorum, multipath, Doctor, JSON health and guest-I/O
+      check. Never infer compatibility merely from successful installation.
+- [ ] Before and after reboot, prove the installed kernel can resolve
+      `dm-clone` with `modprobe --dry-run --show-depends dm-clone`. During one
+      controlled Thick transition, prove the registered target is `clone` v1.x.
+- [ ] Fault-inject every PREPARE creation and cleanup boundary: intent only,
+      destination only, metadata only, both signed remnants, and a deliberately
+      ambiguous remainder. `thick-recover-prepare` must clean only exact signed
+      ownership, remain repeatable after partial cleanup, clear only a completed
+      exact intent and preserve all objects and intent on ambiguity. Verify
+      source and guest hashes before and after every case.
+- [ ] Set the disposable VG materialization limit to 1, hold one hydration and
+      request another snapshot. The second request must refuse before creating
+      an intent or LV, while the running guest and first worker remain healthy.
+      Complete the first transition and prove the next request is admitted.
+- [ ] Repeat the admission test with a limit greater than 1 and concurrent VMs;
+      prove JSON health reports exact active, limit and available counts in
+      AVAILABLE and SATURATED states. Invalid or conflicting alias policy must
+      fail closed without storage mutation.
+- [ ] Prove Thick capacity admission obtains VG data only through the configured
+      `/dev/mapper/<WWID>` device scope. On a fully disposable setup, introduce
+      a same-name stale or local VG and prove it cannot supply capacity data.
+- [ ] Fault-inject a misleading successful stable-frontend removal while the
+      mapper remains. The operation must stop before deactivating the signed
+      anchor or HEAD LV and must preserve recovery evidence.
+- [ ] Run Thick-only Doctor and JSON health on a live PVE node and prove package
+      identity, mode, recovery classification and materialization admission
+      fields match the installed artifact.
+- [ ] Repeat the applicable Thick lifecycle, migration, backup/restore,
+      transport-loss and uninterrupted endurance checks below against the exact
+      candidate artifacts; retain sanitized evidence under their SHA256 values.
+
+Do not mark an item complete when only the refusal exit code is known. Each
+negative test must also prove that no unintended LV, tag, mapper, package,
+configuration or guest-data change occurred.
 
 ## 1. Admission gate
 
