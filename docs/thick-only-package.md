@@ -52,7 +52,9 @@ guardian can remain after its executable and unit are removed. This service
 cleanup is not a storage mutation and does not deactivate guest volumes. The
 old Dual package refuses removal whenever any managed Thin object exists even
 if ThinGuard is already stopped or failed, and a partial VG inventory is never
-treated as an empty inventory.
+treated as an empty inventory. An unavailable or ambiguous systemd state also
+refuses removal; an active guardian must reach a positively re-read stopped
+state before its unit and executable can be removed.
 
 The Thick-only post-install step removes only the dual package's explicitly
 delimited, project-managed `lvmlocal.conf` autogrow fragment because that

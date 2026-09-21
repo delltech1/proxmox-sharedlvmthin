@@ -45,11 +45,41 @@ case "$1" in
                 echo "Drain/migrate them before removing the package, regardless of ThinGuard state." >&2
                 exit 1
             fi
-            if systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
-                systemctl stop "$THIN_GUARD_SERVICE"
+            if ! GUARD_STATE=$(systemctl show --property ActiveState --value \
+                "$THIN_GUARD_SERVICE" 2>/dev/null); then
+                echo "ERROR: package removal refused: ThinGuard state is unavailable." >&2
+                exit 1
+            fi
+            case "$GUARD_STATE" in
+                active|activating|reloading|deactivating)
+                    systemctl stop "$THIN_GUARD_SERVICE"
+                    if ! GUARD_STATE=$(systemctl show --property ActiveState --value \
+                        "$THIN_GUARD_SERVICE" 2>/dev/null); then
+                        echo "ERROR: package removal refused: stopped ThinGuard state is unavailable." >&2
+                        exit 1
+                    fi
+                    case "$GUARD_STATE" in
+                        inactive|failed) ;;
+                        *)
+                            echo "ERROR: package removal refused: ThinGuard stop is unconfirmed ($GUARD_STATE)." >&2
+                            exit 1
+                            ;;
+                    esac
+                    ;;
+                inactive|failed) ;;
+                *)
+                    echo "ERROR: package removal refused: ambiguous ThinGuard state '$GUARD_STATE'." >&2
+                    exit 1
+                    ;;
+            esac
+            if ! systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1; then
+                echo "ERROR: package removal refused: ThinGuard disable failed." >&2
+                exit 1
             fi
         fi
-        systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1 || true
+        if [ "$PACKAGE_FLAVOR" = thick-only ]; then
+            systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1 || true
+        fi
         systemctl stop "$SERVICE" >/dev/null 2>&1 || true
         systemctl disable "$SERVICE" >/dev/null 2>&1 || true
         ;;

@@ -5,7 +5,10 @@
 - Make Dual-package removal independent of the current ThinGuard service state.
   Every removal now requires a complete non-partial LVM inventory and refuses
   while any managed Thin object exists, even if the guardian was manually
-  stopped or failed; service shutdown happens only after that proof.
+  stopped or failed; service shutdown happens only after that proof.  Resolve
+  the exact systemd `ActiveState`, refuse an unavailable/ambiguous state, and
+  positively re-read `inactive` or `failed` after stopping before files may be
+  removed.
 - Refuse a Thick-only install or profile replacement when the system-wide LVM
   inventory contains a partial or malformed VG.  A successful but incomplete
   `lvs` view is no longer accepted as proof that all managed Thin objects are
