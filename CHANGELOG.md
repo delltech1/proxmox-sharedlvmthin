@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Bind every dm-clone status observation to the signed transition geometry.
+  The target must start at sector zero and report the exact frontend length,
+  region size and derived region count throughout hydration and final pivot;
+  substituted, truncated or internally impossible status fails closed.
 - Before any direct zero/metadata write through an LVM pathname, compare the
   exact device-scoped VG/LV UUID pair with the active kernel DM UUID. A stale
   mapper or duplicate-name collision now fails before it can redirect a raw

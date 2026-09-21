@@ -882,7 +882,11 @@ sub _thick_transition_anchor {
 }
 
 sub _thick_verify_clone_status {
-    my ($class, $mapper, $must_be_complete) = @_;
+    my ($class, $mapper, $must_be_complete, $expected_sectors, $expected_region) = @_;
+    die "dm-clone status verification for '$mapper' has no authoritative sector count\n"
+        if !defined($expected_sectors) || $expected_sectors !~ /^\d+$/ || !$expected_sectors;
+    die "dm-clone status verification for '$mapper' has no authoritative region size\n"
+        if !defined($expected_region) || $expected_region !~ /^\d+$/ || !$expected_region;
     my $lines = _command_lines(
         ['/sbin/dmsetup', 'status', '--noflush', $mapper],
         "reading dm-clone status for '$mapper' failed",
@@ -891,10 +895,15 @@ sub _thick_verify_clone_status {
     my $status = $lines->[0];
     die "dm-clone frontend '$mapper' entered the kernel Fail metadata state; automatic hydration or pivot is unsafe\n"
         if $status =~ /^0\s+\d+\s+clone\s+Fail\s*$/i;
-    my ($hydrated, $total, $hydrating) =
-        $status =~ /^0\s+\d+\s+clone\s+\S+\s+\S+\s+\S+\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
+    my ($status_sectors, $region, $hydrated, $total, $hydrating) =
+        $status =~ /^0\s+(\d+)\s+clone\s+\d+\s+\d+\/\d+\s+(\d+)\s+(\d+)\/(\d+)\s+(\d+)(?:\s|$)/;
     die "dm-clone status for '$mapper' is malformed\n"
-        if !defined($hydrated) || !$total || !defined($hydrating);
+        if !defined($status_sectors) || !defined($region) || !defined($hydrated)
+        || !$total || !defined($hydrating);
+    die "dm-clone status geometry for '$mapper' does not match the signed transition\n"
+        if $status_sectors != $expected_sectors || $region != $expected_region
+        || $total != int(($expected_sectors + $expected_region - 1) / $expected_region)
+        || $hydrated > $total;
     my ($metadata_mode) = $status =~ /\s+(rw|ro)\s*$/i;
     die "dm-clone status for '$mapper' does not report an authoritative metadata mode\n"
         if !defined($metadata_mode);
@@ -971,10 +980,12 @@ sub _thick_verify_clone_frontend {
 }
 
 sub _thick_wait_for_hydration {
-    my ($class, $mapper, $timeout) = @_;
+    my ($class, $mapper, $timeout, $expected_sectors, $expected_region) = @_;
     die "invalid thick-generations hydration timeout\n"
         if !defined($timeout) || $timeout !~ /^\d+$/ || $timeout < 60 || $timeout > 86400;
-    my ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+    my ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status(
+        $mapper, 0, $expected_sectors, $expected_region,
+    );
     return 1 if $hydrated == $total && $hydrating == 0;
 
     my $last_hydrated = $hydrated;
@@ -993,7 +1004,9 @@ sub _thick_wait_for_hydration {
         # Close the completion-before-wait race after capturing the event
         # number.  A changed total or regressing progress is ambiguous and
         # never resets the observation window.
-        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status(
+            $mapper, 0, $expected_sectors, $expected_region,
+        );
         return 1 if $hydrated == $total && $hydrating == 0;
         die "dm-clone hydration geometry changed for '$mapper'\n"
             if $total != $last_total || $hydrated < $last_hydrated;
@@ -1021,7 +1034,9 @@ sub _thick_wait_for_hydration {
         };
         $wait_error = $@ if $@;
         my $wait_elapsed = $class->_thick_progress_clock() - $wait_started;
-        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status($mapper, 0);
+        ($hydrated, $total, $hydrating) = $class->_thick_verify_clone_status(
+            $mapper, 0, $expected_sectors, $expected_region,
+        );
         return 1 if $hydrated == $total && $hydrating == 0;
         die "dm-clone hydration geometry changed for '$mapper'\n"
             if $total != $last_total || $hydrated < $last_hydrated;
@@ -4167,6 +4182,7 @@ sub _thick_reconstruct_missing_transition_runtime {
     );
     $class->_thick_verify_clone_status(
         $front, $phase eq 'HYDRATION_COMPLETE' ? 1 : 0,
+        $sectors, $tr->{geometry}->{region_sectors},
     );
     return 1;
 }
@@ -4215,6 +4231,7 @@ sub _thick_verify_published_transition_frontend {
     $class->_thick_verify_clone_status(
         mapper_name($class->_thick_namespace($scfg), $volname),
         $phase eq 'HYDRATION_COMPLETE' ? 1 : 0,
+        int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
     );
     return 1;
 }
@@ -4599,7 +4616,9 @@ sub _thick_volume_snapshot {
             region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
             new => $tr->{new}, source_map => $tr->{source_map},
         );
-        $class->_thick_verify_clone_status($front, 0);
+        $class->_thick_verify_clone_status(
+            $front, 0, $sectors, $tr->{geometry}->{region_sectors},
+        );
         if (!$rollback) {
             $class->_thick_ensure_snapshot_readonly(
                 $vg, $tr->{old}, $lvs->{$vg}->{$tr->{old}}, $device,
@@ -4651,6 +4670,7 @@ sub _thick_volume_snapshot {
         }
         $class->_thick_wait_for_hydration(
             $front, $scfg->{'slt-tg-hydration-timeout'} // 3600,
+            int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
         );
 
         $class->_with_vg_lock($storeid, $scfg, sub {
@@ -4667,7 +4687,9 @@ sub _thick_volume_snapshot {
             region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
             new => $tr->{new}, source_map => $tr->{source_map},
         );
-        $class->_thick_verify_clone_status($front, 1);
+        $class->_thick_verify_clone_status(
+            $front, 1, int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
+        );
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'HYDRATION_COMPLETE', _device => $device,
         );
@@ -4692,7 +4714,9 @@ sub _thick_volume_snapshot {
             region => $tr->{geometry}->{region_sectors}, meta => $tr->{meta},
             new => $tr->{new}, source_map => $tr->{source_map},
         );
-        $class->_thick_verify_clone_status($front, 1);
+        $class->_thick_verify_clone_status(
+            $front, 1, int($tr->{size} / 512), $tr->{geometry}->{region_sectors},
+        );
         my $already_suspended = $class->_thick_mapper_is_suspended($front);
         my $sectors = int($tr->{size} / 512);
         run_command(
@@ -4721,7 +4745,9 @@ sub _thick_volume_snapshot {
         # observation. A crash here leaves an exactly classifiable suspended
         # clone plus the deterministic inactive table; resume repeats no data
         # mutation and can safely continue this boundary.
-        $class->_thick_verify_clone_status($front, 1);
+        $class->_thick_verify_clone_status(
+            $front, 1, $sectors, $tr->{geometry}->{region_sectors},
+        );
         run_command(
             ['/sbin/dmsetup', '--verifyudev', 'resume', $front],
             errmsg => "publishing canonical linear frontend failed",

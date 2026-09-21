@@ -78,6 +78,14 @@ metadata before resume publishes the destination-only mapping. Unknown,
 read-only, failed, or geometrically inconsistent status remains suspended and
 fails closed rather than publishing the linear table.
 
+Every status observation is also bound to the signed transition geometry, not
+merely to a plausible hydration counter. The device-mapper target must begin at
+sector zero and report the exact frontend sector length, configured region
+size, and region count derived from those two values. Those invariants are
+rechecked before and after each bounded event wait and again at the pivot, so a
+replaced, truncated, or internally impossible runtime map cannot inherit the
+authority of an otherwise valid persistent anchor.
+
 The read-only recovery classifier reports that exact suspended boundary as
 `PIVOT_READY`, never as healthy or mutation-safe. This keeps diagnostics and
 the explicit resume implementation consistent without allowing an ordinary

@@ -3604,24 +3604,37 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
     ), 'clone frontend identity, table, and exact dependency set pass');
     is(scalar(@reads), 0, 'all exact clone evidence was consumed');
 
-    @reads = (['0 8192 clone 8 70/5120 8 4/8 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 rw']);
-    is_deeply([$class->_thick_verify_clone_status($mapper, 0)], [4, 8, 1],
+    @reads = (['0 8192 clone 8 70/5120 8 4/1024 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 rw']);
+    is_deeply([$class->_thick_verify_clone_status($mapper, 0, 8192, 8)], [4, 1024, 1],
         'clone status accepts exact writable metadata evidence');
 
-    @reads = (['0 8192 clone 8 70/5120 8 4/8 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 ro']);
-    eval { $class->_thick_verify_clone_status($mapper, 0) };
+    @reads = (['0 8192 clone 8 70/5120 8 4/1024 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 ro']);
+    eval { $class->_thick_verify_clone_status($mapper, 0, 8192, 8) };
     like($@, qr/metadata is read-only; automatic hydration or pivot is unsafe/,
         'read-only clone metadata fails immediately instead of looking like slow hydration');
 
     @reads = (['0 8192 clone Fail']);
-    eval { $class->_thick_verify_clone_status($mapper, 0) };
+    eval { $class->_thick_verify_clone_status($mapper, 0, 8192, 8) };
     like($@, qr/kernel Fail metadata state; automatic hydration or pivot is unsafe/,
         'kernel Fail state receives a distinct fail-closed classification');
 
-    @reads = (['0 8192 clone 8 70/5120 8 4/8 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32']);
-    eval { $class->_thick_verify_clone_status($mapper, 0) };
+    @reads = (['0 8192 clone 8 70/5120 8 4/1024 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32']);
+    eval { $class->_thick_verify_clone_status($mapper, 0, 8192, 8) };
     like($@, qr/does not report an authoritative metadata mode/,
         'missing metadata mode is ambiguous and fails closed');
+
+    for my $case (
+        ['0 4096 clone 8 70/5120 8 4/512 1 0 0 rw', 8192, 8, 'wrong target length'],
+        ['1 8192 clone 8 70/5120 8 4/1024 1 0 0 rw', 8192, 8, 'nonzero target start'],
+        ['0 8192 clone 8 70/5120 16 4/512 1 0 0 rw', 8192, 8, 'wrong region size'],
+        ['0 8192 clone 8 70/5120 8 4/512 1 0 0 rw', 8192, 8, 'wrong total regions'],
+        ['0 8192 clone 8 70/5120 8 1025/1024 0 0 0 rw', 8192, 8, 'impossible hydrated count'],
+    ) {
+        @reads = ([$case->[0]]);
+        eval { $class->_thick_verify_clone_status($mapper, 0, $case->[1], $case->[2]) };
+        like($@, qr/(?:malformed|does not match the signed transition)/,
+            "$case->[3] fails closed");
+    }
 
     my @status = ([8, 8, 0]);
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_clone_status = sub {
@@ -3630,14 +3643,14 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         die "incomplete\n" if $must_be_complete && ($row[0] != $row[1] || $row[2] != 0);
         return @row;
     };
-    ok($class->_thick_wait_for_hydration($mapper, 60),
+    ok($class->_thick_wait_for_hydration($mapper, 60, 8192, 8),
         'already complete hydration returns without waiting');
     is(scalar(@commands), 0, 'already complete hydration spawns no wait probe');
 
     reset_mocks();
     @status = ([1, 8, 0], [2, 8, 1], [8, 8, 0]);
     @reads = (['17']);
-    ok($class->_thick_wait_for_hydration($mapper, 60),
+    ok($class->_thick_wait_for_hydration($mapper, 60, 8192, 8),
         'one event-numbered wait closes the completion race');
     is(scalar(@commands), 1, 'exactly one potentially blocking wait is spawned');
     like((command_lines())[0], qr{/usr/bin/timeout --kill-after=5s 60s /sbin/dmsetup wait \Q$mapper\E 17$},
@@ -3657,7 +3670,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
             $now += 50;
             return;
         };
-        ok($class->_thick_wait_for_hydration($mapper, 60),
+        ok($class->_thick_wait_for_hydration($mapper, 60, 8192, 8),
             'verified progress renews the bounded no-progress observation window');
     }
     is(scalar(@commands), 2,
@@ -3678,7 +3691,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         $now += 61;
         die "observation slice expired\n";
     };
-    eval { $class->_thick_wait_for_hydration($mapper, 60) };
+    eval { $class->_thick_wait_for_hydration($mapper, 60, 8192, 8) };
     like($@, qr/made no verified progress for 60s/,
         'a full no-progress window is recovery-required');
     is(scalar(@commands), 1,
@@ -3696,7 +3709,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         push @commands, [@$command];
         die "dmsetup wait failed immediately\n";
     };
-    eval { $class->_thick_wait_for_hydration($mapper, 60) };
+    eval { $class->_thick_wait_for_hydration($mapper, 60, 8192, 8) };
     like($@, qr/event wait .* failed before the observation boundary/,
         'an immediate dmsetup wait failure is fail-closed instead of a busy retry loop');
     is(scalar(@commands), 1, 'an immediate wait failure is attempted exactly once');
