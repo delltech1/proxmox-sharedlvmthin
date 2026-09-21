@@ -3457,6 +3457,7 @@ subtest 'online Thick resize recovery republishes only a proven zeroed tail' => 
         'slt-expected-vg-uuid' => 'vg-uuid',
         'slt-expected-pv-uuid' => 'pv-uuid',
         'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
     };
     my $anchor = PVE::SharedLvmThinThick::anchor_name('vg-uuid', $volname);
     my $head = PVE::SharedLvmThinThick::generation_name('vg-uuid', $volname, 0);
