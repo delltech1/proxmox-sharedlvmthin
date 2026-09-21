@@ -4944,8 +4944,15 @@ sub _thick_volume_snapshot {
                 # the same PVE multi-disk snapshot operation.
                 return;
             }
-            warn "asynchronous Thick Generations materialization could not be scheduled; "
-                . "completing synchronously: $@";
+            # systemd-run is a mutating request.  A transport/client error does
+            # not prove that systemd rejected it: the exact transaction worker
+            # may already be queued or running.  Never start a synchronous
+            # second owner after that ambiguous boundary.  Persistent anchor
+            # and intent evidence make an explicit resume safe and repeatable.
+            die "asynchronous Thick Generations materialization scheduling was not "
+                . "confirmed; transaction '$intent{tx}' is preserved. Inspect the exact "
+                . "pve-sharedlvmthin-tg-$intent{tx} service/timer and run sharedlvmthin "
+                . "thick-resume '$storeid' '$volname': $@";
         }
         $class->_thick_wait_for_hydration(
             $front, $scfg->{'slt-tg-hydration-timeout'} // 3600,

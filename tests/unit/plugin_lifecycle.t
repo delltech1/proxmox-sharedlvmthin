@@ -3964,7 +3964,7 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
         size => 4096, old_size => 4096, geometry => { region_sectors => 8 },
         operation => 'SNAPSHOT', snapshot => 'snap1',
     };
-    my (@scheduled, $waited, $scoped);
+    my (@scheduled, $waited, $scoped, $schedule_error);
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
@@ -3977,7 +3977,9 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {} };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_resume_transition = sub { return $transition };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_schedule_materialization = sub {
-        @scheduled = @_[1 .. 6]; return 'worker';
+        @scheduled = @_[1 .. 6];
+        die "ambiguous systemd transport failure\n" if $schedule_error;
+        return 'worker';
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_scope_transition_intent_to_anchor = sub {
         my $intent = $_[4];
@@ -4001,6 +4003,17 @@ subtest 'online snapshot returns after scheduling committed hydration' => sub {
             PVE::SharedLvmThinThick::object_key('vg-uuid', 'vm-900001-disk-0') .
             ' 0 enable_hydration',
     ], 'callback only enables hydration before returning');
+
+    $schedule_error = 1;
+    $waited = 0;
+    $scoped = 0;
+    eval { $class->volume_snapshot(
+        $cfg, 'thick-test', 'vm-900001-disk-0', 'snap1',
+    ) };
+    like($@, qr/scheduling was not confirmed.*transaction '$tx' is preserved.*thick-resume/s,
+        'ambiguous worker scheduling preserves the transaction and requires explicit resume');
+    ok(!$waited, 'ambiguous scheduling never starts a synchronous second owner');
+    is($scoped, 1, 'ambiguous scheduling retains anchor-scoped recovery authority');
 };
 
 subtest 'thick deactivate removes kernel mapper even when its udev node vanished' => sub {

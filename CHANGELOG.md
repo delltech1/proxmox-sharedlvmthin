@@ -2,6 +2,11 @@
 
 ## Unreleased — Thick Generations audit
 
+- Fail closed when asynchronous materialization scheduling is not positively
+  confirmed. A `systemd-run` client/transport error may occur after the exact
+  transaction worker was queued, so the snapshot callback no longer starts a
+  competing synchronous owner; it preserves recovery evidence and requires an
+  explicit `thick-resume` after inspecting the transaction service and timer.
 - Separate historical cluster evidence from the current audit delta. The
   release gate now requires explicit physical tests for package profiles,
   PREPARE cleanup, VG-wide concurrency admission, device-scoped capacity,
