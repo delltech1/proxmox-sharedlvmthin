@@ -841,7 +841,34 @@ exit 0
         self.assertEqual(source.count("_thick_activate_exact_lvs("), 11)
         self.assertEqual(source.count("_thick_verify_active_lv_identity("), 3)
         self.assertEqual(source.count("['/sbin/lvchange', '--devices', $device, '-an'"), 1)
-        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 9)
+        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 11)
+
+    def test_post_pivot_cleanup_deactivates_before_destructive_remove(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        cleanup = source[
+            source.index("if ($tr->{state}->{phase} eq 'LINEAR_PIVOTED')") :
+            source.index("sub _thick_free_image")
+        ]
+        self.assertRegex(
+            cleanup,
+            re.compile(
+                r"_thick_deactivate_exact_lvs\(\s*\$vg, \$device,\s*"
+                r'"deactivating detached dm-clone metadata failed",\s*\$tr->\{meta\},\s*\);'
+                r".*?lvremove.*?\$vg/\$tr->\{meta\}",
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            cleanup,
+            re.compile(
+                r"_thick_deactivate_exact_lvs\(\s*\$vg, \$device,\s*"
+                r'"deactivating superseded rollback HEAD failed",\s*\$tr->\{old\},\s*\);'
+                r".*?lvremove.*?\$vg/\$tr->\{old\}",
+                re.DOTALL,
+            ),
+        )
 
     def test_snapshot_delete_recovery_is_an_explicit_command(self):
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")

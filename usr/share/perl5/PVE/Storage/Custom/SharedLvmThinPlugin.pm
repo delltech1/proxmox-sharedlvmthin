@@ -4771,6 +4771,11 @@ sub _thick_volume_snapshot {
             );
         }
         if ($lvs->{$vg}->{$tr->{meta}}) {
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating detached dm-clone metadata failed",
+                $tr->{meta},
+            );
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{meta}"],
                 errmsg => "removing detached dm-clone metadata failed",
@@ -4786,6 +4791,11 @@ sub _thick_volume_snapshot {
                 validate_generation_tags(
                     $after->{$vg}->{$tr->{old}}->{tags} // '', sid => $storeid,
                     vol => $volname, role => 'head', generation => $tr->{old_gen},
+                );
+                $class->_thick_deactivate_exact_lvs(
+                    $vg, $device,
+                    "deactivating superseded rollback HEAD failed",
+                    $tr->{old},
                 );
                 run_command(
                     ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{old}"],
@@ -5559,13 +5569,13 @@ sub _thick_volume_snapshot_delete {
                 $device,
             );
             $class->_thick_fault_point('D2', 'REMOVE_SNAPSHOT', $storeid, $volname);
-            if (_block_device_exists($path)) {
-                $class->_thick_deactivate_exact_lvs(
-                    $vg, $device,
-                    "deactivating snapshot '$vg/$snapshot' before delete failed",
-                    $snapshot,
-                );
-            }
+            # Do not infer kernel inactivity from a missing /dev symlink.  udev
+            # may lag or be damaged while the exact mapper still exists.
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating snapshot '$vg/$snapshot' before delete failed",
+                $snapshot,
+            );
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$snapshot"],
                 errmsg => "removing snapshot '$vg/$snapshot' failed",
@@ -5732,14 +5742,11 @@ sub _thick_recover_snapshot_delete {
 
         if (defined($owned)) {
             $verify_snapshot_inactive->();
-            my $path = "/dev/$vg/$snapshot";
-            if (_block_device_exists($path)) {
-                $class->_thick_deactivate_exact_lvs(
-                    $vg, $device,
-                    "deactivating snapshot '$vg/$snapshot' during recovery failed",
-                    $snapshot,
-                );
-            }
+            $class->_thick_deactivate_exact_lvs(
+                $vg, $device,
+                "deactivating snapshot '$vg/$snapshot' during recovery failed",
+                $snapshot,
+            );
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$snapshot"],
                 errmsg => "removing snapshot '$vg/$snapshot' during recovery failed",

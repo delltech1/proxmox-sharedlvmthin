@@ -14,6 +14,9 @@
   primitive. Any pre-existing mapper must match the scoped LVM UUID, and the
   exact kernel mapper must be absent after `lvchange -an`; already-inactive
   objects remain an idempotent success case.
+- Require that proof immediately before deleting detached dm-clone metadata,
+  a superseded rollback HEAD, or a signed snapshot. Snapshot deletion no longer
+  treats a missing udev pathname as evidence that the kernel mapper is absent.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

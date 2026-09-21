@@ -132,7 +132,10 @@ authority: recovery first proves that the stable frontend maps only the signed
 new HEAD, then idempotently finishes any remaining source-mapper, metadata-LV
 and superseded rollback-HEAD cleanup. An already absent cleanup object is
 accepted only in that post-pivot phase; a present object is revalidated before
-its single removal attempt. If a reboot removed the frontend after the recorded
+its single removal attempt. Each LVM cleanup object is passed through the
+device-scoped prove-and-deactivate gate before `lvremove`; a present kernel
+mapper must match the authoritative LVM UUID and must be confirmed absent after
+deactivation. If a reboot removed the frontend after the recorded
 pivot, recovery activates only the signed new HEAD and reconstructs its exact
 linear frontend; it never recreates dm-clone metadata or a source mapper.
 
@@ -162,7 +165,8 @@ The command accepts neither a snapshot name nor a transaction identifier. It
 derives both from persistent signed state, holds the canonical VG lock,
 requires quorum and pinned storage identity, scopes LVM mutations to the
 expected multipath device, refuses an open or foreign object, performs at most
-one exact removal attempt, verifies the canonical HEAD, and clears only the
+one exact removal attempt, proves kernel deactivation independently of udev
+pathname presence, verifies the canonical HEAD, and clears only the
 matching intent. If the object is already absent after the verified rebase, it
 performs finalize-only recovery without retrying removal.
 

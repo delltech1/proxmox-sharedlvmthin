@@ -4968,6 +4968,8 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
         'partial delete preserves the OPEN intent after the anchor rebase');
     is(scalar(grep { m{/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/\Q$snapshot\E$} } command_lines()), 1,
         'partial delete performs exactly one removal attempt');
+    is(scalar(grep { m{/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/\Q$snapshot\E$} } command_lines()), 1,
+        'missing udev path does not bypass exact kernel deactivation proof');
 };
 
 subtest 'thick snapshot-delete recovery deterministically resumes prepared and finalize states' => sub {
@@ -5047,8 +5049,9 @@ subtest 'thick snapshot-delete recovery deterministically resumes prepared and f
     is_deeply(\@events, [qw(INTENT_VERIFIED REBASE CLEAR)],
         'prepared recovery verifies intent, rebases, then clears only after delete');
     is_deeply([command_lines()], [
+        "/sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/$snapshot",
         "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$snapshot",
-    ], 'prepared recovery removes only the exact device-scoped snapshot');
+    ], 'prepared recovery deactivates and removes only the exact device-scoped snapshot');
 
     reset_mocks();
     @inventory = (
@@ -5481,6 +5484,14 @@ subtest 'thick snapshot follows the persisted transaction and linear-pivot order
         'every scoped metadata mutation uses the pinned multipath device');
     is(scalar(grep { /lvremove .* -f testvg\/\Q$meta\E/ } @snapshot_commands), 1,
         'only the exact detached metadata LV is removed');
+    my ($meta_deactivate) = grep {
+        $snapshot_commands[$_] =~ /lvchange .* -an testvg\/\Q$meta\E/
+    } 0 .. $#snapshot_commands;
+    my ($meta_remove) = grep {
+        $snapshot_commands[$_] =~ /lvremove .* -f testvg\/\Q$meta\E/
+    } 0 .. $#snapshot_commands;
+    ok(defined($meta_deactivate) && defined($meta_remove) && $meta_deactivate < $meta_remove,
+        'detached metadata is exactly deactivated and proved absent before removal');
     is($events[-1], 'INTENT_CLEAR', 'VG intent clears only after MATERIALIZED');
     is(scalar(@inventories), 0, 'all lifecycle inventories were consumed');
 };
