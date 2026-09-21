@@ -6,7 +6,7 @@ Architecture: all
 Conflicts: pve-sharedlvmthin-thick
 Replaces: pve-sharedlvmthin-thick
 Provides: pve-sharedlvmthin-storage-plugin
-Pre-Depends: python3, lvm2, multipath-tools, libpve-cluster-api-perl,
+Pre-Depends: python3, systemd, lvm2, multipath-tools, libpve-cluster-api-perl,
  libpve-storage-perl
 Depends: lvm2, perl, python3, openssl, multipath-tools, util-linux,
  pve-manager, libpve-storage-perl

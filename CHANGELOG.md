@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Make transient Thick-worker enumeration mandatory before every audited
+  upgrade/profile replacement.  Missing `systemctl` no longer skips the gate;
+  both package profiles pre-depend on its owning `systemd` package and refuse
+  when unit state cannot be read.
 - Make Dual-package removal independent of the current ThinGuard service state.
   Every removal now requires a complete non-partial LVM inventory and refuses
   while any managed Thin object exists, even if the guardian was manually

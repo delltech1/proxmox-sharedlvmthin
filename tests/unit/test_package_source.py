@@ -48,7 +48,7 @@ class PackageSourceTests(unittest.TestCase):
 
     def _run_preinst_candidate_audit(
         self, *, recovery_safe=True, disabled=True, duplicate=False,
-        installed_marker=True, action="upgrade"
+        installed_marker=True, action="upgrade", systemctl_ok=True,
     ):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -88,7 +88,9 @@ class PackageSourceTests(unittest.TestCase):
         )
         recovery.chmod(0o755)
         systemctl = root / "systemctl"
-        systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        systemctl.write_text(
+            f"#!/bin/sh\nexit {0 if systemctl_ok else 1}\n", encoding="utf-8"
+        )
         systemctl.chmod(0o755)
 
         source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
@@ -387,6 +389,13 @@ exit 0
         self.assertIn("candidate storage configuration is ambiguous", result.stderr)
 
     @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_preinst_refuses_unavailable_systemd_unit_inventory(self):
+        result, invoked = self._run_preinst_candidate_audit(systemctl_ok=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(invoked, [])
+        self.assertIn("materialization units could not be enumerated", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
     def test_first_install_on_cluster_node_audits_existing_storage(self):
         result, invoked = self._run_preinst_candidate_audit(
             installed_marker=False, action="install", recovery_safe=True,
@@ -628,7 +637,8 @@ exit 0
         self.assertIn("Conflicts: pve-sharedlvmthin\n", thick)
         self.assertIn("Replaces: pve-sharedlvmthin\n", thick)
         expected_predepends = (
-            "Pre-Depends: python3, lvm2, multipath-tools, libpve-cluster-api-perl,\n"
+            "Pre-Depends: python3, systemd, lvm2, multipath-tools, "
+            "libpve-cluster-api-perl,\n"
             " libpve-storage-perl"
         )
         self.assertIn(expected_predepends, dual)

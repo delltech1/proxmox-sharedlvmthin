@@ -43,7 +43,9 @@ When an older SharedLvmThin package is present, the pre-install script also
 runs its bounded read-only upgrade gate and refuses any pending, active or
 failed transient Thick materialization unit. A package replacement therefore
 cannot remove entry points while a known asynchronous worker is unfinished.
-The gate never resumes, repairs or deletes a transaction.
+The gate never resumes, repairs or deletes a transaction. Missing `systemctl`
+or an unreadable unit inventory is a refusal, not evidence that no worker is
+running.
 
 The same pre-unpack transaction and recovery fence applies to ordinary
 upgrades and to a Thick-only-to-dual replacement. During removal of the dual

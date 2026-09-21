@@ -146,19 +146,21 @@ if [ "$IS_UPGRADE" -eq 1 ]; then
             ;;
     esac
 
-    if command -v systemctl >/dev/null 2>&1; then
-        if ! THICK_UNITS=$(systemctl list-units --all --no-legend \
-            --state=active,activating,deactivating,failed \
-            'pve-sharedlvmthin-tg-*' 2>/dev/null); then
-            echo "ERROR: SharedLvmThin upgrade refused: transient Thick" >&2
-            echo "materialization units could not be enumerated." >&2
-            exit 1
-        fi
-        if printf '%s\n' "$THICK_UNITS" | grep -q '[^[:space:]]'; then
-            echo "ERROR: SharedLvmThin upgrade refused: a Thick materialization" >&2
-            echo "unit is pending, active or failed. Complete and verify recovery first." >&2
-            exit 1
-        fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "ERROR: SharedLvmThin upgrade refused: systemctl is unavailable." >&2
+        exit 1
+    fi
+    if ! THICK_UNITS=$(systemctl list-units --all --no-legend \
+        --state=active,activating,deactivating,failed \
+        'pve-sharedlvmthin-tg-*' 2>/dev/null); then
+        echo "ERROR: SharedLvmThin upgrade refused: transient Thick" >&2
+        echo "materialization units could not be enumerated." >&2
+        exit 1
+    fi
+    if printf '%s\n' "$THICK_UNITS" | grep -q '[^[:space:]]'; then
+        echo "ERROR: SharedLvmThin upgrade refused: a Thick materialization" >&2
+        echo "unit is pending, active or failed. Complete and verify recovery first." >&2
+        exit 1
     fi
 
     if ! audit_candidate_storages; then
