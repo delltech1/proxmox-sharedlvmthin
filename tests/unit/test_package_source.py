@@ -452,6 +452,16 @@ exit 0
         self.assertIn("Package: pve-sharedlvmthin-thick", thick)
         self.assertIn("Conflicts: pve-sharedlvmthin\n", thick)
         self.assertIn("Replaces: pve-sharedlvmthin\n", thick)
+        expected_predepends = (
+            "Pre-Depends: python3, lvm2, multipath-tools, pve-manager, "
+            "libpve-storage-perl"
+        )
+        self.assertIn(expected_predepends, dual)
+        self.assertIn(expected_predepends, thick)
+        self.assertEqual(
+            next(line for line in dual.splitlines() if line.startswith("Pre-Depends:")),
+            next(line for line in thick.splitlines() if line.startswith("Pre-Depends:")),
+        )
         self.assertIn("FLAVOR=${2:-${PACKAGE_FLAVOR:-dual}}", build)
         self.assertIn('printf \'%s\\n\' "$FLAVOR"', build)
         self.assertIn("sharedlvmthin-migrate-bridge", build)

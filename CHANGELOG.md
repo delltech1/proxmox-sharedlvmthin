@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Declare the non-Essential runtime used by the candidate pre-unpack recovery
+  checker as Debian `Pre-Depends` in both package profiles.  The safety fence
+  can no longer rely on ordinary `Depends`, whose packages are not guaranteed
+  to be available when the candidate `preinst` runs.
 - Scope every LVM probe in the read-only recovery/upgrade checker to the pinned
   `/dev/mapper/<WWID>`. VG, intent, PV and LV evidence can no longer be sourced
   from an unrelated same-name local or stale VG before the identity comparison.
