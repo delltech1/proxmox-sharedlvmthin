@@ -19,6 +19,9 @@
   cannot positively prove a healthy mutation-safe state.
 - Measure Thick hydration and close-wait deadlines with a monotonic clock so
   wall-clock corrections cannot shorten or extend their safety windows.
+- Require PVE filesystem freeze orchestration for live LXC `rootdir` block
+  snapshots in both package profiles, matching the safety contract used by
+  other external block-snapshot backends.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

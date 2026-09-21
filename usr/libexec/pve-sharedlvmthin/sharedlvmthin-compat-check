@@ -83,7 +83,7 @@ check api-and-hook-contract perl -MPVE::Storage -MPVE::Storage::Custom::SharedLv
     for my $hook (qw(type plugindata properties options status list_images alloc_image free_image
         activate_storage deactivate_storage activate_volume deactivate_volume volume_size_info
         volume_resize volume_snapshot volume_snapshot_delete volume_snapshot_rollback
-        volume_has_feature path parse_volname)) {
+        volume_snapshot_needs_fsfreeze volume_has_feature path parse_volname)) {
         die "missing hook $hook\n" if !PVE::Storage::Custom::SharedLvmThinPlugin->can($hook);
     }
 '

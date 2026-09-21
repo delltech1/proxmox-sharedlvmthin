@@ -5731,6 +5731,13 @@ sub volume_rollback_is_possible {
     return 1;
 }
 
+# LXC mounts raw block volumes directly on the host. Ask PVE to freeze those
+# filesystems around the storage snapshot callback, matching other block
+# backends with external snapshots. This hook is not the VM/QGA freeze policy.
+sub volume_snapshot_needs_fsfreeze {
+    return 1;
+}
+
 sub clone_image {
     die "linked clones are not supported by sharedlvmthin\n";
 }

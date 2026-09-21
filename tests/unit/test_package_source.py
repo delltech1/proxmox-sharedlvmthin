@@ -804,6 +804,7 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("initramfs-no-host-lvm-recovery-copies", source)
         self.assertIn("sharedlvmthin-recovery-check", source)
         self.assertIn("sharedlvmthin-compat-check", build)
+        self.assertIn("volume_snapshot_needs_fsfreeze", source)
         self.assertIn("compat-check)", cli)
 
     def test_hard_failover_audit_is_exact_read_only_and_pipefail_safe(self):

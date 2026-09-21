@@ -2534,6 +2534,11 @@ subtest 'thin volumes advertise zero-initialized copy destinations' => sub {
     );
 };
 
+subtest 'block snapshots request PVE filesystem freeze for live LXC rootdir volumes' => sub {
+    is($class->volume_snapshot_needs_fsfreeze(), 1,
+        'storage snapshot hook requires host filesystem freeze');
+};
+
 subtest 'allocation mode defaults to thin and thick mode requires explicit safety identity' => sub {
     is($class->_allocation_mode({}), 'thin', 'existing storage defaults to thin');
     is(
