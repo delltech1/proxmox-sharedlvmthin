@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import io
 import os
 import re
@@ -76,6 +77,7 @@ class StorageConfigurationTests(unittest.TestCase):
                 )
                 self.assertFalse(storages[0]["disabled"])
 
+
     def test_node_scope_is_recorded(self):
         storages = self.parse_text(
             "sharedlvmthin: scoped\n"
@@ -89,6 +91,50 @@ class StorageConfigurationTests(unittest.TestCase):
             "sharedlvmthin: global\n\tslt-vgname vg_global\n"
         )
         self.assertIsNone(storages[0]["nodes"])
+
+
+class VgMutationIntentHealthTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tree = ast.parse(HEALTH.read_text(encoding="utf-8"))
+        node = next(
+            item for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "evaluate_vg_mutation_intent"
+        )
+        namespace = {"re": re, "hashlib": hashlib}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(HEALTH), "exec"), namespace)
+        cls.evaluate = staticmethod(namespace["evaluate_vg_mutation_intent"])
+
+    def test_empty_intent_is_healthy(self):
+        status, reason, operation = self.evaluate("testvg", "testvg|")
+        self.assertEqual((status, operation), ("PASS", None))
+        self.assertIn("no persistent", reason)
+
+    def test_open_extend_is_validated_but_fails_health_closed(self):
+        values = {
+            "v": "1", "tx": "4" * 32, "state": "OPEN", "op": "EXTEND",
+            "object": "sltg-a-0123456789abcdef01234567", "before": "b" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        tags = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        status, reason, operation = self.evaluate("testvg", f"testvg|{tags}")
+        self.assertEqual((status, operation), ("FAIL", "EXTEND"))
+        self.assertIn("blocks all new mutations", reason)
+        self.assertIn("thick-recover-resize", reason)
+
+    def test_duplicate_or_wrong_vg_intent_is_fail_closed(self):
+        status, _, _ = self.evaluate(
+            "testvg", "testvg|slt_tg_vgi_v=1,slt_tg_vgi_v=1"
+        )
+        self.assertEqual(status, "FAIL")
+        status, _, _ = self.evaluate("testvg", "othervg|")
+        self.assertEqual(status, "FAIL")
 
 
 class PackageIdentityTests(unittest.TestCase):

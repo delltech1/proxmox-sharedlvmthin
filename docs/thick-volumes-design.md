@@ -194,6 +194,12 @@ overrides an OPEN intent: diagnostics report `VG_INTENT_CLEAR=FAIL`, keep
 `EXTEND` case. Malformed, incomplete, duplicate, unknown, or digest-mismatched
 intent evidence is likewise fail-closed.
 
+The JSON health/Doctor path performs the same independent read-only check using
+the pinned multipath device. It publishes the status, operation and reason in
+`vg_mutation_intent` and raises a failing `vg_mutation_intent:<storage-id>`
+check, so CLI diagnostics, web monitoring and upgrade gates cannot disagree
+about whether a persistent mutation is still open.
+
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
 automatic and never searches by a similar name. After confirming that no PVE

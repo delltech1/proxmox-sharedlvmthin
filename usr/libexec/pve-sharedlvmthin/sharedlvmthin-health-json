@@ -4,6 +4,7 @@
 
 import json
 import glob
+import hashlib
 import os
 import platform
 import re
@@ -490,6 +491,53 @@ def vg_info(vg):
             "size_bytes": None,
             "free_bytes": None,
         }
+
+
+def evaluate_vg_mutation_intent(vg, output):
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return "FAIL", "VG mutation-intent inventory is ambiguous", None
+    fields = [field.strip() for field in lines[0].split("|", 1)]
+    if len(fields) != 2 or fields[0] != vg:
+        return "FAIL", "VG mutation-intent inventory is malformed or belongs to another VG", None
+    managed = [tag.strip() for tag in fields[1].split(",")
+               if tag.strip().startswith("slt_tg_vgi_")]
+    if not managed:
+        return "PASS", "no persistent VG mutation intent", None
+    allowed = {"v", "tx", "state", "op", "object", "before", "sha256"}
+    values = {}
+    for tag in managed:
+        match = re.fullmatch(r"slt_tg_vgi_([A-Za-z0-9_]+)=([A-Za-z0-9_.:+-]+)", tag)
+        if not match or match.group(1) not in allowed or match.group(1) in values:
+            return "FAIL", "VG mutation-intent tags are malformed or duplicated", None
+        values[match.group(1)] = match.group(2)
+    if set(values) != allowed:
+        return "FAIL", "VG mutation intent is incomplete or contains unknown fields", None
+    order = ("v", "tx", "state", "op", "object", "before")
+    canonical = "|".join(f"{key}={values[key]}" for key in order)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    operations = {"ALLOC", "EXTEND", "REMOVE", "REMOVE_SNAPSHOT", "DM_CUTOVER", "DM_PIVOT"}
+    if (values["v"] != "1" or values["state"] != "OPEN"
+            or values["op"] not in operations
+            or not re.fullmatch(r"[0-9a-f]{32}", values["tx"])
+            or not re.fullmatch(r"[0-9a-f]{16,64}", values["before"])
+            or values["sha256"] != digest):
+        return "FAIL", "VG mutation-intent identity or digest is invalid", None
+    reason = f"OPEN {values['op']} mutation intent blocks all new mutations"
+    if values["op"] == "EXTEND":
+        reason += "; use the explicit thick-recover-resize workflow when its runtime proof is available"
+    return "FAIL", reason, values["op"]
+
+
+def vg_mutation_intent(vg, expected_wwid=None):
+    command = ["vgs", "--readonly"]
+    if expected_wwid:
+        command.extend(["--devices", f"/dev/mapper/{expected_wwid}"])
+    command.extend(["--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg])
+    rc, out, err = run(command)
+    if rc != 0:
+        return "FAIL", err or out or "VG mutation-intent inventory is unavailable", None
+    return evaluate_vg_mutation_intent(vg, out)
 
 
 def pools(vg, sid):
@@ -1342,6 +1390,7 @@ for storage in parse_storage_cfg():
         **storage,
         "pve": states.get(sid, {}),
         "vg_info": None,
+        "vg_mutation_intent": None,
         "pools": [],
         "thick_anchors": [],
         "pool_inventory_error": None,
@@ -1380,6 +1429,18 @@ for storage in parse_storage_cfg():
         item["vg_info"] = vg_info(vg)
 
         if item["vg_info"].get("visible"):
+            intent_status, intent_reason, intent_op = vg_mutation_intent(
+                vg, storage.get("expected_wwid"),
+            )
+            item["vg_mutation_intent"] = {
+                "status": intent_status,
+                "operation": intent_op,
+                "reason": intent_reason,
+            }
+            check(
+                f"vg_mutation_intent:{sid}", intent_status,
+                f"{sid}: {intent_reason}",
+            )
             pool_inventory, pool_error, thick_anchors = pools(vg, sid)
             item["pool_inventory_error"] = pool_error
             if pool_error is not None:
