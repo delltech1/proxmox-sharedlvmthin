@@ -57,6 +57,11 @@ metadata before resume publishes the destination-only mapping. Unknown,
 read-only, failed, or geometrically inconsistent status remains suspended and
 fails closed rather than publishing the linear table.
 
+The read-only recovery classifier reports that exact suspended boundary as
+`PIVOT_READY`, never as healthy or mutation-safe. This keeps diagnostics and
+the explicit resume implementation consistent without allowing an ordinary
+operation to adopt or bypass the interrupted transition.
+
 For a running guest, PVE keeps QEMU paused until the storage snapshot callback
 returns. Online materialization is therefore asynchronous by default. The
 callback may return only after it has persisted and positively verified the

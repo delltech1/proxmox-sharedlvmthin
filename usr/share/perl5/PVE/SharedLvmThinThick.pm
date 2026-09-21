@@ -552,14 +552,14 @@ sub classify_recovery {
             'runtime mapping is absent; persistent clone metadata must be reopened and verified')
             if $runtime eq 'absent';
         if ($runtime eq 'clone') {
-            return $blocked->('hydration-complete clone frontend is suspended')
-                if $runtime_suspended;
             return $blocked->('clone runtime dependency does not prove the signed source generation')
                 if $clone_source ne 'source';
             return $blocked->('anchor claims complete hydration but clone status does not')
                 if $clone_status ne 'complete';
             return $result->('RECOVERY_REQUIRED', 'HYDRATION_COMPLETE', 'PIVOT_READY',
-                'complete clone mapping is ready for an explicit linear pivot');
+                $runtime_suspended
+                    ? 'complete clone is suspended at the verified pivot boundary; explicit recovery may reload and publish the exact linear table'
+                    : 'complete clone mapping is ready for an explicit linear pivot');
         }
         return $result->('RECOVERY_REQUIRED', 'PIVOT_UNRECORDED', 'MATERIALIZED',
             'linear destination is live but LINEAR_PIVOTED was not recorded')

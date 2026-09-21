@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Classify an exact, complete clone left suspended at the final pivot boundary
+  as explicitly recoverable `PIVOT_READY` evidence. It still blocks unrelated
+  mutation and may proceed only after the resume path revalidates the signed
+  source, complete hydration, writable metadata and inactive linear table.
 - Treat kernel `dm-clone` metadata mode as mandatory transition evidence.
   `ro`, `Fail`, or a missing mode now stops hydration/recovery immediately and
   preserves the transaction instead of being misclassified as ordinary slow

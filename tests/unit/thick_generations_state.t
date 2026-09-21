@@ -293,6 +293,18 @@ is($c6_suspended->{materialization_state}, 'PUBLISH_REQUIRED',
     'C6 suspended old-generation runtime is an exact resumable publication state');
 is($c6_suspended->{safe_for_mutation}, 0,
     'C6 publication recovery remains fail-closed');
+my $c9_suspended = classify_recovery(
+    anchor => { %$recovery_prepared, phase => 'HYDRATION_COMPLETE', head => 'g1', generation => 1 },
+    intent => $cutover_intent, objects => { %transition_objects },
+    runtime => 'clone', runtime_suspended => 1, clone_status => 'complete',
+    clone_source => 'source', expected_anchor => $anchor_object,
+);
+is($c9_suspended->{data_state}, 'VALID',
+    'a complete clone suspended at the pivot boundary retains deterministic authority');
+is($c9_suspended->{materialization_state}, 'PIVOT_READY',
+    'a suspended complete clone is explicitly resumable without replaying hydration');
+is($c9_suspended->{safe_for_mutation}, 0,
+    'suspended pivot recovery still blocks unrelated mutation');
 my $c6_active = classify_recovery(
     anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
     intent => $cutover_intent, objects => { %transition_objects },
