@@ -92,6 +92,51 @@ class StorageConfigurationTests(unittest.TestCase):
         )
         self.assertIsNone(storages[0]["nodes"])
 
+    def test_thick_materialization_limit_defaults_and_parses(self):
+        default = self.parse_text(
+            "sharedlvmthin: thick-default\n\tslt-vgname vg_a\n"
+        )[0]
+        self.assertEqual(default["tg_max_active_materializations"], 4)
+        explicit = self.parse_text(
+            "sharedlvmthin: thick-tuned\n"
+            "\tslt-vgname vg_b\n"
+            "\tslt-tg-max-active-materializations 12\n"
+        )[0]
+        self.assertEqual(explicit["tg_max_active_materializations"], 12)
+
+
+class ThickMaterializationAdmissionHealthTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.evaluate = staticmethod(
+            load_function("evaluate_thick_materialization_admission")
+        )
+
+    def test_slots_are_counted_from_non_materialized_anchors(self):
+        status, result = self.evaluate([
+            {"phase": "MATERIALIZED"},
+            {"phase": "HYDRATING"},
+            {"phase": "HYDRATION_COMPLETE"},
+        ], 3)
+        self.assertEqual(status, "PASS")
+        self.assertEqual(result["active"], 2)
+        self.assertTrue(result["available"])
+
+    def test_saturated_limit_is_visible_but_not_false_failure(self):
+        status, result = self.evaluate([
+            {"phase": "HYDRATING"}, {"phase": "PREPARED"},
+        ], 2)
+        self.assertEqual(status, "PASS")
+        self.assertFalse(result["available"])
+        self.assertIn("intentionally blocked", result["reason"])
+
+    def test_invalid_limit_fails_health_closed(self):
+        for value in (0, 65, "four", True):
+            with self.subTest(value=value):
+                status, result = self.evaluate([], value)
+                self.assertEqual(status, "FAIL")
+                self.assertFalse(result["available"])
+
 
 class VgMutationIntentHealthTests(unittest.TestCase):
     @classmethod

@@ -131,6 +131,7 @@ def parse_storage_cfg():
                 "expected_min_paths": None,
                 "expected_pv_uuid": None,
                 "expected_wwid": None,
+                "tg_max_active_materializations": 4,
             }
             continue
 
@@ -161,6 +162,12 @@ def parse_storage_cfg():
 
             elif s.startswith("slt-allocation-mode "):
                 current["allocation_mode"] = s.split(None, 1)[1]
+
+            elif s.startswith("slt-tg-max-active-materializations "):
+                value = s.split(None, 1)[1]
+                current["tg_max_active_materializations"] = (
+                    int(value) if value.isdigit() else value
+                )
 
             elif s.startswith("slt-initial-pool-size "):
                 try:
@@ -795,6 +802,31 @@ def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
     return results
 
 
+def evaluate_thick_materialization_admission(anchors, limit):
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 64:
+        return "FAIL", {
+            "active": None,
+            "limit": limit,
+            "available": False,
+            "reason": "Thick materialization concurrency limit is invalid",
+        }
+    active = sum(
+        1 for anchor in anchors or []
+        if anchor.get("phase") != "MATERIALIZED"
+    )
+    available = active < limit
+    return "PASS", {
+        "active": active,
+        "limit": limit,
+        "available": available,
+        "reason": (
+            f"{active}/{limit} Thick materialization slots active; "
+            + ("new PREPARE may be admitted" if available
+               else "new PREPARE is intentionally blocked at the configured ceiling")
+        ),
+    }
+
+
 def evaluate_pool_flags(attr, health_status, check_needed=None):
     if not attr:
         return "UNKNOWN", "thin-pool attributes are unavailable"
@@ -1398,6 +1430,7 @@ for storage in parse_storage_cfg():
         "vg_mutation_intent": None,
         "pools": [],
         "thick_anchors": [],
+        "thick_materialization_admission": None,
         "pool_inventory_error": None,
         "metadata_spares": [],
         "transport": None,
@@ -1459,6 +1492,18 @@ for storage in parse_storage_cfg():
                 item["thick_anchors"] = evaluate_thick_anchor_references(
                     sid, thick_anchors, thick_worker_state
                 )
+                materialization_limit = storage.get(
+                    "tg_max_active_materializations", 4
+                )
+                admission_status, admission = evaluate_thick_materialization_admission(
+                    item["thick_anchors"], materialization_limit
+                )
+                item["thick_materialization_admission"] = admission
+                if storage.get("allocation_mode") == "thick-generations":
+                    check(
+                        f"thick_materialization_admission:{sid}", admission_status,
+                        f"{sid}: {admission['reason']}",
+                    )
                 for anchor in item["thick_anchors"]:
                     if anchor.get("status") in {"WARN", "FAIL"}:
                         check(
