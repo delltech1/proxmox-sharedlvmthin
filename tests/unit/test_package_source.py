@@ -12,6 +12,40 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    def _run_thick_only_preinst_inventory(self, *, vg_attr="wz--n-"):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        storage = root / "storage.cfg"
+        storage.write_text("dir: local\n        path /tmp\n", encoding="utf-8")
+        marker = root / "package-flavor"
+        commands = {
+            "vgs": f"#!/bin/sh\nprintf '%s\\n' 'shared-vg|{vg_attr}'\n",
+            "lvs": "#!/bin/sh\nexit 0\n",
+        }
+        for name, text in commands.items():
+            command = root / name
+            command.write_text(text, encoding="utf-8")
+            command.chmod(0o755)
+        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = source.replace(
+            "/usr/share/pve-sharedlvmthin/package-flavor", str(marker)
+        ).replace("STORAGECFG=/etc/pve/storage.cfg", f"STORAGECFG={storage}")
+        source = source.replace(
+            "# P0 upgrade fence for the exclusive Thin owner schema.",
+            "exit 0\n\n# P0 upgrade fence for the exclusive Thin owner schema.",
+        )
+        candidate = root / "preinst"
+        candidate.write_text(source, encoding="utf-8")
+        candidate.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{root}{os.pathsep}{env['PATH']}"
+        env["DPKG_MAINTSCRIPT_PACKAGE"] = "pve-sharedlvmthin-thick"
+        return subprocess.run(
+            ["/bin/sh", str(candidate), "install"], env=env, text=True,
+            capture_output=True, check=False,
+        )
+
     def _run_preinst_candidate_audit(
         self, *, recovery_safe=True, disabled=True, duplicate=False,
         installed_marker=True, action="upgrade"
@@ -230,6 +264,17 @@ exit 0
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(invoked, ["--preinstall disabled-thick"])
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_thick_only_preinst_refuses_partial_vg_inventory(self):
+        result = self._run_thick_only_preinst_inventory(vg_attr="wz-pn-")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("partial or ambiguous VG", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_thick_only_preinst_accepts_complete_empty_thin_inventory(self):
+        result = self._run_thick_only_preinst_inventory()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
         helper = (
@@ -469,6 +514,8 @@ exit 0
         self.assertIn("allocation modes cannot be proven safe", preinst)
         self.assertIn("LVM inventory failed", preinst)
         self.assertIn('if ! MANAGED_LVS=$(lvs --readonly', preinst)
+        self.assertIn('if ! VOLUME_GROUPS=$(vgs --readonly', preinst)
+        self.assertIn('substr($2, 4, 1) == "p"', preinst)
         self.assertIn("pve-sharedlvmthin-tg-*", preinst)
         self.assertIn("No package files were replaced", preinst)
         self.assertIn("ordinary upgrades as well as dual <-> Thick-only", preinst)

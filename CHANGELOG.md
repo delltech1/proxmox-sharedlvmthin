@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Refuse a Thick-only install or profile replacement when the system-wide LVM
+  inventory contains a partial or malformed VG.  A successful but incomplete
+  `lvs` view is no longer accepted as proof that all managed Thin objects are
+  absent while one or more PVs are missing.
 - Declare the non-Essential runtime used by the candidate pre-unpack recovery
   checker as Debian `Pre-Depends` in both package profiles.  The safety fence
   can no longer rely on ordinary `Depends`, whose packages are not guaranteed

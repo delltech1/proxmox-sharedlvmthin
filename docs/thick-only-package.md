@@ -33,7 +33,9 @@ package boundary.
 Switching is permitted only after every `sharedlvmthin` storage is explicitly
 configured as `thick-generations` and no managed Thin pool remains in any
 backing VG. The pre-install script checks both conditions before files are
-unpacked and refuses an ambiguous or unsafe switch. A Thin pool must be
+unpacked and refuses an ambiguous or unsafe switch. It also refuses every
+partial or malformed VG inventory: a successful but incomplete LVM scan is
+not proof that managed Thin objects are absent. A Thin pool must be
 migrated or deliberately removed with the dual-mode package; uninstalling its
 runtime is never a migration procedure.
 
