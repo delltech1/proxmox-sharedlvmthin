@@ -219,7 +219,8 @@ sharedlvmthin: two
         self.assertIn("local tpool mapper", failures[0])
 
     def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
-                 allocation_mode="thin", lvs_output=None, referenced=True):
+                 allocation_mode="thin", lvs_output=None, referenced=True,
+                 vg_tags=""):
         cfg = {
             "slt-vgname": "testvg",
             "slt-expected-vg-uuid": "vg-uuid",
@@ -233,7 +234,7 @@ sharedlvmthin: two
             joined = " ".join(command)
             out = ""
             if command[0].endswith("vgs"):
-                out = "vg-uuid"
+                out = f"testvg|{vg_tags}" if "vg_name,vg_tags" in command else "vg-uuid"
             elif command[0].endswith("pvs"):
                 out = f"pv-uuid|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
@@ -354,6 +355,37 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("THICK_ANCHORS_HEALTHY=PASS", text)
         self.assertIn("SAFE_FOR_MUTATION=YES", text)
+
+    def test_open_extend_intent_is_visible_and_blocks_recovery_check(self):
+        name, tags = self.anchor()
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        values = {
+            "v": "1", "tx": "4" * 32, "state": "OPEN", "op": "EXTEND",
+            "object": name, "before": "b" * 32,
+        }
+        order = ("v", "tx", "state", "op", "object", "before")
+        canonical = "|".join(f"{key}={values[key]}" for key in order)
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        intent = ",".join([
+            *(f"slt_tg_vgi_{key}={values[key]}" for key in order),
+            f"slt_tg_vgi_sha256={digest}",
+        ])
+        rc, text = self.run_main(
+            allocation_mode="thick-generations", lvs_output=output,
+            vg_tags=intent,
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("VG_INTENT_CLEAR=FAIL", text)
+        self.assertIn("OPEN EXTEND intent blocks mutation", text)
+        self.assertIn("sharedlvmthin thick-recover-resize test <volume>", text)
+        self.assertIn("SAFE_FOR_MUTATION=NO", text)
+
+    def test_malformed_vg_intent_fails_closed(self):
+        ok, details = self.checker.vg_intent_health(
+            "testvg|slt_tg_vgi_v=1,slt_tg_vgi_v=1", "test", "testvg"
+        )
+        self.assertFalse(ok)
+        self.assertIn("malformed or ambiguous", details[0])
 
     def test_unreferenced_materialized_thick_anchor_fails_closed(self):
         name, tags = self.anchor()

@@ -22,6 +22,10 @@
   frontend and the target from the signed HEAD LV, repeats and flushes the full
   unpublished zero tail, atomically republishes it, and clears only the exact
   `OPEN EXTEND` intent. Missing or contradictory runtime evidence fails closed.
+- Make the read-only recovery checker inspect and cryptographically validate
+  the VG mutation-intent tags. Any OPEN or malformed intent now prevents a
+  healthy/safe-for-mutation result; `OPEN EXTEND` reports the exact explicit
+  resize-recovery command instead of being hidden by a materialized anchor.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

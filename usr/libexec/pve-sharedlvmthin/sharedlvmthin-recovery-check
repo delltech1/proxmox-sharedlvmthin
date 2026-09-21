@@ -453,6 +453,46 @@ def thin_reference_health(pool_output, sid, reference_lookup,
     return (not failures), pools, failures
 
 
+def vg_intent_health(output, sid, expected_vg):
+    """Reject every persistent mutation intent; validate it before reporting."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if len(lines) != 1:
+        return False, ["VG intent inventory is ambiguous"]
+    fields = [field.strip() for field in lines[0].split("|", 1)]
+    if len(fields) != 2 or fields[0] != expected_vg:
+        return False, ["VG intent inventory is malformed"]
+    managed = [tag.strip() for tag in fields[1].split(",")
+               if tag.strip().startswith("slt_tg_vgi_")]
+    if not managed:
+        return True, []
+    values = {}
+    token = re.compile(r"[A-Za-z0-9_.:+-]+")
+    allowed = {"v", "tx", "state", "op", "object", "before", "sha256"}
+    for tag in managed:
+        match = re.fullmatch(r"slt_tg_vgi_([A-Za-z0-9_]+)=([A-Za-z0-9_.:+-]+)", tag)
+        if not match or match.group(1) not in allowed or match.group(1) in values:
+            return False, ["VG mutation intent tags are malformed or ambiguous"]
+        values[match.group(1)] = match.group(2)
+    if set(values) != allowed or any(not token.fullmatch(value) for value in values.values()):
+        return False, ["VG mutation intent is incomplete or non-canonical"]
+    order = ("v", "tx", "state", "op", "object", "before")
+    canonical = "|".join(f"{key}={values[key]}" for key in order)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    operations = {"ALLOC", "EXTEND", "REMOVE", "REMOVE_SNAPSHOT", "DM_CUTOVER", "DM_PIVOT"}
+    if (values["v"] != "1" or values["state"] != "OPEN"
+            or values["op"] not in operations
+            or not re.fullmatch(r"[0-9a-f]{32}", values["tx"])
+            or not re.fullmatch(r"[0-9a-f]{16,64}", values["before"])
+            or values["sha256"] != digest):
+        return False, ["VG mutation intent identity or digest is invalid"]
+    if values["op"] == "EXTEND":
+        return False, [
+            "OPEN EXTEND intent blocks mutation; for a proven active frontend run "
+            f"sharedlvmthin thick-recover-resize {sid} <volume>"
+        ]
+    return False, [f"OPEN {values['op']} intent blocks mutation and requires exact recovery"]
+
+
 def main(argv=None):
     argv = argv or sys.argv[1:]
     if len(argv) != 1 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", argv[0]):
@@ -479,6 +519,7 @@ def main(argv=None):
     # from accumulating tasks during a storage incident.
     probes = [
         ("VG", ["/sbin/vgs", "--readonly", "--noheadings", "--separator", "|", "-o", "vg_uuid", vg]),
+        ("INTENT", ["/sbin/vgs", "--readonly", "--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg]),
         ("PV", ["/sbin/pvs", "--readonly", "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
@@ -494,12 +535,18 @@ def main(argv=None):
             break
 
     results["BOUNDED_LVM_PROBES"] = "PASS" if all(
-        evidence.get(x, {}).get("status") == "PASS" for x in ("VG", "PV", "POOL")
+        evidence.get(x, {}).get("status") == "PASS" for x in ("VG", "INTENT", "PV", "POOL")
     ) else "FAIL"
 
     vg_lines = [x.strip() for x in evidence.get("VG", {}).get("out", "").splitlines() if x.strip()]
     actual_vg = vg_lines[0] if len(vg_lines) == 1 else ""
     results["VG_UUID_MATCH"] = "PASS" if expected_vg and actual_vg.lower() == expected_vg.lower() else "FAIL"
+
+    intent_ok, intent_details = vg_intent_health(
+        evidence.get("INTENT", {}).get("out", ""), sid, vg,
+    )
+    results["VG_INTENT_CLEAR"] = "PASS" if intent_ok else "FAIL"
+    details.extend(f"recovery-required: {item}" for item in intent_details)
 
     pv_lines = [x.strip() for x in evidence.get("PV", {}).get("out", "").splitlines() if x.strip()]
     actual_pv = actual_dev = ""
@@ -642,6 +689,7 @@ def main(argv=None):
         details.append(f"unscoped_dstate_tasks={len(unknown)}; positive storage attribution unavailable")
 
     ordered = ["PATHS_HEALTHY", "WWID_MATCH", "PV_UUID_MATCH", "VG_UUID_MATCH",
+               "VG_INTENT_CLEAR",
                "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "THIN_REFERENCES_HEALTHY",
                "THIN_OWNER_STATE",
                "NO_RELEVANT_DSTATE", "BOUNDED_LVM_PROBES",

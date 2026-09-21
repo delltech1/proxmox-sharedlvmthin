@@ -187,6 +187,13 @@ verifies the final map and clears the matching intent. A missing frontend,
 smaller backing LV, non-linear table, identity mismatch, or changed authority
 is ambiguous and remains fail-closed for manual investigation.
 
+`sharedlvmthin recovery-check <storage-id>` independently reads the VG tags and
+validates the complete signed mutation intent. A materialized anchor never
+overrides an OPEN intent: diagnostics report `VG_INTENT_CLEAR=FAIL`, keep
+`SAFE_FOR_MUTATION=NO`, and identify `thick-recover-resize` for an exact
+`EXTEND` case. Malformed, incomplete, duplicate, unknown, or digest-mismatched
+intent evidence is likewise fail-closed.
+
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
 automatic and never searches by a similar name. After confirming that no PVE
