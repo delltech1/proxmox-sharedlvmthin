@@ -231,10 +231,16 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("sharedlvmthin-migrate-bridge", build)
         self.assertIn("sub _package_flavor", plugin)
         self.assertIn("Thin allocation mode is unavailable", plugin)
-        self.assertIn("managed Thin pool", preinst)
+        self.assertIn("managed Thin", preinst)
         self.assertIn("$1 ~ /pve-slt-sid-/", preinst)
         self.assertIn("Thick-only package: Thin autogrow policy", postinst)
         self.assertIn("require_dual_mode", cli)
+        self.assertIn("pve-sharedlvmthin-thick", cli)
+        self.assertIn(
+            "Thin dmeventd/autogrow policy is not applicable to Thick-only flavor",
+            cli,
+        )
+        self.assertIn("DEFAULT_ALLOCATION_MODE=thick-generations", cli)
         self.assertIn("thick-only) CONTROL=", build)
         worker = (
             ROOT

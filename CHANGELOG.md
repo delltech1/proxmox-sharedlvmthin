@@ -11,6 +11,9 @@
   operational helpers, refuses installation while Thin configuration or
   managed Thin pools remain, and conflicts with the dual package so their
   shared files cannot overwrite one another.
+- Make Doctor package-aware: Thick-only installations verify their own package,
+  treat absent Thin services and autogrow policy as intentional, and use the
+  Thick Generations default when the fixed allocation property is omitted.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

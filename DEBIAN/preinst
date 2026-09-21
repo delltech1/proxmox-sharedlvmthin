@@ -31,8 +31,8 @@ if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
     fi
     if command -v lvs >/dev/null 2>&1 &&
        lvs --readonly --noheadings --separator '|' -o lv_tags,segtype 2>/dev/null |
-       awk -F'|' '$2 ~ /thin-pool/ && $1 ~ /pve-slt-sid-/ { found=1 } END { exit found ? 0 : 1 }'; then
-        echo "ERROR: Thick-only package installation refused: managed Thin pool" >&2
+       awk -F'|' '$1 ~ /pve-slt-sid-/ { found=1 } END { exit found ? 0 : 1 }'; then
+        echo "ERROR: Thick-only package installation refused: managed Thin" >&2
         echo "objects still exist. Their data must not be stranded by a flavor switch." >&2
         exit 1
     fi
