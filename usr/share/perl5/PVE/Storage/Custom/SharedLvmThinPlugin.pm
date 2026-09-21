@@ -1240,6 +1240,9 @@ sub _thick_deactivate_volume {
             ['/sbin/dmsetup', 'remove', '--retry', $mapper],
             errmsg => "removing stable thick-generations frontend '$mapper' failed",
         );
+        die "stable thick-generations frontend '$mapper' removal is unconfirmed; "
+            . "underlying LVs remain active\n"
+            if _block_device_exists("/dev/mapper/$mapper");
     }
     $class->_thick_deactivate_exact_lvs(
         $vg, $device,

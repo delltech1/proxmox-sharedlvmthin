@@ -851,6 +851,17 @@ exit 0
         self.assertEqual(source.count("['/sbin/lvchange', '--devices', $device, '-an'"), 1)
         self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 13)
 
+    def test_stable_thick_frontend_removal_has_an_absence_postcondition(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(
+            source,
+            r"(?s)dmsetup', 'remove', '--retry', \$mapper\].*?"
+            r"removal is unconfirmed; .*?underlying LVs remain active.*?"
+            r"_block_device_exists\(\"/dev/mapper/\$mapper\"\)",
+        )
+
     def test_post_pivot_cleanup_deactivates_before_destructive_remove(self):
         source = (
             ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"

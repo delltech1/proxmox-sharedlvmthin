@@ -2,6 +2,9 @@
 
 ## Unreleased — Thick Generations audit
 
+- Require positive frontend absence after a successful stable `dmsetup remove`
+  before deactivating the signed anchor and HEAD LVs. A misleading command
+  success can no longer let teardown proceed against a surviving frontend.
 - Scope the Thick capacity probe to the pinned multipath WWID with LVM
   `--devices`; a same-name local or stale VG can no longer supply admission
   figures after storage identity was verified.
