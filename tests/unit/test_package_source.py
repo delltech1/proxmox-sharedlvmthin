@@ -1093,7 +1093,7 @@ exit 0
         )
         commands.extend(
             re.findall(
-                r"my @(?:head|anchor)_create = \(\s*'/sbin/lvcreate'(?P<body>.*?)\);",
+                r"my @(?:head|anchor|new|meta)_create = \(\s*'/sbin/lvcreate'(?P<body>.*?)\);",
                 source,
                 flags=re.S,
             )
