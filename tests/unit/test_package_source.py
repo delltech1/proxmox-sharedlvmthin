@@ -286,6 +286,9 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('dpkg-deb --control "$PACKAGE" "$TMP/control"', release_check)
         self.assertIn('sh -n "$TMP/control/$maintscript"', release_check)
         self.assertIn("package that builds but cannot configure", release_check)
+        self.assertIn('DOC_DIR="$STAGE/usr/share/doc/$PACKAGE_NAME"', build)
+        self.assertIn('DOC_DIR="$TMP/root/usr/share/doc/$PACKAGE_NAME"', release_check)
+        self.assertIn("dual-package documentation namespace leaked", release_check)
 
         release_gate = (ROOT / "docs/thick-generations-release-gate.md").read_text(
             encoding="utf-8"

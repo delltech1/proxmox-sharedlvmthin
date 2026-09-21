@@ -37,14 +37,25 @@ if [ "$FLAVOR" = "thick-only" ]; then
         "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence" \
         "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import" \
         "$STAGE/usr/sbin/sharedlvmthin-migrate-bridge"
+
+    # Debian package documentation belongs under the binary package name.
+    # Move the shared source documentation rather than duplicating it, so a
+    # flavor replacement cannot leave files owned under the other profile.
+    mkdir -p "$STAGE/usr/share/doc/$PACKAGE_NAME"
+    cp -a "$STAGE/usr/share/doc/pve-sharedlvmthin/." \
+        "$STAGE/usr/share/doc/$PACKAGE_NAME/"
+    rm -rf "$STAGE/usr/share/doc/pve-sharedlvmthin"
 fi
+
+DOC_DIR="$STAGE/usr/share/doc/$PACKAGE_NAME"
+mkdir -p "$DOC_DIR"
 
 # Ship the same risk/support boundary and project notice inside the binary
 # package so the warning remains available after an offline installation.
 install -m 0644 "$ROOT/docs/RISK-AND-SUPPORT-BOUNDARY.md" \
-    "$STAGE/usr/share/doc/pve-sharedlvmthin/RISK-AND-SUPPORT-BOUNDARY.md"
+    "$DOC_DIR/RISK-AND-SUPPORT-BOUNDARY.md"
 install -m 0644 "$ROOT/NOTICE" \
-    "$STAGE/usr/share/doc/pve-sharedlvmthin/NOTICE"
+    "$DOC_DIR/NOTICE"
 
 # Syntax tests can leave bytecode in a development tree. Binary packages
 # must be built only from authoritative source files.

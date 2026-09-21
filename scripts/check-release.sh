@@ -39,7 +39,19 @@ case "$PACKAGE_NAME:$FLAVOR" in
     *) echo "package name/flavor mismatch: $PACKAGE_NAME:$FLAVOR" >&2; exit 1 ;;
 esac
 
+DOC_DIR="$TMP/root/usr/share/doc/$PACKAGE_NAME"
+if [ ! -f "$DOC_DIR/copyright" ] || \
+   [ ! -f "$DOC_DIR/RISK-AND-SUPPORT-BOUNDARY.md" ] || \
+   [ ! -f "$DOC_DIR/NOTICE" ]; then
+    echo "package documentation is missing from its package namespace: $PACKAGE_NAME" >&2
+    exit 1
+fi
+
 if [ "$FLAVOR" = "thick-only" ]; then
+    if [ -e "$TMP/root/usr/share/doc/pve-sharedlvmthin" ]; then
+        echo "dual-package documentation namespace leaked into Thick-only package" >&2
+        exit 1
+    fi
     for forbidden_path in \
         lib/systemd/system/pve-sharedlvmthin-thin-guard.service \
         usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor \
