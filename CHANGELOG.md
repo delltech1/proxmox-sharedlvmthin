@@ -22,7 +22,10 @@
   checker is executable, syntax-valid and byte-identical to the payload copy in
   both package profiles. The candidate no longer double-probes through the old
   installed helper; Debian's `upgrade` argument and the installed flavor marker
-  select the audit, and duplicate storage identifiers fail before probing.
+  select the audit, and duplicate storage identifiers fail before probing. A
+  first local install also runs the candidate audit whenever cluster
+  `storage.cfg` already contains SharedLvmThin storage, covering a new node
+  joining an existing data-bearing cluster.
 - Fail closed when asynchronous materialization scheduling is not positively
   confirmed. A `systemd-run` client/transport error may occur after the exact
   transaction worker was queued, so the snapshot callback no longer starts a

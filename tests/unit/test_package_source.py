@@ -13,13 +13,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class PackageSourceTests(unittest.TestCase):
     def _run_preinst_candidate_audit(
-        self, *, recovery_safe=True, disabled=True, duplicate=False
+        self, *, recovery_safe=True, disabled=True, duplicate=False,
+        installed_marker=True, action="upgrade"
     ):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         marker = root / "package-flavor"
-        marker.write_text("dual\n", encoding="utf-8")
+        if installed_marker:
+            marker.write_text("dual\n", encoding="utf-8")
         storage = root / "storage.cfg"
         storage_text = (
             "sharedlvmthin: disabled-thick\n"
@@ -70,7 +72,7 @@ class PackageSourceTests(unittest.TestCase):
         env["PATH"] = f"{root}{os.pathsep}{env['PATH']}"
         env["DPKG_MAINTSCRIPT_PACKAGE"] = "pve-sharedlvmthin"
         result = subprocess.run(
-            ["/bin/sh", str(candidate), "upgrade"], env=env, text=True,
+            ["/bin/sh", str(candidate), action], env=env, text=True,
             capture_output=True, check=False,
         )
         invoked = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
@@ -220,6 +222,14 @@ exit 0
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(invoked, [])
         self.assertIn("candidate storage configuration is ambiguous", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_first_install_on_cluster_node_audits_existing_storage(self):
+        result, invoked = self._run_preinst_candidate_audit(
+            installed_marker=False, action="install", recovery_safe=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(invoked, ["disabled-thick"])
 
     def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
         helper = (
@@ -459,6 +469,7 @@ exit 0
         self.assertIn("candidate recovery checker is missing", preinst)
         self.assertIn("sharedlvmthin-candidate-recovery-check", preinst)
         self.assertIn('"${1:-}" = "upgrade"', preinst)
+        self.assertIn("grep -q '^sharedlvmthin:[[:space:]]'", preinst)
         self.assertIn("if ($2 in seen) exit 3", preinst)
         self.assertIn("candidate storage configuration is ambiguous", preinst)
         self.assertIn("not positively recovery-safe under candidate rules", preinst)

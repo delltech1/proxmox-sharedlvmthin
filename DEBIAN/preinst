@@ -117,10 +117,15 @@ audit_candidate_storages() {
 # fence to ordinary upgrades as well as dual <-> Thick-only replacements.
 # The Debian upgrade argument is authoritative even if an old package predates
 # the flavor marker. A cross-profile replacement is detected by the installed
-# marker. Only a genuine first installation may skip the storage audit.
+# marker. A first local installation on a node joining an existing cluster must
+# still audit storage already present in pmxcfs; only a host with no
+# SharedLvmThin configuration may skip the storage audit.
 IS_UPGRADE=0
 [ "${1:-}" = "upgrade" ] && IS_UPGRADE=1
 [ -n "$INSTALLED_FLAVOR" ] && IS_UPGRADE=1
+if [ -r "$STORAGECFG" ] && grep -q '^sharedlvmthin:[[:space:]]' "$STORAGECFG"; then
+    IS_UPGRADE=1
+fi
 if [ "$IS_UPGRADE" -eq 1 ]; then
     case "$INSTALLED_FLAVOR" in
         dual|thick-only|'') ;;
