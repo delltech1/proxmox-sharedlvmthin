@@ -220,6 +220,7 @@ class PackageSourceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         preinst = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        prerm = (ROOT / "DEBIAN/prerm").read_text(encoding="utf-8")
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
 
         self.assertIn("Package: pve-sharedlvmthin\n", dual)
@@ -237,7 +238,19 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("pve-sharedlvmthin-tg-*", preinst)
         self.assertIn("sharedlvmthin-upgrade-check", preinst)
         self.assertIn("No package files were replaced", preinst)
+        self.assertIn("ordinary upgrades as well as dual <-> Thick-only", preinst)
+        self.assertLess(
+            preinst.index("if [ -n \"$INSTALLED_FLAVOR\" ]"),
+            preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
+        )
         self.assertIn("Thick-only package: Thin autogrow policy", postinst)
+        self.assertIn('systemctl stop "$THIN_GUARD_SERVICE"', prerm)
+        self.assertIn('systemctl disable "$THIN_GUARD_SERVICE"', prerm)
+        self.assertIn("active ThinGuard still protects", prerm)
+        self.assertLess(
+            prerm.index("pve-slt-sid-"),
+            prerm.index('systemctl stop "$THIN_GUARD_SERVICE"'),
+        )
         self.assertIn("require_dual_mode", cli)
         self.assertIn("pve-sharedlvmthin-thick", cli)
         self.assertIn(
@@ -254,6 +267,13 @@ class PackageSourceTests(unittest.TestCase):
             "Thin recovery operations are unavailable in the Thick-only package",
             worker,
         )
+
+        health = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json"
+        ).read_text(encoding="utf-8")
+        self.assertIn('return "pve-sharedlvmthin-thick", flavor', health)
+        self.assertIn('"plugin_package": plugin_package', health)
+        self.assertNotIn('package_version("pve-sharedlvmthin")', health)
 
     def test_public_support_claims_separate_thin_and_materialized_thick_mobility(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

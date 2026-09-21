@@ -37,6 +37,12 @@ failed transient Thick materialization unit. A package replacement therefore
 cannot remove entry points while a known asynchronous worker is unfinished.
 The gate never resumes, repairs or deletes a transaction.
 
+The same pre-unpack transaction and recovery fence applies to ordinary
+upgrades and to a Thick-only-to-dual replacement. During removal of the dual
+profile, dpkg also stops and disables ThinGuard so no orphaned in-memory
+guardian can remain after its executable and unit are removed. This service
+cleanup is not a storage mutation and does not deactivate guest volumes.
+
 Run `sharedlvmthin upgrade-check` immediately before every rolling package
 change. Every Thick anchor must be positively verified as `MATERIALIZED`; do
 not replace plugin code while a hydration, rollback, deletion or recovery

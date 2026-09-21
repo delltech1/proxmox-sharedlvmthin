@@ -69,6 +69,15 @@ def package_version(name):
     return value(["dpkg-query", "-W", "-f=${Version}", name])
 
 
+def installed_plugin_package():
+    flavor = read_file("/usr/share/pve-sharedlvmthin/package-flavor")
+    if flavor == "thick-only":
+        return "pve-sharedlvmthin-thick", flavor
+    if flavor == "dual":
+        return "pve-sharedlvmthin", flavor
+    return None, flavor
+
+
 def read_file(path):
     try:
         with open(path, "r") as f:
@@ -1253,6 +1262,7 @@ def build_transport(vg):
 api, apiage = pve_api()
 papi = plugin_api()
 states = pvesm_states()
+plugin_package, package_flavor = installed_plugin_package()
 
 doc = {
     "schema": 1,
@@ -1266,7 +1276,9 @@ doc = {
         "storage_api": api,
         "storage_api_age": apiage,
         "plugin_api": papi,
-        "plugin_version": package_version("pve-sharedlvmthin"),
+        "plugin_package": plugin_package,
+        "package_flavor": package_flavor,
+        "plugin_version": package_version(plugin_package) if plugin_package else None,
         "storage_package": package_version("libpve-storage-perl"),
     },
     "lvm": lvm_info(),
