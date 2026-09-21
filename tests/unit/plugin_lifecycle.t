@@ -3099,6 +3099,43 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     is(scalar(@cleared), 1, 'OPEN intent clears after exact absence proof');
 
     reset_mocks();
+    @inventories = (
+        { testvg => { $head => { tags => $head_tags, lv_state => '-' } } },
+        { testvg => {} },
+    );
+    @cleared = ();
+    is($class->_thick_recover_partial_allocation($cfg, $storeid, $volname),
+        'PARTIAL_ALLOCATION_RECOVERED',
+        'creation interrupted before anchor creation is idempotently recovered');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
+    ], 'a lone exact signed generation is the only object removed');
+    is(scalar(@cleared), 1, 'head-only recovery clears intent after exact absence proof');
+
+    reset_mocks();
+    @inventories = (
+        { testvg => { $anchor => { tags => $anchor_tags, lv_state => '-' } } },
+        { testvg => {} },
+    );
+    @cleared = ();
+    is($class->_thick_recover_partial_allocation($cfg, $storeid, $volname),
+        'PARTIAL_ALLOCATION_RECOVERED',
+        'cleanup interrupted after generation removal is idempotently recovered');
+    is_deeply([command_lines()], [
+        "/sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
+    ], 'a lone exact signed anchor is the only object removed');
+    is(scalar(@cleared), 1, 'anchor-only recovery clears intent after exact absence proof');
+
+    reset_mocks();
+    @inventories = ({ testvg => {} });
+    @cleared = ();
+    eval { $class->_thick_recover_partial_allocation($cfg, $storeid, $volname) };
+    like($@, qr/requires one or both exact signed allocation objects/,
+        'empty inventory is not silently adopted by partial-object recovery');
+    is(scalar(@commands), 0, 'empty-inventory refusal performs no mutation');
+    is_deeply(\@cleared, [], 'empty-inventory refusal preserves OPEN intent');
+
+    reset_mocks();
     @inventories = ($before);
     @cleared = ();
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub {

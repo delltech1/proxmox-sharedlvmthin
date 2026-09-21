@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- Make partial Thick allocation cleanup idempotent across its own two delete
+  boundaries. Recovery now accepts an exact signed generation left before
+  anchor creation or an exact signed anchor left after generation removal,
+  while continuing to reject foreign objects, runtime frontends and PVE refs.
 - Bind every dm-clone status observation to the signed transition geometry.
   The target must start at sector zero and report the exact frontend length,
   region size and derived region count throughout hydration and final pivot;

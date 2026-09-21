@@ -2010,27 +2010,31 @@ sub _thick_recover_partial_allocation {
         my @related = sort grep {
             $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
         } keys %$objects;
-        die "partial-allocation recovery requires exactly the signed anchor and generation-0 HEAD\n"
-            if @related != 2 || $related[0] ne $anchor || $related[1] ne $head;
+        my $anchor_present = exists($objects->{$anchor});
+        my $head_present = exists($objects->{$head});
+        die "partial-allocation recovery requires one or both exact signed allocation objects\n"
+            if !@related || grep { $_ ne $anchor && $_ ne $head } @related;
         die "partial-allocation recovery refused: transaction frontend '$mapper' exists\n"
             if _block_device_exists("/dev/mapper/$mapper");
 
-        my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
-        die "partial-allocation anchor does not match the exact OPEN ALLOC transaction\n"
-            if $state->{sid} ne $storeid || $state->{vol} ne $volname
-            || $state->{phase} ne 'PREPARED' || $state->{op} ne 'ALLOC'
-            || $state->{tx} ne $intent->{tx} || $state->{snapshot} ne 'none'
-            || $state->{generation} != 0 || $state->{head} ne $head
-            || $state->{source} ne $head || $state->{old} ne $head
-            || $state->{new} ne $head;
+        if ($anchor_present) {
+            my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
+            die "partial-allocation anchor does not match the exact OPEN ALLOC transaction\n"
+                if $state->{sid} ne $storeid || $state->{vol} ne $volname
+                || $state->{phase} ne 'PREPARED' || $state->{op} ne 'ALLOC'
+                || $state->{tx} ne $intent->{tx} || $state->{snapshot} ne 'none'
+                || $state->{generation} != 0 || $state->{head} ne $head
+                || $state->{source} ne $head || $state->{old} ne $head
+                || $state->{new} ne $head;
+        }
         validate_generation_tags(
             $objects->{$head}->{tags} // '', sid => $storeid, vol => $volname,
             role => 'head', generation => 0,
-        );
+        ) if $head_present;
         my $references = $class->_thick_pve_reference_files($storeid, $volname);
         die "partial-allocation recovery refused: PVE still references '$storeid:$volname' in "
             . join(', ', @$references) . "\n" if @$references;
-        for my $object ($anchor, $head) {
+        for my $object (grep { exists($objects->{$_}) } ($anchor, $head)) {
             $class->_verify_autoactivation_disabled($vg, $object, $device);
             my $active = _command_lines(
                 ['/sbin/lvs', '--noheadings', '--devices', $device,
@@ -2059,11 +2063,11 @@ sub _thick_recover_partial_allocation {
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$head"],
                 errmsg => "removing partial thick generation '$vg/$head' failed",
-            );
+            ) if $head_present;
             run_command(
                 ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$anchor"],
                 errmsg => "removing partial thick anchor '$vg/$anchor' failed",
-            );
+            ) if $anchor_present;
         };
         $command_error = $@ if $@;
         my $after = $class->_thick_list_volumes_scoped($vg, $device);
