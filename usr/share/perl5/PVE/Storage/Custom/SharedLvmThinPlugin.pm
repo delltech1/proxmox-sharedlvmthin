@@ -79,6 +79,28 @@ sub type {
     return 'sharedlvmthin';
 }
 
+sub _package_flavor_path {
+    return '/usr/share/pve-sharedlvmthin/package-flavor';
+}
+
+sub _package_flavor {
+    my ($class) = @_;
+    my $path = $class->_package_flavor_path();
+    return 'dual' if !-e $path;
+    open(my $fh, '<', $path)
+        or die "cannot read SharedLvmThin package flavor '$path': $!\n";
+    my $flavor = <$fh>;
+    my $extra = <$fh>;
+    close($fh)
+        or die "cannot close SharedLvmThin package flavor '$path': $!\n";
+    die "SharedLvmThin package flavor is missing or ambiguous\n"
+        if !defined($flavor) || defined($extra);
+    $flavor =~ s/\s+$//;
+    die "unknown SharedLvmThin package flavor '$flavor'\n"
+        if $flavor ne 'dual' && $flavor ne 'thick-only';
+    return $flavor;
+}
+
 sub _outer_lock_yield {
     my ($class, $milliseconds) = @_;
     return if !$milliseconds;
@@ -148,16 +170,19 @@ sub plugindata {
 # native Proxmox storage properties.
 #
 sub properties {
-    return {
+    my $thick_only = __PACKAGE__->_package_flavor() eq 'thick-only';
+    my $properties = {
         'slt-vgname' => {
             description => 'Backing shared LVM volume group.',
             type => 'string',
         },
         'slt-allocation-mode' => {
-            description => 'Experimental lab-only backend: per-VM Thin pools or fully allocated Thick Generations; both modes require disposable storage.',
+            description => $thick_only
+                ? 'Experimental lab-only Thick Generations backend; requires disposable storage.'
+                : 'Experimental lab-only backend: per-VM Thin pools or fully allocated Thick Generations; both modes require disposable storage.',
             type => 'string',
-            enum => ['thin', 'thick-generations'],
-            default => 'thin',
+            enum => $thick_only ? ['thick-generations'] : ['thin', 'thick-generations'],
+            default => $thick_only ? 'thick-generations' : 'thin',
         },
         'slt-tg-hydration-timeout' => {
             description => 'Bounded Thick Generations no-progress timeout in seconds. Continuing verified dm-clone progress may run longer for large disks.',
@@ -311,10 +336,20 @@ sub properties {
             maximum => 1048576,
         },
     };
+    if ($thick_only) {
+        delete @$properties{qw(
+            slt-thin-leaseguard slt-thin-peer-connect-timeout
+            slt-thin-peer-probe-timeout slt-thin-ha-takeover
+            slt-initial-pool-size slt-initial-pool-mode
+            slt-initial-pool-percent slt-initial-pool-max
+            slt-burst-headroom-gib
+        )};
+    }
+    return $properties;
 }
 
 sub options {
-    return {
+    my $options = {
         'slt-vgname' => { fixed => 1 },
         'slt-allocation-mode' => { fixed => 1, optional => 1 },
         'slt-tg-hydration-timeout' => { optional => 1 },
@@ -348,13 +383,27 @@ sub options {
         content => { optional => 1 },
         shared => { optional => 1 },
     };
+    if (__PACKAGE__->_package_flavor() eq 'thick-only') {
+        delete @$options{qw(
+            slt-thin-leaseguard slt-thin-peer-connect-timeout
+            slt-thin-peer-probe-timeout slt-thin-ha-takeover
+            slt-initial-pool-size slt-initial-pool-mode
+            slt-initial-pool-percent slt-initial-pool-max
+            slt-burst-headroom-gib
+        )};
+    }
+    return $options;
 }
 
 sub _allocation_mode {
     my ($class, $scfg) = @_;
-    my $mode = $scfg->{'slt-allocation-mode'} // 'thin';
+    my $flavor = $class->_package_flavor();
+    my $mode = $scfg->{'slt-allocation-mode'}
+        // ($flavor eq 'thick-only' ? 'thick-generations' : 'thin');
     die "unknown SharedLvmThin allocation mode '$mode'\n"
         if $mode ne 'thin' && $mode ne 'thick-generations';
+    die "Thin allocation mode is unavailable in the Thick-only package\n"
+        if $flavor eq 'thick-only' && $mode ne 'thick-generations';
     return $mode;
 }
 

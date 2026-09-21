@@ -17,6 +17,37 @@ dpkg-deb --info "$PACKAGE" >/dev/null
 dpkg-deb --contents "$PACKAGE" >"$TMP/contents.txt"
 dpkg-deb --extract "$PACKAGE" "$TMP/root"
 
+PACKAGE_NAME=$(dpkg-deb -f "$PACKAGE" Package)
+FLAVOR_FILE="$TMP/root/usr/share/pve-sharedlvmthin/package-flavor"
+if [ ! -f "$FLAVOR_FILE" ]; then
+    echo "package flavor marker is missing" >&2
+    exit 1
+fi
+FLAVOR=$(sed -n '1p' "$FLAVOR_FILE")
+case "$PACKAGE_NAME:$FLAVOR" in
+    pve-sharedlvmthin:dual) ;;
+    pve-sharedlvmthin-thick:thick-only) ;;
+    *) echo "package name/flavor mismatch: $PACKAGE_NAME:$FLAVOR" >&2; exit 1 ;;
+esac
+
+if [ "$FLAVOR" = "thick-only" ]; then
+    for forbidden_path in \
+        lib/systemd/system/pve-sharedlvmthin-thin-guard.service \
+        usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence \
+        usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+        usr/sbin/sharedlvmthin-migrate-bridge
+    do
+        if [ -e "$TMP/root/$forbidden_path" ]; then
+            echo "Thin operational path leaked into Thick-only package: $forbidden_path" >&2
+            exit 1
+        fi
+    done
+fi
+
 for forbidden in \
     '*.key' '*.p12' '*.pfx' 'id_rsa' 'id_ed25519' '*.pyc' '__pycache__'; do
     if find "$TMP/root" -name "$forbidden" -print -quit | grep -q .; then

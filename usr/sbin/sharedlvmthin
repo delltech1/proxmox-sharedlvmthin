@@ -5,6 +5,25 @@
 set -u
 
 VERSION="0.3-doctor"
+PACKAGE_FLAVOR_FILE=/usr/share/pve-sharedlvmthin/package-flavor
+PACKAGE_FLAVOR=dual
+if [ -e "$PACKAGE_FLAVOR_FILE" ]; then
+    IFS= read -r PACKAGE_FLAVOR <"$PACKAGE_FLAVOR_FILE" || {
+        echo "ERROR: cannot read package flavor" >&2
+        exit 2
+    }
+fi
+case "$PACKAGE_FLAVOR" in
+    dual|thick-only) ;;
+    *) echo "ERROR: unknown package flavor '$PACKAGE_FLAVOR'" >&2; exit 2 ;;
+esac
+
+require_dual_mode() {
+    if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+        echo "ERROR: this command is unavailable in the Thick-only package" >&2
+        exit 64
+    fi
+}
 DOCTOR_MODE="${DOCTOR_MODE:-full}"
 PLUGIN="/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 MONITOR="/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor"
@@ -1340,6 +1359,7 @@ deep_doctor() {
 case "${1:-doctor}" in
     doctor)
         if [ "${2:-}" = "--deep" ]; then
+            require_dual_mode
             deep_doctor
         elif [ "${2:-}" = "--quick" ]; then
             DOCTOR_MODE=quick doctor
@@ -1351,6 +1371,7 @@ case "${1:-doctor}" in
         fi
         ;;
     deep|--deep)
+        require_dual_mode
         deep_doctor
         ;;
     recovery-check)
@@ -1423,6 +1444,7 @@ case "${1:-doctor}" in
             --recover-orphan-tree "$2" "$3"
         ;;
     thin-recover-orphan)
+        require_dual_mode
         if [ "$#" -ne 3 ]; then
             echo "Usage: sharedlvmthin thin-recover-orphan <storage-id> <volume>" >&2
             exit 64
@@ -1431,6 +1453,7 @@ case "${1:-doctor}" in
             --recover-thin-orphan "$2" "$3"
         ;;
     thin-recover-fenced-owner)
+        require_dual_mode
         if [ "$#" -ne 4 ]; then
             echo "Usage: sharedlvmthin thin-recover-fenced-owner <storage-id> <volume> <fenced-node>" >&2
             exit 64
@@ -1440,6 +1463,7 @@ case "${1:-doctor}" in
             --recover-fenced-thin-owner "$2" "$3" "$4"
         ;;
     thin-adopt-owner-model)
+        require_dual_mode
         if [ "$#" -ne 4 ] || [ "$4" != "ALL-NODES-INACTIVE" ]; then
             echo "Usage: sharedlvmthin thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE" >&2
             exit 64
@@ -1449,6 +1473,7 @@ case "${1:-doctor}" in
             --adopt-thin-owner-model "$2" "$3" "$4"
         ;;
     thin-metadata-check)
+        require_dual_mode
         if [ "$#" -ne 3 ]; then
             echo "Usage: sharedlvmthin thin-metadata-check <storage-id> <volume>" >&2
             exit 64

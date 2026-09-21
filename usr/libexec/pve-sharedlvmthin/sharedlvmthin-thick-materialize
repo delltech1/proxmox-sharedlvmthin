@@ -16,6 +16,8 @@ my $recover_orphan_tree = @ARGV == 3 && $ARGV[0] eq '--recover-orphan-tree';
 my $recover_thin_orphan = @ARGV == 3 && $ARGV[0] eq '--recover-thin-orphan';
 my $recover_fenced_thin_owner = @ARGV == 4 && $ARGV[0] eq '--recover-fenced-thin-owner';
 my $adopt_thin_owner_model = @ARGV == 4 && $ARGV[0] eq '--adopt-thin-owner-model';
+my $thin_operation = $recover_thin_orphan || $recover_fenced_thin_owner
+    || $adopt_thin_owner_model;
 die "Usage: sharedlvmthin-thick-materialize <storage-id> <volume> <snapshot> <operation> <transaction>\n"
     . "       sharedlvmthin-thick-materialize --resume <storage-id> <volume>\n"
     . "       sharedlvmthin-thick-materialize --recover-delete <storage-id> <volume>\n"
@@ -47,6 +49,8 @@ die "storage '$storeid' is not SharedLvmThin\n"
     if ($scfg->{type} // '') ne 'sharedlvmthin';
 
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+die "Thin recovery operations are unavailable in the Thick-only package\n"
+    if $thin_operation && $class->_package_flavor() eq 'thick-only';
 if ($adopt_thin_owner_model) {
     die "storage '$storeid' is configured for Thick Generations\n"
         if $class->_allocation_mode($scfg) eq 'thick-generations';

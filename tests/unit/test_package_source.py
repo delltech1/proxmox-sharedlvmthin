@@ -210,6 +210,42 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("one LVM thin pool per VM", control)
         self.assertIn("fully allocated Thick Generations", control)
 
+    def test_thick_only_package_is_a_restricted_shared_core_flavor(self):
+        dual = (ROOT / "DEBIAN/control").read_text(encoding="utf-8")
+        thick = (ROOT / "packaging/thick-only/control").read_text(encoding="utf-8")
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        plugin = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        preinst = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("Package: pve-sharedlvmthin\n", dual)
+        self.assertIn("Conflicts: pve-sharedlvmthin-thick", dual)
+        self.assertIn("Package: pve-sharedlvmthin-thick", thick)
+        self.assertIn("Conflicts: pve-sharedlvmthin\n", thick)
+        self.assertIn("Replaces: pve-sharedlvmthin\n", thick)
+        self.assertIn("FLAVOR=${2:-${PACKAGE_FLAVOR:-dual}}", build)
+        self.assertIn('printf \'%s\\n\' "$FLAVOR"', build)
+        self.assertIn("sharedlvmthin-migrate-bridge", build)
+        self.assertIn("sub _package_flavor", plugin)
+        self.assertIn("Thin allocation mode is unavailable", plugin)
+        self.assertIn("managed Thin pool", preinst)
+        self.assertIn("$1 ~ /pve-slt-sid-/", preinst)
+        self.assertIn("Thick-only package: Thin autogrow policy", postinst)
+        self.assertIn("require_dual_mode", cli)
+        self.assertIn("sh scripts/build.sh dist-thick thick-only", workflow)
+        worker = (
+            ROOT
+            / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "Thin recovery operations are unavailable in the Thick-only package",
+            worker,
+        )
+
     def test_public_support_claims_separate_thin_and_materialized_thick_mobility(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         migration = (ROOT / "docs/migration.md").read_text(encoding="utf-8")

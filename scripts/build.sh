@@ -5,10 +5,17 @@
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=$(sed -n 's/^Version:[[:space:]]*//p' "$ROOT/DEBIAN/control")
-ARCH=$(sed -n 's/^Architecture:[[:space:]]*//p' "$ROOT/DEBIAN/control")
 OUT=${1:-"$ROOT/dist"}
-PACKAGE="pve-sharedlvmthin_${VERSION}_${ARCH}.deb"
+FLAVOR=${2:-${PACKAGE_FLAVOR:-dual}}
+case "$FLAVOR" in
+    dual) CONTROL="$ROOT/DEBIAN/control" ;;
+    thick-only) CONTROL="$ROOT/packaging/thick-only/control" ;;
+    *) echo "unknown package flavor: $FLAVOR" >&2; exit 64 ;;
+esac
+VERSION=$(sed -n 's/^Version:[[:space:]]*//p' "$CONTROL")
+ARCH=$(sed -n 's/^Architecture:[[:space:]]*//p' "$CONTROL")
+PACKAGE_NAME=$(sed -n 's/^Package:[[:space:]]*//p' "$CONTROL")
+PACKAGE="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1788231600}
 export SOURCE_DATE_EPOCH
 STAGE=$(mktemp -d)
@@ -16,6 +23,21 @@ trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 
 mkdir -p "$OUT"
 cp -a "$ROOT/DEBIAN" "$ROOT/lib" "$ROOT/usr" "$STAGE/"
+cp "$CONTROL" "$STAGE/DEBIAN/control"
+mkdir -p "$STAGE/usr/share/pve-sharedlvmthin"
+printf '%s\n' "$FLAVOR" >"$STAGE/usr/share/pve-sharedlvmthin/package-flavor"
+
+if [ "$FLAVOR" = "thick-only" ]; then
+    rm -f \
+        "$STAGE/lib/systemd/system/pve-sharedlvmthin-thin-guard.service" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence" \
+        "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import" \
+        "$STAGE/usr/sbin/sharedlvmthin-migrate-bridge"
+fi
 
 # Ship the same risk/support boundary and project notice inside the binary
 # package so the warning remains available after an offline installation.
@@ -31,7 +53,7 @@ find "$STAGE" -depth -type d -name '__pycache__' -exec rmdir {} +
 
 find "$STAGE" -type d -exec chmod 0755 {} +
 find "$STAGE" -type f -exec chmod 0644 {} +
-chmod 0755 \
+for PROGRAM in \
     "$STAGE/DEBIAN/preinst" \
     "$STAGE/DEBIAN/postinst" \
     "$STAGE/DEBIAN/postrm" \
@@ -55,6 +77,9 @@ chmod 0755 \
     "$STAGE/usr/sbin/sharedlvmthin" \
     "$STAGE/usr/sbin/sharedlvmthin-migrate-bridge" \
     "$STAGE/usr/sbin/sharedlvmthin-web-configure"
+do
+    [ ! -e "$PROGRAM" ] || chmod 0755 "$PROGRAM"
+done
 
 find "$STAGE" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 

@@ -6,6 +6,11 @@
   `ro`, `Fail`, or a missing mode now stops hydration/recovery immediately and
   preserves the transaction instead of being misclassified as ordinary slow
   progress until the no-progress timeout.
+- Add a Thick-only Debian package profile built from the same plugin core as
+  the dual-mode package. It exposes only `thick-generations`, removes Thin
+  operational helpers, refuses installation while Thin configuration or
+  managed Thin pools remain, and conflicts with the dual package so their
+  shared files cannot overwrite one another.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

@@ -2570,6 +2570,34 @@ subtest 'allocation mode defaults to thin and thick mode requires explicit safet
     like($@, qr/requires a protected VG reserve/, 'thick mode cannot consume the last VG extents');
 };
 
+subtest 'Thick-only package flavor shares the core but removes every Thin entry point' => sub {
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_package_flavor = sub {
+        return 'thick-only';
+    };
+    is($class->_allocation_mode({}), 'thick-generations',
+        'Thick-only configuration defaults to Thick Generations');
+    eval { $class->_allocation_mode({ 'slt-allocation-mode' => 'thin' }) };
+    like($@, qr/Thin allocation mode is unavailable in the Thick-only package/,
+        'explicit Thin mode fails closed in Thick-only flavor');
+
+    my $properties = $class->properties();
+    is_deeply($properties->{'slt-allocation-mode'}->{enum}, ['thick-generations'],
+        'PVE schema advertises only Thick Generations');
+    is($properties->{'slt-allocation-mode'}->{default}, 'thick-generations',
+        'PVE schema has no legacy Thin default');
+    ok(!exists($properties->{'slt-thin-leaseguard'}),
+        'Thin runtime policy is absent from Thick-only properties');
+    ok(!exists($properties->{'slt-initial-pool-mode'}),
+        'Thin allocation policy is absent from Thick-only properties');
+
+    my $options = $class->options();
+    ok(!exists($options->{'slt-thin-ha-takeover'}),
+        'Thin HA option is absent from Thick-only schema');
+    ok(exists($options->{'slt-tg-hydration-timeout'}),
+        'Thick transition controls remain available');
+};
+
 subtest 'thin and thick aliases over one pinned VG share one canonical mutation lock' => sub {
     reset_mocks();
     no warnings 'redefine';
