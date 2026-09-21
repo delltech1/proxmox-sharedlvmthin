@@ -91,6 +91,34 @@ class StorageConfigurationTests(unittest.TestCase):
         self.assertIsNone(storages[0]["nodes"])
 
 
+class PackageIdentityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.evaluate = staticmethod(load_function("evaluate_package_identity"))
+
+    def test_dual_and_thick_only_exact_identity_pass(self):
+        for package, flavor in (
+            ("pve-sharedlvmthin", "dual"),
+            ("pve-sharedlvmthin-thick", "thick-only"),
+        ):
+            with self.subTest(flavor=flavor):
+                status, message = self.evaluate(package, flavor, "1.2.3")
+                self.assertEqual(status, "PASS")
+                self.assertIn(package, message)
+
+    def test_missing_or_unknown_marker_fails(self):
+        for flavor in (None, "", "future"):
+            with self.subTest(flavor=flavor):
+                status, _ = self.evaluate(None, flavor, None)
+                self.assertEqual(status, "FAIL")
+
+    def test_identity_mismatch_and_missing_version_fail(self):
+        status, _ = self.evaluate("pve-sharedlvmthin", "thick-only", "1.2.3")
+        self.assertEqual(status, "FAIL")
+        status, _ = self.evaluate("pve-sharedlvmthin-thick", "thick-only", None)
+        self.assertEqual(status, "FAIL")
+
+
 class ClusterHealthSemanticsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

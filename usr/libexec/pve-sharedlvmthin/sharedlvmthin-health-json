@@ -78,6 +78,20 @@ def installed_plugin_package():
     return None, flavor
 
 
+def evaluate_package_identity(package, flavor, version):
+    expected = {
+        "dual": "pve-sharedlvmthin",
+        "thick-only": "pve-sharedlvmthin-thick",
+    }
+    if flavor not in expected:
+        return "FAIL", "package flavor marker is missing or invalid"
+    if package != expected[flavor]:
+        return "FAIL", "package identity contradicts the installed flavor marker"
+    if not version:
+        return "FAIL", f"installed package version is unavailable for {package}"
+    return "PASS", f"installed package identity is {package} {version} ({flavor})"
+
+
 def read_file(path):
     try:
         with open(path, "r") as f:
@@ -1263,6 +1277,7 @@ api, apiage = pve_api()
 papi = plugin_api()
 states = pvesm_states()
 plugin_package, package_flavor = installed_plugin_package()
+plugin_version = package_version(plugin_package) if plugin_package else None
 
 doc = {
     "schema": 1,
@@ -1278,7 +1293,7 @@ doc = {
         "plugin_api": papi,
         "plugin_package": plugin_package,
         "package_flavor": package_flavor,
-        "plugin_version": package_version(plugin_package) if plugin_package else None,
+        "plugin_version": plugin_version,
         "storage_package": package_version("libpve-storage-perl"),
     },
     "lvm": lvm_info(),
@@ -1300,6 +1315,12 @@ def check(name, status, message):
         doc["result"] = "FAIL"
     elif status == "WARN" and doc["result"] == "PASS":
         doc["result"] = "WARN"
+
+
+package_status, package_message = evaluate_package_identity(
+    plugin_package, package_flavor, plugin_version
+)
+check("plugin_package_identity", package_status, package_message)
 
 
 api_status, api_message = evaluate_api_compatibility(api, apiage, papi)

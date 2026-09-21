@@ -301,6 +301,7 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('return "pve-sharedlvmthin-thick", flavor', health)
         self.assertIn('"plugin_package": plugin_package', health)
         self.assertNotIn('package_version("pve-sharedlvmthin")', health)
+        self.assertIn('check("plugin_package_identity"', health)
 
         release_check = (ROOT / "scripts/check-release.sh").read_text(
             encoding="utf-8"
