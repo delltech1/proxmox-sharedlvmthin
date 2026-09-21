@@ -8,7 +8,6 @@ fi
 
 INSTALLED_FLAVOR=$(sed -n '1p' \
     /usr/share/pve-sharedlvmthin/package-flavor 2>/dev/null || true)
-UPGRADE_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
 STORAGECFG=/etc/pve/storage.cfg
 PREINST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 CANDIDATE_RECOVERY_CHECK="$PREINST_DIR/sharedlvmthin-candidate-recovery-check"
@@ -24,12 +23,11 @@ cleanup_candidate_audit() {
 trap cleanup_candidate_audit EXIT
 trap 'cleanup_candidate_audit; exit 130' HUP INT TERM
 
-# The ordinary helper above is the version from the package that is still
-# installed: dpkg has not unpacked the candidate yet. Published TG32 skipped
-# disabled storage and its checker did not yet expose the signed VG-intent
+# dpkg has not unpacked the candidate payload yet. Published TG32's installed
+# helper skipped disabled storage and did not yet expose the signed VG-intent
 # proof for enabled storage either. The candidate therefore carries an
-# executable copy of its new,
-# read-only recovery checker in the control archive. Use that copy here before
+# executable copy of its new read-only recovery checker in the control archive.
+# Use that copy here before
 # payload unpacking; never substitute the less strict installed checker.
 audit_candidate_storages() {
     [ -r "$STORAGECFG" ] || {
@@ -46,7 +44,10 @@ audit_candidate_storages() {
             if (inside) print sid "|" mode "|" nodes
         }
         /^sharedlvmthin:[[:space:]]+/ {
-            emit(); inside=1; sid=$2; mode="thin"; nodes=""; next
+            emit()
+            if ($2 in seen) exit 3
+            seen[$2]=1
+            inside=1; sid=$2; mode="thin"; nodes=""; next
         }
         /^[^[:space:]]/ { emit(); inside=0; next }
         inside && $1 == "disable" {
@@ -114,9 +115,13 @@ audit_candidate_storages() {
 # Replacing shared plugin code while an asynchronous Thick transaction is
 # running (or has failed) is unsafe in either package direction. Apply this
 # fence to ordinary upgrades as well as dual <-> Thick-only replacements.
-# First installation has neither an installed flavor marker nor an existing
-# checker and therefore does not claim to be an upgrade.
-if [ -n "$INSTALLED_FLAVOR" ] || [ -x "$UPGRADE_CHECK" ]; then
+# The Debian upgrade argument is authoritative even if an old package predates
+# the flavor marker. A cross-profile replacement is detected by the installed
+# marker. Only a genuine first installation may skip the storage audit.
+IS_UPGRADE=0
+[ "${1:-}" = "upgrade" ] && IS_UPGRADE=1
+[ -n "$INSTALLED_FLAVOR" ] && IS_UPGRADE=1
+if [ "$IS_UPGRADE" -eq 1 ]; then
     case "$INSTALLED_FLAVOR" in
         dual|thick-only|'') ;;
         *)
@@ -140,16 +145,6 @@ if [ -n "$INSTALLED_FLAVOR" ] || [ -x "$UPGRADE_CHECK" ]; then
         fi
     fi
 
-    if [ ! -x "$UPGRADE_CHECK" ]; then
-        echo "ERROR: SharedLvmThin upgrade refused: the installed read-only" >&2
-        echo "upgrade checker is missing. No package files were replaced." >&2
-        exit 1
-    fi
-    if ! "$UPGRADE_CHECK"; then
-        echo "ERROR: SharedLvmThin upgrade refused by the installed" >&2
-        echo "recovery/upgrade gate. No package files were replaced." >&2
-        exit 1
-    fi
     if ! audit_candidate_storages; then
         echo "ERROR: candidate recovery fence refused the package transaction." >&2
         echo "No package files were replaced." >&2

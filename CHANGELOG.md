@@ -20,7 +20,9 @@
   intent and disabled-storage semantics. Storage scoped exclusively to other
   nodes remains not applicable. Release validation proves the control-archive
   checker is executable, syntax-valid and byte-identical to the payload copy in
-  both package profiles.
+  both package profiles. The candidate no longer double-probes through the old
+  installed helper; Debian's `upgrade` argument and the installed flavor marker
+  select the audit, and duplicate storage identifiers fail before probing.
 - Fail closed when asynchronous materialization scheduling is not positively
   confirmed. A `systemd-run` client/transport error may occur after the exact
   transaction worker was queued, so the snapshot callback no longer starts a

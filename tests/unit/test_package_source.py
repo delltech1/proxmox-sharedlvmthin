@@ -12,20 +12,28 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
-    def _run_preinst_candidate_audit(self, *, recovery_safe=True, disabled=True):
+    def _run_preinst_candidate_audit(
+        self, *, recovery_safe=True, disabled=True, duplicate=False
+    ):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         marker = root / "package-flavor"
         marker.write_text("dual\n", encoding="utf-8")
         storage = root / "storage.cfg"
-        storage.write_text(
+        storage_text = (
             "sharedlvmthin: disabled-thick\n"
             + ("        disable 1\n" if disabled else "")
             + "        vgname shared-vg\n"
-            + "        slt-allocation-mode thick-generations\n",
-            encoding="utf-8",
+            + "        slt-allocation-mode thick-generations\n"
         )
+        if duplicate:
+            storage_text += (
+                "sharedlvmthin: disabled-thick\n"
+                "        vgname other-vg\n"
+                "        slt-allocation-mode thick-generations\n"
+            )
+        storage.write_text(storage_text, encoding="utf-8")
         calls = root / "recovery.calls"
         recovery = root / "sharedlvmthin-candidate-recovery-check"
         records = (
@@ -43,9 +51,6 @@ class PackageSourceTests(unittest.TestCase):
             encoding="utf-8",
         )
         recovery.chmod(0o755)
-        upgrade = root / "upgrade-check"
-        upgrade.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        upgrade.chmod(0o755)
         systemctl = root / "systemctl"
         systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         systemctl.chmod(0o755)
@@ -53,9 +58,6 @@ class PackageSourceTests(unittest.TestCase):
         source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
         source = source.replace(
             "/usr/share/pve-sharedlvmthin/package-flavor", str(marker)
-        ).replace(
-            "UPGRADE_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check",
-            f"UPGRADE_CHECK={upgrade}",
         ).replace("STORAGECFG=/etc/pve/storage.cfg", f"STORAGECFG={storage}")
         source = source.replace(
             "# The Thick-only package must never silently strand",
@@ -211,6 +213,13 @@ exit 0
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(invoked, ["disabled-thick"])
         self.assertIn("candidate recovery fence refused", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_preinst_rejects_duplicate_storage_before_probe(self):
+        result, invoked = self._run_preinst_candidate_audit(duplicate=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(invoked, [])
+        self.assertIn("candidate storage configuration is ambiguous", result.stderr)
 
     def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
         helper = (
@@ -444,12 +453,13 @@ exit 0
         self.assertIn("LVM inventory failed", preinst)
         self.assertIn('if ! MANAGED_LVS=$(lvs --readonly', preinst)
         self.assertIn("pve-sharedlvmthin-tg-*", preinst)
-        self.assertIn("sharedlvmthin-upgrade-check", preinst)
         self.assertIn("No package files were replaced", preinst)
         self.assertIn("ordinary upgrades as well as dual <-> Thick-only", preinst)
         self.assertIn("audit_candidate_storages", preinst)
         self.assertIn("candidate recovery checker is missing", preinst)
         self.assertIn("sharedlvmthin-candidate-recovery-check", preinst)
+        self.assertIn('"${1:-}" = "upgrade"', preinst)
+        self.assertIn("if ($2 in seen) exit 3", preinst)
         self.assertIn("candidate storage configuration is ambiguous", preinst)
         self.assertIn("not positively recovery-safe under candidate rules", preinst)
         self.assertIn("candidate recovery fence refused", preinst)
@@ -460,7 +470,7 @@ exit 0
             preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
         )
         self.assertLess(
-            preinst.index("if [ -n \"$INSTALLED_FLAVOR\" ]"),
+            preinst.index('if [ "$IS_UPGRADE" -eq 1 ]'),
             preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
         )
         self.assertIn("Removed obsolete SharedLvmThin-managed Thin autogrow policy", postinst)
