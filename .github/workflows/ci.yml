@@ -26,12 +26,26 @@ jobs:
           python3 -m py_compile usr/libexec/pve-sharedlvmthin/sharedlvmthin-web usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
       - name: Shell static analysis
         run: shellcheck -x scripts/*.sh experiments/thick-generations/*.sh usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
-      - name: Reproducible package build
-        run: sh scripts/build.sh
-      - name: Upload package
+      - name: Reproducible dual-mode package build
+        run: sh scripts/build.sh dist/dual dual
+      - name: Reproducible Thick-only package build
+        run: sh scripts/build.sh dist/thick-only thick-only
+      - name: Verify package identities and mutual exclusion
+        run: |
+          dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
+          thick=$(find dist/thick-only -maxdepth 1 -name '*.deb' -print -quit)
+          test "$(dpkg-deb -f "$dual" Package)" = pve-sharedlvmthin
+          test "$(dpkg-deb -f "$thick" Package)" = pve-sharedlvmthin-thick
+          dpkg-deb -f "$dual" Conflicts | grep -qw pve-sharedlvmthin-thick
+          dpkg-deb -f "$thick" Conflicts | grep -qw pve-sharedlvmthin
+          test "$(dpkg-deb -f "$dual" Version)" = "$(dpkg-deb -f "$thick" Version)"
+      - name: Upload package candidates
         uses: actions/upload-artifact@v4
         with:
-          name: pve-sharedlvmthin-package
+          name: pve-sharedlvmthin-package-candidates
           path: |
-            dist/*.deb
-            dist/SHA256SUMS
+            dist/dual/*.deb
+            dist/dual/SHA256SUMS
+            dist/thick-only/*.deb
+            dist/thick-only/SHA256SUMS
+
