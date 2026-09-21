@@ -25,9 +25,9 @@ echo
 echo "Configuring SharedLvmThin..."
 
 perl -c "$PLUGIN"
-perl -c "$MONITOR"
 perl -c "$MATERIALIZER"
 if [ "$PACKAGE_FLAVOR" = "dual" ]; then
+    perl -c "$MONITOR"
     perl -c "$THIN_GUARDD"
 fi
 python3 -m py_compile "$HEALTH"

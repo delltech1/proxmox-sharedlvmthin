@@ -244,6 +244,11 @@ class PackageSourceTests(unittest.TestCase):
             preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
         )
         self.assertIn("Thick-only package: Thin autogrow policy", postinst)
+        syntax_guard = postinst.index('if [ "$PACKAGE_FLAVOR" = "dual" ]; then')
+        monitor_syntax = postinst.index('perl -c "$MONITOR"')
+        guard_syntax = postinst.index('perl -c "$THIN_GUARDD"')
+        self.assertLess(syntax_guard, monitor_syntax)
+        self.assertLess(syntax_guard, guard_syntax)
         self.assertIn('systemctl stop "$THIN_GUARD_SERVICE"', prerm)
         self.assertIn('systemctl disable "$THIN_GUARD_SERVICE"', prerm)
         self.assertIn("active ThinGuard still protects", prerm)
