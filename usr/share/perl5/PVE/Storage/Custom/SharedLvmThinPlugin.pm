@@ -3868,10 +3868,10 @@ sub _thick_resume_transition {
         || $intent->{op} ne $expected_intent_op || $intent->{object} ne $anchor
         || $intent->{tx} ne $state->{tx};
     die "recoverable transition request identity mismatch\n"
-        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE)$/
+        if $state->{phase} !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/
         || $state->{op} ne $operation || $state->{snapshot} ne $snap
         || ($state->{phase} =~ /^(?:PREPARED|SOURCE_READY)$/ && $state->{head} ne $state->{old})
-        || ($state->{phase} =~ /^(?:COMMITTED|HYDRATING|HYDRATION_COMPLETE)$/
+        || ($state->{phase} =~ /^(?:COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/
             && $state->{head} ne $state->{new});
 
     my ($old, $new, $source) = @{$state}{qw(old new source)};
@@ -3890,10 +3890,16 @@ sub _thick_resume_transition {
     my $expected_new = generation_name($namespace, $volname, $new_gen);
     my $meta = sprintf('sltg-m-%s-%08d', $key, $new_gen);
     die "prepared transition destination name mismatch\n" if $new ne $expected_new;
-    for my $name ($old, $source, $new, $meta) {
+    for my $name ($source, $new) {
         die "prepared transition object '$vg/$name' is missing\n"
             if !$lvs->{$vg} || !$lvs->{$vg}->{$name};
     }
+    die "prepared transition object '$vg/$old' is missing\n"
+        if (!$lvs->{$vg} || !$lvs->{$vg}->{$old})
+        && !($state->{phase} eq 'LINEAR_PIVOTED' && $operation eq 'ROLLBACK');
+    die "prepared transition object '$vg/$meta' is missing\n"
+        if (!$lvs->{$vg} || !$lvs->{$vg}->{$meta})
+        && $state->{phase} ne 'LINEAR_PIVOTED';
 
     my ($source_gen, $source_info);
     if ($operation eq 'ROLLBACK') {
@@ -3908,7 +3914,9 @@ sub _thick_resume_transition {
         die "prepared snapshot source identity mismatch\n" if $source ne $old;
     }
     my $size = $source_info->{lv_size};
-    my $old_size = $lvs->{$vg}->{$old}->{lv_size};
+    my $old_size = $lvs->{$vg}->{$old}
+        ? $lvs->{$vg}->{$old}->{lv_size}
+        : $size;
     die "prepared transition size is invalid\n"
         if !defined($size) || $size !~ /^\d+$/ || !$size || $size % 512
         || !defined($old_size) || $old_size !~ /^\d+$/ || !$old_size || $old_size % 512;
@@ -3919,14 +3927,17 @@ sub _thick_resume_transition {
         $lvs->{$vg}->{$new}->{tags} // '', sid => $storeid,
         vol => $volname, role => 'head', generation => $new_gen,
     );
-    $class->_thick_verify_transition_metadata(
-        $storeid, $scfg, $volname, $lvs->{$vg}->{$meta},
-        tx => $intent->{tx}, generation => $new_gen,
-        region => $geometry->{region_sectors},
-        metadata_bytes => $geometry->{metadata_bytes}, name => $meta, device => $device,
-    );
+    if ($lvs->{$vg}->{$meta}) {
+        $class->_thick_verify_transition_metadata(
+            $storeid, $scfg, $volname, $lvs->{$vg}->{$meta},
+            tx => $intent->{tx}, generation => $new_gen,
+            region => $geometry->{region_sectors},
+            metadata_bytes => $geometry->{metadata_bytes}, name => $meta, device => $device,
+        );
+    }
     $class->_verify_autoactivation_disabled($vg, $new, $device);
-    $class->_verify_autoactivation_disabled($vg, $meta, $device);
+    $class->_verify_autoactivation_disabled($vg, $meta, $device)
+        if $lvs->{$vg}->{$meta};
     my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $source_gen);
     if (_block_device_exists("/dev/mapper/$source_map")) {
         $class->_thick_verify_source_mapper(
@@ -3937,7 +3948,7 @@ sub _thick_resume_transition {
                 $vg, $anchor, $state, phase => 'SOURCE_READY', _device => $device,
             );
         }
-    } elsif ($state->{phase} ne 'PREPARED') {
+    } elsif ($state->{phase} ne 'PREPARED' && $state->{phase} ne 'LINEAR_PIVOTED') {
         my $front = mapper_name($namespace, $volname);
         die "$state->{phase} transition runtime is partial; source mapper '$source_map' is missing\n"
             if _block_device_exists("/dev/mapper/$front");
@@ -4552,33 +4563,69 @@ sub _thick_volume_snapshot {
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'LINEAR_PIVOTED', _device => $device,
         );
+        $tr->{state} = $state;
+        return;
+        }, $device);
+    }
 
-        $class->_thick_verify_transition_metadata(
-            $storeid, $scfg, $volname, $lvs->{$vg}->{$tr->{meta}},
-            tx => $intent{tx}, generation => $tr->{new_gen},
-            region => $tr->{geometry}->{region_sectors},
-            metadata_bytes => $tr->{geometry}->{metadata_bytes}, name => $tr->{meta},
-            device => $device,
+    if ($tr->{state}->{phase} eq 'LINEAR_PIVOTED') {
+        $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_thick_require_transition_intent(
+            $storeid, $scfg, $volname, \%intent,
         );
+        my $lvs = $class->_thick_list_volumes_scoped($vg, $device);
+        my $info = $lvs->{$vg} && $lvs->{$vg}->{$tr->{anchor}};
+        die "linear-pivoted transition anchor disappeared before cleanup\n" if !$info;
+        my $state = decode_anchor_tags($info->{tags} // '');
+        die "linear-pivoted transition state mismatch\n"
+            if $state->{phase} ne 'LINEAR_PIVOTED' || $state->{tx} ne $intent{tx}
+            || $state->{head} ne $tr->{new} || $state->{old} ne $tr->{old}
+            || $state->{new} ne $tr->{new};
+        $class->_thick_verify_frontend(
+            $scfg, $volname, $tr->{new}, int($tr->{size} / 512),
+        );
+        if ($lvs->{$vg}->{$tr->{meta}}) {
+            $class->_thick_verify_transition_metadata(
+                $storeid, $scfg, $volname, $lvs->{$vg}->{$tr->{meta}},
+                tx => $intent{tx}, generation => $tr->{new_gen},
+                region => $tr->{geometry}->{region_sectors},
+                metadata_bytes => $tr->{geometry}->{metadata_bytes}, name => $tr->{meta},
+                device => $device,
+            );
+        }
         $class->_thick_verify_snapshot_readonly($vg, $tr->{source}, $device);
-        run_command(
-            ['/sbin/dmsetup', '--verifyudev', 'remove', $tr->{source_map}],
-            errmsg => "removing detached snapshot source mapper failed",
-        );
-        run_command(
-            ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{meta}"],
-            errmsg => "removing detached dm-clone metadata failed",
-        );
+        if (_block_device_exists("/dev/mapper/$tr->{source_map}")) {
+            $class->_thick_verify_source_mapper(
+                $scfg, $tr->{source_map}, $tr->{source}, int($tr->{size} / 512),
+                $intent{tx},
+            );
+            run_command(
+                ['/sbin/dmsetup', '--verifyudev', 'remove', $tr->{source_map}],
+                errmsg => "removing detached snapshot source mapper failed",
+            );
+        }
+        if ($lvs->{$vg}->{$tr->{meta}}) {
+            run_command(
+                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{meta}"],
+                errmsg => "removing detached dm-clone metadata failed",
+            );
+        }
         die "detached snapshot source mapper still exists after removal\n"
             if _block_device_exists("/dev/mapper/$tr->{source_map}");
         my $after = $class->_thick_list_volumes_scoped($vg, $device);
         die "detached dm-clone metadata still exists after removal\n"
             if $after->{$vg} && $after->{$vg}->{$tr->{meta}};
         if ($rollback) {
-            run_command(
-                ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{old}"],
-                errmsg => "removing superseded rollback HEAD failed",
-            );
+            if ($after->{$vg} && $after->{$vg}->{$tr->{old}}) {
+                validate_generation_tags(
+                    $after->{$vg}->{$tr->{old}}->{tags} // '', sid => $storeid,
+                    vol => $volname, role => 'head', generation => $tr->{old_gen},
+                );
+                run_command(
+                    ['/sbin/lvremove', '--devices', $device, '-f', "$vg/$tr->{old}"],
+                    errmsg => "removing superseded rollback HEAD failed",
+                );
+            }
             $after = $class->_thick_list_volumes_scoped($vg, $device);
             die "superseded rollback HEAD still exists after removal\n"
                 if $after->{$vg} && $after->{$vg}->{$tr->{old}};
@@ -4591,6 +4638,7 @@ sub _thick_volume_snapshot {
         $state = $class->_thick_transition_anchor(
             $vg, $tr->{anchor}, $state, phase => 'MATERIALIZED', _device => $device,
         );
+        $tr->{state} = $state;
         $class->_clear_vg_intent($vg, %intent, _device => $device)
             if !$intent{_anchor_scoped};
         return;

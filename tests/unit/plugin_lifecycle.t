@@ -5111,6 +5111,14 @@ subtest 'C3 resume requires exact persisted request and transaction identity' =>
         is($hydration_complete->{state}->{phase}, 'HYDRATION_COMPLETE',
             'C9 resume reconstructs the exact persisted pre-pivot state');
     }
+
+    $state = { %$state, phase => 'LINEAR_PIVOTED' };
+    delete $inventory->{testvg}->{$meta};
+    my $linear_pivoted = $class->_thick_resume_transition(
+        $cfg, $storeid, $volname, 'snap1', 'SNAPSHOT', $intent,
+    );
+    is($linear_pivoted->{state}->{phase}, 'LINEAR_PIVOTED',
+        'post-pivot resume accepts already removed metadata and source runtime');
 };
 
 subtest 'C4 source mapper verification is exact and read-only' => sub {
