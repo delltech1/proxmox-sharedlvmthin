@@ -164,12 +164,14 @@ while IFS='|' read -r sid disabled mode nodes; do
     healthy=$(grep -c '^STATE=HEALTHY$' "$result" || true)
     safe=$(grep -c '^SAFE_FOR_MUTATION=YES$' "$result" || true)
     anchors=$(grep -c '^THICK_ANCHORS_HEALTHY=PASS$' "$result" || true)
+    intent_clear=$(grep -c '^VG_INTENT_CLEAR=PASS$' "$result" || true)
 
     rm -f -- "$result"
     result=
 
     if [ "$rc" -eq 0 ] && [ "$healthy" -eq 1 ] && \
-       [ "$safe" -eq 1 ] && [ "$anchors" -eq 1 ]; then
+       [ "$safe" -eq 1 ] && [ "$anchors" -eq 1 ] && \
+       [ "$intent_clear" -eq 1 ]; then
         echo "UPGRADE_STORAGE_RESULT=PASS"
     else
         echo "UPGRADE_STORAGE_RESULT=FAIL"

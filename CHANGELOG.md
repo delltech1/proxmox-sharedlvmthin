@@ -29,6 +29,9 @@
 - Apply the same device-scoped, digest-validating VG-intent gate to JSON health
   and therefore the web/Doctor view. Monitoring can no longer report PASS when
   the mutation admission path is fenced by an OPEN or malformed intent.
+- Require exactly one explicit `VG_INTENT_CLEAR=PASS` record in the package
+  upgrade gate. A checker regression that omits, duplicates or weakens this
+  evidence cannot authorize Dual or Thick-only unpacking.
 - Fully zero every new snapshot/rollback destination before a dm-clone
   frontend can expose it. This makes dm-clone's unhydrated-region DISCARD
   semantics deterministic and prevents old free-extent contents from becoming

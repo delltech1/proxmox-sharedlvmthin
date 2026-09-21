@@ -60,6 +60,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
             exit 0
@@ -85,6 +86,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=FAIL
+            echo VG_INTENT_CLEAR=FAIL
             echo STATE=RECOVERY_REQUIRED
             echo SAFE_FOR_MUTATION=NO
             exit 2
@@ -105,6 +107,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
             exit 0
@@ -126,6 +129,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
             exit 0
@@ -144,6 +148,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
@@ -151,6 +156,25 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
         )
         self.assertEqual(result.returncode, 2)
+        self.assertIn("UPGRADE_SAFE=NO", result.stdout)
+
+    def test_healthy_claim_without_explicit_clear_intent_proof_is_refused(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: thick-store
+                    vgname shared-vg
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            echo THICK_ANCHORS_HEALTHY=PASS
+            echo STATE=HEALTHY
+            echo SAFE_FOR_MUTATION=YES
+            exit 0
+            """,
+        )
+        self.assertEqual(invoked, ["thick-store"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("UPGRADE_STORAGE_RESULT=FAIL", result.stdout)
         self.assertIn("UPGRADE_SAFE=NO", result.stdout)
 
 

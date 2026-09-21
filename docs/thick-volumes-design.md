@@ -200,6 +200,11 @@ the pinned multipath device. It publishes the status, operation and reason in
 check, so CLI diagnostics, web monitoring and upgrade gates cannot disagree
 about whether a persistent mutation is still open.
 
+Package upgrades and Dual/Thick-only profile switches require exactly one
+`VG_INTENT_CLEAR=PASS` result for every applicable configured storage in
+addition to the overall healthy and safe-for-mutation records. Missing or
+duplicated proof is an upgrade refusal before package files are replaced.
+
 An interrupted restore or allocation may leave exactly one generation-zero
 HEAD and its PREPARED anchor behind an OPEN `ALLOC` intent. Recovery is never
 automatic and never searches by a similar name. After confirming that no PVE
