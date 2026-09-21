@@ -5896,7 +5896,8 @@ subtest 'Thick materialization admission is VG-wide and fail-closed' => sub {
         'new transition is refused exactly at the configured VG-wide limit');
     $inventory->{testvg}->{'sltg-a-bad'} = { tags => '' };
     eval { $class->_thick_materialization_admission($cfg, $inventory) };
-    like($@, qr/incomplete anchor/, 'ambiguous owned-looking anchor fails closed');
+    like($@, qr/incomplete Thick Generations anchor/,
+        'ambiguous owned-looking anchor fails closed');
 };
 
 done_testing();
