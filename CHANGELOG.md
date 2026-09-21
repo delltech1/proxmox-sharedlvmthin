@@ -17,6 +17,8 @@
 - Refuse a dual-to-Thick package replacement while a transient Thick worker is
   pending, active or failed, or while the installed read-only upgrade gate
   cannot positively prove a healthy mutation-safe state.
+- Measure Thick hydration and close-wait deadlines with a monotonic clock so
+  wall-clock corrections cannot shorten or extend their safety windows.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 

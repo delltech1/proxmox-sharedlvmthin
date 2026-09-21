@@ -65,6 +65,9 @@ window. Event waits use bounded slices to permit revalidation. Completion
 requires exact geometry, a fully hydrated counter and zero active hydration
 requests. Counter regression, geometry change, immediate wait failure or a
 full interval without progress is recovery-required and fails closed.
+The interval is measured with a monotonic clock, so NTP corrections, manual
+wall-clock changes and daylight-saving transitions cannot shorten or extend
+the watchdog window.
 
 The asynchronous worker has `TimeoutStartSec=infinity`; systemd does not kill
 a legitimate long hydration. Restart/resume reconstructs only the exact

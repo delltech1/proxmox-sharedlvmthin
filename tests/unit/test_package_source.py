@@ -78,6 +78,7 @@ class PackageSourceTests(unittest.TestCase):
         self.assertNotIn("timeout --foreground", helper)
         self.assertIn("A timeout is never fencing", timing)
         self.assertIn("no arbitrary total wall-clock deadline", timing)
+        self.assertIn("CLOCK_MONOTONIC", plugin)
         self.assertIn("rollback outcome is UNKNOWN", plugin)
         self.assertIn("continuing without retry", plugin)
         self.assertNotIn("if ($origin_removed)", plugin)

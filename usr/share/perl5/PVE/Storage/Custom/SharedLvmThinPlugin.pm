@@ -941,7 +941,9 @@ sub _thick_wait_for_hydration {
 }
 
 sub _thick_progress_clock {
-    return Time::HiRes::time();
+    # Wall-clock corrections must neither expire a healthy long hydration
+    # early nor keep a stalled clone alive past its no-progress interval.
+    return Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC());
 }
 
 sub _thick_frontend_open_count {
