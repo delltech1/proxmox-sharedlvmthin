@@ -48,4 +48,3 @@ jobs:
             dist/dual/SHA256SUMS
             dist/thick-only/*.deb
             dist/thick-only/SHA256SUMS
-
