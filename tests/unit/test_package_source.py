@@ -269,7 +269,8 @@ exit 0
     def test_thick_only_preinst_refuses_partial_vg_inventory(self):
         result = self._run_thick_only_preinst_inventory(vg_attr="wz-pn-")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("partial or ambiguous VG", result.stderr)
+        self.assertIn("LVM reports a partial", result.stderr)
+        self.assertIn("absence of managed Thin objects is unproven", result.stderr)
 
     @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
     def test_thick_only_preinst_accepts_complete_empty_thin_inventory(self):
