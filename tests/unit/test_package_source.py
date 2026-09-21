@@ -12,6 +12,71 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageSourceTests(unittest.TestCase):
+    def _run_preinst_disabled_audit(self, *, recovery_safe=True):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        marker = root / "package-flavor"
+        marker.write_text("dual\n", encoding="utf-8")
+        storage = root / "storage.cfg"
+        storage.write_text(
+            "sharedlvmthin: disabled-thick\n"
+            "        disable 1\n"
+            "        vgname shared-vg\n"
+            "        slt-allocation-mode thick-generations\n",
+            encoding="utf-8",
+        )
+        calls = root / "recovery.calls"
+        recovery = root / "recovery-check"
+        records = (
+            "THICK_ANCHORS_HEALTHY=PASS\nVG_INTENT_CLEAR=PASS\n"
+            "STATE=HEALTHY\nSAFE_FOR_MUTATION=YES\n"
+            if recovery_safe
+            else "THICK_ANCHORS_HEALTHY=FAIL\nVG_INTENT_CLEAR=FAIL\n"
+                 "STATE=RECOVERY_REQUIRED\nSAFE_FOR_MUTATION=NO\n"
+        )
+        recovery.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$1\" >>'{calls}'\n"
+            f"printf '%s' '{records}'\n"
+            f"exit {0 if recovery_safe else 2}\n",
+            encoding="utf-8",
+        )
+        recovery.chmod(0o755)
+        upgrade = root / "upgrade-check"
+        upgrade.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        upgrade.chmod(0o755)
+        systemctl = root / "systemctl"
+        systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        systemctl.chmod(0o755)
+
+        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = source.replace(
+            "/usr/share/pve-sharedlvmthin/package-flavor", str(marker)
+        ).replace(
+            "UPGRADE_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check",
+            f"UPGRADE_CHECK={upgrade}",
+        ).replace(
+            "RECOVERY_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check",
+            f"RECOVERY_CHECK={recovery}",
+        ).replace("STORAGECFG=/etc/pve/storage.cfg", f"STORAGECFG={storage}")
+        source = source.replace(
+            "# The Thick-only package must never silently strand",
+            "exit 0\n\n# The Thick-only package must never silently strand",
+        )
+        candidate = root / "preinst"
+        candidate.write_text(source, encoding="utf-8")
+        candidate.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{root}{os.pathsep}{env['PATH']}"
+        env["DPKG_MAINTSCRIPT_PACKAGE"] = "pve-sharedlvmthin"
+        result = subprocess.run(
+            ["/bin/sh", str(candidate), "upgrade"], env=env, text=True,
+            capture_output=True, check=False,
+        )
+        invoked = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+        return result, invoked
+
     def _run_package_profile_gate(self, *, active_units=""):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -125,6 +190,21 @@ exit 0
             self.assertIn("is-active --quiet", calls)
             self.assertNotIn("stop ", calls)
             self.assertNotIn("disable ", calls)
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_preinst_audits_disabled_storage_with_installed_checker(self):
+        result, invoked = self._run_preinst_disabled_audit(recovery_safe=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(invoked, ["disabled-thick"])
+        self.assertIn("STATE=HEALTHY", result.stdout)
+
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_preinst_refuses_unsafe_disabled_storage_before_unpack(self):
+        result, invoked = self._run_preinst_disabled_audit(recovery_safe=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(invoked, ["disabled-thick"])
+        self.assertIn("disabled storage 'disabled-thick' is not positively recovery-safe", result.stderr)
+        self.assertIn("No package files were replaced", result.stderr)
 
     def test_thin_metadata_check_is_bounded_snapshot_only_and_packaged(self):
         helper = (
@@ -361,6 +441,17 @@ exit 0
         self.assertIn("sharedlvmthin-upgrade-check", preinst)
         self.assertIn("No package files were replaced", preinst)
         self.assertIn("ordinary upgrades as well as dual <-> Thick-only", preinst)
+        self.assertIn("audit_disabled_storages", preinst)
+        self.assertIn("installed recovery checker is missing", preinst)
+        self.assertIn("disabled-storage configuration is ambiguous", preinst)
+        self.assertIn("disabled storage '$sid' is not positively recovery-safe", preinst)
+        self.assertIn("disabled-storage recovery fence refused", preinst)
+        self.assertIn("THICK_ANCHORS_HEALTHY=PASS", preinst)
+        self.assertIn("VG_INTENT_CLEAR=PASS", preinst)
+        self.assertLess(
+            preinst.index("if ! audit_disabled_storages"),
+            preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
+        )
         self.assertLess(
             preinst.index("if [ -n \"$INSTALLED_FLAVOR\" ]"),
             preinst.index('if [ "$PACKAGE_FLAVOR" = "thick-only" ]'),
