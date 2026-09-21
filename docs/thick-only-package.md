@@ -32,6 +32,12 @@ package boundary. Thick-only CLI help advertises only common diagnostics and
 Thick recovery commands; Thin command names remain visible only in the Dual
 profile.
 
+After a clean install or profile replacement, `postinst` independently checks
+that the excluded Thin/bridge executables are absent and that systemd reports
+ThinGuard as `inactive` or `failed`. Stale payload, an active guardian or
+unavailable runtime state refuses package configuration instead of declaring a
+Thick-only node ready.
+
 ## Switching from the dual-mode package
 
 Switching is permitted only after every `sharedlvmthin` storage is explicitly

@@ -159,6 +159,12 @@ if [ "$FLAVOR" = "thick-only" ]; then
         echo "Thick-only postinst validates an absent Thin daemon outside its flavor guard" >&2
         exit 1
     fi
+    if ! grep -Fq 'Thick-only configuration refused: stale Thin component remains' \
+        "$TMP/control/postinst" || \
+       ! grep -Fq 'ThinGuard runtime state is unavailable' "$TMP/control/postinst"; then
+        echo "Thick-only postinst lacks stale Thin payload/runtime refusal" >&2
+        exit 1
+    fi
 fi
 
 for forbidden in \

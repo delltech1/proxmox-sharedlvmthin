@@ -2,6 +2,10 @@
 
 ## Unreleased — Thick Generations audit
 
+- After dpkg replacement and `daemon-reload`, make Thick-only configuration
+  prove that every excluded Thin/bridge executable is absent and that the
+  ThinGuard unit is positively inactive or failed.  Stale payload, an active
+  guardian or unavailable systemd evidence leaves the package unconfigured.
 - Remove the migration-bridge admission/planning/QMP helpers and daemon-only
   ThinGuard/mobility Perl modules from the Thick-only payload, not merely their
   public executables.  Artifact validation rejects any of these dormant Thin

@@ -99,6 +99,41 @@ fi
 
 systemctl daemon-reload
 
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    for FORBIDDEN_THIN_PATH in \
+        /lib/systemd/system/pve-sharedlvmthin-thin-guard.service \
+        /usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
+        /usr/sbin/sharedlvmthin-migrate-bridge
+    do
+        if [ -e "$FORBIDDEN_THIN_PATH" ]; then
+            echo "ERROR: Thick-only configuration refused: stale Thin component remains:" >&2
+            echo "  $FORBIDDEN_THIN_PATH" >&2
+            echo "Do not use this node until package ownership and profile replacement are repaired." >&2
+            exit 1
+        fi
+    done
+    if ! THIN_GUARD_STATE=$(systemctl show --property ActiveState --value \
+        "$THIN_GUARD_SERVICE" 2>/dev/null); then
+        echo "ERROR: Thick-only configuration refused: ThinGuard runtime state is unavailable." >&2
+        exit 1
+    fi
+    case "$THIN_GUARD_STATE" in
+        inactive|failed) ;;
+        *)
+            echo "ERROR: Thick-only configuration refused: ThinGuard remains '$THIN_GUARD_STATE'." >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # Never restart an armed runtime guardian during a package transaction. Its
 # in-memory epoch/watchdog bindings remain authoritative until every protected
 # mapper has completed normal PVE teardown.
