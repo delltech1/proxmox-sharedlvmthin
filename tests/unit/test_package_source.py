@@ -449,6 +449,14 @@ exit 0
         self.assertIn("stat -c '%a'", parity)
         self.assertIn("dual/Thick-only shared payload parity: PASS", parity)
 
+        reproducible = (
+            ROOT / "scripts/check-reproducible-packages.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("build_pair dual", reproducible)
+        self.assertIn("build_pair thick-only", reproducible)
+        self.assertIn('cmp -s "$first_deb" "$second_deb"', reproducible)
+        self.assertIn("reproducible package builds: PASS", reproducible)
+
         profile_gate = (
             ROOT / "experiments/thick-generations/package-profile-gate.sh"
         ).read_text(encoding="utf-8")

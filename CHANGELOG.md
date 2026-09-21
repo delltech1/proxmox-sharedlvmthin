@@ -68,6 +68,9 @@
   manifest for both package profiles, and reject post-install verification
   output instead of treating an empty or unchecked `dpkg --verify` run as
   evidence of package integrity.
+- Prove build reproducibility rather than inferring it: CI rebuilds both Dual
+  and Thick-only profiles in independent staging directories and requires
+  byte-identical `.deb` artifacts and checksum files.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
