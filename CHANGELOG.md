@@ -22,6 +22,15 @@
 - Require PVE filesystem freeze orchestration for live LXC `rootdir` block
   snapshots in both package profiles, matching the safety contract used by
   other external block-snapshot backends.
+- Apply the pre-unpack Thick transaction/recovery fence to ordinary upgrades
+  and both package-profile replacement directions, not only dual-to-Thick.
+- Refuse removal while an active ThinGuard still protects managed Thin
+  objects; stop it only after a successful empty managed-object inventory.
+- Fix Thick-only package configuration so `postinst` never syntax-checks Thin
+  daemons intentionally absent from that artifact, and enforce the condition
+  against the built package in the release checker.
+- Report the actual Thick-only package identity and version in JSON health
+  diagnostics instead of querying the mutually exclusive dual package.
 
 ## RC5.11 TG32 — experimental timing and scale hardening
 
