@@ -350,7 +350,7 @@ my $post_pivot_partial_cleanup = classify_recovery(
 );
 is($post_pivot_partial_cleanup->{data_state}, 'VALID',
     'linear-pivoted rollback remains deterministic after metadata and old HEAD cleanup');
-is($post_pivot_partial_cleanup->{action}, 'FINALIZE_READY',
+is($post_pivot_partial_cleanup->{materialization_state}, 'FINALIZE_READY',
     'post-pivot partial cleanup can finalize without recreating removed objects');
 
 my $post_pivot_reboot = classify_recovery(
@@ -362,7 +362,7 @@ my $post_pivot_reboot = classify_recovery(
 );
 is($post_pivot_reboot->{data_state}, 'VALID',
     'linear-pivoted rollback retains deterministic authority after host reboot');
-is($post_pivot_reboot->{action}, 'RECONSTRUCT_REQUIRED',
+is($post_pivot_reboot->{materialization_state}, 'RECONSTRUCT_REQUIRED',
     'post-pivot reboot requires exact linear frontend reconstruction before cleanup');
 
 my $rollback_materialized = {
