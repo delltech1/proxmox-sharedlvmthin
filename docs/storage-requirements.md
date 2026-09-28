@@ -11,6 +11,10 @@ The administrator is responsible for a stable, consistently presented block devi
 - PVE quorum/fencing appropriate for concurrent shared writes.
 
 The plugin does not create iSCSI sessions, FCoE controllers, FC zoning, SAN ACLs, LUNs, multipath maps, PVs, or VGs.
+It also never treats an iSCSI ACL revoke as confirmed fencing: an already
+established initiator session may remain able to write after new logins are
+denied. Storage-side or out-of-band fencing remains an independently designed
+and positively verified site responsibility.
 
 ## Capacity domains and space reuse
 

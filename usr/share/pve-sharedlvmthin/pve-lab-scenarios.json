@@ -1,0 +1,2010 @@
+{
+    "schema": 1,
+    "registry": "pve-lab-scenarios-v1",
+    "scenarios": {
+        "activation-deactivation": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "allocate-free": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "backup-restore": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "blocked-descendant": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "bounded-timeout": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "cross-node-generation": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "dstate-refusal": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "dual-clean-install": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "dual-post-reboot": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "dual-to-thick-replacement": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "dual-upgrade": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "full-hydration": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "geometry-qualification": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "hydration-io-fault": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "identity-mismatch-refusal": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "interrupted-lvm-mutation": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "large-node-fanout": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "large-vm-inventory": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "linear-pivot": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "live-migration": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "lost-lock-refusal": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "mixed-version-migration": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "directed-transition",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "mixed-version-recovery": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "directed-transition",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "node-scope": {
+            "revision": 1,
+            "status": "READY",
+            "blocked_reason": null,
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "read-only-cluster",
+            "runner": {
+                "entrypoint": "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-observe",
+                "subcommand": "node-scope",
+                "revision": 1,
+                "code_files": [
+                    "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-observe",
+                    "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-oracle"
+                ]
+            },
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-oracle",
+                        "required_assertions": [
+                            "cluster-members-readable",
+                            "node-masks-reference-members-only",
+                            "shared-storage-config-present"
+                        ]
+                    }
+                }
+            ]
+        },
+        "offline-migration": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "one-node-upgrade-reboot": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "directed-transition",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "orphan-worker": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "partial-peer-failure": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "partial-write": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "path-loss": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "path-recovery": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "peer-prepare-reservation": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "pending-before-dispatch": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "pvesm-lifecycle": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "quorum-read-only": {
+            "revision": 1,
+            "status": "READY",
+            "blocked_reason": null,
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "read-only-cluster",
+            "runner": {
+                "entrypoint": "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-observe",
+                "subcommand": "quorum-read-only",
+                "revision": 1,
+                "code_files": [
+                    "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-observe",
+                    "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-oracle"
+                ]
+            },
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-oracle",
+                        "required_assertions": [
+                            "corosync-config-identified",
+                            "native-pvecm-status-readable",
+                            "native-quorum-positive"
+                        ]
+                    }
+                }
+            ]
+        },
+        "reboot-recovery": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "remaining-nodes-upgrade": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "directed-transition",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "resize": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "single-worker-invariant": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "snapshot-delete-rollback": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "snapshot-fault-recovery": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "suspended-pivot-recovery": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "suspended-resize-recovery": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "thick-clean-install": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "thick-post-reboot": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "thick-upgrade": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "thin-hard-failover-refusal": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "thin-live-migration": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "thin-offline-migration": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "vm-create-start-stop": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        },
+        "web-ui-registration": {
+            "revision": 1,
+            "status": "READY",
+            "blocked_reason": null,
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "read-only-cluster",
+            "runner": {
+                "entrypoint": "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-observe",
+                "subcommand": "web-ui-registration",
+                "revision": 1,
+                "code_files": [
+                    "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-observe",
+                    "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-oracle"
+                ]
+            },
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": false,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": "usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-oracle",
+                        "required_assertions": [
+                            "api-policy-and-plugin-type",
+                            "api-probe-exited-cleanly",
+                            "required-hooks-callable",
+                            "web-assets-present",
+                            "web-service-unit-loaded"
+                        ]
+                    }
+                }
+            ]
+        },
+        "worker-kill": {
+            "revision": 1,
+            "status": "BLOCKED",
+            "blocked_reason": "End-to-end runner and scenario-specific oracle are not yet registered",
+            "profiles": [
+                "dual",
+                "thick-only"
+            ],
+            "binding": "class",
+            "fixture_kind": "disposable-storage",
+            "runner": null,
+            "parameters": {
+                "fixture_bytes": {
+                    "type": "integer",
+                    "minimum": 4096
+                },
+                "io_sector_bytes": {
+                    "type": "integer",
+                    "minimum": 512
+                },
+                "concurrency": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "cases": [
+                {
+                    "id": "default",
+                    "fault_required": true,
+                    "fault_boundary": null,
+                    "oracle": {
+                        "revision": 1,
+                        "validator": null,
+                        "required_assertions": []
+                    }
+                }
+            ]
+        }
+    }
+}

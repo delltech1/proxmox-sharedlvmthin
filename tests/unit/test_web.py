@@ -282,6 +282,67 @@ class HealthCacheTests(unittest.TestCase):
                 snapshot["cache"]["last_error"], "scale backend unavailable"
             )
 
+    def test_cached_monitoring_preserves_100_500_1000_thick_anchor_snapshots(self):
+        for count in (100, 500, 1000):
+            payload = {
+                "result": "PASS",
+                "storages": [{
+                    "id": "thick-scale-test",
+                    "allocation_mode": "thick-generations",
+                    "thick_materialization_admission": {
+                        "state": "SATURATED",
+                        "active": count,
+                        "limit": 4,
+                        "available": False,
+                        "available_slots": 0,
+                    },
+                    "thick_anchors": [
+                        {
+                            "volid": f"vm-{900000 + i}-disk-0",
+                            "phase": "HYDRATING",
+                            "operation": "SNAPSHOT",
+                            "generation": i,
+                            "status": "WARN",
+                        }
+                        for i in range(count)
+                    ],
+                }],
+            }
+            runner = mock.Mock(
+                return_value=SimpleNamespace(
+                    returncode=0, stdout=json.dumps(payload), stderr=""
+                )
+            )
+            cache = self.HealthCache("collector", 30, 10, runner=runner)
+            self.assertTrue(cache.refresh())
+            for _ in range(10):
+                snapshot = cache.snapshot()
+                storage = snapshot["storages"][0]
+                self.assertEqual(len(storage["thick_anchors"]), count)
+                self.assertEqual(
+                    storage["thick_materialization_admission"]["active"], count
+                )
+                self.assertEqual(
+                    storage["thick_materialization_admission"]["available_slots"], 0
+                )
+            self.assertEqual(
+                runner.call_count, 1,
+                "dashboard reads must not rerun the collector for Thick anchors",
+            )
+
+            cache.runner = mock.Mock(
+                return_value=SimpleNamespace(
+                    returncode=1, stdout="", stderr="scale backend unavailable"
+                )
+            )
+            self.assertFalse(cache.refresh())
+            snapshot = cache.snapshot()
+            self.assertEqual(len(snapshot["storages"][0]["thick_anchors"]), count)
+            self.assertEqual(
+                snapshot["storages"][0]["thick_materialization_admission"]["active"],
+                count,
+            )
+
     def test_dashboard_explains_non_fungible_pool_reservation(self):
         html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
             encoding="utf-8"
@@ -299,6 +360,31 @@ class HealthCacheTests(unittest.TestCase):
         self.assertIn("thick_anchors", html)
         self.assertIn("PVE references", html)
         self.assertIn("never trigger automatic cleanup or repair", html)
+        self.assertIn("D.platform.package_flavor==='thick-only'", html)
+        self.assertIn("Thick Generations only", html)
+
+    def test_dashboard_exposes_thick_materialization_admission_fail_closed(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("thick_materialization_admission", html)
+        self.assertIn("available_slots", html)
+        self.assertIn('String(a.state||"UNKNOWN").toUpperCase()', html)
+        self.assertIn('Number.isInteger(v)&&v>=0?v:"-"', html)
+        self.assertIn('"AVAILABLE"', html)
+        self.assertIn('"SATURATED"', html)
+        self.assertIn("UNKNOWN never authorizes a new transition", html)
+        self.assertIn("Materialization slots", html)
+
+    def test_dashboard_shows_valid_collector_duration_and_accepts_older_json(self):
+        html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("D.collection_duration_ms", html)
+        self.assertIn("Number.isInteger(D.collection_duration_ms)", html)
+        self.assertIn("D.collection_duration_ms>=0", html)
+        self.assertIn("collected in ${D.collection_duration_ms} ms", html)
+        self.assertIn(":'';updated.textContent", html)
 
     def test_dashboard_warns_not_to_sum_same_vg_alias_capacity(self):
         html = (ROOT / "usr/share/pve-sharedlvmthin/web/index.html").read_text(

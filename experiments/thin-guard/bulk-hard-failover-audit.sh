@@ -22,7 +22,7 @@ mapfile -t configured_nodes < <(perl -MJSON::PP -0777 -e '
 remote() {
     local node=$1
     shift
-    if [[ ${HOSTNAME,,} == ${node,,} ]]; then
+    if [[ ${HOSTNAME,,} == "${node,,}" ]]; then
         "$@"
         return
     fi

@@ -1,0 +1,538 @@
+#!/usr/bin/python3
+"""Validate the versioned PVE compatibility contract catalogue."""
+
+import argparse
+import ast
+import hashlib
+import json
+import os
+import pathlib
+import re
+import sys
+
+DEFAULT_CATALOGUE = "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json"
+DEFAULT_SCENARIO_REGISTRY = "/usr/share/pve-sharedlvmthin/pve-lab-scenarios.json"
+ID_RE = re.compile(r"[a-z0-9][a-z0-9.-]*\Z")
+PARAM_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+COMMAND_RE = re.compile(r"(?<![A-Za-z0-9_.-])(/(?:usr/)?(?:s?bin)/[A-Za-z0-9_.+-]+)")
+PVE_SYMBOL_RE = re.compile(r"\b(PVE::(?:[A-Za-z][A-Za-z0-9_]*::)+[a-z][A-Za-z0-9_]*)\b")
+PVE_METHOD_RE = re.compile(
+    r"\b(PVE(?:::[A-Za-z][A-Za-z0-9_]*)+)\s*->\s*([a-z][A-Za-z0-9_]*)\b"
+)
+PVE_IMPORT_RE = re.compile(
+    r"\buse\s+(PVE(?:::[A-Za-z][A-Za-z0-9_]*)+)\s+qw\(([^)]*)\)"
+)
+NATIVE_OPERATION_PATTERNS = {
+    "qm.config": re.compile(r"\bqm\s+config\b"),
+    "qm.create": re.compile(r"\bqm\s+create\b"),
+    "qm.destroy": re.compile(r"\bqm\s+destroy\b"),
+    "qm.disk-move": re.compile(r"\bqm\s+disk\s+move\b"),
+    "qm.delsnapshot": re.compile(r"\bqm\s+delsnapshot\b"),
+    "qm.migrate": re.compile(r"\bqm\s+migrate\b"),
+    "qm.rollback": re.compile(r"\bqm\s+rollback\b"),
+    "qm.set": re.compile(r"\bqm\s+set\b"),
+    "qm.snapshot": re.compile(r"\bqm\s+snapshot\b"),
+    "qm.status": re.compile(r"\bqm\s+status\b"),
+    "qm.stop": re.compile(r"\bqm\s+stop\b"),
+    "pvesh.get": re.compile(r"\bpvesh\s+get\b"),
+    "pvesm.path": re.compile(r"\bpvesm\s+path\b"),
+    "pvesm.status": re.compile(r"\bpvesm\s+status\b"),
+    "pvecm.status": re.compile(r"\bpvecm\s+status\b"),
+}
+NATIVE_COMMAND_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(qm|pct|pvesm|pvesh|pvecm)\s+"
+    r"([a-z][a-z0-9-]*)(?:\s+([a-z][a-z0-9-]*))?"
+)
+NATIVE_ARGV_RE = re.compile(
+    r"[\"'](?:/(?:usr/)?s?bin/)?(qm|pct|pvesm|pvesh|pvecm)[\"']\s*,\s*"
+    r"[\"']([a-z][a-z0-9-]*)[\"'](?:\s*,\s*"
+    r"[\"']([a-z][a-z0-9-]*)[\"'])?"
+)
+NATIVE_QUOTED_SHELL_RE = re.compile(
+    r"[\"'](?:/(?:usr/)?s?bin/)?(qm|pct|pvesm|pvesh|pvecm)[\"']\s+"
+    r"[\"']([a-z][a-z0-9-]*)[\"'](?:\s+"
+    r"[\"']([a-z][a-z0-9-]*)[\"'])?"
+)
+
+
+def discover_native_operations(text):
+    operations = set()
+    candidates = NATIVE_COMMAND_RE.findall(text) + NATIVE_ARGV_RE.findall(text) \
+        + NATIVE_QUOTED_SHELL_RE.findall(text)
+    for tool, first, second in candidates:
+        if first in {"qm", "pct", "pvesm", "pvesh", "pvecm"}:
+            continue
+        if tool == "qm" and first == "disk" and second:
+            operations.add(f"qm.disk-{second}")
+        else:
+            operations.add(f"{tool}.{first}")
+    return operations
+
+
+def discover_imported_pve_symbols(text):
+    symbols = set()
+    for module, imports in PVE_IMPORT_RE.findall(text):
+        for name in imports.split():
+            if re.fullmatch(r"[a-z][A-Za-z0-9_]*", name):
+                symbols.add(f"{module}::{name}")
+    return symbols
+
+
+def discover_pve_method_symbols(text):
+    return {f"{module}::{method}" for module, method in PVE_METHOD_RE.findall(text)}
+
+
+def strict_load(path):
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle, object_pairs_hook=reject_duplicates)
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def inventory_literal_tuple(source_root, variable):
+    path = source_root / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-upstream-inventory"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == variable
+                for target in node.targets):
+            value = ast.literal_eval(node.value)
+            if not isinstance(value, tuple) or not value or any(
+                    not isinstance(item, str) or not item for item in value) \
+                    or len(value) != len(set(value)):
+                raise ValueError(f"{variable} inventory is malformed")
+            return set(value)
+    raise ValueError(f"{variable} inventory is missing")
+
+
+def inventory_runtime_commands(source_root):
+    return inventory_literal_tuple(source_root, "COMMANDS")
+
+
+def python_test_exists(path, identifier):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.test_[A-Za-z0-9_]+", identifier):
+        return False
+    class_name, method_name = identifier.split(".", 1)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    matches = 0
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            matches += sum(
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name == method_name for item in node.body
+            )
+    return matches == 1
+
+
+def validate_scenario_registry(registry, catalogue, source_root=None):
+    errors = []
+    if not isinstance(registry, dict) or set(registry) != {"schema", "registry", "scenarios"} \
+            or registry.get("schema") != 1 \
+            or registry.get("registry") != "pve-lab-scenarios-v1" \
+            or not isinstance(registry.get("scenarios"), dict):
+        return ["lab scenario registry is malformed"], []
+    contracts = catalogue.get("contracts", [])
+    expected = {
+        test for contract in contracts if isinstance(contract, dict)
+        for test in contract.get("lab_tests", [])
+    }
+    scenarios = registry["scenarios"]
+    if set(scenarios) != expected:
+        errors.append("lab scenario registry does not exactly cover catalogue lab tests")
+    blocked = []
+    for scenario_id, scenario in scenarios.items():
+        if not isinstance(scenario_id, str) or not ID_RE.fullmatch(scenario_id) \
+                or not isinstance(scenario, dict):
+            errors.append(f"invalid lab scenario: {scenario_id}")
+            continue
+        required_profiles = {
+            scope for contract in contracts if isinstance(contract, dict)
+            and scenario_id in contract.get("lab_tests", [])
+            for scope in contract.get("scope", [])
+        }
+        transition = any(
+            scenario_id in contract.get("transition_tests", [])
+            for contract in contracts if isinstance(contract, dict)
+        )
+        fault = any(
+            scenario_id in contract.get("fault_tests", [])
+            for contract in contracts if isinstance(contract, dict)
+        )
+        if set(scenario) != {"revision", "status", "blocked_reason", "profiles",
+                            "binding", "fixture_kind", "runner", "parameters", "cases"} \
+                or type(scenario.get("revision")) is not int or scenario["revision"] < 1 \
+                or scenario.get("status") not in {"READY", "BLOCKED"} \
+                or set(scenario.get("profiles", [])) != required_profiles \
+                or scenario.get("binding") != ("directed-transition" if transition else "class") \
+                or not isinstance(scenario.get("fixture_kind"), str) \
+                or not scenario.get("fixture_kind") \
+                or not isinstance(scenario.get("parameters"), dict) \
+                or not isinstance(scenario.get("cases"), list) or not scenario["cases"]:
+            errors.append(f"invalid lab scenario contract: {scenario_id}")
+            continue
+        case_ids = set()
+        for case in scenario["cases"]:
+            if not isinstance(case, dict) or set(case) != {\
+                    "id", "fault_required", "fault_boundary", "oracle"} \
+                    or not isinstance(case.get("id"), str) or not ID_RE.fullmatch(case["id"]) \
+                    or case["id"] in case_ids or type(case.get("fault_required")) is not bool \
+                    or case["fault_required"] != fault:
+                errors.append(f"invalid lab scenario case: {scenario_id}")
+                continue
+            oracle = case.get("oracle")
+            if not isinstance(oracle, dict) or set(oracle) != {
+                    "revision", "validator", "required_assertions"} \
+                    or type(oracle.get("revision")) is not int or oracle["revision"] < 1 \
+                    or not isinstance(oracle.get("required_assertions"), list) \
+                    or any(not isinstance(item, str) or not ID_RE.fullmatch(item)
+                           for item in oracle.get("required_assertions", [])) \
+                    or len(oracle.get("required_assertions", [])) \
+                    != len(set(oracle.get("required_assertions", []))):
+                errors.append(f"invalid lab scenario oracle: {scenario_id}:{case.get('id')}")
+                continue
+            case_ids.add(case["id"])
+        if scenario["status"] == "BLOCKED":
+            blocked.append(scenario_id)
+            if not isinstance(scenario.get("blocked_reason"), str) \
+                    or not scenario["blocked_reason"] or scenario.get("runner") is not None:
+                errors.append(f"invalid blocked lab scenario: {scenario_id}")
+            continue
+        if scenario.get("blocked_reason") is not None:
+            errors.append(f"ready lab scenario has blocked reason: {scenario_id}")
+        for case in scenario["cases"]:
+            oracle = case.get("oracle", {})
+            if not isinstance(oracle.get("validator"), str) \
+                    or not oracle["validator"] \
+                    or not oracle.get("required_assertions"):
+                errors.append(f"ready lab scenario has no executable oracle: {scenario_id}")
+            elif not isinstance(scenario.get("runner"), dict) \
+                    or oracle["validator"] not in scenario["runner"].get("code_files", []):
+                errors.append(f"ready lab oracle is not bound to runner code: {scenario_id}")
+            elif source_root is not None:
+                validator = (source_root / oracle["validator"]).resolve()
+                try:
+                    validator.relative_to(source_root.resolve())
+                except ValueError:
+                    errors.append(f"ready lab oracle escapes source root: {scenario_id}")
+                else:
+                    if not validator.is_file() or validator.is_symlink():
+                        errors.append(f"ready lab oracle is missing or unsafe: {scenario_id}")
+        runner = scenario.get("runner")
+        if not isinstance(runner, dict) or set(runner) != {\
+                "entrypoint", "subcommand", "revision", "code_files"} \
+                or type(runner.get("revision")) is not int or runner["revision"] < 1 \
+                or runner.get("subcommand") != scenario_id \
+                or not isinstance(runner.get("code_files"), list) or not runner["code_files"]:
+            errors.append(f"invalid ready lab runner: {scenario_id}")
+            continue
+        if source_root is not None:
+            for relative in [runner.get("entrypoint"), *runner.get("code_files", [])]:
+                if not isinstance(relative, str):
+                    errors.append(f"invalid runner path: {scenario_id}")
+                    continue
+                path = (source_root / relative).resolve()
+                try:
+                    path.relative_to(source_root.resolve())
+                except ValueError:
+                    errors.append(f"runner path escapes source root: {scenario_id}")
+                    continue
+                if not path.is_file() or path.is_symlink():
+                    errors.append(f"runner file is missing or unsafe: {scenario_id}:{relative}")
+    return sorted(set(errors)), sorted(blocked)
+
+
+def validate_catalogue(document, source_root=None):
+    errors = []
+    if type(document.get("schema")) is not int or document.get("schema") != 1 \
+            or document.get("catalogue") != "pve-compatibility-contracts-v1":
+        errors.append("unsupported catalogue identity")
+    lab_schema = document.get("lab_execution_schema")
+    if not isinstance(lab_schema, dict) \
+            or set(lab_schema) != {"revision", "required_parameters"} \
+            or type(lab_schema.get("revision")) is not int or lab_schema.get("revision") != 1 \
+            or not isinstance(lab_schema.get("required_parameters"), list) \
+            or not lab_schema.get("required_parameters") \
+            or any(not isinstance(value, str) or not PARAM_RE.fullmatch(value)
+                   for value in lab_schema.get("required_parameters", [])):
+        errors.append("invalid lab execution schema")
+    contracts = document.get("contracts")
+    if not isinstance(contracts, list) or not contracts:
+        return ["contract catalogue is empty or malformed"]
+    seen = set()
+    allowed_scope = {"dual", "thick-only"}
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            errors.append("contract row is not an object")
+            continue
+        contract_id = contract.get("id")
+        if not isinstance(contract_id, str) or not ID_RE.fullmatch(contract_id):
+            errors.append("contract has invalid id")
+            continue
+        if contract_id in seen:
+            errors.append(f"duplicate contract id: {contract_id}")
+        seen.add(contract_id)
+        if type(contract.get("revision")) is not int or contract["revision"] < 1:
+            errors.append(f"{contract_id}: invalid contract revision")
+        scope = contract.get("scope")
+        if not isinstance(scope, list) or not scope or set(scope) - allowed_scope:
+            errors.append(f"{contract_id}: invalid package scope")
+        for field in ("dependencies", "static_tests", "read_only_checks", "lab_tests"):
+            values = contract.get(field)
+            if not isinstance(values, list) or not values \
+                    or any(not isinstance(value, str) or not value for value in values) \
+                    or len(values) != len(set(values)):
+                errors.append(f"{contract_id}: invalid or empty {field}")
+        fault_tests = contract.get("fault_tests", [])
+        if not isinstance(fault_tests, list) \
+                or any(not isinstance(value, str) or not value for value in fault_tests) \
+                or len(fault_tests) != len(set(fault_tests)) \
+                or any(value not in contract.get("lab_tests", []) for value in fault_tests):
+            errors.append(f"{contract_id}: invalid fault_tests")
+        transition_tests = contract.get("transition_tests", [])
+        if not isinstance(transition_tests, list) \
+                or any(not isinstance(value, str) or not value for value in transition_tests) \
+                or len(transition_tests) != len(set(transition_tests)) \
+                or any(value not in contract.get("lab_tests", []) for value in transition_tests):
+            errors.append(f"{contract_id}: invalid transition_tests")
+        if source_root is not None and isinstance(contract.get("static_tests"), list):
+            for relative in contract["static_tests"]:
+                candidate = (source_root / relative).resolve()
+                try:
+                    candidate.relative_to(source_root.resolve())
+                except ValueError:
+                    errors.append(f"{contract_id}: static test escapes source root: {relative}")
+                    continue
+                if not candidate.is_file():
+                    errors.append(f"{contract_id}: static test is missing: {relative}")
+    coverage = document.get("source_dependency_coverage")
+    if not isinstance(coverage, dict) or set(coverage) != {\
+            "revision", "commands", "perl_symbols", "hooks", "native_operations",\
+            "native_operation_tests", "exact_surface_tests"} \
+            or coverage.get("revision") != 1:
+        errors.append("invalid source dependency coverage")
+    else:
+        contracts_by_id = {
+            row.get("id"): row for row in contracts if isinstance(row, dict)
+        }
+        for kind in ("commands", "perl_symbols", "hooks", "native_operations"):
+            values = coverage.get(kind)
+            if not isinstance(values, dict) or not values:
+                errors.append(f"source dependency coverage has no {kind}")
+                continue
+            for dependency, contract_id in values.items():
+                if not isinstance(dependency, str) or not dependency \
+                        or not isinstance(contract_id, str) or contract_id not in seen:
+                    errors.append(f"invalid {kind} coverage row: {dependency}")
+        surface_tests = coverage.get("exact_surface_tests")
+        if not isinstance(surface_tests, dict) or set(surface_tests) != {
+                "revision", "internal_command_exceptions", "commands",
+                "perl_symbols", "hooks"} \
+                or surface_tests.get("revision") != 1:
+            errors.append("exact surface test policy is malformed")
+        else:
+            internal_exceptions = surface_tests.get("internal_command_exceptions")
+            if not isinstance(internal_exceptions, list) \
+                    or any(not isinstance(item, str) or not item
+                           for item in internal_exceptions) \
+                    or len(internal_exceptions) != len(set(internal_exceptions)):
+                errors.append("internal command exception registry is malformed")
+            for kind in ("commands", "perl_symbols", "hooks"):
+                binding = surface_tests.get(kind)
+                if not isinstance(binding, dict) or set(binding) != {
+                        "framework", "file", "id", "claim"} \
+                        or binding.get("framework") != "python-unittest" \
+                        or binding.get("claim") not in {
+                            "provider-model", "registry-consistency"}:
+                    errors.append(f"invalid exact surface test binding: {kind}")
+                    continue
+                if source_root is not None:
+                    test_path = (source_root / str(binding.get("file", ""))).resolve()
+                    try:
+                        test_path.relative_to(source_root.resolve())
+                    except ValueError:
+                        errors.append(f"exact surface test escapes source root: {kind}")
+                    else:
+                        if not test_path.is_file() or test_path.is_symlink():
+                            errors.append(f"exact surface test is missing or unsafe: {kind}")
+                        else:
+                            try:
+                                present = python_test_exists(test_path, binding.get("id"))
+                            except (OSError, SyntaxError, TypeError):
+                                present = False
+                            if not present:
+                                errors.append(f"exact surface test id is absent: {kind}")
+        operation_tests = coverage.get("native_operation_tests")
+        if not isinstance(operation_tests, dict) \
+                or set(operation_tests) != set(coverage.get("native_operations", {})):
+            errors.append("native PVE operation test registry is incomplete")
+        else:
+            for operation, binding in operation_tests.items():
+                if not isinstance(binding, dict) or set(binding) != {\
+                        "contract", "static_test", "lab_test", "parser_revision"}:
+                    errors.append(f"invalid native PVE operation test binding: {operation}")
+                    continue
+                contract = contracts_by_id.get(binding.get("contract"))
+                if contract is None \
+                        or binding.get("contract") != coverage["native_operations"].get(operation) \
+                        or binding.get("static_test") not in contract.get("static_tests", []) \
+                        or binding.get("lab_test") not in contract.get("lab_tests", []) \
+                        or type(binding.get("parser_revision")) is not int \
+                        or binding["parser_revision"] < 1:
+                    errors.append(f"unverifiable native PVE operation test binding: {operation}")
+        if source_root is not None:
+            covered_runtime = {
+                pathlib.PurePosixPath(command).name
+                for command in coverage.get("commands", {})
+            }
+            try:
+                required_runtime = inventory_runtime_commands(source_root)
+            except (OSError, SyntaxError, ValueError) as exc:
+                errors.append(f"runtime command inventory unavailable: {exc}")
+                required_runtime = set()
+            try:
+                required_hooks = inventory_literal_tuple(source_root, "REQUIRED_HOOKS")
+            except (OSError, SyntaxError, ValueError) as exc:
+                errors.append(f"runtime hook inventory unavailable: {exc}")
+                required_hooks = set()
+            for dependency in sorted(required_runtime - covered_runtime):
+                errors.append(f"runtime command has no contract binding: {dependency}")
+            internal_exceptions = set(
+                coverage.get("exact_surface_tests", {}).get(
+                    "internal_command_exceptions", []
+                )
+            )
+            for dependency in sorted(
+                    covered_runtime - required_runtime - internal_exceptions):
+                errors.append(f"stale runtime command contract binding: {dependency}")
+            for dependency in sorted(internal_exceptions - covered_runtime):
+                errors.append(f"stale internal command exception: {dependency}")
+            for dependency in sorted(internal_exceptions):
+                candidate = source_root / "usr/sbin" / dependency
+                if not candidate.is_file() or candidate.is_symlink():
+                    errors.append(f"internal command exception is missing: {dependency}")
+            discovered_commands = set()
+            discovered_symbols = set()
+            discovered_operations = set()
+            scan_roots = [source_root / "usr", source_root / "DEBIAN",
+                          source_root / "packaging"]
+            for path in (path for root in scan_roots if root.exists()
+                         for path in root.rglob("*")):
+                if not path.is_file() or path.suffix in {".json", ".gz", ".png", ".jpg"}:
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                discovered_commands.update(COMMAND_RE.findall(text))
+                for symbol in PVE_SYMBOL_RE.findall(text):
+                    if symbol.startswith("PVE::SharedLvmThin") \
+                            or symbol.startswith("PVE::Storage::Custom::SharedLvmThinPlugin"):
+                        continue
+                    discovered_symbols.add(symbol)
+                for symbol in discover_imported_pve_symbols(text):
+                    if symbol.startswith("PVE::SharedLvmThin") \
+                            or symbol.startswith(
+                                "PVE::Storage::Custom::SharedLvmThinPlugin"):
+                        continue
+                    discovered_symbols.add(symbol)
+                for symbol in discover_pve_method_symbols(text):
+                    if symbol.startswith("PVE::SharedLvmThin") \
+                            or symbol.startswith(
+                                "PVE::Storage::Custom::SharedLvmThinPlugin"):
+                        continue
+                    discovered_symbols.add(symbol)
+                discovered_operations.update(discover_native_operations(text))
+            covered_commands = set(coverage.get("commands", {}))
+            covered_symbols = set(coverage.get("perl_symbols", {}))
+            covered_operations = set(coverage.get("native_operations", {}))
+            covered_hooks = set(coverage.get("hooks", {}))
+            try:
+                required_symbols = inventory_literal_tuple(
+                    source_root, "REQUIRED_PVE_SYMBOLS"
+                )
+            except (OSError, SyntaxError, ValueError) as exc:
+                errors.append(f"runtime PVE symbol inventory unavailable: {exc}")
+                required_symbols = set()
+            for dependency in sorted(required_symbols - covered_symbols):
+                errors.append(f"runtime PVE symbol has no contract/test binding: {dependency}")
+            for dependency in sorted(covered_symbols - required_symbols):
+                errors.append(f"stale runtime PVE symbol coverage: {dependency}")
+            for dependency in sorted(required_hooks - covered_hooks):
+                errors.append(f"runtime hook has no contract/test binding: {dependency}")
+            for dependency in sorted(covered_hooks - required_hooks):
+                errors.append(f"stale runtime hook coverage: {dependency}")
+            for dependency in sorted(discovered_commands - covered_commands):
+                errors.append(f"uncovered external command dependency: {dependency}")
+            for dependency in sorted(discovered_symbols - covered_symbols):
+                errors.append(f"uncovered upstream Perl dependency: {dependency}")
+            for dependency in sorted(discovered_operations - covered_operations):
+                errors.append(f"uncovered native PVE operation: {dependency}")
+            for dependency in sorted(covered_operations - discovered_operations):
+                errors.append(f"stale native PVE operation coverage: {dependency}")
+    return sorted(set(errors))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--catalogue", default=DEFAULT_CATALOGUE)
+    parser.add_argument("--source-root", help="also verify source-tree static test paths")
+    parser.add_argument("--scenario-registry")
+    args = parser.parse_args(argv)
+    try:
+        document = strict_load(args.catalogue)
+        root = pathlib.Path(args.source_root) if args.source_root else None
+        errors = validate_catalogue(document, root)
+        registry_path = args.scenario_registry
+        if registry_path is None:
+            registry_path = str(
+                root / "usr/share/pve-sharedlvmthin/pve-lab-scenarios.json"
+                if root is not None else pathlib.Path(DEFAULT_SCENARIO_REGISTRY)
+            )
+        registry = strict_load(registry_path)
+        registry_errors, blocked_scenarios = validate_scenario_registry(
+            registry, document, root,
+        )
+        errors.extend(registry_errors)
+        registry_digest = sha256(registry_path)
+        digest = sha256(args.catalogue)
+    except (OSError, ValueError) as exc:
+        errors = [f"catalogue unavailable: {exc}"]
+        digest = None
+        document = {}
+        blocked_scenarios = []
+        registry_digest = None
+    output = {
+        "kind": "pve-compatibility-contract-catalogue",
+        "schema": 1,
+        "catalogue": document.get("catalogue"),
+        "catalogue_sha256": digest,
+        "contract_ids": sorted(
+            row.get("id") for row in document.get("contracts", [])
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        ),
+        "valid": not errors,
+        "scenario_registry_sha256": registry_digest,
+        "blocked_scenarios": blocked_scenarios,
+        "qualification_ready": not errors and not blocked_scenarios,
+        "errors": errors,
+        "upgrade_authorized": False,
+    }
+    print(json.dumps(output, sort_keys=True, indent=2))
+    return 0 if not errors else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

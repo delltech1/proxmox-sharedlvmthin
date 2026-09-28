@@ -6,3 +6,9 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+outputs/
+BASTRIX-SharedLVM-*-Handover-*.zip
+docs/HANDOVER-BUNDLE-*.md
+docs/THICK-AUDIT-HANDOFF.md
+docs/THICK-AUDIT-WORKLOG.md
+docs/lab/*_ROLE_AWARE_PREFLIGHT_*.md

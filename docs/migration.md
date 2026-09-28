@@ -45,6 +45,14 @@ The command validates the exact pool, owner, identity, quorum, lock, and local
 absence of dm-thin mappings. The `<fenced-node>` argument is an explicit
 operator assertion; the plugin does not perform or infer fencing.
 
+Revoking an iSCSI initiator ACL is not accepted as that proof. Target ACL
+changes are vendor-specific and may reject only new logins while an established
+session continues to issue writes. Likewise, SSH reachability, cluster
+membership, an elapsed timeout, or a cooperative source-side command cannot
+prove that the old kernel has stopped storage I/O. Any site-specific SAN or
+out-of-band fencing integration must positively confirm termination of the old
+writer before the explicit recovery assertion is used.
+
 ### Opt-in PVE HA fenced-owner takeover
 
 TG29 adds an opt-in PVE HA integration for the same fenced-owner transition:

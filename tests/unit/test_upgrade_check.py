@@ -1,3 +1,5 @@
+import os
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -9,8 +11,12 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check"
 
 
+@unittest.skipUnless(
+    os.name == "posix" and shutil.which("bash") is not None,
+    "requires POSIX executable scripts and Bash",
+)
 class UpgradeCheckTests(unittest.TestCase):
-    def run_check(self, config, checker):
+    def run_check(self, config, checker, *arguments, inventory_failure=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             storage = root / "storage.cfg"
@@ -32,10 +38,15 @@ class UpgradeCheckTests(unittest.TestCase):
                 "RECOVERY_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check",
                 f"RECOVERY_CHECK={recovery}",
             ).replace("PROBE_TIMEOUT=150", "PROBE_TIMEOUT=5")
+            if inventory_failure:
+                source = source.replace(
+                    'if ! inventory >"$inventory_result"; then',
+                    'if ! false >"$inventory_result"; then',
+                )
             test_script.write_text(source, encoding="utf-8")
             test_script.chmod(0o755)
             result = subprocess.run(
-                ["bash", str(test_script)],
+                ["bash", str(test_script), *arguments],
                 text=True,
                 capture_output=True,
                 check=False,
@@ -43,7 +54,7 @@ class UpgradeCheckTests(unittest.TestCase):
             invoked = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
             return result, invoked
 
-    def test_checks_enabled_thin_and_thick_and_skips_disabled_storage(self):
+    def test_checks_enabled_and_disabled_thin_and_thick_storage(self):
         result, invoked = self.run_check(
             """
             sharedlvmthin: thin-store
@@ -56,25 +67,69 @@ class UpgradeCheckTests(unittest.TestCase):
             sharedlvmthin: disabled-store
                     disable
                     vgname other-vg
-                    slt-allocation-mode future-disabled-mode
+                    slt-allocation-mode thick-generations
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
             exit 0
             """,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(invoked, ["thin-store", "thick-store"])
-        self.assertIn("RESULT=SKIP_DISABLED", result.stdout)
-        self.assertIn("UPGRADE_STORAGES_CHECKED=2", result.stdout)
-        self.assertIn("UPGRADE_STORAGES_SKIPPED_DISABLED=1", result.stdout)
+        self.assertEqual(invoked, ["thin-store", "thick-store", "disabled-store"])
+        self.assertIn("UPGRADE_STORAGE_DISABLED=YES", result.stdout)
+        self.assertIn("UPGRADE_STORAGES_CHECKED=3", result.stdout)
+        self.assertIn("UPGRADE_STORAGES_SKIPPED_DISABLED=0", result.stdout)
         self.assertIn(
-            "UPGRADE_STORAGES_SKIPPED_EXPLICITLY_DISABLED=1", result.stdout
+            "UPGRADE_STORAGES_CHECKED_EXPLICITLY_DISABLED=1", result.stdout
         )
         self.assertIn("UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=0", result.stdout)
         self.assertIn("UPGRADE_SAFE=YES", result.stdout)
+
+    def test_disabled_storage_with_recovery_evidence_blocks_upgrade(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: disabled-thick
+                    disable 1
+                    vgname shared-vg
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            echo THICK_ANCHORS_HEALTHY=FAIL
+            echo VG_INTENT_CLEAR=FAIL
+            echo STATE=RECOVERY_REQUIRED
+            echo SAFE_FOR_MUTATION=NO
+            exit 2
+            """,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(invoked, ["disabled-thick"])
+        self.assertIn("UPGRADE_STORAGE_DISABLED=YES", result.stdout)
+        self.assertIn("UPGRADE_STORAGE_RESULT=FAIL", result.stdout)
+        self.assertIn("UPGRADE_SAFE=NO", result.stdout)
+
+    def test_invalid_disable_value_fails_closed_without_probe(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: ambiguous
+                    disable perhaps
+                    vgname shared-vg
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
+            echo STATE=HEALTHY
+            echo SAFE_FOR_MUTATION=YES
+            exit 0
+            """,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(invoked, [])
+        self.assertIn("DETAIL=invalid disable value", result.stdout)
+        self.assertIn("UPGRADE_SAFE=NO", result.stdout)
 
     def test_fails_closed_on_recovery_required_storage(self):
         result, invoked = self.run_check(
@@ -85,6 +140,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=FAIL
+            echo VG_INTENT_CLEAR=FAIL
             echo STATE=RECOVERY_REQUIRED
             echo SAFE_FOR_MUTATION=NO
             exit 2
@@ -93,6 +149,40 @@ class UpgradeCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(invoked, ["thick-store"])
         self.assertIn("UPGRADE_STORAGE_RESULT=FAIL", result.stdout)
+        self.assertIn("UPGRADE_SAFE=NO", result.stdout)
+
+    def test_fail_fast_stops_after_first_definitive_failure(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: unsafe-first
+                    vgname shared-vg
+                    slt-allocation-mode thick-generations
+
+            sharedlvmthin: healthy-second
+                    vgname other-vg
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            if [ "$1" = unsafe-first ]; then
+                echo THICK_ANCHORS_HEALTHY=FAIL
+                echo VG_INTENT_CLEAR=FAIL
+                echo STATE=RECOVERY_REQUIRED
+                echo SAFE_FOR_MUTATION=NO
+                exit 2
+            fi
+            echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
+            echo STATE=HEALTHY
+            echo SAFE_FOR_MUTATION=YES
+            exit 0
+            """,
+            "--fail-fast",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(invoked, ["unsafe-first"])
+        self.assertIn("UPGRADE_FAIL_FAST=YES", result.stdout)
+        self.assertIn("UPGRADE_SCAN_COMPLETE=NO", result.stdout)
+        self.assertIn("UPGRADE_STORAGES_CHECKED=1", result.stdout)
         self.assertIn("UPGRADE_SAFE=NO", result.stdout)
 
     def test_skips_storage_outside_local_node_scope(self):
@@ -105,6 +195,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
             exit 0
@@ -126,6 +217,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
             exit 0
@@ -144,6 +236,7 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
             """
             echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
             echo STATE=HEALTHY
             echo STATE=HEALTHY
             echo SAFE_FOR_MUTATION=YES
@@ -151,6 +244,47 @@ class UpgradeCheckTests(unittest.TestCase):
             """,
         )
         self.assertEqual(result.returncode, 2)
+        self.assertIn("UPGRADE_SAFE=NO", result.stdout)
+
+    def test_healthy_claim_without_explicit_clear_intent_proof_is_refused(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: thick-store
+                    vgname shared-vg
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            echo THICK_ANCHORS_HEALTHY=PASS
+            echo STATE=HEALTHY
+            echo SAFE_FOR_MUTATION=YES
+            exit 0
+            """,
+        )
+        self.assertEqual(invoked, ["thick-store"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("UPGRADE_STORAGE_RESULT=FAIL", result.stdout)
+        self.assertIn("UPGRADE_SAFE=NO", result.stdout)
+
+    def test_storage_inventory_failure_cannot_disappear_through_substitution(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: thick-store
+                    vgname shared-vg
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
+            echo STATE=HEALTHY
+            echo SAFE_FOR_MUTATION=YES
+            exit 0
+            """,
+            inventory_failure=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(invoked, [])
+        self.assertIn("UPGRADE_SCAN_COMPLETE=NO", result.stdout)
+        self.assertIn("ERROR=storage inventory failed", result.stdout)
         self.assertIn("UPGRADE_SAFE=NO", result.stdout)
 
 

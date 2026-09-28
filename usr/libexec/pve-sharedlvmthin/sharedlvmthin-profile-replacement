@@ -1,0 +1,539 @@
+#!/usr/bin/env python3
+"""Crash-recoverable executor for one exact package-profile replacement."""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path("/var/lib/pve-sharedlvmthin/profile-replacement")
+LOCK = ROOT / ".lock"
+READY = ROOT / "ready.json"
+INTENT = ROOT / "prerm-intent.json"
+DONE = ROOT / "dpkg-done.json"
+COMPLETE = ROOT / "complete.json"
+ARCHIVE = ROOT / "archive"
+SCHEMA = "slt-profile-replacement/v2"
+MAX_AGE = 300
+PACKAGES = {"pve-sharedlvmthin": "dual",
+            "pve-sharedlvmthin-thick": "thick-only"}
+SAFE_VERSION = re.compile(r"^[A-Za-z0-9.+:~_-]+$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class Refusal(Exception):
+    pass
+
+
+def require(value, message):
+    if not value:
+        raise Refusal(message)
+
+
+def fsync_dir(path: Path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def safe_dir(path: Path, mode: int):
+    info = os.lstat(path)
+    require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == mode,
+            f"unsafe directory: {path}")
+
+
+def ensure_root():
+    require(os.geteuid() == 0, "profile replacement requires root")
+    for parent in (Path("/var"), Path("/var/lib"),
+                   Path("/var/lib/pve-sharedlvmthin")):
+        info = os.lstat(parent)
+        require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                and info.st_uid == 0 and stat.S_IMODE(info.st_mode) & 0o022 == 0,
+                f"unsafe profile replacement parent: {parent}")
+    created = False
+    try:
+        ROOT.mkdir(mode=0o700)
+        created = True
+    except FileExistsError:
+        pass
+    safe_dir(ROOT, 0o700)
+    if created:
+        fsync_dir(ROOT.parent)
+    archive_created = False
+    try:
+        ARCHIVE.mkdir(mode=0o700)
+        archive_created = True
+    except FileExistsError:
+        pass
+    safe_dir(ARCHIVE, 0o700)
+    if archive_created:
+        fsync_dir(ROOT)
+
+
+class Locked:
+    def __enter__(self):
+        ensure_root()
+        self.fd = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+                          | os.O_NOFOLLOW, 0o600)
+        info = os.fstat(self.fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0
+                and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1,
+                "profile replacement lock is unsafe")
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        named = os.stat(LOCK, follow_symlinks=False)
+        require((named.st_dev, named.st_ino) == (info.st_dev, info.st_ino),
+                "profile replacement lock namespace changed")
+        return self
+
+    def __exit__(self, *_):
+        os.close(self.fd)
+
+
+def read_boot_id():
+    value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    require(re.fullmatch(r"[0-9a-f-]{36}", value) is not None,
+            "boot identity is invalid")
+    return value
+
+
+def proc_start(pid: int):
+    data = Path(f"/proc/{pid}/stat").read_text()
+    close = data.rfind(")")
+    fields = data[close + 2:].split() if close > 0 else []
+    require(len(fields) > 19 and fields[19].isdigit(),
+            "process start identity is invalid")
+    return fields[19]
+
+
+def ancestry_contains(pid: int, start: str):
+    current, seen = os.getpid(), set()
+    while current > 1 and current not in seen:
+        seen.add(current)
+        if current == pid:
+            return proc_start(current) == start
+        lines = Path(f"/proc/{current}/status").read_text().splitlines()
+        parent = [line for line in lines if line.startswith("PPid:")]
+        require(len(parent) == 1, "process ancestry is ambiguous")
+        current = int(parent[0].split()[1])
+    return False
+
+
+def proc_executable(pid: int):
+    return os.readlink(f"/proc/{pid}/exe")
+
+
+def proc_cmdline(pid: int):
+    values = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    if values and values[-1] == b"":
+        values.pop()
+    return values
+
+
+def exact_dpkg_process(record):
+    pid = record["dpkg_pid"]
+    require(ancestry_contains(pid, record["dpkg_start"]),
+            "authorized dpkg is not a live ancestor")
+    require(proc_executable(pid) == "/usr/bin/dpkg",
+            "authorized process is not dpkg")
+    require(proc_cmdline(pid)
+            == [b"/usr/bin/dpkg", b"-i", record["candidate"].encode()],
+            "authorized dpkg arguments changed")
+
+
+def sha256(path: Path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def candidate_field(path: Path, field: str):
+    result = subprocess.run(
+        ["/usr/bin/dpkg-deb", "-f", str(path), field],
+        env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+        text=True, capture_output=True, check=False, timeout=30)
+    require(result.returncode == 0 and result.stderr == "",
+            f"candidate {field} is unavailable")
+    value = result.stdout.rstrip("\n")
+    require(value and "\n" not in value, f"candidate {field} is invalid")
+    return value
+
+
+def safe_regular(path: Path, mode: int | None = None):
+    info = os.lstat(path)
+    require(stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == 0 and info.st_nlink == 1, f"unsafe file: {path}")
+    if mode is not None:
+        require(stat.S_IMODE(info.st_mode) == mode, f"unsafe mode: {path}")
+    return info
+
+
+def write_create(path: Path, payload: dict):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+                 | os.O_NOFOLLOW, 0o600)
+    try:
+        raw = (json.dumps(payload, sort_keys=True, separators=(",", ":"))
+               + "\n").encode()
+        view = memoryview(raw)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    fsync_dir(path.parent)
+
+
+def read_record(path: Path):
+    safe_regular(path, 0o600)
+    raw = path.read_bytes()
+    require(len(raw) <= 16384 and raw.endswith(b"\n"),
+            "profile replacement record is invalid")
+    try:
+        pairs = json.loads(raw, object_pairs_hook=list)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise Refusal(f"profile replacement record is invalid: {error}") from error
+    require(isinstance(pairs, list), "profile replacement record is invalid")
+    result = {}
+    for key, value in pairs:
+        require(isinstance(key, str) and key not in result,
+                "profile replacement record has invalid or duplicate keys")
+        result[key] = value
+    return result
+
+
+BASE_KEYS = {"schema", "phase", "txid", "created", "host", "boot_id",
+             "source_package", "source_version", "source_flavor",
+             "target_package", "target_version", "target_flavor",
+             "candidate", "candidate_sha256", "dpkg_pid", "dpkg_start"}
+
+
+def validate_shape(record, phase, extras=()):
+    require(set(record) == BASE_KEYS | set(extras),
+            "profile replacement record shape is invalid")
+    require(record["schema"] == SCHEMA and record["phase"] == phase,
+            "profile replacement phase is invalid")
+    require(isinstance(record["txid"], str)
+            and re.fullmatch(r"[0-9a-f]{32}", record["txid"]) is not None,
+            "profile replacement transaction identity is invalid")
+    require(record["host"] == os.uname().nodename,
+            "profile replacement host changed")
+    require(record["source_package"] in PACKAGES
+            and record["target_package"] in PACKAGES
+            and record["source_package"] != record["target_package"],
+            "profile replacement package identity is invalid")
+    require(record["source_flavor"] == PACKAGES[record["source_package"]]
+            and record["target_flavor"] == PACKAGES[record["target_package"]],
+            "profile replacement flavor identity is invalid")
+    require(record["source_version"] == record["target_version"]
+            and SAFE_VERSION.fullmatch(record["target_version"]) is not None,
+            "profile replacement version identity is invalid")
+    require(type(record["created"]) is int and record["created"] >= 0,
+            "profile replacement creation time is invalid")
+    require(type(record["dpkg_pid"]) is int and record["dpkg_pid"] > 1
+            and isinstance(record["dpkg_start"], str),
+            "profile replacement process identity is invalid")
+    require(record["candidate"] == str(ROOT / "candidate.deb")
+            and isinstance(record["candidate_sha256"], str)
+            and SHA256.fullmatch(record["candidate_sha256"]) is not None,
+            "profile replacement candidate identity is invalid")
+
+
+def validate_candidate(record):
+    candidate = Path(record["candidate"])
+    safe_regular(candidate, 0o400)
+    require(sha256(candidate) == record["candidate_sha256"],
+            "profile replacement candidate changed")
+    require(candidate_field(candidate, "Package") == record["target_package"]
+            and candidate_field(candidate, "Version") == record["target_version"],
+            "profile replacement candidate package changed")
+
+
+def prepare(args, dpkg_pid, dpkg_start):
+    candidate = Path(args.candidate)
+    require(candidate.is_absolute(), "candidate path must be absolute")
+    safe_regular(candidate, 0o400)
+    require(SHA256.fullmatch(args.sha256) is not None
+            and sha256(candidate) == args.sha256, "candidate digest changed")
+    require(args.source_package in PACKAGES and args.target_package in PACKAGES
+            and args.source_package != args.target_package,
+            "package profile transition is invalid")
+    require(SAFE_VERSION.fullmatch(args.source_version) is not None
+            and args.source_version == args.target_version,
+            "cross-profile replacement requires one exact version")
+    require(candidate_field(candidate, "Package") == args.target_package
+            and candidate_field(candidate, "Version") == args.target_version
+            and candidate_field(candidate, "Architecture") == "all",
+            "candidate identity changed")
+    pinned = ROOT / "candidate.deb"
+    for evidence in (READY, INTENT, DONE, COMPLETE, pinned):
+        require(not os.path.lexists(evidence),
+                "unfinished profile replacement evidence exists")
+    source_fd = os.open(candidate, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    target_fd = os.open(pinned, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                        | os.O_CLOEXEC | os.O_NOFOLLOW, 0o400)
+    try:
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(target_fd, view):]
+        os.fsync(target_fd)
+    finally:
+        os.close(target_fd)
+        os.close(source_fd)
+    fsync_dir(ROOT)
+    require(sha256(pinned) == args.sha256, "pinned candidate digest changed")
+    record = {
+        "schema": SCHEMA, "phase": "READY", "txid": secrets.token_hex(16),
+        "created": int(time.time()), "host": os.uname().nodename,
+        "boot_id": read_boot_id(), "source_package": args.source_package,
+        "source_version": args.source_version,
+        "source_flavor": PACKAGES[args.source_package],
+        "target_package": args.target_package,
+        "target_version": args.target_version,
+        "target_flavor": PACKAGES[args.target_package],
+        "candidate": str(pinned), "candidate_sha256": args.sha256,
+        "dpkg_pid": dpkg_pid, "dpkg_start": dpkg_start}
+    write_create(READY, record)
+    return record
+
+
+def execute(args):
+    read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
+    child = os.fork()
+    if child == 0:
+        try:
+            os.close(write_fd)
+            signal = os.read(read_fd, 1)
+            os.close(read_fd)
+            if signal != b"1":
+                os._exit(125)
+            pinned = str(ROOT / "candidate.deb")
+            os.execve("/usr/bin/dpkg", ["/usr/bin/dpkg", "-i", pinned],
+                      {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+        except BaseException:
+            os._exit(126)
+    os.close(read_fd)
+    try:
+        start = proc_start(child)
+        with Locked():
+            prepared = prepare(args, child, start)
+        os.write(write_fd, b"1")
+    except BaseException:
+        os.close(write_fd)
+        os.waitpid(child, 0)
+        raise
+    os.close(write_fd)
+    _, status = os.waitpid(child, 0)
+    rc = os.waitstatus_to_exitcode(status)
+    with Locked():
+        active = INTENT if os.path.lexists(INTENT) else READY
+        require(os.path.lexists(active), "dpkg ended without transaction evidence")
+        current = read_record(active)
+        require(current["txid"] == prepared["txid"], "transaction identity changed")
+        done = dict(current)
+        done.update(phase="DPKG_DONE", dpkg_completed=int(time.time()),
+                    dpkg_exit=rc)
+        write_create(DONE, done)
+        if active == READY:
+            READY.unlink()
+            fsync_dir(ROOT)
+    print(f"PROFILE_REPLACEMENT_DPKG_EXIT={rc}")
+    print(f"PROFILE_REPLACEMENT_TXID={prepared['txid']}")
+    require(rc == 0, f"exact dpkg transaction failed with status {rc}")
+
+
+def verify_prerm(args):
+    record = read_record(READY)
+    validate_shape(record, "READY")
+    require(record["boot_id"] == read_boot_id(),
+            "profile replacement boot changed before consumption")
+    require(0 <= int(time.time()) - record["created"] <= MAX_AGE,
+            "profile replacement authorization expired")
+    validate_candidate(record)
+    exact_dpkg_process(record)
+    require(record["source_package"] == args.source_package
+            and record["source_version"] == args.source_version,
+            "installed source profile does not match authorization")
+    require(args.action in {"remove", "deconfigure"},
+            "maintainer-script action is invalid")
+    intent = dict(record)
+    intent.update(phase="PRERM_INTENT", consumed=int(time.time()))
+    write_create(INTENT, intent)
+    READY.unlink()
+    fsync_dir(ROOT)
+    print("PROFILE_REPLACEMENT_VERIFIED=YES")
+
+
+def installed_exact(record):
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+    result = subprocess.run(
+        ["/usr/bin/dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}",
+         record["target_package"]], text=True, capture_output=True, check=False,
+        env=env, timeout=30)
+    require(result.returncode == 0
+            and result.stdout == f"ii  {record['target_version']}",
+            "target package is not exactly installed")
+    other = subprocess.run(
+        ["/usr/bin/dpkg-query", "-W", "-f=${db:Status-Abbrev}",
+         record["source_package"]], text=True, capture_output=True, check=False,
+        env=env, timeout=30)
+    require(other.returncode != 0 or not other.stdout.startswith("ii"),
+            "source package remains installed")
+
+
+def same_transaction(left, right):
+    keys = BASE_KEYS - {"phase"}
+    require(all(left.get(key) == right.get(key) for key in keys),
+            "transaction evidence identity changed")
+
+
+def validate_complete(record):
+    normal = {"consumed", "dpkg_completed", "dpkg_exit", "completed",
+              "settlement"}
+    recovered = {"consumed", "completed", "settlement"}
+    extras = set(record) - BASE_KEYS
+    require(extras in (normal, recovered),
+            "completed transaction record shape is invalid")
+    validate_shape(record, "COMPLETE", extras)
+    if extras == normal:
+        require(record["dpkg_exit"] == 0
+                and record["settlement"] == "DPKG_EXIT_ZERO",
+                "normal completion evidence is invalid")
+    else:
+        require(record["settlement"] == "RECOVERED_EXACT_TARGET",
+                "recovered completion evidence is invalid")
+
+
+def executor_is_alive(record):
+    if record["boot_id"] != read_boot_id():
+        return False
+    try:
+        return proc_start(record["dpkg_pid"]) == record["dpkg_start"]
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ESRCH):
+            return False
+        raise Refusal(f"exact dpkg executor state is unobservable: {error}") from error
+
+
+def finalize(args):
+    require(re.fullmatch(r"[0-9a-f]{32}", args.txid or "") is not None,
+            "settlement transaction identity is invalid")
+    archived = ARCHIVE / f"{args.txid}.json"
+    if os.path.lexists(archived) and not os.path.lexists(COMPLETE):
+        record = read_record(archived)
+        validate_complete(record)
+        require(record["target_package"] == args.target_package
+                and record["target_version"] == args.target_version
+                and record["candidate_sha256"] == args.candidate_sha256,
+                "archived settlement identity does not match")
+        installed_exact(record)
+        print("PROFILE_REPLACEMENT_ALREADY_FINALIZED=YES")
+        print(f"PROFILE_REPLACEMENT_ARCHIVE={archived}")
+        return
+    if os.path.lexists(COMPLETE):
+        record = read_record(COMPLETE)
+        validate_complete(record)
+    else:
+        record = read_record(INTENT)
+        validate_shape(record, "PRERM_INTENT", {"consumed"})
+        require(record["txid"] == args.txid
+                and record["target_package"] == args.target_package
+                and record["target_version"] == args.target_version
+                and record["candidate_sha256"] == args.candidate_sha256,
+                "settlement identity does not match the transaction")
+        require(record["boot_id"] == read_boot_id() or args.recovery,
+                "boot changed; explicit recovery settlement is required")
+        validate_candidate(record)
+        installed_exact(record)
+        if os.path.lexists(DONE):
+            done = read_record(DONE)
+            validate_shape(done, "DPKG_DONE",
+                           {"consumed", "dpkg_completed", "dpkg_exit"})
+            same_transaction(record, done)
+            require(done["dpkg_exit"] == 0,
+                    "dpkg completion is unsuccessful")
+            complete = dict(done)
+            complete.update(phase="COMPLETE", completed=int(time.time()),
+                            settlement="DPKG_EXIT_ZERO")
+        else:
+            require(args.recovery,
+                    "dpkg completion is absent; explicit recovery is required")
+            require(not executor_is_alive(record),
+                    "the exact dpkg executor is still alive")
+            complete = dict(record)
+            complete.update(phase="COMPLETE", completed=int(time.time()),
+                            settlement="RECOVERED_EXACT_TARGET")
+        write_create(COMPLETE, complete)
+        record = complete
+    require(record["txid"] == args.txid
+            and record["target_package"] == args.target_package
+            and record["target_version"] == args.target_version
+            and record["candidate_sha256"] == args.candidate_sha256,
+            "settlement identity does not match the transaction")
+    installed_exact(record)
+    archive = ARCHIVE / f"{record['txid']}.json"
+    if os.path.lexists(Path(record["candidate"])):
+        safe_regular(Path(record["candidate"]), 0o400)
+        Path(record["candidate"]).unlink()
+        fsync_dir(ROOT)
+    for evidence in (INTENT, DONE, READY):
+        if os.path.lexists(evidence):
+            safe_regular(evidence, 0o600)
+            evidence.unlink()
+            fsync_dir(ROOT)
+    require(not os.path.lexists(archive), "transaction archive already exists")
+    os.replace(COMPLETE, archive)
+    fsync_dir(ARCHIVE)
+    fsync_dir(ROOT)
+    print("PROFILE_REPLACEMENT_FINALIZED=YES")
+    print(f"PROFILE_REPLACEMENT_ARCHIVE={archive}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("execute")
+    for name in ("candidate", "sha256", "source-package", "source-version",
+                 "target-package", "target-version"):
+        run.add_argument(f"--{name}", required=True)
+    verify = sub.add_parser("verify-prerm")
+    for name in ("source-package", "source-version", "action"):
+        verify.add_argument(f"--{name}", required=True)
+    done = sub.add_parser("finalize")
+    done.add_argument("--target-package", required=True)
+    done.add_argument("--target-version", required=True)
+    done.add_argument("--candidate-sha256", required=True)
+    done.add_argument("--txid", required=True)
+    done.add_argument("--recovery", action="store_true")
+    args = parser.parse_args()
+    if args.command == "execute":
+        execute(args)
+    else:
+        with Locked():
+            {"verify-prerm": verify_prerm, "finalize": finalize}[args.command](args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Refusal, OSError, subprocess.SubprocessError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(2)

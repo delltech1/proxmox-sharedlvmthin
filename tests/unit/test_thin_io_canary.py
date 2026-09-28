@@ -1,6 +1,8 @@
 import importlib.util
+import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -22,6 +24,10 @@ class ThinIoCanaryTests(unittest.TestCase):
         damaged[100] ^= 1
         self.assertIsNone(canary.decode(bytes(damaged)))
 
+    @unittest.skipUnless(
+        hasattr(os, "pwrite") and hasattr(os, "pread") and hasattr(os, "O_CLOEXEC"),
+        "requires POSIX positional I/O",
+    )
     def test_bounded_write_and_verify(self):
         with tempfile.TemporaryDirectory() as directory:
             target = pathlib.Path(directory) / "device"
@@ -29,7 +35,7 @@ class ThinIoCanaryTests(unittest.TestCase):
             target.write_bytes(b"\0" * 8192)
             subprocess.run(
                 [
-                    "python3", str(SCRIPT), "write", str(target), str(journal),
+                    sys.executable, str(SCRIPT), "write", str(target), str(journal),
                     "--count", "5", "--interval", "0", "--allow-regular-test",
                 ],
                 check=True,
@@ -37,7 +43,7 @@ class ThinIoCanaryTests(unittest.TestCase):
             )
             result = subprocess.run(
                 [
-                    "python3", str(SCRIPT), "verify", str(target), str(journal),
+                    sys.executable, str(SCRIPT), "verify", str(target), str(journal),
                     "--allow-regular-test",
                 ],
                 check=True,
@@ -52,7 +58,7 @@ class ThinIoCanaryTests(unittest.TestCase):
             journal = pathlib.Path(directory) / "journal"
             target.write_bytes(b"\0" * 8192)
             result = subprocess.run(
-                ["python3", str(SCRIPT), "verify", str(target), str(journal)],
+                [sys.executable, str(SCRIPT), "verify", str(target), str(journal)],
                 text=True,
                 stderr=subprocess.PIPE,
             )

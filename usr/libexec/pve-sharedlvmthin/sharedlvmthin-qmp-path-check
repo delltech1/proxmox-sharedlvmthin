@@ -87,17 +87,19 @@ def verify_stable_identity(path, expected):
     return current, None
 
 
-def collect_device_paths(value, result):
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key == "filename":
-                path = canonical(child)
-                if path:
-                    result.add(path)
-            collect_device_paths(child, result)
-    elif isinstance(value, list):
-        for child in value:
-            collect_device_paths(child, result)
+def active_device_path(device):
+    """Return only the active node path, never a backing-file path."""
+    inserted = device.get("inserted")
+    if not isinstance(inserted, dict):
+        return None
+    image = inserted.get("image")
+    image_path = canonical(image.get("filename")) if isinstance(image, dict) else None
+    if "file" in inserted:
+        file_path = canonical(inserted.get("file"))
+        if not file_path or (image_path is not None and image_path != file_path):
+            return None
+        return file_path
+    return image_path
 
 
 def read_expected():
@@ -114,6 +116,27 @@ def read_expected():
     if not expected:
         die("no expected disk paths supplied", 64)
     return expected
+
+
+def match_active_devices(devices, expected):
+    observed = {}
+    for device in devices:
+        slot = device.get("qdev")
+        if slot not in expected:
+            continue
+        if slot in observed:
+            raise ValueError(f"duplicate runtime block records for {slot}")
+        path = active_device_path(device)
+        if path != expected[slot]:
+            raise ValueError(f"runtime/config path divergence for {slot}")
+        observed[slot] = path
+    if set(observed) != set(expected):
+        raise ValueError("runtime block graph is missing a configured disk")
+    return observed
+
+
+def block_jobs_settled(before, after):
+    return isinstance(before, list) and isinstance(after, list) and not before and not after
 
 
 def main(argv):
@@ -143,26 +166,21 @@ def main(argv):
         if "QMP" not in greeting:
             die("invalid QMP greeting")
         qmp_command(stream, "qmp_capabilities")
+        jobs_before = qmp_command(stream, "query-block-jobs")
         devices = qmp_command(stream, "query-block")
+        jobs_after = qmp_command(stream, "query-block-jobs")
     except (OSError, ValueError, socket.timeout):
         die("bounded QMP block query failed")
     finally:
         sock.close()
 
-    observed = {}
-    for device in devices:
-        slot = device.get("qdev")
-        if slot not in expected:
-            continue
-        paths = set()
-        collect_device_paths(device.get("inserted", {}), paths)
-        matches = {path for path in paths if path == expected[slot]}
-        if len(matches) != 1:
-            die(f"runtime/config path divergence for {slot}")
-        observed[slot] = next(iter(matches))
+    if not block_jobs_settled(jobs_before, jobs_after):
+        die("active QEMU block job makes runtime path authority ambiguous")
 
-    if set(observed) != set(expected):
-        die("runtime block graph is missing a configured disk")
+    try:
+        observed = match_active_devices(devices, expected)
+    except ValueError as exc:
+        die(str(exc))
 
     observed_identity = {}
     for slot, path in observed.items():

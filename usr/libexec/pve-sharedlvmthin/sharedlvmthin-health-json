@@ -4,13 +4,18 @@
 
 import json
 import glob
+import hashlib
 import os
 import platform
 import re
 import socket
 import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+sys.dont_write_bytecode = True
+from sharedlvmthin_pve_inventory import collect as collect_pve_inventory
 
 
 def exact_decimal(value):
@@ -60,6 +65,11 @@ def run(cmd):
         return 255, "", str(e)
 
 
+def elapsed_milliseconds(started, now=None):
+    ended = time.monotonic() if now is None else now
+    return max(0, int(round((ended - started) * 1000)))
+
+
 def value(cmd):
     rc, out, _ = run(cmd)
     return out if rc == 0 else None
@@ -67,6 +77,29 @@ def value(cmd):
 
 def package_version(name):
     return value(["dpkg-query", "-W", "-f=${Version}", name])
+
+
+def installed_plugin_package():
+    flavor = read_file("/usr/share/pve-sharedlvmthin/package-flavor")
+    if flavor == "thick-only":
+        return "pve-sharedlvmthin-thick", flavor
+    if flavor == "dual":
+        return "pve-sharedlvmthin", flavor
+    return None, flavor
+
+
+def evaluate_package_identity(package, flavor, version):
+    expected = {
+        "dual": "pve-sharedlvmthin",
+        "thick-only": "pve-sharedlvmthin-thick",
+    }
+    if flavor not in expected:
+        return "FAIL", "package flavor marker is missing or invalid"
+    if package != expected[flavor]:
+        return "FAIL", "package identity contradicts the installed flavor marker"
+    if not version:
+        return "FAIL", f"installed package version is unavailable for {package}"
+    return "PASS", f"installed package identity is {package} {version} ({flavor})"
 
 
 def read_file(path):
@@ -107,6 +140,7 @@ def parse_storage_cfg():
                 "expected_min_paths": None,
                 "expected_pv_uuid": None,
                 "expected_wwid": None,
+                "tg_max_active_materializations": 4,
             }
             continue
 
@@ -137,6 +171,12 @@ def parse_storage_cfg():
 
             elif s.startswith("slt-allocation-mode "):
                 current["allocation_mode"] = s.split(None, 1)[1]
+
+            elif s.startswith("slt-tg-max-active-materializations "):
+                value = s.split(None, 1)[1]
+                current["tg_max_active_materializations"] = (
+                    int(value) if value.isdigit() else value
+                )
 
             elif s.startswith("slt-initial-pool-size "):
                 try:
@@ -417,6 +457,25 @@ def lvm_info():
     }
 
 
+def dm_clone_info():
+    path = "/sys/module/dm_clone/parameters/clone_hydration_throttle"
+    try:
+        with open(path, encoding="ascii") as handle:
+            raw = handle.read().strip()
+        value = int(raw, 10)
+        if value < 0 or value > 100:
+            raise ValueError("percentage outside 0..100")
+        return {
+            "available": True,
+            "hydration_throttle_percent": value,
+        }
+    except (OSError, UnicodeError, ValueError):
+        return {
+            "available": False,
+            "hydration_throttle_percent": None,
+        }
+
+
 def pvesm_states():
     rc, out, _ = run(["pvesm", "status"])
     states = {}
@@ -469,7 +528,59 @@ def vg_info(vg):
         }
 
 
-def pools(vg, sid):
+def evaluate_vg_mutation_intent(vg, output):
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return "FAIL", "VG mutation-intent inventory is ambiguous", None
+    fields = [field.strip() for field in lines[0].split("|", 1)]
+    if len(fields) != 2 or fields[0] != vg:
+        return "FAIL", "VG mutation-intent inventory is malformed or belongs to another VG", None
+    managed = [tag.strip() for tag in fields[1].split(",")
+               if tag.strip().startswith("slt_tg_vgi_")]
+    if not managed:
+        return "PASS", "no persistent VG mutation intent", None
+    allowed = {"v", "tx", "state", "op", "object", "before", "sha256"}
+    values = {}
+    for tag in managed:
+        match = re.fullmatch(r"slt_tg_vgi_([A-Za-z0-9_]+)=([A-Za-z0-9_.:+-]+)", tag)
+        if not match or match.group(1) not in allowed or match.group(1) in values:
+            return "FAIL", "VG mutation-intent tags are malformed or duplicated", None
+        values[match.group(1)] = match.group(2)
+    if set(values) != allowed:
+        return "FAIL", "VG mutation intent is incomplete or contains unknown fields", None
+    order = ("v", "tx", "state", "op", "object", "before")
+    canonical = "|".join(f"{key}={values[key]}" for key in order)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    operations = {"ALLOC", "EXTEND", "REMOVE", "REMOVE_SNAPSHOT", "DM_CUTOVER", "DM_PIVOT"}
+    if (values["v"] != "1" or values["state"] != "OPEN"
+            or values["op"] not in operations
+            or not re.fullmatch(r"[0-9a-f]{32}", values["tx"])
+            or not re.fullmatch(r"[0-9a-f]{16,64}", values["before"])
+            or values["sha256"] != digest):
+        return "FAIL", "VG mutation-intent identity or digest is invalid", None
+    reason = f"OPEN {values['op']} mutation intent blocks all new mutations"
+    if values["op"] == "EXTEND":
+        reason += "; use the explicit thick-recover-resize workflow when its runtime proof is available"
+    elif values["op"] == "REMOVE":
+        reason += "; use the explicit reference-gated thick-recover-volume-delete workflow"
+    elif values["op"] in {"DM_CUTOVER", "DM_PIVOT"}:
+        reason += ("; use thick-recover-prepare only for a still-MATERIALIZED anchor "
+                   "whose transition was never published, otherwise use thick-resume")
+    return "FAIL", reason, values["op"]
+
+
+def vg_mutation_intent(vg, expected_wwid=None):
+    command = ["vgs", "--readonly"]
+    if expected_wwid:
+        command.extend(["--devices", f"/dev/mapper/{expected_wwid}"])
+    command.extend(["--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg])
+    rc, out, err = run(command)
+    if rc != 0:
+        return "FAIL", err or out or "VG mutation-intent inventory is unavailable", None
+    return evaluate_vg_mutation_intent(vg, out)
+
+
+def lvm_volume_inventory(vg):
     rc, out, err = run([
         "lvs",
         "--noheadings",
@@ -483,8 +594,24 @@ def pools(vg, sid):
         vg,
     ])
 
+    return {
+        "rc": rc,
+        "output": out,
+        "error": err,
+    }
+
+
+def pools(vg, sid, inventory=None):
+    if inventory is None:
+        inventory = lvm_volume_inventory(vg)
+
+    rc = inventory.get("rc")
+    out = inventory.get("output") or ""
+    err = inventory.get("error") or ""
+
     result = []
     thick_anchors = []
+    lv_sizes = {}
 
     if rc != 0:
         return None, err or out or f"lvs exited with status {rc}", None
@@ -498,6 +625,10 @@ def pools(vg, sid):
             continue
 
         name = fields[0]
+        try:
+            lv_sizes[name] = exact_byte_count(fields[1])
+        except (TypeError, ValueError):
+            lv_sizes[name] = None
 
         tags = [x for x in fields[3].split(",") if x]
         tag_values = {}
@@ -570,6 +701,8 @@ def pools(vg, sid):
             "when_full": fields[13] or None,
         })
 
+    for anchor in thick_anchors:
+        anchor["head_size_bytes"] = lv_sizes.get(anchor.get("head"))
     return result, None, thick_anchors
 
 
@@ -596,61 +729,191 @@ def pve_volume_reference_files(volid):
     return matches
 
 
-def thick_worker_state(transaction, sid=None, volume=None):
+def pve_volume_reference_index(include_current_sizes=False):
+    """Read every cluster config once and index exact PVE volume references."""
+    references, current_sizes, read_errors = collect_pve_inventory(
+        read_text=read_file,
+        globber=glob.glob,
+    )
+    return (references, current_sizes, read_errors) \
+        if include_current_sizes else references
+
+
+def thick_worker_process_inventory():
+    """Capture worker argv and the process tree once for one collector run."""
+    workers = []
+    for path in glob.glob("/proc/[0-9]*/cmdline"):
+        try:
+            pid = int(path.split("/")[2])
+            with open(path, "rb") as process_cmdline:
+                command = process_cmdline.read()
+            argv = [
+                item.decode("utf-8", "strict")
+                for item in command.split(b"\0") if item
+            ]
+        except (IndexError, OSError, UnicodeError, ValueError):
+            continue
+        worker_args = None
+        if argv and os.path.basename(argv[0]) == "sharedlvmthin-thick-materialize":
+            worker_args = argv[1:]
+        elif (
+            len(argv) >= 2
+            and os.path.basename(argv[0]) == "perl"
+            and os.path.basename(argv[1]) == "sharedlvmthin-thick-materialize"
+        ):
+            worker_args = argv[2:]
+        if worker_args is not None:
+            workers.append((pid, worker_args))
+
+    processes = {}
+    for stat_path in glob.glob("/proc/[0-9]*/stat"):
+        try:
+            pid = int(stat_path.split("/")[2])
+            with open(stat_path, "rb") as process_stat:
+                stat = process_stat.read()
+            tail = stat[stat.rfind(b")") + 2:].split()
+            if len(tail) >= 2:
+                processes[pid] = (tail[0], int(tail[1]))
+        except (IndexError, OSError, ValueError):
+            continue
+    return {"workers": workers, "processes": processes}
+
+
+def thick_worker_unit_states(transactions, batch_size=256):
+    """Read exact transaction service/timer states in bounded systemd batches."""
+    valid = sorted(set(
+        transaction for transaction in transactions or []
+        if isinstance(transaction, str)
+        and re.fullmatch(r"[0-9a-f]{32}", transaction)
+    ))
+    if (
+        not isinstance(batch_size, int) or isinstance(batch_size, bool)
+        or not 1 <= batch_size <= 256
+    ):
+        raise ValueError("invalid Thick worker unit-state batch size")
+    result = {}
+    for offset in range(0, len(valid), batch_size):
+        chunk = valid[offset:offset + batch_size]
+        units = [
+            f"pve-sharedlvmthin-tg-{transaction}.{suffix}"
+            for transaction in chunk for suffix in ("service", "timer")
+        ]
+        rc, out, _ = run([
+            "systemctl", "show", *units,
+            "--property=Id", "--property=ActiveState", "--no-pager",
+        ])
+        if rc != 0:
+            continue
+        for block in re.split(r"\n\s*\n", out.strip()):
+            fields = {}
+            for line in block.splitlines():
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    fields[key] = value
+            match = re.fullmatch(
+                r"pve-sharedlvmthin-tg-([0-9a-f]{32})\.(service|timer)",
+                fields.get("Id", ""),
+            )
+            state = fields.get("ActiveState", "").strip().lower()
+            if match and state:
+                result.setdefault(match.group(1), {})[match.group(2)] = state
+    return result
+
+
+def thick_worker_state(
+    transaction, sid=None, volume=None, process_inventory=None, unit_states=None
+):
     """Return the observed state of one transaction-scoped worker."""
     if not transaction or not re.fullmatch(r"[0-9a-f]{32}", transaction):
         return "UNKNOWN"
-    unit = f"pve-sharedlvmthin-tg-{transaction}"
-    observed = []
-    for suffix in ("service", "timer"):
-        rc, out, _ = run([
-            "systemctl", "show", f"{unit}.{suffix}",
-            "--property=ActiveState", "--value",
-        ])
-        if rc == 0 and out:
-            observed.append(out.strip().lower())
-    if any(state in {"active", "activating", "reloading"} for state in observed):
-        return "RUNNING"
+    if unit_states is not None:
+        observed = dict(unit_states.get(transaction, {}))
+    else:
+        unit = f"pve-sharedlvmthin-tg-{transaction}"
+        observed = {}
+        for suffix in ("service", "timer"):
+            rc, out, _ = run([
+                "systemctl", "show", f"{unit}.{suffix}",
+                "--property=ActiveState", "--value",
+            ])
+            if rc == 0 and out:
+                observed[suffix] = out.strip().lower()
+    exact_process = None
+    exact_pids = set()
     if (
         sid and volume
         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sid)
         and re.fullmatch(r"(?:vm|base)-[0-9]+-disk-[0-9]+", volume)
     ):
-        for path in glob.glob("/proc/[0-9]*/cmdline"):
-            try:
-                with open(path, "rb") as process_cmdline:
-                    command = process_cmdline.read()
-                argv = [
-                    item.decode("utf-8", "strict")
-                    for item in command.split(b"\0") if item
-                ]
-            except (OSError, UnicodeError):
+        inventory = (
+            process_inventory
+            if process_inventory is not None
+            else thick_worker_process_inventory()
+        )
+        processes = inventory.get("processes", {})
+        for pid, worker_args in inventory.get("workers", []):
+            exact_resume = worker_args == ["--resume", sid, volume]
+            exact_scheduled = (
+                len(worker_args or []) == 5
+                and worker_args[0] == sid
+                and worker_args[1] == volume
+                and re.fullmatch(r"[A-Za-z0-9_.+-]+", worker_args[2])
+                and worker_args[3] == "SNAPSHOT"
+                and worker_args[4] == transaction
+            )
+            if exact_resume or exact_scheduled:
+                exact_process = "RUNNING"
+                exact_pids.add(pid)
+
+        # A worker normally sleeps while its timeout/dmsetup child executes.
+        # Attribute D-state only through an exact live parent chain rooted at
+        # the transaction worker; unrelated host D-state must not be blamed on
+        # this anchor.
+        live_exact_pids = exact_pids.intersection(processes)
+        for pid, (state, parent) in processes.items():
+            if state != b"D":
                 continue
-            worker_args = None
-            if argv and os.path.basename(argv[0]) == "sharedlvmthin-thick-materialize":
-                worker_args = argv[1:]
-            elif (
-                len(argv) >= 2
-                and os.path.basename(argv[0]) == "perl"
-                and os.path.basename(argv[1]) == "sharedlvmthin-thick-materialize"
-            ):
-                worker_args = argv[2:]
-            if worker_args == ["--resume", sid, volume]:
-                return "RUNNING"
-    if "failed" in observed:
+            current = pid
+            seen = set()
+            while current in processes and current not in seen:
+                if current in live_exact_pids:
+                    return "BLOCKED_DSTATE"
+                seen.add(current)
+                current = processes[current][1]
+    running_states = {"active", "activating", "reloading"}
+    if observed.get("service") in running_states:
+        return "RUNNING"
+    # A timer proves queued work only while the matching service has not
+    # already failed. Preserve the failed service as the stronger observation
+    # instead of letting a lingering timer mask recovery-required state.
+    if (
+        observed.get("timer") in running_states
+        and observed.get("service") != "failed"
+    ):
+        return "RUNNING"
+    if exact_process == "RUNNING":
+        return "RUNNING"
+    if "failed" in observed.values():
         return "FAILED"
     if observed:
         return "ABSENT"
     return "UNKNOWN"
 
 
-def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
+def evaluate_thick_anchor_references(
+    sid, anchors, worker_state=None, reference_index=None,
+    current_size_index=None, reference_evidence_errors=None,
+):
     """Classify anchors without mutating or guessing cleanup eligibility."""
     results = []
     for anchor in anchors or []:
         volume = anchor.get("volume")
         volid = f"{sid}:{volume}" if volume else None
-        references = pve_volume_reference_files(volid) if volid else []
+        references = (
+            list(reference_index.get(volid, []))
+            if volid and reference_index is not None
+            else pve_volume_reference_files(volid) if volid else []
+        )
         item = {
             **anchor,
             "volid": volid,
@@ -665,7 +928,10 @@ def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
             )
             item["worker_state"] = observed_worker
             if (
-                phase not in {"PREPARED", "HYDRATING", "HYDRATION_COMPLETE", "LINEAR_PIVOTED"}
+                phase not in {
+                    "PREPARED", "SOURCE_READY", "COMMITTED", "HYDRATING",
+                    "HYDRATION_COMPLETE", "LINEAR_PIVOTED",
+                }
                 or not transaction
                 or not re.fullmatch(r"[0-9a-f]{32}", transaction)
             ):
@@ -682,14 +948,45 @@ def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
                     f"materialization phase {phase} has its exact transaction worker; "
                     "dependency-changing mutations remain blocked until completion"
                 )
+            elif observed_worker == "FAILED":
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    f"materialization phase {phase} has a failed exact transaction "
+                    "worker; preserve its journal and signed storage evidence, then "
+                    "use the explicit thick-resume workflow; no automatic repair "
+                    "attempted"
+                )
+            elif observed_worker == "BLOCKED_DSTATE":
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    f"materialization phase {phase} has its exact worker blocked "
+                    "in uninterruptible kernel sleep; a userspace timeout cannot "
+                    "fence or cancel that I/O. Preserve the journal and signed "
+                    "storage evidence, restore authoritative path health, and do "
+                    "not start another worker"
+                )
             else:
                 item["status"] = "FAIL"
                 item["materialization_state"] = "RECOVERY_REQUIRED"
                 item["reason"] = (
                     f"materialization phase {phase} has no active exact transaction "
-                    "worker; preserve evidence and run the explicit thick-resume "
-                    "workflow; no automatic repair attempted"
+                    "worker. Worker absence does not prove that a synchronous PVE "
+                    "foreground caller or one of its descendants has exited. Preserve "
+                    "the process tree and signed storage evidence; do not start a "
+                    "second worker until caller/descendant absence and lack of kernel "
+                    "hydration progress are both positively established. Only then use "
+                    "the explicit thick-resume workflow; no automatic repair attempted"
                 )
+        elif reference_evidence_errors:
+            item["status"] = "FAIL"
+            item["materialization_state"] = "RECOVERY_REQUIRED"
+            item["reason"] = (
+                "PVE configuration reference evidence is incomplete; unreadable "
+                "configuration files prevent proof of unique ownership"
+            )
+            item["reference_evidence_errors"] = list(reference_evidence_errors)
         elif not volume:
             item["status"] = "WARN"
             item["materialization_state"] = "MATERIALIZED"
@@ -703,17 +1000,89 @@ def evaluate_thick_anchor_references(sid, anchors, worker_state=None):
                 "purpose and identity before any explicit cleanup"
             )
         elif len(references) > 1:
-            item["status"] = "WARN"
-            item["materialization_state"] = "MATERIALIZED"
+            item["status"] = "FAIL"
+            item["materialization_state"] = "RECOVERY_REQUIRED"
             item["reason"] = (
                 "volume is referenced by multiple PVE configs; ownership is ambiguous"
             )
+        elif current_size_index is not None:
+            current = list(current_size_index.get(volid, []))
+            declared = current[0][1] if len(current) == 1 else None
+            role = current[0][2] if len(current) == 1 else None
+            authoritative = anchor.get("head_size_bytes")
+            if len(current) != 1:
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    f"volume has {len(current)} current PVE references; exactly one "
+                    "is required before further mutation"
+                )
+            elif role == "detached":
+                item["status"] = "PASS"
+                item["materialization_state"] = "MATERIALIZED"
+                item["reason"] = (
+                    "volume has one detached PVE unused reference; attached-size "
+                    "reconciliation is not applicable"
+                )
+            elif role != "attached" \
+                    or not isinstance(authoritative, int) or authoritative < 1 \
+                    or not isinstance(declared, int) or declared < 1:
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    "current PVE or authoritative HEAD size is unavailable; "
+                    "further mutation is blocked"
+                )
+            elif declared != authoritative:
+                item["status"] = "FAIL"
+                item["materialization_state"] = "RECOVERY_REQUIRED"
+                item["reason"] = (
+                    f"current PVE size {declared} differs from authoritative HEAD "
+                    f"size {authoritative}; reconcile the stopped VM/CT "
+                    "configuration before further mutation"
+                )
+            else:
+                item["status"] = "PASS"
+                item["materialization_state"] = "MATERIALIZED"
+                item["reason"] = (
+                    "volume has one current PVE reference with exact HEAD size"
+                )
         else:
             item["status"] = "PASS"
             item["materialization_state"] = "MATERIALIZED"
             item["reason"] = "volume has exactly one PVE configuration reference"
         results.append(item)
     return results
+
+
+def evaluate_thick_materialization_admission(anchors, limit):
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 64:
+        return "FAIL", {
+            "active": None,
+            "limit": limit,
+            "available": False,
+            "available_slots": None,
+            "state": "UNKNOWN",
+            "reason": "Thick materialization concurrency limit is invalid",
+        }
+    active = sum(
+        1 for anchor in anchors or []
+        if anchor.get("phase") != "MATERIALIZED"
+    )
+    available = active < limit
+    available_slots = max(0, limit - active)
+    return "PASS", {
+        "active": active,
+        "limit": limit,
+        "available": available,
+        "available_slots": available_slots,
+        "state": "AVAILABLE" if available else "SATURATED",
+        "reason": (
+            f"{active}/{limit} Thick materialization slots active; "
+            + ("new PREPARE may be admitted" if available
+               else "new PREPARE is intentionally blocked at the configured ceiling")
+        ),
+    }
 
 
 def evaluate_pool_flags(attr, health_status, check_needed=None):
@@ -986,7 +1355,7 @@ def evaluate_expected_paths(transport, expected_min_paths):
 
 def evaluate_allocation_policy(storage):
     allocation_mode = storage.get("allocation_mode") or "thin"
-    if allocation_mode == "thick-generations":
+    if allocation_mode in ("thick-generations", "thick-generations-lazy"):
         return "PASS", (
             "Thick Generations mode allocates independent thick LVs; thin-pool "
             "headroom and autogrow policy do not apply"
@@ -1121,9 +1490,129 @@ def iscsi_sessions():
     return sessions
 
 
-def build_transport(vg):
+def parse_iscsi_node_records(output):
+    records = []
+    current = {}
+    wanted = {
+        "node.name": "target",
+        "node.startup": "startup",
+        "node.conn[0].address": "portal",
+        "node.conn[0].port": "port",
+        "iface.iscsi_ifacename": "iface",
+    }
+
+    for raw in output.splitlines():
+        if "=" not in raw:
+            continue
+        key, raw_value = (part.strip() for part in raw.split("=", 1))
+        field = wanted.get(key)
+        if field is None:
+            continue
+        if key == "node.name" and current:
+            records.append(current)
+            current = {}
+        value = raw_value
+        if field == "port":
+            try:
+                value = int(raw_value)
+            except ValueError:
+                value = None
+        current[field] = value
+
+    if current:
+        records.append(current)
+    return records
+
+
+def iscsi_node_records():
+    rc, out, error = run(["iscsiadm", "-m", "node", "-o", "show"])
+    if rc != 0:
+        return [], error or f"iscsiadm node inventory failed with status {rc}"
+    return parse_iscsi_node_records(out), None
+
+
+def iscsi_path_identity(device):
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", str(device or "")):
+        return None, "unsafe or missing block-device name"
+    device_path = os.path.realpath(f"/sys/class/block/{device}/device")
+    match = re.search(r"/session([0-9]+)(?:/|$)", device_path)
+    if match is None:
+        return None, "block path is not bound to an observable iSCSI session"
+    session_number = match.group(1)
+    session_root = f"/sys/class/iscsi_session/session{session_number}"
+    target = read_file(f"{session_root}/targetname")
+    iface = read_file(f"{session_root}/ifacename")
+    connections = sorted(glob.glob(
+        f"/sys/class/iscsi_connection/connection{session_number}:*"
+    ))
+    if not target or not iface or len(connections) != 1:
+        return None, "iSCSI session identity is missing or ambiguous"
+    portal = read_file(f"{connections[0]}/persistent_address")
+    raw_port = read_file(f"{connections[0]}/persistent_port")
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        port = None
+    if not portal or port is None:
+        return None, "iSCSI connection portal identity is missing or malformed"
+    return {
+        "session": int(session_number),
+        "target": target,
+        "portal": portal,
+        "port": port,
+        "iface": iface,
+    }, None
+
+
+def evaluate_iscsi_boot_persistence(transport, node_records, service_state):
+    if transport.get("type") != "iscsi":
+        return None
+    if service_state != "enabled":
+        return "FAIL", (
+            "open-iscsi.service is not enabled for automatic boot login "
+            f"(observed {service_state or 'unknown'})"
+        )
+    paths = transport.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return "FAIL", "managed iSCSI transport has no enumerable paths"
+    failures = []
+    proven = []
+    for path in paths:
+        device = str(path.get("device") or "<unknown>")
+        identity = path.get("iscsi_identity")
+        if not isinstance(identity, dict):
+            failures.append(f"{device}: exact session identity unavailable")
+            continue
+        matches = [
+            record for record in node_records
+            if record.get("target") == identity.get("target")
+            and record.get("portal") == identity.get("portal")
+            and record.get("port") == identity.get("port")
+            and record.get("iface") == identity.get("iface")
+        ]
+        if len(matches) != 1:
+            failures.append(
+                f"{device}: expected one exact persistent node record, found {len(matches)}"
+            )
+            continue
+        if matches[0].get("startup") != "automatic":
+            failures.append(
+                f"{device}: persistent node startup is "
+                f"{matches[0].get('startup') or 'unknown'}, not automatic"
+            )
+            continue
+        proven.append(device)
+    if failures:
+        return "FAIL", "; ".join(failures)
+    return "PASS", (
+        f"{len(proven)} managed iSCSI path(s) have exact automatic persistent records"
+    )
+
+
+def build_transport(vg, inventory=None):
+    all_pvs = inventory["pvs"] if inventory is not None else pvs_json()
     pvs = [
-        x for x in pvs_json()
+        x for x in all_pvs
         if x.get("vg_name") == vg
     ]
 
@@ -1167,9 +1656,13 @@ def build_transport(vg):
         result["state"] = "SINGLE_PATH_OR_UNKNOWN"
         return result
 
+    multipath_maps = (
+        inventory["multipath_maps"]
+        if inventory is not None else multipath_json()
+    )
     maps = {
         str(x.get("uuid", "")).lower(): x
-        for x in multipath_json()
+        for x in multipath_maps
     }
 
     mp = maps.get(wwid)
@@ -1184,7 +1677,10 @@ def build_transport(vg):
     result["dm_device"] = mp.get("sysfs")
     result["path_faults"] = mp.get("path_faults", 0)
 
-    block = block_transport_map()
+    block = (
+        inventory["block"]
+        if inventory is not None else block_transport_map()
+    )
     paths = flatten_multipath_paths(mp)
 
     transports = set()
@@ -1216,6 +1712,12 @@ def build_transport(vg):
             "lun": path.get("lun_hex"),
         }
 
+        if transport == "iscsi":
+            identity, identity_error = iscsi_path_identity(dev)
+            item["iscsi_identity"] = identity
+            if identity_error is not None:
+                item["iscsi_identity_error"] = identity_error
+
         result["paths"].append(item)
 
     result["paths_total"] = len(result["paths"])
@@ -1235,8 +1737,53 @@ def build_transport(vg):
     # established target sessions.
     #
     if result["type"] == "iscsi":
-        sessions = iscsi_sessions()
+        if inventory is not None:
+            if "iscsi_sessions" not in inventory:
+                inventory["iscsi_sessions"] = iscsi_sessions()
+            sessions = inventory["iscsi_sessions"]
+        else:
+            sessions = iscsi_sessions()
         result["sessions"] = sessions
+        if inventory is not None:
+            if "iscsi_node_records" not in inventory:
+                records, records_error = iscsi_node_records()
+                inventory["iscsi_node_records"] = records
+                inventory["iscsi_node_records_error"] = records_error
+            records = inventory["iscsi_node_records"]
+            records_error = inventory.get("iscsi_node_records_error")
+            if "open_iscsi_enabled" not in inventory:
+                rc, enabled, error = run([
+                    "systemctl", "is-enabled", "open-iscsi.service"
+                ])
+                inventory["open_iscsi_enabled"] = enabled if rc == 0 else (
+                    enabled or error or "unknown"
+                )
+            service_state = inventory["open_iscsi_enabled"]
+        else:
+            records, records_error = iscsi_node_records()
+            rc, enabled, error = run([
+                "systemctl", "is-enabled", "open-iscsi.service"
+            ])
+            service_state = enabled if rc == 0 else (enabled or error or "unknown")
+        result["boot_persistence"] = {
+            "node_records_error": records_error,
+            "open_iscsi_service": service_state,
+        }
+        if records_error is None:
+            status_reason = evaluate_iscsi_boot_persistence(
+                result, records, service_state
+            )
+            if status_reason is not None:
+                status, reason = status_reason
+                result["boot_persistence"].update({
+                    "status": status,
+                    "reason": reason,
+                })
+        else:
+            result["boot_persistence"].update({
+                "status": "FAIL",
+                "reason": "persistent iSCSI node inventory unavailable: " + records_error,
+            })
 
     if result["paths_total"] == 0:
         result["state"] = "CRITICAL"
@@ -1250,14 +1797,18 @@ def build_transport(vg):
     return result
 
 
+collection_started = time.monotonic()
 api, apiage = pve_api()
 papi = plugin_api()
 states = pvesm_states()
+plugin_package, package_flavor = installed_plugin_package()
+plugin_version = package_version(plugin_package) if plugin_package else None
 
 doc = {
     "schema": 1,
     "timestamp": datetime.now(timezone.utc).astimezone().isoformat(),
     "result": "PASS",
+    "collection_duration_ms": None,
     "host": host_info(),
     "cluster": cluster_info(),
     "platform": {
@@ -1266,10 +1817,13 @@ doc = {
         "storage_api": api,
         "storage_api_age": apiage,
         "plugin_api": papi,
-        "plugin_version": package_version("pve-sharedlvmthin"),
+        "plugin_package": plugin_package,
+        "package_flavor": package_flavor,
+        "plugin_version": plugin_version,
         "storage_package": package_version("libpve-storage-perl"),
     },
     "lvm": lvm_info(),
+    "dm_clone": dm_clone_info(),
     "storages": [],
     "checks": [],
     "thin_pool_runtime": {
@@ -1290,6 +1844,12 @@ def check(name, status, message):
         doc["result"] = "WARN"
 
 
+package_status, package_message = evaluate_package_identity(
+    plugin_package, package_flavor, plugin_version
+)
+check("plugin_package_identity", package_status, package_message)
+
+
 api_status, api_message = evaluate_api_compatibility(api, apiage, papi)
 check("storage_api", api_status, api_message)
 
@@ -1298,6 +1858,15 @@ cluster_status, cluster_message = cluster_check_status(doc["cluster"])
 check("cluster_quorum", cluster_status, cluster_message)
 
 
+pve_reference_index = None
+pve_current_size_index = None
+pve_reference_evidence_errors = None
+thick_process_inventory = None
+transport_inventory = None
+vg_info_cache = {}
+vg_intent_cache = {}
+lvm_volume_inventory_cache = {}
+metadata_spares_cache = {}
 for storage in parse_storage_cfg():
     sid = storage["id"]
     vg = storage["vg"]
@@ -1306,8 +1875,10 @@ for storage in parse_storage_cfg():
         **storage,
         "pve": states.get(sid, {}),
         "vg_info": None,
+        "vg_mutation_intent": None,
         "pools": [],
         "thick_anchors": [],
+        "thick_materialization_admission": None,
         "pool_inventory_error": None,
         "metadata_spares": [],
         "transport": None,
@@ -1341,10 +1912,31 @@ for storage in parse_storage_cfg():
     )
 
     if vg:
-        item["vg_info"] = vg_info(vg)
+        if vg not in vg_info_cache:
+            vg_info_cache[vg] = vg_info(vg)
+        item["vg_info"] = vg_info_cache[vg]
 
         if item["vg_info"].get("visible"):
-            pool_inventory, pool_error, thick_anchors = pools(vg, sid)
+            intent_key = (vg, storage.get("expected_wwid"))
+            if intent_key not in vg_intent_cache:
+                vg_intent_cache[intent_key] = vg_mutation_intent(
+                    vg, storage.get("expected_wwid"),
+                )
+            intent_status, intent_reason, intent_op = vg_intent_cache[intent_key]
+            item["vg_mutation_intent"] = {
+                "status": intent_status,
+                "operation": intent_op,
+                "reason": intent_reason,
+            }
+            check(
+                f"vg_mutation_intent:{sid}", intent_status,
+                f"{sid}: {intent_reason}",
+            )
+            if vg not in lvm_volume_inventory_cache:
+                lvm_volume_inventory_cache[vg] = lvm_volume_inventory(vg)
+            pool_inventory, pool_error, thick_anchors = pools(
+                vg, sid, lvm_volume_inventory_cache[vg]
+            )
             item["pool_inventory_error"] = pool_error
             if pool_error is not None:
                 check(
@@ -1354,9 +1946,44 @@ for storage in parse_storage_cfg():
                 )
             else:
                 item["pools"] = pool_inventory
+                if thick_anchors and pve_reference_index is None:
+                    (pve_reference_index, pve_current_size_index,
+                     pve_reference_evidence_errors) = (
+                        pve_volume_reference_index(include_current_sizes=True)
+                    )
+                worker_state = thick_worker_state
+                if any(
+                    anchor.get("phase") != "MATERIALIZED"
+                    for anchor in thick_anchors
+                ):
+                    if thick_process_inventory is None:
+                        thick_process_inventory = thick_worker_process_inventory()
+                    transactions = [
+                        anchor.get("transaction") for anchor in thick_anchors
+                        if anchor.get("phase") != "MATERIALIZED"
+                    ]
+                    worker_units = thick_worker_unit_states(transactions)
+                    worker_state = lambda transaction, worker_sid, volume, inventory=thick_process_inventory, units=worker_units: thick_worker_state(
+                        transaction, worker_sid, volume, inventory, units
+                    )
                 item["thick_anchors"] = evaluate_thick_anchor_references(
-                    sid, thick_anchors, thick_worker_state
+                    sid, thick_anchors, worker_state, pve_reference_index,
+                    pve_current_size_index, pve_reference_evidence_errors,
                 )
+                materialization_limit = storage.get(
+                    "tg_max_active_materializations", 4
+                )
+                admission_status, admission = evaluate_thick_materialization_admission(
+                    item["thick_anchors"], materialization_limit
+                )
+                item["thick_materialization_admission"] = admission
+                if storage.get("allocation_mode") in (
+                    "thick-generations", "thick-generations-lazy"
+                ):
+                    check(
+                        f"thick_materialization_admission:{sid}", admission_status,
+                        f"{sid}: {admission['reason']}",
+                    )
                 for anchor in item["thick_anchors"]:
                     if anchor.get("status") in {"WARN", "FAIL"}:
                         check(
@@ -1365,8 +1992,16 @@ for storage in parse_storage_cfg():
                             f"{sid}: {anchor.get('volid') or anchor.get('name')}: "
                             f"{anchor.get('reason')}; no cleanup attempted",
                         )
-            item["metadata_spares"] = metadata_spares(vg)
-            item["transport"] = build_transport(vg)
+            if vg not in metadata_spares_cache:
+                metadata_spares_cache[vg] = metadata_spares(vg)
+            item["metadata_spares"] = metadata_spares_cache[vg]
+            if transport_inventory is None:
+                transport_inventory = {
+                    "pvs": pvs_json(),
+                    "multipath_maps": multipath_json(),
+                    "block": block_transport_map(),
+                }
+            item["transport"] = build_transport(vg, transport_inventory)
 
             for pool in item["pools"]:
                 pool_status, pool_reason = evaluate_pool_flags(
@@ -1447,7 +2082,10 @@ for storage in parse_storage_cfg():
 
             t = item["transport"]
 
-            vg_pvs = [pv for pv in pvs_json() if pv.get("vg_name") == vg]
+            vg_pvs = [
+                pv for pv in transport_inventory["pvs"]
+                if pv.get("vg_name") == vg
+            ]
             binding_status, binding_reason = evaluate_pv_binding(
                 vg_pvs,
                 storage.get("expected_pv_uuid"),
@@ -1507,6 +2145,14 @@ for storage in parse_storage_cfg():
                     f"{sid}: no healthy storage paths",
                 )
 
+            if t.get("type") == "iscsi":
+                persistence = t.get("boot_persistence") or {}
+                check(
+                    f"iscsi_boot_persistence:{sid}",
+                    persistence.get("status", "FAIL"),
+                    f"{sid}: {persistence.get('reason') or 'boot persistence is unproven'}",
+                )
+
             check(
                 f"storage:{sid}",
                 "PASS",
@@ -1541,4 +2187,5 @@ dmeventd_status, dmeventd_message = evaluate_dmeventd(
 check("dmeventd", dmeventd_status, dmeventd_message)
 
 
+doc["collection_duration_ms"] = elapsed_milliseconds(collection_started)
 print(json.dumps(doc, indent=2, sort_keys=False))

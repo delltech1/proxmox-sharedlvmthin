@@ -1,0 +1,332 @@
+#!/usr/bin/python3
+"""Statically inspect authenticated candidate Debian packages without extraction."""
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tarfile
+
+SCHEMA = 1
+CATALOGUE = "pve-upstream-candidates-v1"
+ALLOWED_PREFIXES = (
+    "./usr/share/perl5/PVE/",
+    "./usr/share/pve-manager/",
+    "./usr/share/javascript/proxmox-widget-toolkit/",
+    "./usr/sbin/",
+    "./usr/bin/",
+)
+SOURCE_SUFFIXES = (".pm", ".pl", ".py", ".js")
+
+
+def _run(argv, timeout=30):
+    try:
+        result = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=timeout, check=False, env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "stdout": "", "stderr": str(exc), "rc": None}
+    return {
+        "ok": result.returncode == 0,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "rc": result.returncode,
+    }
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _apt_security_errors():
+    errors = []
+    config = _run(["apt-config", "dump"])
+    if not config["ok"]:
+        return ["APT configuration unavailable"]
+    for key in (
+        "Acquire::AllowInsecureRepositories",
+        "Acquire::AllowDowngradeToInsecureRepositories",
+        "APT::Get::AllowUnauthenticated",
+    ):
+        if re.search(rf'^\s*{re.escape(key)}\s+"?(?:1|true|yes)"?;', config["stdout"], re.I | re.M):
+            errors.append(f"unsafe APT option enabled: {key}")
+    source_paths = [pathlib.Path("/etc/apt/sources.list")]
+    source_paths.extend(sorted(pathlib.Path("/etc/apt/sources.list.d").glob("*")))
+    unsafe = re.compile(
+        r"(?:trusted|allow-insecure|allow-weak)\s*=\s*yes|^\s*Trusted\s*:\s*yes\s*$",
+        re.I | re.M,
+    )
+    for path in source_paths:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"APT source unreadable: {path}: {exc}")
+            continue
+        if unsafe.search(text):
+            errors.append(f"APT source bypasses authentication: {path}")
+    return errors
+
+
+def _control_fields(path):
+    result = _run(["dpkg-deb", "-f", path])
+    if not result["ok"]:
+        raise ValueError(f"cannot read Debian control fields: {result['stderr'].strip()}")
+    parsed = {}
+    current = None
+    for line in result["stdout"].splitlines():
+        if line[:1].isspace():
+            if current is None:
+                raise ValueError("orphan Debian control continuation")
+            parsed[current] += "\n" + line
+            continue
+        if ": " not in line:
+            raise ValueError("ambiguous Debian control output")
+        key, value = line.split(": ", 1)
+        if key in parsed:
+            raise ValueError(f"duplicate Debian control field: {key}")
+        parsed[key] = value
+        current = key
+    required = {"Package", "Version", "Architecture"}
+    if not required.issubset(parsed):
+        raise ValueError("incomplete Debian control identity")
+    source = parsed.get("Source", parsed["Package"]).split()[0]
+    return {
+        "package": parsed["Package"], "version": parsed["Version"],
+        "architecture": parsed["Architecture"], "source": source,
+        "depends": parsed.get("Depends"), "pre_depends": parsed.get("Pre-Depends"),
+        "breaks": parsed.get("Breaks"), "conflicts": parsed.get("Conflicts"),
+        "replaces": parsed.get("Replaces"), "provides": parsed.get("Provides"),
+    }
+
+
+def _apt_record(package, version, architecture):
+    result = _run(["apt-cache", "show", f"{package}:{architecture}={version}"])
+    if not result["ok"]:
+        raise ValueError(f"exact APT record unavailable: {result['stderr'].strip()}")
+    records = [block for block in result["stdout"].strip().split("\n\n") if block.strip()]
+    matches = []
+    for block in records:
+        fields = {}
+        for line in block.splitlines():
+            if not line or line[0].isspace() or ": " not in line:
+                continue
+            key, value = line.split(": ", 1)
+            fields[key] = value
+        if fields.get("Package") == package and fields.get("Version") == version \
+                and fields.get("Architecture") == architecture:
+            matches.append(fields)
+    if len(matches) != 1:
+        raise ValueError(f"expected one exact authenticated APT record, found {len(matches)}")
+    record = matches[0]
+    sha256 = record.get("SHA256")
+    filename = record.get("Filename")
+    size = record.get("Size")
+    if not sha256 or not re.fullmatch(r"[a-f0-9]{64}", sha256) or not filename \
+            or not size or not size.isdigit():
+        raise ValueError("APT record lacks SHA256/Filename/Size provenance")
+    return {"sha256": sha256, "filename": filename, "size": int(size)}
+
+
+def _safe_member_name(name):
+    if name in (".", "./"):
+        return True
+    if not name.startswith("./") or name.startswith("./../") or "//" in name:
+        return False
+    normalized = name[2:-1] if name.endswith("/") else name[2:]
+    parts = normalized.split("/")
+    return bool(parts) and all(part not in ("", ".", "..") for part in parts)
+
+
+def _candidate_sources(path):
+    process = subprocess.Popen(
+        ["dpkg-deb", "--fsys-tarfile", path], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    sources = {}
+    relevant_nonregular = []
+    invalid_paths = []
+    seen_members = set()
+    member_types = {}
+    selected_total = 0
+    member_count = 0
+    try:
+        with tarfile.open(fileobj=process.stdout, mode="r|*") as archive:
+            for member in archive:
+                member_count += 1
+                if member_count > 200000:
+                    raise ValueError("candidate archive exceeds member-count limit")
+                if not _safe_member_name(member.name):
+                    invalid_paths.append(member.name)
+                    continue
+                normalized = member.name.rstrip("/") or "."
+                if normalized in seen_members:
+                    raise ValueError("candidate archive contains duplicate member path")
+                seen_members.add(normalized)
+                member_types[normalized] = member.type
+                relevant = member.name.startswith(ALLOWED_PREFIXES) \
+                    and member.name.endswith(SOURCE_SUFFIXES)
+                if not relevant:
+                    continue
+                if not member.isfile():
+                    relevant_nonregular.append(member.name)
+                    continue
+                if member.size < 0 or member.size > 16 * 1024 * 1024:
+                    raise ValueError("candidate selected source exceeds per-file size limit")
+                selected_total += member.size
+                if selected_total > 256 * 1024 * 1024:
+                    raise ValueError("candidate selected sources exceed total size limit")
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"cannot stream candidate member {member.name}")
+                digest = hashlib.sha256()
+                size = 0
+                for chunk in iter(lambda: extracted.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    size += len(chunk)
+                sources[member.name] = {"sha256": digest.hexdigest(), "size": size}
+    finally:
+        if process.stdout:
+            process.stdout.close()
+    stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
+    rc = process.wait(timeout=30)
+    if rc != 0:
+        raise ValueError(f"dpkg-deb data stream failed: {stderr.strip()}")
+    if invalid_paths:
+        raise ValueError("candidate archive contains unsafe member paths")
+    if relevant_nonregular:
+        raise ValueError("candidate relevant source path is not a regular file")
+    for name in sources:
+        parts = name.rstrip("/").split("/")
+        for index in range(2, len(parts)):
+            parent = "/".join(parts[:index])
+            member_type = member_types.get(parent)
+            if member_type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                raise ValueError("candidate relevant source has a link ancestor")
+    return sources
+
+
+def inspect_package(path):
+    identity = _control_fields(path)
+    provenance = _apt_record(identity["package"], identity["version"], identity["architecture"])
+    actual_sha256 = _file_sha256(path)
+    actual_size = os.path.getsize(path)
+    if provenance["sha256"] != actual_sha256 or provenance["size"] != actual_size:
+        raise ValueError("candidate bytes do not match exact APT SHA256/Size")
+    sources = _candidate_sources(path)
+    changed = []
+    missing_installed = []
+    for member, candidate in sorted(sources.items()):
+        installed_path = "/" + member[2:]
+        try:
+            if os.path.islink(installed_path) or not os.path.isfile(installed_path):
+                missing_installed.append(member)
+                continue
+            installed_sha256 = _file_sha256(installed_path)
+        except OSError:
+            missing_installed.append(member)
+            continue
+        if installed_sha256 != candidate["sha256"]:
+            changed.append(member)
+    return {
+        "identity": identity,
+        "apt_provenance": provenance,
+        "deb_sha256": actual_sha256,
+        "dependency_plan_complete": False,
+        "relevant_source_count": len(sources),
+        "changed_relevant_sources": changed,
+        "new_or_missing_installed_sources": missing_installed,
+        "_source_paths": sorted(sources),
+    }
+
+
+def _strict_json_load(path):
+    def reject_duplicates(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle, object_pairs_hook=reject_duplicates)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--current-inventory", required=True,
+                        help="complete output from sharedlvmthin upstream-inventory")
+    parser.add_argument("deb", nargs="+", help="already downloaded candidate .deb files")
+    args = parser.parse_args(argv)
+    errors = _apt_security_errors()
+    current_fingerprint = None
+    try:
+        current_document = _strict_json_load(args.current_inventory)
+        current = current_document.get("inventory")
+        if not isinstance(current, dict) or current.get("kind") != "inventory" \
+                or current.get("catalogue") != "pve-upstream-contracts-v1" \
+                or not current.get("collection_complete"):
+            raise ValueError("current inventory is missing, wrong-kind or incomplete")
+        current_fingerprint = current.get("contract_fingerprint")
+        if not isinstance(current_fingerprint, str) \
+                or not re.fullmatch(r"[a-f0-9]{64}", current_fingerprint):
+            raise ValueError("current inventory fingerprint is invalid")
+    except (OSError, ValueError) as exc:
+        errors.append(f"current inventory unavailable: {exc}")
+    packages = []
+    seen = set()
+    source_owners = {}
+    for raw_path in args.deb:
+        path = os.path.realpath(raw_path)
+        if not os.path.isfile(path) or not path.endswith(".deb"):
+            errors.append(f"candidate is not a regular .deb: {raw_path}")
+            continue
+        try:
+            result = inspect_package(path)
+            key = (result["identity"]["package"], result["identity"]["architecture"])
+            if key in seen:
+                raise ValueError("duplicate candidate package/architecture")
+            seen.add(key)
+            for source_path in result["_source_paths"]:
+                previous = source_owners.setdefault(source_path, result["identity"]["package"])
+                if previous != result["identity"]["package"]:
+                    raise ValueError(
+                        f"candidate source path collision: {source_path} is supplied by "
+                        f"{previous} and {result['identity']['package']}"
+                    )
+            packages.append(result)
+        except (OSError, ValueError, tarfile.TarError, subprocess.SubprocessError) as exc:
+            errors.append(f"candidate inspection failed for {os.path.basename(path)}: {exc}")
+    for package in packages:
+        package.pop("_source_paths", None)
+    verdict = "BLOCKED" if errors else "RETEST_REQUIRED"
+    document = {
+        "kind": "candidate-static-inspection",
+        "schema": SCHEMA,
+        "catalogue": CATALOGUE,
+        "verdict": verdict,
+        "candidate_runtime_authorized": False,
+        "current_contract_fingerprint": current_fingerprint,
+        "packages": packages,
+        "errors": sorted(errors),
+        "limitations": [
+            "candidate code was not loaded or executed",
+            "clean static comparison does not replace disposable mixed-version and mutation tests",
+        ],
+    }
+    print(json.dumps(document, sort_keys=True, indent=2))
+    return 2 if errors else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

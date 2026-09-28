@@ -1,8 +1,23 @@
 # Thick Generations release gate
 
-Thick Generations remains a release candidate. Every required software and
-available live integration gate below has positive evidence; a documented
-hardware boundary is not converted into a success claim.
+Thick Generations remains a release candidate. Existing lifecycle evidence is
+recorded below, but the newly separated Thick-only package profile has open
+installation and replacement gates. No source-level test or successful package
+build converts those open runtime gates into a success claim. A documented
+hardware boundary is likewise not converted into a success claim.
+
+## Published TG32 versus audit candidate
+
+The immutable `v0.9.0-rc5.11-tg32` pre-release contains the previously
+qualified dual-mode TG32 package. It is not rebuilt or silently replaced by
+this audit. The Thick-only profile, explicit dm-clone `rw`/`ro`/`Fail` checks,
+monotonic transition timing, package transaction fences, checksum manifests
+and profile-replacement tooling exist only on the unreleased audit branch until
+a later candidate passes every applicable open gate below.
+
+No known incident currently proves routine data corruption in the published
+TG32 artifact. That absence is not a production-safety claim and the new
+hardening must not be represented as retroactively present in its `.deb`.
 
 Disruptive cluster and transport coverage is tracked separately in the
 [Thin and Thick Generations redundancy gate](thick-generations-redundancy-gate.md).
@@ -12,12 +27,15 @@ The executable order and remaining original-cluster work are defined in the
 | Area | Required evidence | Current state |
 | --- | --- | --- |
 | Persistent model | Signed anchor, immutable generations, exact identity and deterministic state classification | PASS |
-| Transition primitive | Persistent dm-clone reopen, hydration, linear pivot and destination-only dependency | PASS |
-| Crash recovery | C0-C9 classification and exact forward or cleanup recovery | PASS |
+| Transition primitive | Persistent dm-clone reopen, hydration, flush-capable table boundaries, linear pivot and destination-only dependency | RETEST REQUIRED — earlier lifecycle evidence predates the bounded flush-capable cutovers in the current audit candidate |
+| Crash recovery | C0-C10 classification and exact forward or cleanup recovery; R0 suspended-resize recovery | RETEST_REQUIRED |
 | Snapshot deletion | D0-D4 classification, stale-lock refusal and idempotent recovery | PASS |
 | Cross-node recovery | Runtime reconstruction from persistent state without source-host mapper state | PASS |
 | Same-VG coexistence | Canonical lock, inventory isolation, thin and thick lifecycle, exact cleanup | PASS |
 | PVE lifecycle | Allocate, start, stop, resize, snapshot, rollback, delete and full clone | PASS |
+| Native PVE 9 LVM volume-chain comparator | On the same shared block LUN, enable `snapshot-as-volume-chain` for newly created disposable VM disks and compare allocation latency, steady-state/chain-depth I/O, snapshot/rollback/delete, backup/restore, offline/live migration, node reboot and fault recovery against Thick Generations; record where either design has a measurable functional or safety advantage | OPEN |
+| Thick fast-initialization capability | On a disposable reused LV containing nonzero regional canaries, test bounded `BLKZEROOUT` and separately storage-advertised UNMAP/read-zero semantics through the exact multipath device; require every region to read as zero, preserved neighboring volumes, deterministic timeout/UNKNOWN handling and no publication before proof. Unqualified storage must retain the full safe zero fallback | OPEN |
+| Deferred lazy-zero RAW research | After the current endurance and DUAL/Thick-only stabilization gates complete, preserve the existing RAW/linear format and qualify the stock-kernel `dm-zero -> dm-clone` design as defined in [TG lazy-zero RAW research](tg-lazy-zero-raw-research.md). Direct discard must be proven rejected for the complete guarded lifecycle; QEMU configuration or an advertised queue value alone is not proof | DEFERRED — DO NOT MIX INTO CURRENT CANDIDATE |
 | Thin mobility | Offline source-deactivate then target-activate handoff; overlapping live migration must fail closed | PASS; LIVE REFUSED BY DESIGN |
 | Materialized Thick mobility | Offline/live migration in independent linear steady state | PASS |
 | Storage conversion | Thin-to-thick/thick-to-thin storage move with exact destination and source-cleanup evidence | PASS |
@@ -36,10 +54,24 @@ The executable order and remaining original-cluster work are defined in the
 | Physical petabyte storage | Representative array qualification | NOT TESTED |
 | Physical FC fabric | Representative HBA, firmware, fabric and array qualification | NOT TESTED |
 | Web and installer | Dual-mode configuration, authentication, monitoring and live rendering | PASS |
+| Thick-only clean install | Exact candidate installs/configures on every qualified PVE API version; no absent Thin helper is invoked | OPEN |
+| Package profile replacement | Dual-to-Thick-only and Thick-only-to-dual replacement refuse unsafe state and preserve healthy Thick guests | OPEN |
+| Package rolling update | Same-flavor upgrade one node at a time with active services, reboot and post-update guest I/O verification | OPEN |
+| Package removal fence | Ordinary removal refuses configured storage, managed Thin/Thick objects, Thick VG intent, partial or unreadable inventory; only exact Dual↔Thick-only `remove in-favour` replacement may preserve Thick objects | OPEN |
+| Thick-only diagnostics | Package identity/version, Doctor and JSON health output match the installed Thick-only artifact on a live PVE node | OPEN |
+| PREPARE cleanup recovery | Intent-only, partial signed remnants, complete signed pair and ambiguity refusal with guest hashes and idempotent retry | OPEN |
+| Materialization admission | Per-VG saturation refuses before intent/LV creation, preserves active workers and admits work after capacity returns | OPEN |
+| Worker scheduling ambiguity | Lost/failed systemd acknowledgement preserves the transaction, starts no synchronous second owner and remains explicitly resumable | OPEN |
+| Admission health telemetry | Exact active/limit/available values for AVAILABLE and SATURATED states; invalid or conflicting policy fails closed | OPEN |
+| Device-scoped capacity | Capacity query is pinned to the configured multipath WWID and cannot accept a same-name local/stale VG | OPEN |
+| Frontend-removal postcondition | A surviving mapper after reported removal prevents lower signed-LV deactivation and preserves recovery evidence | OPEN |
+| Kernel dm-clone gate | Module dry-run succeeds before/after reboot and a controlled transition proves the registered `clone` v1.x target | OPEN |
+| dm-clone hydration I/O faults | Source-read and destination-write faults preserve the exact signed transition, refuse pivot/cleanup, apply client deadlines without claiming they terminate kernel D-state, identify an exact blocked worker, confirm disabled background scheduling without claiming cancellation of in-flight I/O, and resume only after authoritative I/O recovery with matching hashes; guest latency is recorded | OPEN |
 | Recovery monitoring | Live IN_PROGRESS, RECOVERY_REQUIRED and post-resume MATERIALIZED classification; scoped dmeventd requirement | PASS |
-| Regression | Python, Perl taint-mode, package content and privacy gates at accepted commit | PASS: 166 PYTHON CASES; 115 PERL SUBTESTS / 635 ASSERTIONS |
+| Regression | Python, Perl taint-mode, package content, privacy, reproducibility and profile-parity gates at the exact release commit | LOCAL PARTIAL: 191 Windows-compatible tests pass and 19 POSIX-only tests skip; current unpublished commits still require the full Linux/Perl, reproducible-package and profile-parity gates |
 
 `PASS` means the evidence is recorded in
+the sanitized public
 [`thick-generations-poc-status.md`](thick-generations-poc-status.md). A current
 `RUNNING` or `OPEN` entry in this table would be a release blocker; historical
 intermediate states remain unchanged in the chronological evidence log. A
@@ -52,4 +84,13 @@ Thick Generations.
 Before publishing a package, repeat the full regression and package privacy
 checks against the exact commit used to build the release artifact. Install
 that identical artifact on every qualified PVE Storage API version, verify
-service health, and retain its checksum with the test evidence.
+service health, and retain its checksum with the test evidence. For the
+Thick-only profile, execute every package row marked `OPEN` above with both a
+quiescent cluster and deliberately injected refusal conditions. A refused
+unsafe transaction must leave the previously installed package and guest I/O
+intact; merely returning a non-zero dpkg status is insufficient evidence.
+
+Do not substitute an older green PR check for this row. Any commit added after
+that check, including local hardening not yet pushed for review, reopens the
+exact-head regression gate until CI and the Linux package/runtime gates run on
+the same immutable commit.

@@ -1,14 +1,163 @@
 # Original cluster qualification plan
 
-This document defines the qualification work for the local
-`0.9.0~rc5.4~tg24` Thick Generations candidate. It is a test plan, not a support
-claim. Record exact package checksums, PVE versions, Storage API versions,
-storage identities and results before changing any state.
+This document preserves the completed qualification record for the historical
+`0.9.0~rc5.4~tg24` Thick Generations candidate and defines the additional gate
+for the current unreleased Thick audit. Historical check marks are evidence for
+the named older candidate only. They do not qualify a new commit, package or
+profile. This is a test plan, not a support claim. Record exact commit, package
+checksums, PVE versions, Storage API versions, storage identities and results
+before changing any state.
 
 The ESXi datastore that produced SATA command failures, controller resets and
 VMFS heartbeat timeouts is excluded from all further load and fault testing.
 Its interrupted run is infrastructure-failure evidence, not a plugin failure
 and not an endurance pass.
+
+## 0. Unreleased Thick audit delta
+
+Every item in this section is a release blocker for the current audit
+candidate. Run it only on disposable storage and test guests. Attach sanitized
+command output, timestamps, package SHA256 values and before/after guest hashes
+to the evidence record. A CI pass, package build or historical check mark below
+cannot close any of these runtime items.
+
+The working branch can contain commits newer than any existing pull-request
+check. Treat such a check as historical evidence only; it does not qualify the
+local candidate until the exact release commit is submitted and tested.
+
+### Dedicated 1-TiB Thick medium admission
+
+For the nested ESXi lab, create a new dedicated 1-TiB virtual disk on exactly
+one selected storage-target VM (Ubuntu or TrueNAS). Positively verify the VM
+identity and datastore free capacity first, and use an ESXi thick-provisioned
+backing rather than a thin VMDK. Record its controller/unit identity and prove
+the guest sees the expected new, otherwise unused disk before creating any
+pool. Never resize or reuse an existing system/data disk for this gate.
+
+On the selected target, create a dedicated pool or otherwise isolated backing
+object, then a non-sparse 1-TiB zvol/LUN. Bind the iSCSI backstore and ACLs to
+that exact object. On every PVE node, discover/login through the intended test
+network, require the same resulting WWID and build one multipath map before
+creating the disposable PV/VG and PVE storage definition. Re-run the read-only
+identity gate on every node after login and again after reboot.
+
+Because every storage layer is virtualized under ESXi, this qualifies the
+nested orchestration, capacity, timing and injected-failure behavior only. It
+must not be reported as physical-array, HBA or fabric qualification even when
+all one-TiB tests pass.
+
+Before initializing the requested disposable 1-TiB LUN, run
+`one-tib-lun-initiator-preflight.sh` independently on every participating PVE
+node with the exact expected hostname, `/dev/mapper/<WWID>`, expected WWID and
+path count. Every node must report the same DM UUID and byte size, sufficient
+paths, no holders, mounts, swap or visible signatures, and
+`BACKING_ALLOCATION=UNPROVEN_REQUIRES_TARGET_EVIDENCE`. The script is read-only
+and deliberately cannot initialize the LUN.
+
+The initiator's reported capacity is not proof of physical backing. On an
+Ubuntu or TrueNAS ZFS target, retain sanitized target-side output from
+`zfs get -Hp -o property,value volsize,refreservation <zvol>` and require
+`refreservation == volsize >= 1099511627776`; a sparse zvol or a value of
+`none` does not qualify. Also record the read-only target/backstore mapping
+that proves the exported LUN uses that exact zvol. For a non-ZFS backing store,
+record the vendor's authoritative allocation/reservation evidence instead.
+Only after both sides agree may the normal, separately reviewed initialization
+step create a PV/VG. Never place target credentials, hostnames, addresses,
+WWIDs or pool/dataset names in publishable evidence.
+
+- [ ] Build Dual and Thick-only packages twice from the exact accepted commit;
+      prove byte-identical artifacts and record both SHA256 values.
+- [ ] On each qualified PVE Storage API version, run the package profile gate
+      before mutation, then exercise same-flavor upgrades and both
+      Dual-to-Thick-only and Thick-only-to-Dual replacement. After every
+      transaction prove the opposite package is absent, the flavor marker and
+      CLI match the installed package, and existing guest I/O is unchanged.
+- [ ] Exercise package removal separately from profile replacement. With an
+      empty disposable Thick storage definition still configured, then with
+      each of an exact anchor, generation, transition object and VG intent
+      present after removing that definition, prove a plain `dpkg --remove`
+      refuses before stopping services or removing files. Prove an unrelated
+      `remove in-favour` package name also refuses. Only after configuration,
+      objects and intents are absent may ordinary removal succeed. In separate
+      runs, prove the exact Dual↔Thick-only replacement preserves the same
+      materialized Thick guest hash and recovery health while the opposite
+      package becomes absent.
+- [ ] Disable a disposable Thick storage while it contains an injected OPEN
+      transition, then prove both an ordinary upgrade and profile replacement
+      refuse before unpacking. Restore exact healthy state and prove the same
+      disabled storage is read-only checked and permits the transaction.
+- [ ] Perform the rolling update one node at a time, including a reboot and
+      post-reboot identity, quorum, multipath, Doctor, JSON health and guest-I/O
+      check. Never infer compatibility merely from successful installation.
+      Record `/proc/sys/kernel/random/boot_id` before reboot and run the
+      read-only `package-post-reboot-gate.sh` afterwards, so an unchanged boot,
+      wrong package/profile, version drift or stale cross-profile payload
+      cannot be mistaken for a completed qualification step.
+- [ ] Before and after reboot, prove the installed kernel can resolve
+      `dm-clone` with `modprobe --dry-run --show-depends dm-clone`. During one
+      controlled Thick transition, prove the registered target is `clone` v1.x.
+- [ ] During separate disposable transitions, fault the immutable source path
+      and destination write path. Prove the no-progress window produces a
+      failed transaction-scoped worker without pivot or cleanup and that the
+      exact mapper reports `no_hydration`. Separately make the disable request
+      fail or become unconfirmable and prove it is not retried and health does
+      not claim quiescence. In both cases health remains recovery-required, the
+      signed anchor/intent and guest-visible frontend are preserved, and exact
+      resume completes only after authoritative I/O health returns. Record
+      guest latency during the source-read case; do not classify this as
+      transparent path-failure recovery.
+      First reproduce both kernel cases without an existing VG by running
+      `hydration-io-fault-qualification.sh source` and then `destination`; each
+      run must report a stationary counter, confirmed disabled background
+      scheduling, bounded recovery, matching source/destination hashes and
+      exact cleanup. Record the hydrating-region counter separately; do not
+      claim that `no_hydration` cancels an already in-flight failed region.
+      If a control process enters persistent `D` state, prove health reports
+      its exact worker as `BLOCKED_DSTATE`, starts no second worker and does not
+      claim the userspace timeout terminated it.
+      Repeat with a non-default `slt-tg-command-deadline-sec` and independently
+      varied `slt-tg-hydration-timeout`: every status/event/message/wait client
+      must obey the command deadline, while only a strict increase in
+      `hydrated_regions` renews the no-progress interval. Event-number changes
+      and nonzero `hydrating_regions` must not renew it.
+- [ ] Fault-inject every PREPARE creation and cleanup boundary: intent only,
+      destination only, metadata only, both signed remnants, and a deliberately
+      ambiguous remainder. `thick-recover-prepare` must clean only exact signed
+      ownership, remain repeatable after partial cleanup, clear only a completed
+      exact intent and preserve all objects and intent on ambiguity. Verify
+      source and guest hashes before and after every case.
+- [ ] Set the disposable VG materialization limit to 1, hold one hydration and
+      request another snapshot. The second request must refuse before creating
+      an intent or LV, while the running guest and first worker remain healthy.
+      Complete the first transition and prove the next request is admitted.
+- [ ] Repeat the admission test with a limit greater than 1 and concurrent VMs;
+      prove JSON health reports exact active, limit and available counts in
+      AVAILABLE and SATURATED states. Invalid or conflicting alias policy must
+      fail closed without storage mutation. Keep exactly one userspace owner
+      per transaction and record aggregate throughput, per-transition proven
+      progress, foreground tail latency and maximum progress gap. No admitted
+      transition may starve indefinitely; compare limit 1, the default limit
+      and the measured backend-safe limit before changing any default.
+- [ ] Fault-inject a lost or failed `systemd-run` reply after worker submission.
+      Prove the snapshot callback does not start synchronous hydration, the
+      exact transaction service/timer and persistent state remain diagnosable,
+      and one explicit resume completes without a second materialization owner.
+- [ ] Prove Thick capacity admission obtains VG data only through the configured
+      `/dev/mapper/<WWID>` device scope. On a fully disposable setup, introduce
+      a same-name stale or local VG and prove it cannot supply capacity data.
+- [ ] Fault-inject a misleading successful stable-frontend removal while the
+      mapper remains. The operation must stop before deactivating the signed
+      anchor or HEAD LV and must preserve recovery evidence.
+- [ ] Run Thick-only Doctor and JSON health on a live PVE node and prove package
+      identity, mode, recovery classification and materialization admission
+      fields match the installed artifact.
+- [ ] Repeat the applicable Thick lifecycle, migration, backup/restore,
+      transport-loss and uninterrupted endurance checks below against the exact
+      candidate artifacts; retain sanitized evidence under their SHA256 values.
+
+Do not mark an item complete when only the refusal exit code is known. Each
+negative test must also prove that no unintended LV, tag, mapper, package,
+configuration or guest-data change occurred.
 
 ## 1. Admission gate
 

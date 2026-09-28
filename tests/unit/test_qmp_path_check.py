@@ -23,14 +23,52 @@ class QmpPathCheckTests(unittest.TestCase):
     def setUpClass(cls):
         cls.helper = load_helper()
 
-    def test_collects_only_canonical_device_filenames(self):
-        result = set()
-        self.helper.collect_device_paths({
-            "filename": "/dev/mapper/example",
-            "backing-image": {"filename": "json:not-a-device"},
-            "children": [{"filename": "/tmp/not-a-device"}],
-        }, result)
-        self.assertEqual(result, {os.path.realpath("/dev/mapper/example")})
+    def test_active_path_never_accepts_expected_backing_image(self):
+        device = {"inserted": {
+            "file": "/dev/mapper/foreign",
+            "image": {"filename": "/dev/mapper/foreign",
+                      "backing-image": {"filename": "/dev/mapper/expected"}},
+        }}
+        self.assertEqual(self.helper.active_device_path(device),
+                         os.path.realpath("/dev/mapper/foreign"))
+
+    def test_active_path_accepts_legacy_image_filename_only(self):
+        device = {"inserted": {"image": {"filename": "/dev/mapper/expected"}}}
+        self.assertEqual(self.helper.active_device_path(device),
+                         os.path.realpath("/dev/mapper/expected"))
+
+    def test_active_path_rejects_conflicting_or_invalid_explicit_file(self):
+        self.assertIsNone(self.helper.active_device_path({"inserted": {
+            "file": "/dev/mapper/expected",
+            "image": {"filename": "/dev/mapper/foreign"},
+        }}))
+        self.assertIsNone(self.helper.active_device_path({"inserted": {
+            "file": "/tmp/not-a-device",
+            "image": {"filename": "/dev/mapper/expected"},
+        }}))
+
+    def test_match_rejects_expected_path_only_as_backing(self):
+        expected = {"scsi0": os.path.realpath("/dev/mapper/expected")}
+        devices = [{"qdev": "scsi0", "inserted": {
+            "file": "/dev/mapper/foreign",
+            "image": {"filename": "/dev/mapper/foreign",
+                      "backing-image": {"filename": "/dev/mapper/expected"}},
+        }}]
+        with self.assertRaisesRegex(ValueError, "divergence"):
+            self.helper.match_active_devices(devices, expected)
+
+    def test_match_rejects_duplicate_slot_records(self):
+        expected = {"scsi0": os.path.realpath("/dev/mapper/expected")}
+        record = {"qdev": "scsi0", "inserted": {"file": "/dev/mapper/expected"}}
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.helper.match_active_devices([record, record], expected)
+
+    def test_block_job_proof_requires_empty_lists_on_both_sides(self):
+        self.assertTrue(self.helper.block_jobs_settled([], []))
+        for before, after in (([{"device": "drive-scsi0"}], []),
+                              ([], [{"device": "drive-scsi0"}]),
+                              ({}, []), ([], None)):
+            self.assertFalse(self.helper.block_jobs_settled(before, after))
 
     def test_slot_grammar_excludes_shell_and_path_syntax(self):
         self.assertIsNotNone(self.helper.SLOT_RE.fullmatch("scsi12"))
@@ -39,6 +77,7 @@ class QmpPathCheckTests(unittest.TestCase):
 
     @patch("builtins.open", new_callable=mock_open, read_data="LVM-vg-lv\n")
     @patch("os.stat")
+    @unittest.skipUnless(os.name == "posix", "requires POSIX device numbers")
     def test_device_identity_uses_block_devno_and_dm_uuid(self, stat_mock, _open_mock):
         stat_mock.return_value.st_mode = 0o060000
         stat_mock.return_value.st_rdev = os.makedev(252, 17)
@@ -48,6 +87,7 @@ class QmpPathCheckTests(unittest.TestCase):
         )
 
     @patch("os.stat")
+    @unittest.skipUnless(os.name == "posix", "requires POSIX device numbers")
     def test_device_identity_rejects_non_block_path(self, stat_mock):
         stat_mock.return_value.st_mode = 0o100000
         stat_mock.return_value.st_rdev = os.makedev(252, 17)
@@ -55,6 +95,7 @@ class QmpPathCheckTests(unittest.TestCase):
 
     @patch("builtins.open", new_callable=mock_open, read_data="\n")
     @patch("os.stat")
+    @unittest.skipUnless(os.name == "posix", "requires POSIX device numbers")
     def test_device_identity_rejects_missing_dm_uuid(self, stat_mock, _open_mock):
         stat_mock.return_value.st_mode = 0o060000
         stat_mock.return_value.st_rdev = os.makedev(252, 17)

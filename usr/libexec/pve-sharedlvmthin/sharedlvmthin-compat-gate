@@ -1,0 +1,340 @@
+#!/usr/bin/python3
+"""Collect one node's bounded pre/post-upgrade compatibility evidence."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+TOOL_DIR = "/usr/libexec/pve-sharedlvmthin"
+CATALOGUE = "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json"
+SAFE_ENV = {"LC_ALL": "C", "LANG": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+OUTPUT_LIMIT = 4 * 1024 * 1024
+STEP_TIMEOUT = 300
+RUN_ID_RE = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
+HEX_RE = re.compile(r"[a-f0-9]{64}\Z")
+PLAN_ID_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_limited(source, destination):
+    size = os.path.getsize(source)
+    with open(source, "rb") as input_handle, open(destination, "xb") as output_handle:
+        remaining = OUTPUT_LIMIT
+        while remaining:
+            chunk = input_handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            output_handle.write(chunk)
+            remaining -= len(chunk)
+        output_handle.flush()
+        os.fsync(output_handle.fileno())
+    return {"size": min(size, OUTPUT_LIMIT), "truncated": size > OUTPUT_LIMIT,
+            "sha256": _sha256(destination)}
+
+
+def run_step(name, argv, directory, timeout=STEP_TIMEOUT, accepted=(0,)):
+    raw_stdout = directory / f".{name}.stdout.raw"
+    raw_stderr = directory / f".{name}.stderr.raw"
+    timed_out = False
+    returncode = None
+    error = None
+    try:
+        with open(raw_stdout, "xb") as stdout, open(raw_stderr, "xb") as stderr:
+            process = subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                env=SAFE_ENV, start_new_session=True,
+            )
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                os.killpg(process.pid, signal.SIGKILL)
+                returncode = process.wait(timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        error = str(exc)
+    stdout_path = directory / f"{name}.stdout"
+    stderr_path = directory / f"{name}.stderr"
+    stdout_evidence = _write_limited(raw_stdout, stdout_path) if raw_stdout.exists() else None
+    stderr_evidence = _write_limited(raw_stderr, stderr_path) if raw_stderr.exists() else None
+    raw_stdout.unlink(missing_ok=True)
+    raw_stderr.unlink(missing_ok=True)
+    complete = error is None and not timed_out \
+        and stdout_evidence is not None and stderr_evidence is not None \
+        and not stdout_evidence["truncated"] and not stderr_evidence["truncated"]
+    return {
+        "name": name,
+        "argv": argv,
+        "timeout_sec": timeout,
+        "returncode": returncode,
+        "accepted_returncodes": list(accepted),
+        "timed_out": timed_out,
+        "error": error,
+        "complete": complete,
+        "passed": complete and returncode in accepted,
+        "stdout": stdout_evidence,
+        "stderr": stderr_evidence,
+    }
+
+
+def classify(steps):
+    blocking = [step["name"] for step in steps if not step["passed"]]
+    if blocking:
+        return "BLOCKED", blocking
+    return "RETEST_REQUIRED", []
+
+
+def _boot_id():
+    return pathlib.Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+
+
+def _strict_load(path):
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle, object_pairs_hook=reject_duplicates)
+
+
+def _load_plan(path, phase, host, now):
+    plan = _strict_load(path)
+    expected_keys = {
+        "kind", "schema", "run_id", "phase", "cluster_id_sha256",
+        "upgrade_plan_sha256", "collector_sha256", "valid_from", "valid_until",
+        "eligible_nodes", "candidate_packages", "plugin_artifacts",
+        "lab_runner_sha256", "required_transitions", "class_descriptors",
+    }
+    if set(plan) != expected_keys:
+        raise ValueError("collection plan has missing or unknown fields")
+    if plan.get("kind") != "cluster-compatibility-plan" \
+            or type(plan.get("schema")) is not int or plan.get("schema") != 1:
+        raise ValueError("unsupported collection plan")
+    if plan.get("phase") != phase or not RUN_ID_RE.fullmatch(str(plan.get("run_id", ""))):
+        raise ValueError("collection plan phase/run identity mismatch")
+    for field in (
+        "cluster_id_sha256", "upgrade_plan_sha256", "collector_sha256", "lab_runner_sha256",
+    ):
+        if not HEX_RE.fullmatch(str(plan.get(field, ""))):
+            raise ValueError(f"invalid collection plan {field}")
+    valid_from = datetime.datetime.fromisoformat(plan["valid_from"].replace("Z", "+00:00"))
+    valid_until = datetime.datetime.fromisoformat(plan["valid_until"].replace("Z", "+00:00"))
+    if valid_from.tzinfo is None or valid_until.tzinfo is None \
+            or valid_from > now or now > valid_until \
+            or (valid_until - valid_from).total_seconds() > 86400:
+        raise ValueError("collection plan is outside its bounded validity window")
+    rows = plan.get("eligible_nodes")
+    if not isinstance(rows, list) or not rows or len(rows) > 4096:
+        raise ValueError("collection plan has no eligible nodes")
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"host", "storage_scope_sha256"} \
+                or not isinstance(row.get("host"), str) or row["host"] in seen \
+                or not HEX_RE.fullmatch(str(row.get("storage_scope_sha256", ""))):
+            raise ValueError("collection plan has invalid or duplicate eligible node")
+        seen.add(row["host"])
+    candidates = plan.get("candidate_packages")
+    if not isinstance(candidates, list) or len(candidates) > 512:
+        raise ValueError("collection plan candidate set is malformed")
+    candidate_keys = set()
+    for row in candidates:
+        if not isinstance(row, dict) or set(row) != {"package", "version", "architecture", "sha256"} \
+                or any(not isinstance(row.get(key), str) or not row[key]
+                       for key in ("package", "version", "architecture")) \
+                or not HEX_RE.fullmatch(str(row.get("sha256", ""))):
+            raise ValueError("collection plan candidate row is malformed")
+        key = (row["package"], row["version"], row["architecture"], row["sha256"])
+        if key in candidate_keys:
+            raise ValueError("collection plan has duplicate candidate row")
+        candidate_keys.add(key)
+    artifacts = plan.get("plugin_artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != {"dual_sha256", "thick_sha256"} \
+            or any(not HEX_RE.fullmatch(str(artifacts.get(key, ""))) for key in artifacts):
+        raise ValueError("collection plan plugin artifacts are malformed")
+    transitions = plan.get("required_transitions")
+    if not isinstance(transitions, list) or len(transitions) > 128:
+        raise ValueError("collection plan transition set is malformed")
+    transition_ids = set()
+    for row in transitions:
+        required = {"id", "source_class", "destination_class", "direction", "order", "peer_classes"}
+        if not isinstance(row, dict) or set(row) != required \
+                or not isinstance(row["id"], str) or not PLAN_ID_RE.fullmatch(row["id"]) \
+                or row["id"] in transition_ids \
+                or not isinstance(row["source_class"], str) \
+                or not HEX_RE.fullmatch(row["source_class"]) \
+                or not isinstance(row["destination_class"], str) \
+                or not HEX_RE.fullmatch(row["destination_class"]) \
+                or row["direction"] not in ("old-to-new", "new-to-old") \
+                or type(row["order"]) is not int or row["order"] < 1 \
+                or not isinstance(row["peer_classes"], list) \
+                or any(not isinstance(item, str) or not HEX_RE.fullmatch(item)
+                       for item in row["peer_classes"]) \
+                or len(row["peer_classes"]) != len(set(row["peer_classes"])):
+            raise ValueError("collection plan transition row is malformed")
+        transition_ids.add(row["id"])
+    descriptors = plan.get("class_descriptors")
+    if not isinstance(descriptors, list) or not descriptors or len(descriptors) > 256:
+        raise ValueError("collection plan class descriptor set is malformed")
+    descriptor_ids = set()
+    for row in descriptors:
+        required = {"contract_fingerprint", "package_flavor", "running_kernel",
+                    "plugin_payload_sha256"}
+        if not isinstance(row, dict) or set(row) != required \
+                or not isinstance(row["contract_fingerprint"], str) \
+                or not HEX_RE.fullmatch(row["contract_fingerprint"]) \
+                or row["contract_fingerprint"] in descriptor_ids \
+                or row["package_flavor"] not in ("dual", "thick-only") \
+                or not isinstance(row["running_kernel"], str) or not row["running_kernel"] \
+                or not isinstance(row["plugin_payload_sha256"], str) \
+                or not HEX_RE.fullmatch(row["plugin_payload_sha256"]):
+            raise ValueError("collection plan class descriptor row is malformed")
+        descriptor_ids.add(row["contract_fingerprint"])
+    referenced_classes = set()
+    for row in transitions:
+        referenced_classes.update([row["source_class"], row["destination_class"]])
+        referenced_classes.update(row["peer_classes"])
+    if not referenced_classes.issubset(descriptor_ids):
+        raise ValueError("collection plan transition references an undescribed class")
+    matches = [row for row in rows if row.get("host") == host]
+    if len(matches) != 1 or not HEX_RE.fullmatch(str(matches[0].get("storage_scope_sha256", ""))):
+        raise ValueError("local node is missing or ambiguous in collection plan")
+    return plan, matches[0]
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--phase", required=True, choices=("pre-upgrade", "post-reboot"))
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--collection-plan", required=True)
+    parser.add_argument("--qualification")
+    parser.add_argument("--candidate-deb", action="append", default=[])
+    args = parser.parse_args(argv)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    host = os.uname().nodename
+    try:
+        plan, node_plan = _load_plan(args.collection_plan, args.phase, host, now)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        parser.error(f"collection plan rejected: {exc}")
+    plan_sha256 = _sha256(args.collection_plan)
+    collector_sha256 = _sha256(os.path.realpath(__file__))
+    if collector_sha256 != plan["collector_sha256"]:
+        parser.error("running collector does not match collection plan")
+    output = pathlib.Path(args.output_dir).absolute()
+    if output.exists():
+        parser.error("output directory must not already exist")
+    parent = output.parent
+    if not parent.is_dir():
+        parser.error("output parent does not exist")
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=parent))
+    os.chmod(staging, 0o700)
+    steps = []
+    started_at = now
+    boot_id_start = _boot_id()
+    try:
+        steps.append(run_step(
+            "contract-catalogue",
+            [f"{TOOL_DIR}/sharedlvmthin-contract-check", "--catalogue", CATALOGUE],
+            staging, timeout=60,
+        ))
+        inventory_argv = [f"{TOOL_DIR}/sharedlvmthin-upstream-inventory"]
+        inventory_accepted = (0,)
+        if args.qualification:
+            inventory_argv.extend(["--compare", os.path.realpath(args.qualification)])
+            inventory_accepted = (0, 3)
+        steps.append(run_step(
+            "upstream-inventory", inventory_argv, staging,
+            timeout=180, accepted=inventory_accepted,
+        ))
+        steps.append(run_step(
+            "compat-check", [f"{TOOL_DIR}/sharedlvmthin-compat-check"],
+            staging, timeout=300,
+        ))
+        steps.append(run_step(
+            "upgrade-check", [f"{TOOL_DIR}/sharedlvmthin-upgrade-check", "--fail-fast"],
+            staging, timeout=1200,
+        ))
+        if args.candidate_deb:
+            candidate_argv = [
+                f"{TOOL_DIR}/sharedlvmthin-candidate-inspect",
+                "--current-inventory", str(staging / "upstream-inventory.stdout"),
+            ] + [os.path.realpath(path) for path in args.candidate_deb]
+            steps.append(run_step(
+                "candidate-inspect", candidate_argv, staging,
+                timeout=300, accepted=(3,),
+            ))
+        final_inventory_argv = [f"{TOOL_DIR}/sharedlvmthin-upstream-inventory"]
+        if args.qualification:
+            final_inventory_argv.extend(["--compare", os.path.realpath(args.qualification)])
+        steps.append(run_step(
+            "upstream-inventory-final", final_inventory_argv, staging,
+            timeout=180, accepted=inventory_accepted,
+        ))
+        verdict, blocking = classify(steps)
+        boot_id_finish = _boot_id()
+        if boot_id_finish != boot_id_start:
+            verdict = "BLOCKED"
+            blocking.append("boot-identity-changed")
+        document = {
+            "kind": "node-compatibility-gate",
+            "schema": 1,
+            "phase": args.phase,
+            "run_id": plan["run_id"],
+            "collection_plan_sha256": plan_sha256,
+            "cluster_id_sha256": plan["cluster_id_sha256"],
+            "upgrade_plan_sha256": plan["upgrade_plan_sha256"],
+            "collector_sha256": collector_sha256,
+            "lab_runner_sha256": plan["lab_runner_sha256"],
+            "plugin_artifacts": plan["plugin_artifacts"],
+            "class_descriptors": plan["class_descriptors"],
+            "expected_storage_scope_sha256": node_plan["storage_scope_sha256"],
+            "started_at": started_at.isoformat(),
+            "collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "host": host,
+            "boot_id_at_start": boot_id_start,
+            "boot_id_at_finish": boot_id_finish,
+            "verdict": verdict,
+            "scope": "node",
+            "upgrade_authorized": False,
+            "blocking_steps": blocking,
+            "steps": steps,
+            "limitations": [
+                "node evidence does not prove all-node cluster coverage",
+                "physical mutation and mixed-version lab contracts are not executed by this command",
+                "RETEST_REQUIRED is expected until exact lab result manifests are aggregated",
+            ],
+        }
+        result_path = staging / "gate-result.json"
+        with open(result_path, "x", encoding="utf-8") as handle:
+            json.dump(document, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.rename(staging, output)
+        staging = None
+        print(json.dumps(document, sort_keys=True, indent=2))
+        return 2 if verdict == "BLOCKED" else 3
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

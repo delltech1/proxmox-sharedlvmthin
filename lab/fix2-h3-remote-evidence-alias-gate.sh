@@ -49,6 +49,8 @@ chmod 0755 "$work/dmsetup"
 
 run_case() {
     local scenario="$1"
+    # Positional parameters intentionally expand in the child shell.
+    # shellcheck disable=SC2016
     unshare --mount --propagation private \
         env SLT_H3_SCENARIO="$scenario" \
         bash -c 'set -eu; mount --bind "$1" /usr/sbin/dmsetup; exec /bin/bash "$2" "$3" "$4"' \

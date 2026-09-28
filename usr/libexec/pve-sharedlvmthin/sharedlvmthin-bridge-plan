@@ -9,13 +9,14 @@ import sys
 
 
 SOURCE_PHASES = {
-    "PREPARED", "WAITING_ADMISSION", "MATERIALIZING", "MOVE_FAILED",
+    "PREPARED", "WAITING_ADMISSION", "MATERIALIZING", "MATERIALIZE_FAILED",
     "MATERIALIZED_THICK", "MIGRATION_UNSETTLED",
 }
 TARGET_PHASES = {
     "MATERIALIZED_THICK", "MIGRATION_UNSETTLED", "MIGRATED_THICK",
-    "RETURN_THIN_PREPARED", "MOVE_FAILED", "RETURNED_THIN",
-    "COMPLETE_THICK",
+    "RETURN_ADMISSION_PENDING", "RETURN_HEALTH_PENDING",
+    "RETURN_THIN_PREPARED", "RETURNING_THIN", "RETURN_FAILED", "RETURNED_THIN",
+    "FINALIZING_THICK", "COMPLETE_THICK",
 }
 
 
@@ -45,8 +46,12 @@ def classify(*, phase, authority, return_thin, disk_count, thin_count,
 
     if phase not in TARGET_PHASES:
         raise ValueError("phase is incompatible with target authority")
-    if admission != "none":
-        raise ValueError("target authority requires released VG admission")
+    if phase == "FINALIZING_THICK":
+        if return_thin or thick_count != disk_count:
+            raise ValueError("finalizing-Thick state contradicts saved policy or topology")
+        return "FINALIZE_THICK_ONLY"
+    if admission == "exact" and not return_thin:
+        raise ValueError("keep-Thick target has an unexpected active admission")
     if thin_count == disk_count:
         if not return_thin:
             raise ValueError("all-Thin target contradicts keep-Thick policy")

@@ -1,0 +1,604 @@
+#!/usr/bin/python3
+"""Validate physical lab executions against catalogue-derived obligations."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+HEX_RE = re.compile(r"[a-f0-9]{64}\Z")
+UUID_RE = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
+ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+TRANSITION_CONTRACTS = {"pve.migration-offline-live", "cluster.rolling-upgrade"}
+
+
+def _reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def read_regular(path, limit=8 * 1024 * 1024):
+    descriptor = None
+    try:
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        )
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size < 0 or before.st_size > limit:
+            raise ValueError("artifact is non-regular or exceeds size limit")
+        chunks = []
+        total = 0
+        while total < before.st_size:
+            chunk = os.read(descriptor, min(1024 * 1024, before.st_size - total))
+            if not chunk:
+                raise ValueError("artifact ended early")
+            chunks.append(chunk)
+            total += len(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError("artifact grew during read")
+        after = os.fstat(descriptor)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode")
+        if tuple(getattr(before, key) for key in fields) \
+                != tuple(getattr(after, key) for key in fields):
+            raise ValueError("artifact changed during read")
+        return b"".join(chunks)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def load_json(path):
+    data = read_regular(path)
+    document = json.loads(data.decode("utf-8"), object_pairs_hook=_reject_duplicates)
+    return document, hashlib.sha256(data).hexdigest()
+
+
+def digest(path):
+    return hashlib.sha256(read_regular(path)).hexdigest()
+
+
+def verify_artifact(reference, evidence_root, evidence_type, execution, scenario=None):
+    if not isinstance(reference, dict) or set(reference) != {"artifact", "size", "sha256"}:
+        raise ValueError("supporting evidence reference is malformed")
+    name = reference["artifact"]
+    if not isinstance(name, str) or not ID_RE.fullmatch(name) \
+            or type(reference["size"]) is not int or not 1 <= reference["size"] <= 8 * 1024 * 1024 \
+            or not HEX_RE.fullmatch(str(reference["sha256"])):
+        raise ValueError("supporting evidence reference is unsafe")
+    data = read_regular(evidence_root / name)
+    if len(data) != reference["size"] or hashlib.sha256(data).hexdigest() != reference["sha256"]:
+        raise ValueError("supporting evidence size/digest mismatch")
+    document = json.loads(data.decode("utf-8"), object_pairs_hook=_reject_duplicates)
+    required = {"kind", "schema", "test_run_id", "attempt_id", "evidence_type",
+                "value_sha256", "payload"}
+    if not isinstance(document, dict) or set(document) != required \
+            or document.get("kind") != "lab-supporting-evidence" \
+            or type(document.get("schema")) is not int or document.get("schema") != 1 \
+            or document.get("test_run_id") != execution["test_run_id"] \
+            or document.get("attempt_id") != execution["attempt_id"] \
+            or document.get("evidence_type") != evidence_type \
+            or not HEX_RE.fullmatch(str(document.get("value_sha256", ""))) \
+            or not isinstance(document.get("payload"), dict) or not document["payload"]:
+        raise ValueError(f"supporting evidence content is malformed: {evidence_type}")
+    payload = document["payload"]
+    value_sha256 = document["value_sha256"]
+    calculated_value = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if calculated_value != value_sha256:
+        raise ValueError(f"supporting evidence value digest mismatch: {evidence_type}")
+    if evidence_type == "precondition":
+        valid = set(payload) == {"proven", "state_sha256"} \
+            and payload["proven"] is True \
+            and HEX_RE.fullmatch(str(payload["state_sha256"])) is not None
+    elif evidence_type == "fault":
+        valid = set(payload) == {"requested", "confirmed", "boundary_id"} \
+            and payload["requested"] is execution["fault"]["requested"] \
+            and payload["confirmed"] is execution["fault"]["confirmed"] \
+            and payload["boundary_id"] == execution["fault"]["boundary_id"]
+    elif evidence_type == "oracle_definition":
+        valid = set(payload) == {"definition_sha256"} \
+            and HEX_RE.fullmatch(str(payload["definition_sha256"])) is not None
+    elif evidence_type in ("oracle_expected", "oracle_observed"):
+        valid = set(payload) == {"data_sha256"} \
+            and HEX_RE.fullmatch(str(payload["data_sha256"])) is not None
+        if scenario is not None:
+            cases = scenario.get("cases") if isinstance(scenario, dict) else None
+            case_by_id = {
+                row.get("id"): row for row in cases or [] if isinstance(row, dict)
+            }
+            case = case_by_id.get(execution.get("scenario_case_id"))
+            oracle_contract = case.get("oracle") if isinstance(case, dict) else None
+            required_assertions = oracle_contract.get("required_assertions") \
+                if isinstance(oracle_contract, dict) else None
+            assertions = payload.get("assertions")
+            valid = set(payload) == {
+                "data_sha256", "scenario_id", "scenario_case_id", "assertions"
+            } \
+                and payload.get("scenario_id") == execution.get("scenario_id") \
+                and payload.get("scenario_case_id") == execution.get("scenario_case_id") \
+                and isinstance(required_assertions, list) and required_assertions \
+                and len(required_assertions) == len(set(required_assertions)) \
+                and isinstance(assertions, dict) \
+                and set(assertions) == set(required_assertions) \
+                and all(value is True for value in assertions.values()) \
+                and HEX_RE.fullmatch(str(payload.get("data_sha256", ""))) is not None
+    elif evidence_type in ("reconciliation_expected", "reconciliation_observed"):
+        valid = set(payload) == {"state_sha256"} \
+            and HEX_RE.fullmatch(str(payload["state_sha256"])) is not None
+    else:
+        valid = False
+    if not valid:
+        raise ValueError(f"supporting evidence semantics do not match: {evidence_type}")
+    return value_sha256
+
+
+def parse_time(value):
+    if not isinstance(value, str):
+        raise ValueError("timestamp is missing")
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp lacks timezone")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def derive_obligations(catalogue, aggregate):
+    classes = aggregate.get("classes")
+    transitions = aggregate.get("required_transitions")
+    descriptors = aggregate.get("class_descriptors")
+    if not isinstance(classes, list) or not isinstance(transitions, list) \
+            or not isinstance(descriptors, list):
+        raise ValueError("aggregate class/transition inventory is malformed")
+    if not classes:
+        raise ValueError("aggregate contains no observed contract classes")
+    descriptor_by_class = {
+        row.get("contract_fingerprint"): row for row in descriptors if isinstance(row, dict)
+    }
+    if len(descriptor_by_class) != len(descriptors):
+        raise ValueError("aggregate class descriptor inventory is malformed")
+    class_profiles = {}
+    class_nodes = set()
+    for row in classes:
+        fingerprint = row.get("contract_fingerprint") if isinstance(row, dict) else None
+        profile = row.get("package_flavor") if isinstance(row, dict) else None
+        nodes = row.get("nodes") if isinstance(row, dict) else None
+        if not isinstance(fingerprint, str) or not HEX_RE.fullmatch(fingerprint) \
+                or profile not in ("dual", "thick-only") or fingerprint in class_profiles:
+            raise ValueError("aggregate contains invalid contract class")
+        if not isinstance(nodes, list) or not nodes \
+                or any(not isinstance(node, str) or not ID_RE.fullmatch(node) for node in nodes) \
+                or len(nodes) != len(set(nodes)) or class_nodes.intersection(nodes):
+            raise ValueError("aggregate class node membership is malformed")
+        class_nodes.update(nodes)
+        class_profiles[fingerprint] = profile
+        descriptor = descriptor_by_class.get(fingerprint)
+        if not isinstance(descriptor, dict) \
+                or descriptor.get("package_flavor") != profile \
+                or descriptor.get("running_kernel") != row.get("running_kernel") \
+                or descriptor.get("plugin_payload_sha256") != row.get("plugin_payload_sha256"):
+            raise ValueError("observed class differs from its plan descriptor")
+    expected_nodes = aggregate.get("expected_nodes")
+    observed_nodes = aggregate.get("observed_nodes")
+    if not isinstance(expected_nodes, list) or not isinstance(observed_nodes, list) \
+            or not expected_nodes or sorted(expected_nodes) != sorted(observed_nodes) \
+            or class_nodes != set(observed_nodes):
+        raise ValueError("aggregate node/class coverage is incomplete")
+    transition_by_id = {}
+    for row in transitions:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) \
+                or row["id"] in transition_by_id:
+            raise ValueError("aggregate contains invalid transition")
+        transition_by_id[row["id"]] = row
+    obligations = {}
+    for contract in catalogue.get("contracts", []):
+        contract_id = contract.get("id")
+        revision = contract.get("revision")
+        scopes = contract.get("scope")
+        tests = contract.get("lab_tests")
+        if not isinstance(contract_id, str) or type(revision) is not int or revision < 1 \
+                or not isinstance(scopes, list) or not isinstance(tests, list):
+            raise ValueError("catalogue contract is malformed")
+        applicable_classes = sorted(
+            fingerprint for fingerprint, profile in class_profiles.items() if profile in scopes
+        )
+        transition_tests = contract.get("transition_tests", [])
+        if contract_id in TRANSITION_CONTRACTS and applicable_classes and transition_tests \
+                and not transition_by_id:
+            raise ValueError(f"required directed transitions are absent for {contract_id}")
+        for test_id in tests:
+            if test_id in transition_tests:
+                for transition_id in sorted(transition_by_id):
+                    obligation_id = f"{contract_id}@{revision}:{test_id}@1:transition:{transition_id}"
+                    obligations[obligation_id] = {
+                        "contract_id": contract_id, "revision": revision,
+                        "test_id": test_id, "test_revision": 1,
+                        "transition_id": transition_id,
+                        "source_class": transition_by_id[transition_id]["source_class"],
+                        "destination_class": transition_by_id[transition_id]["destination_class"],
+                        "peer_classes": transition_by_id[transition_id]["peer_classes"],
+                        "transition_direction": transition_by_id[transition_id]["direction"],
+                        "transition_order": transition_by_id[transition_id]["order"],
+                        "class_descriptors": {
+                            item: descriptor_by_class[item] for item in sorted(set(
+                                [transition_by_id[transition_id]["source_class"],
+                                 transition_by_id[transition_id]["destination_class"]]
+                                + transition_by_id[transition_id]["peer_classes"]
+                            ))
+                        },
+                        "fault_required": test_id in contract.get("fault_tests", []),
+                        "required_parameters": catalogue["lab_execution_schema"]["required_parameters"],
+                        "classes": sorted(set(
+                            [transition_by_id[transition_id]["source_class"],
+                             transition_by_id[transition_id]["destination_class"]]
+                            + transition_by_id[transition_id]["peer_classes"]
+                        )),
+                    }
+            else:
+                for fingerprint in applicable_classes:
+                    obligation_id = f"{contract_id}@{revision}:{test_id}@1:class:{fingerprint}"
+                    obligations[obligation_id] = {
+                        "contract_id": contract_id, "revision": revision,
+                        "test_id": test_id, "test_revision": 1,
+                        "transition_id": None, "classes": [fingerprint],
+                        "source_class": None, "destination_class": None, "peer_classes": [],
+                        "transition_direction": None, "transition_order": None,
+                        "class_descriptors": {fingerprint: descriptor_by_class[fingerprint]},
+                        "fault_required": test_id in contract.get("fault_tests", []),
+                        "required_parameters": catalogue["lab_execution_schema"]["required_parameters"],
+                    }
+    return obligations
+
+
+def validate_execution(execution, obligation, runner_sha256, evidence_root, scenario=None):
+    required = {
+        "kind", "schema", "obligation_id", "test_run_id", "attempt_id",
+        "contract_id", "contract_revision", "test_id", "test_revision",
+        "runner_sha256", "scenario_id", "scenario_case_id", "parameters", "fixture", "participants",
+        "contract_classes", "directed_transition_id", "started_at", "finished_at",
+        "transition_direction", "transition_order",
+        "elapsed_ms", "precondition", "fault", "oracle", "invariants",
+        "reconciliation", "terminal_outcome", "evidence_artifacts",
+    }
+    if not isinstance(execution, dict) or set(execution) != required \
+            or execution.get("kind") != "lab-test-execution" \
+            or type(execution.get("schema")) is not int or execution.get("schema") != 1:
+        raise ValueError("execution schema is malformed")
+    for field in ("test_run_id", "attempt_id"):
+        if not isinstance(execution[field], str) or not UUID_RE.fullmatch(execution[field]):
+            raise ValueError(f"invalid {field}")
+    if execution["contract_id"] != obligation["contract_id"] \
+            or type(execution["contract_revision"]) is not int \
+            or execution["contract_revision"] != obligation["revision"] \
+            or execution["test_id"] != obligation["test_id"] \
+            or type(execution["test_revision"]) is not int \
+            or execution["test_revision"] != obligation["test_revision"] \
+            or execution["runner_sha256"] != runner_sha256 \
+            or execution["directed_transition_id"] != obligation["transition_id"] \
+            or execution["transition_direction"] != obligation["transition_direction"] \
+            or type(execution["transition_order"]) is not type(obligation["transition_order"]) \
+            or execution["transition_order"] != obligation["transition_order"] \
+            or not isinstance(execution["contract_classes"], list) \
+            or any(not isinstance(item, str) for item in execution["contract_classes"]) \
+            or sorted(execution["contract_classes"]) != obligation["classes"]:
+        raise ValueError("execution identity/binding mismatch")
+    if not isinstance(execution["scenario_id"], str) or not ID_RE.fullmatch(execution["scenario_id"]):
+        raise ValueError("invalid scenario id")
+    if not isinstance(execution["scenario_case_id"], str) \
+            or not ID_RE.fullmatch(execution["scenario_case_id"]):
+        raise ValueError("invalid scenario case id")
+    if scenario is not None:
+        cases = scenario.get("cases") if isinstance(scenario, dict) else None
+        case_by_id = {
+            row.get("id"): row for row in cases or [] if isinstance(row, dict)
+        }
+        case = case_by_id.get(execution["scenario_case_id"])
+        if scenario.get("status") != "READY" \
+                or execution["scenario_id"] != obligation["test_id"] \
+                or scenario.get("revision") != execution["test_revision"] \
+                or len(case_by_id) != len(cases or []) or case is None:
+            raise ValueError("execution is not bound to the exact registered scenario/case")
+        if case.get("fault_required") is not obligation["fault_required"] \
+                or execution["fault"].get("boundary_id") \
+                != (case.get("fault_boundary") or ""):
+            raise ValueError("execution fault does not match registered scenario case")
+        parameter_schema = scenario.get("parameters")
+        if not isinstance(parameter_schema, dict) \
+                or set(parameter_schema) != set(execution["parameters"]):
+            raise ValueError("execution parameters differ from registered scenario")
+        for name, value in execution["parameters"].items():
+            rule = parameter_schema.get(name)
+            if not isinstance(rule, dict) or rule.get("type") != "integer" \
+                    or type(value) is not int or value < rule.get("minimum", 1):
+                raise ValueError("execution parameter violates registered scenario")
+    if not isinstance(execution["parameters"], dict) \
+            or set(execution["parameters"]) != set(obligation["required_parameters"]) \
+            or any(type(value) is not int or value < 1
+                   for value in execution["parameters"].values()):
+        raise ValueError("typed test parameters are missing")
+    fixture = execution["fixture"]
+    fixture_kind = scenario.get("fixture_kind") if scenario is not None else "disposable-storage"
+    if not isinstance(fixture, dict) \
+            or not HEX_RE.fullmatch(str(fixture.get("identity_sha256", ""))):
+        raise ValueError("fixture identity is unproven")
+    if fixture_kind == "disposable-storage":
+        if fixture.get("disposable") is not True or fixture.get("format") != "raw":
+            raise ValueError("fixture disposable RAW format is unproven")
+    elif fixture_kind == "read-only-cluster":
+        if fixture.get("disposable") is not False or fixture.get("format") != "none":
+            raise ValueError("read-only cluster fixture contract is unproven")
+    else:
+        raise ValueError("unsupported registered fixture kind")
+    participants = execution["participants"]
+    if not isinstance(participants, list) or not participants:
+        raise ValueError("execution participants are missing")
+    participant_identities = set()
+    for participant in participants:
+        fields = {
+            "role", "node_identity_sha256", "boot_id_start", "boot_id_finish",
+            "running_kernel", "plugin_payload_sha256", "contract_fingerprint",
+        }
+        if not isinstance(participant, dict) or set(participant) != fields \
+                or not HEX_RE.fullmatch(str(participant["node_identity_sha256"])) \
+                or not UUID_RE.fullmatch(str(participant["boot_id_start"])) \
+                or not UUID_RE.fullmatch(str(participant["boot_id_finish"])) \
+                or not HEX_RE.fullmatch(str(participant["plugin_payload_sha256"])) \
+                or not HEX_RE.fullmatch(str(participant["contract_fingerprint"])) \
+                or not isinstance(participant["role"], str) or not ID_RE.fullmatch(participant["role"]) \
+                or not isinstance(participant["running_kernel"], str) \
+                or not participant["running_kernel"]:
+            raise ValueError("participant software/boot identity is malformed")
+        identity = participant["node_identity_sha256"]
+        if identity in participant_identities:
+            raise ValueError("one node identity cannot satisfy multiple participant roles")
+        participant_identities.add(identity)
+        descriptor = obligation["class_descriptors"].get(participant["contract_fingerprint"])
+        if descriptor is None \
+                or participant["running_kernel"] != descriptor["running_kernel"] \
+                or participant["plugin_payload_sha256"] != descriptor["plugin_payload_sha256"]:
+            raise ValueError("participant software tuple differs from class descriptor")
+    participant_classes = {row["contract_fingerprint"] for row in participants}
+    if not set(obligation["classes"]).issubset(participant_classes):
+        raise ValueError("participants do not cover every required contract class")
+    if obligation["transition_id"] is not None:
+        role_classes = {}
+        for row in participants:
+            role_classes.setdefault(row["role"], set()).add(row["contract_fingerprint"])
+        if obligation["source_class"] not in role_classes.get("source", set()) \
+                or obligation["destination_class"] not in role_classes.get("destination", set()) \
+                or not set(obligation["peer_classes"]).issubset(role_classes.get("peer", set())):
+            raise ValueError("directed transition participant roles/classes are incomplete")
+    started, finished = parse_time(execution["started_at"]), parse_time(execution["finished_at"])
+    if started > finished or type(execution["elapsed_ms"]) is not int \
+            or execution["elapsed_ms"] < 0 or execution["elapsed_ms"] > 7 * 86400 * 1000:
+        raise ValueError("execution interval is invalid")
+    precondition = execution["precondition"]
+    if not isinstance(precondition, dict) or precondition.get("proven") is not True \
+            or not HEX_RE.fullmatch(str(precondition.get("evidence_sha256", ""))):
+        raise ValueError("precondition is not positively proven")
+    fault = execution["fault"]
+    fault_required = obligation["fault_required"]
+    if not isinstance(fault, dict) or set(fault) != {
+            "required", "boundary_id", "requested", "confirmed", "evidence_sha256"} \
+            or fault.get("required") is not fault_required \
+            or (fault_required and (fault.get("requested") is not True
+                                    or fault.get("confirmed") is not True
+                                    or not isinstance(fault.get("boundary_id"), str)
+                                    or not fault["boundary_id"])) \
+            or not HEX_RE.fullmatch(str(fault.get("evidence_sha256", ""))):
+        raise ValueError("fault boundary was not independently confirmed")
+    oracle = execution["oracle"]
+    if not isinstance(oracle, dict) or set(oracle) != {
+            "definition_sha256", "expected_sha256", "observed_sha256", "comparison"} \
+            or any(not HEX_RE.fullmatch(str(oracle.get(key, "")))
+                   for key in ("definition_sha256", "expected_sha256", "observed_sha256")) \
+            or oracle.get("comparison") != "MATCH" \
+            or oracle["expected_sha256"] != oracle["observed_sha256"]:
+        raise ValueError("independent oracle did not match")
+    invariants = execution["invariants"]
+    if not isinstance(invariants, dict) or set(invariants) != {
+            "forbidden_actions", "competing_writers", "redispatches", "ambiguous_outcome"} \
+            or any(type(invariants[key]) is not int or invariants[key] != 0
+                   for key in ("forbidden_actions", "competing_writers", "redispatches")) \
+            or invariants["ambiguous_outcome"] is not False:
+        raise ValueError("forbidden/ambiguous behavior was observed")
+    reconciliation = execution["reconciliation"]
+    if not isinstance(reconciliation, dict) or set(reconciliation) != {
+            "complete", "original_transaction_reconciled", "prior_executor_alive",
+            "expected_state_sha256", "observed_state_sha256", "comparison",
+            "fixture_disposition"} \
+            or reconciliation["complete"] is not True \
+            or reconciliation["original_transaction_reconciled"] is not True \
+            or reconciliation["prior_executor_alive"] is not False \
+            or reconciliation["comparison"] != "MATCH" \
+            or reconciliation["fixture_disposition"] not in (
+                "clean", "preserved-for-review", "unchanged") \
+            or not HEX_RE.fullmatch(str(reconciliation["expected_state_sha256"])) \
+            or reconciliation["observed_state_sha256"] != reconciliation["expected_state_sha256"]:
+        raise ValueError("post-test reconciliation is incomplete")
+    if execution["terminal_outcome"] != "PASS":
+        raise ValueError("execution did not terminate with PASS")
+    artifacts = execution["evidence_artifacts"]
+    required_artifacts = {
+        "precondition": precondition["evidence_sha256"],
+        "fault": fault["evidence_sha256"],
+        "oracle_definition": oracle["definition_sha256"],
+        "oracle_expected": oracle["expected_sha256"],
+        "oracle_observed": oracle["observed_sha256"],
+        "reconciliation_expected": reconciliation["expected_state_sha256"],
+        "reconciliation_observed": reconciliation["observed_state_sha256"],
+    }
+    if not isinstance(artifacts, dict) or set(artifacts) != set(required_artifacts):
+        raise ValueError("supporting evidence artifact set is incomplete")
+    for label, expected_sha256 in required_artifacts.items():
+        if verify_artifact(
+                artifacts[label], evidence_root, label, execution, scenario
+        ) != expected_sha256:
+            raise ValueError(f"supporting evidence digest mismatch: {label}")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--catalogue", required=True)
+    parser.add_argument("--scenario-registry")
+    parser.add_argument("--cluster-aggregate", required=True)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--evidence-dir", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args(argv)
+    errors = []
+    try:
+        catalogue, catalogue_sha = load_json(args.catalogue)
+        registry_path = args.scenario_registry or str(
+            pathlib.Path(args.catalogue).with_name("pve-lab-scenarios.json")
+        )
+        registry, registry_sha = load_json(registry_path)
+        aggregate, aggregate_sha = load_json(args.cluster_aggregate)
+        manifest, _manifest_sha = load_json(args.manifest)
+        if not isinstance(catalogue, dict) or not isinstance(registry, dict) \
+                or not isinstance(aggregate, dict) \
+                or not isinstance(manifest, dict):
+            raise ValueError("catalogue, aggregate and manifest roots must be objects")
+        if aggregate.get("kind") != "cluster-compatibility-aggregate" \
+                or type(aggregate.get("schema")) is not int or aggregate.get("schema") != 1 \
+                or aggregate.get("verdict") != "RETEST_REQUIRED" \
+                or aggregate.get("cluster_upgrade_authorized") is not False \
+                or aggregate.get("errors") != []:
+            raise ValueError("cluster aggregate is not complete RETEST_REQUIRED evidence")
+        if manifest.get("kind") != "lab-qualification-manifest" \
+                or type(manifest.get("schema")) is not int or manifest.get("schema") != 1:
+            raise ValueError("lab manifest schema is invalid")
+        contracts = catalogue.get("contracts")
+        lab_schema = catalogue.get("lab_execution_schema")
+        if type(catalogue.get("schema")) is not int or catalogue.get("schema") != 1 \
+                or catalogue.get("catalogue") != "pve-compatibility-contracts-v1" \
+                or not isinstance(contracts, list) or not contracts \
+                or not isinstance(lab_schema, dict) \
+                or set(lab_schema) != {"revision", "required_parameters"} \
+                or type(lab_schema.get("revision")) is not int or lab_schema["revision"] != 1 \
+                or not isinstance(lab_schema.get("required_parameters"), list) \
+                or not lab_schema["required_parameters"] \
+                or any(not isinstance(key, str) or not ID_RE.fullmatch(key)
+                       for key in lab_schema["required_parameters"]) \
+                or len({row.get("id") for row in contracts if isinstance(row, dict)}) != len(contracts) \
+                or aggregate.get("catalogue_sha256") != catalogue_sha:
+            raise ValueError("catalogue is invalid or differs from the cluster aggregate")
+        expected_scenarios = {
+            test for contract in contracts if isinstance(contract, dict)
+            for test in contract.get("lab_tests", [])
+        }
+        scenarios = registry.get("scenarios")
+        if registry.get("schema") != 1 \
+                or registry.get("registry") != "pve-lab-scenarios-v1" \
+                or not isinstance(scenarios, dict) \
+                or set(scenarios) != expected_scenarios:
+            raise ValueError("lab scenario registry is invalid or incomplete")
+        bindings = {
+            "catalogue_sha256": catalogue_sha,
+            "scenario_registry_sha256": registry_sha,
+            "cluster_aggregate_sha256": aggregate_sha,
+            "collection_plan_sha256": aggregate.get("collection_plan_sha256"),
+            "upgrade_plan_sha256": aggregate.get("upgrade_plan_sha256"),
+            "lab_runner_sha256": aggregate.get("lab_runner_sha256"),
+            "dual_sha256": aggregate.get("plugin_artifacts", {}).get("dual_sha256"),
+            "thick_sha256": aggregate.get("plugin_artifacts", {}).get("thick_sha256"),
+        }
+        if any(not isinstance(value, str) or not HEX_RE.fullmatch(value)
+               for value in bindings.values()):
+            raise ValueError("aggregate contains missing or invalid lab bindings")
+        if aggregate.get("scenario_registry_sha256") != registry_sha:
+            raise ValueError("scenario registry differs from qualified cluster aggregate")
+        if any(manifest.get(key) != value for key, value in bindings.items()):
+            raise ValueError("lab manifest binding does not match catalogue/aggregate/plan")
+        obligations = derive_obligations(catalogue, aggregate)
+        if not obligations:
+            raise ValueError("catalogue and aggregate produce no applicable lab obligations")
+        blocked = sorted({
+            obligation["test_id"] for obligation in obligations.values()
+            if scenarios.get(obligation["test_id"], {}).get("status") != "READY"
+        })
+        if blocked:
+            raise ValueError(
+                "required lab scenarios are not executable: " + ",".join(blocked)
+            )
+        references = manifest.get("executions")
+        if not isinstance(references, list) or len(references) > 100000:
+            raise ValueError("lab execution reference list is malformed")
+        seen_attempts = set()
+        seen_obligations = set()
+        covered = set()
+        evidence_root = pathlib.Path(args.evidence_dir).resolve()
+        for reference in references:
+            if not isinstance(reference, dict) or set(reference) != {
+                    "obligation_id", "artifact", "size", "sha256"}:
+                raise ValueError("lab execution reference is malformed")
+            obligation_id = reference["obligation_id"]
+            artifact = reference["artifact"]
+            if obligation_id not in obligations or not isinstance(artifact, str) \
+                    or not ID_RE.fullmatch(artifact) or type(reference["size"]) is not int \
+                    or reference["size"] < 1 or reference["size"] > 8 * 1024 * 1024 \
+                    or not HEX_RE.fullmatch(str(reference["sha256"])):
+                raise ValueError("unknown obligation or unsafe evidence reference")
+            if obligation_id in seen_obligations:
+                raise ValueError("duplicate lab obligation execution")
+            seen_obligations.add(obligation_id)
+            artifact_path = evidence_root / artifact
+            data = read_regular(artifact_path)
+            if len(data) != reference["size"] or hashlib.sha256(data).hexdigest() != reference["sha256"]:
+                raise ValueError("lab execution evidence size/digest mismatch")
+            execution = json.loads(data.decode("utf-8"), object_pairs_hook=_reject_duplicates)
+            if execution.get("obligation_id") != obligation_id:
+                raise ValueError("execution artifact belongs to another obligation")
+            attempt = execution.get("attempt_id")
+            if attempt in seen_attempts:
+                raise ValueError("duplicate lab attempt id")
+            seen_attempts.add(attempt)
+            validate_execution(
+                execution, obligations[obligation_id], bindings["lab_runner_sha256"], evidence_root,
+                scenarios[obligations[obligation_id]["test_id"]],
+            )
+            covered.add(obligation_id)
+        if covered != set(obligations):
+            raise ValueError("lab evidence does not exactly cover all required obligations")
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        errors.append(str(exc))
+        obligations = {}
+        covered = set()
+        bindings = {}
+    document = {
+        "kind": "lab-evidence-evaluation", "schema": 1,
+        "verdict": "BLOCKED" if errors else "LAB_EVIDENCE_COMPLETE",
+        "upgrade_authorized": False,
+        "bindings": bindings,
+        "required_obligations": len(obligations),
+        "covered_obligations": len(covered),
+        "errors": errors,
+        "limitations": [
+            "evidence integrity does not authenticate the reporting host or lab operator",
+            "complete lab evidence does not establish current cluster readiness or authorize upgrade",
+        ],
+    }
+    output = pathlib.Path(args.output)
+    if output.exists():
+        parser.error("output already exists")
+    temporary = pathlib.Path(f"{output}.tmp.{os.getpid()}")
+    with open(temporary, "x", encoding="utf-8") as handle:
+        json.dump(document, handle, sort_keys=True, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, output)
+    print(json.dumps(document, sort_keys=True, indent=2))
+    return 2 if errors else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

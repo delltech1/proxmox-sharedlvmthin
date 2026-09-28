@@ -11,12 +11,111 @@ case "$1" in
 esac
 
 if [ "$1" = "purge" ]; then
+    PURGED_FLAVOR=dual
+    OTHER_PACKAGE=pve-sharedlvmthin-thick
+    OTHER_FLAVOR=thick-only
+    if [ "${DPKG_MAINTSCRIPT_PACKAGE:-}" = "pve-sharedlvmthin-thick" ]; then
+        PURGED_FLAVOR=thick-only
+        OTHER_PACKAGE=pve-sharedlvmthin
+        OTHER_FLAVOR=dual
+    fi
+    FLAVOR_FILE=/usr/share/pve-sharedlvmthin/package-flavor
+    ACTIVE_FLAVOR=
+    if [ -e "$FLAVOR_FILE" ] || [ -L "$FLAVOR_FILE" ]; then
+        if [ ! -f "$FLAVOR_FILE" ] || [ -L "$FLAVOR_FILE" ] || \
+           [ "$(wc -l <"$FLAVOR_FILE" 2>/dev/null)" != 1 ]; then
+            ACTIVE_FLAVOR=invalid
+        else
+            ACTIVE_FLAVOR=$(sed -n '1p' "$FLAVOR_FILE" 2>/dev/null) || \
+                ACTIVE_FLAVOR=invalid
+            if [ "$ACTIVE_FLAVOR" != invalid ] && \
+               ! printf '%s\n' "$ACTIVE_FLAVOR" | cmp -s - "$FLAVOR_FILE"; then
+                ACTIVE_FLAVOR=invalid
+            fi
+        fi
+    fi
+
+    # dpkg's installed-state database is authoritative even if a damaged or
+    # temporarily unreadable package marker supplies no evidence. Never let a
+    # stale residual purge delete state from an installed opposite profile.
+    if ! PACKAGE_STATES=$(dpkg-query -W \
+        -f='${binary:Package}|${db:Status-Status}\n' \
+        'pve-sharedlvmthin*' 2>/dev/null); then
+        echo "WARNING: package database state is unavailable; preserving shared state." >&2
+        exit 0
+    fi
+    if ! OTHER_STATUS=$(printf '%s\n' "$PACKAGE_STATES" | awk -F '|' \
+        -v package="$OTHER_PACKAGE" '
+            $1 == package { if (seen++) exit 2; status=$2 }
+            END { if (seen == 1) print status; else if (seen > 1) exit 2 }
+        '); then
+        echo "WARNING: opposite package state is ambiguous; preserving shared state." >&2
+        exit 0
+    fi
+    case "$OTHER_STATUS" in
+        installed|unpacked|half-configured|half-installed|triggers-awaited|triggers-pending)
+            if [ "$ACTIVE_FLAVOR" != "$OTHER_FLAVOR" ]; then
+                echo "WARNING: payload-bearing $OTHER_PACKAGE conflicts with package-flavor marker; preserving shared state." >&2
+            else
+                echo "Residual $PURGED_FLAVOR package purge: preserving state owned by active $ACTIVE_FLAVOR profile."
+            fi
+            exit 0
+            ;;
+        ''|config-files|not-installed)
+            ;;
+        *)
+            echo "WARNING: unknown $OTHER_PACKAGE package state '$OTHER_STATUS'; preserving shared state." >&2
+            exit 0
+            ;;
+    esac
+
+    # After a Conflicts/Replaces switch, the old package can remain only as a
+    # residual config-files entry. Purging that obsolete entry must never
+    # delete configuration or recovery state owned by the active opposite
+    # profile. When readable, the installed flavor marker supplies a second
+    # independent ownership signal.
+    case "$ACTIVE_FLAVOR" in
+        dual|thick-only)
+            if [ "$ACTIVE_FLAVOR" != "$PURGED_FLAVOR" ]; then
+                echo "Residual $PURGED_FLAVOR package purge: preserving state owned by active $ACTIVE_FLAVOR profile."
+                exit 0
+            fi
+            ;;
+        '')
+            ;;
+        *)
+            echo "WARNING: invalid active SharedLvmThin package flavor; preserving shared state." >&2
+            exit 0
+            ;;
+    esac
+
     LVMLOCAL=/etc/lvm/lvmlocal.conf
     if [ -f "$LVMLOCAL" ]; then
-        sed -i '/^# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW$/,/^# END PVE-SHAREDLVMTHIN MANAGED AUTOGROW$/d' "$LVMLOCAL"
+        LVM_BEGIN='# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW'
+        LVM_END='# END PVE-SHAREDLVMTHIN MANAGED AUTOGROW'
+        if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null || \
+           grep -Fq "$LVM_END" "$LVMLOCAL" 2>/dev/null; then
+            if ! awk -v begin="$LVM_BEGIN" -v end="$LVM_END" '
+                $0 == begin { if (open || seen) exit 2; open=1; seen=1; next }
+                $0 == end { if (!open) exit 2; open=0; closed=1; next }
+                END { if (!seen || open || !closed) exit 2 }
+            ' "$LVMLOCAL"; then
+                echo "ERROR: malformed SharedLvmThin-managed LVM policy markers;" >&2
+                echo "preserving $LVMLOCAL and shared recovery state for manual inspection." >&2
+                exit 1
+            fi
+            sed -i "/^$LVM_BEGIN$/,/^$LVM_END$/d" "$LVMLOCAL"
+        fi
     fi
     rm -rf /etc/pve-sharedlvmthin
-    rm -rf /var/lib/pve-sharedlvmthin
+    # Recovery, migration and maintenance evidence is deliberately persistent.
+    # In particular, deleting and recreating maintenance/.maintenance.lock
+    # would let a purger and an already-open waiter hold different inodes while
+    # both believe they serialize the same namespace.  Preserve the complete
+    # private runtime-state directory on purge; an administrator may remove it
+    # only after separately proving that no transaction, hold, receipt, worker
+    # or process still references it.
+    echo "Preserving /var/lib/pve-sharedlvmthin recovery and maintenance state."
     # py_compile in postinst creates unowned cache artifacts.  Keep cleanup
     # strictly inside the package's private executable directory.
     rm -rf /usr/libexec/pve-sharedlvmthin/__pycache__

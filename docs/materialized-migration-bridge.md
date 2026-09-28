@@ -130,6 +130,18 @@ completed disk count and a positive target recovery check:
 sharedlvmthin-migrate-bridge resume <vmid>
 ```
 
+Concurrent bridge workflows may finish their data moves while another
+transaction is still mutating the same VG. The completed workflow does not
+wait inside its worker for a globally idle VG and does not weaken the global
+health predicate. It preserves `RETURN_THIN_PREPARED` and exits with code 75
+and the explicit fields `BRIDGE=FINALIZATION_PENDING`,
+`DATA_MOVES_COMPLETED=YES`, and `RECOVERY_PLAN=FINALIZE_THIN`. After every
+worker in the submitted burst has terminated, reconcile each pending
+transaction serially. Automatic settlement is permitted only when a fresh
+`plan` returns exactly `FINALIZE_THIN`; `resume` then performs health and
+identity checks but dispatches no data move or delete. Any other plan remains
+an operator-visible refusal rather than a blind retry.
+
 If historical state files make the VMID ambiguous, no file is selected by
 mtime. Inspect the files and provide the exact recorded transaction explicitly:
 

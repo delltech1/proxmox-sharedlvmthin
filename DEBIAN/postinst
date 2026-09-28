@@ -6,10 +6,67 @@ MONITOR=/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor
 MATERIALIZER=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize
 THIN_GUARDD=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd
 HEALTH=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json
+PVE_INVENTORY=/usr/libexec/pve-sharedlvmthin/sharedlvmthin_pve_inventory.py
 WEB=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web
 CONF=/etc/pve-sharedlvmthin/web.conf
 SERVICE=pve-sharedlvmthin-web.service
 THIN_GUARD_SERVICE=pve-sharedlvmthin-thin-guard.service
+PACKAGE_FLAVOR_FILE=/usr/share/pve-sharedlvmthin/package-flavor
+PACKAGE_FLAVOR=$(sed -n '1p' "$PACKAGE_FLAVOR_FILE" 2>/dev/null || true)
+[ "$PACKAGE_FLAVOR" = "dual" ] || [ "$PACKAGE_FLAVOR" = "thick-only" ] || {
+    echo "ERROR: invalid or missing SharedLvmThin package flavor" >&2
+    exit 1
+}
+POSTINST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+if [ "$PACKAGE_FLAVOR" = "dual" ]; then
+    MAINTENANCE_CONTROL_PACKAGE=pve-sharedlvmthin
+else
+    MAINTENANCE_CONTROL_PACKAGE=pve-sharedlvmthin-thick
+fi
+if [ -n "${DPKG_MAINTSCRIPT_PACKAGE:-}" ] && \
+   [ "$DPKG_MAINTSCRIPT_PACKAGE" != "$MAINTENANCE_CONTROL_PACKAGE" ]; then
+    echo "ERROR: maintainer-script package identity differs from package flavor." >&2
+    exit 1
+fi
+MAINTENANCE_CHECK="$POSTINST_DIR/$MAINTENANCE_CONTROL_PACKAGE.sharedlvmthin-package-maintenance-check"
+PACKAGE_ARTIFACT_FILE=/usr/share/pve-sharedlvmthin/package-artifact-sha256
+MAINTENANCE_CONFIGURE=0
+PACKAGE_VERSION=
+PACKAGE_ARTIFACT=
+if [ ! -x "$MAINTENANCE_CHECK" ]; then
+    echo "ERROR: candidate package maintenance probe is missing." >&2
+    exit 1
+fi
+if "$MAINTENANCE_CHECK" --probe-hold; then
+    MAINTENANCE_HOLD=1
+else
+    maintenance_probe_rc=$?
+    if [ "$maintenance_probe_rc" -eq 3 ]; then
+        MAINTENANCE_HOLD=0
+    else
+        echo "ERROR: package maintenance hold state is unsafe or unknown." >&2
+        exit 1
+    fi
+fi
+
+if [ "$MAINTENANCE_HOLD" -eq 1 ]; then
+    [ "$PACKAGE_FLAVOR" = "dual" ] || {
+        echo "ERROR: package maintenance transaction exists for a non-DUAL profile." >&2
+        exit 1
+    }
+    PACKAGE_VERSION=$(dpkg-query -W -f='${Version}' "${DPKG_MAINTSCRIPT_PACKAGE:-pve-sharedlvmthin}")
+    PACKAGE_ARTIFACT=$(sed -n '1p' "$PACKAGE_ARTIFACT_FILE" 2>/dev/null || true)
+    if ! "$MAINTENANCE_CHECK" \
+        --phase CONFIG_COMMITTED \
+        --package "${DPKG_MAINTSCRIPT_PACKAGE:-pve-sharedlvmthin}" \
+        --version "$PACKAGE_VERSION" \
+        --flavor "$PACKAGE_FLAVOR" \
+        --artifact-sha256 "$PACKAGE_ARTIFACT"; then
+        echo "ERROR: package maintenance CONFIG_COMMITTED transaction was not verified." >&2
+        exit 1
+    fi
+    MAINTENANCE_CONFIGURE=1
+fi
 LVMLOCAL=/etc/lvm/lvmlocal.conf
 STATE_DIR=/var/lib/pve-sharedlvmthin
 LVM_BEGIN='# BEGIN PVE-SHAREDLVMTHIN MANAGED AUTOGROW'
@@ -19,26 +76,87 @@ echo
 echo "Configuring SharedLvmThin..."
 
 perl -c "$PLUGIN"
-perl -c "$MONITOR"
 perl -c "$MATERIALIZER"
-perl -c "$THIN_GUARDD"
-python3 -m py_compile "$HEALTH"
-python3 -m py_compile "$WEB"
+if [ "$PACKAGE_FLAVOR" = "dual" ]; then
+    perl -c "$MONITOR"
+    perl -c "$THIN_GUARDD"
+    python3 - "$MAINTENANCE_CHECK" <<'PY'
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+compile(path.read_bytes(), str(path), "exec")
+PY
+fi
+# Compile source in memory. py_compile would leave unowned __pycache__ files in
+# the executable tree and make exact installed-payload attestation ambiguous.
+python3 - "$HEALTH" "$PVE_INVENTORY" "$WEB" <<'PY'
+import pathlib
+import sys
+for raw_path in sys.argv[1:]:
+    path = pathlib.Path(raw_path)
+    compile(path.read_bytes(), str(path), "exec")
+PY
 
-chmod 0755 "$MONITOR" "$MATERIALIZER" "$THIN_GUARDD" "$HEALTH" "$WEB" \
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+# Older package revisions used py_compile. Remove only its well-known cache
+# artifacts; never erase an unknown file from the private runtime namespace.
+PYTHON_CACHE=/usr/libexec/pve-sharedlvmthin/__pycache__
+if [ -L "$PYTHON_CACHE" ]; then
+    echo "ERROR: refusing symlinked legacy Python cache directory: $PYTHON_CACHE" >&2
+    exit 1
+fi
+if [ -d "$PYTHON_CACHE" ]; then
+    find "$PYTHON_CACHE" -maxdepth 1 -type f \
+        \( -name 'sharedlvmthin-health-json*.pyc' \
+        -o -name 'sharedlvmthin_pve_inventory*.pyc' \
+        -o -name 'sharedlvmthin-web*.pyc' \) -delete
+    rmdir "$PYTHON_CACHE" 2>/dev/null || true
+fi
+
+chmod 0755 "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-profile-replacement \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
+
+if [ "$PACKAGE_FLAVOR" = "dual" ]; then
+    chmod 0755 "$MONITOR" "$THIN_GUARDD" \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check
+fi
 
 # Install the tested dmeventd policy only when the administrator has not
 # already selected any of these settings.  Never overwrite a vendor or local
 # SAN policy.  The marked fragment is removable independently during purge.
-mkdir -p "$STATE_DIR"
-if grep -Eq '^[[:space:]]*(thin_command|thin_pool_autoextend_threshold|thin_pool_autoextend_percent)[[:space:]]*=' "$LVMLOCAL" 2>/dev/null; then
+if [ "$MAINTENANCE_CONFIGURE" -eq 1 ]; then
+    echo "Maintenance configure: lvmlocal.conf changes are deferred and must already be prepared."
+else
+    mkdir -p "$STATE_DIR"
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null || \
+       grep -Fq "$LVM_END" "$LVMLOCAL" 2>/dev/null; then
+        # The dual package owns only this explicitly delimited fragment.
+        # Thick-only removes it because its thin_command target is deliberately
+        # absent. Require one complete, non-nested block before editing; a
+        # damaged marker must preserve the file and fail package configuration.
+        if ! awk -v begin="$LVM_BEGIN" -v end="$LVM_END" '
+            $0 == begin { if (open || seen) exit 2; open=1; seen=1; next }
+            $0 == end { if (!open) exit 2; open=0; closed=1; next }
+            END { if (!seen || open || !closed) exit 2 }
+        ' "$LVMLOCAL"; then
+            echo "ERROR: malformed SharedLvmThin-managed LVM policy markers;" >&2
+            echo "preserving $LVMLOCAL unchanged for manual inspection." >&2
+            exit 1
+        fi
+        cp -a "$LVMLOCAL" "$STATE_DIR/lvmlocal.conf.before-thick-only"
+        sed -i "/^$LVM_BEGIN$/,/^$LVM_END$/d" "$LVMLOCAL"
+        echo "Removed obsolete SharedLvmThin-managed Thin autogrow policy."
+    else
+        echo "Thick-only package: no SharedLvmThin-managed Thin autogrow policy is present."
+        echo "Administrator-owned LVM settings were not modified."
+    fi
+elif grep -Eq '^[[:space:]]*(thin_command|thin_pool_autoextend_threshold|thin_pool_autoextend_percent)[[:space:]]*=' "$LVMLOCAL" 2>/dev/null; then
     if grep -Fq "$LVM_BEGIN" "$LVMLOCAL" 2>/dev/null; then
         echo "Existing SharedLvmThin managed LVM autogrow configuration preserved."
     else
@@ -61,13 +179,69 @@ $LVM_END
 EOF
     echo "Installed fail-closed SharedLvmThin dmeventd autogrow policy."
 fi
+fi
 
-systemctl daemon-reload
+if [ "$MAINTENANCE_CONFIGURE" -eq 0 ]; then
+    systemctl daemon-reload
+else
+    echo "Maintenance configure: systemd daemon-reload deferred."
+fi
+
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    for FORBIDDEN_THIN_PATH in \
+        /lib/systemd/system/pve-sharedlvmthin-thin-guard.service \
+        /usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guardd \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-guard-inventory \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-maintenance-check \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
+        /usr/share/perl5/PVE/SharedLvmThinGuard.pm \
+        /usr/share/perl5/PVE/SharedLvmThinGuardClient.pm \
+        /usr/share/perl5/PVE/SharedLvmThinGuardEngine.pm \
+        /usr/share/perl5/PVE/SharedLvmThinGuardInventory.pm \
+        /usr/share/perl5/PVE/SharedLvmThinGuardProtocol.pm \
+        /usr/share/perl5/PVE/SharedLvmThinGuardState.pm \
+        /usr/share/perl5/PVE/SharedLvmThinMobility.pm \
+        /usr/share/perl5/PVE/SharedLvmThinPeerAudit.pm \
+        /usr/share/perl5/PVE/SharedLvmThinRelay.pm \
+        /usr/share/perl5/PVE/SharedLvmThinWatchdog.pm \
+        /usr/sbin/sharedlvmthin-migrate-bridge
+    do
+        if [ -e "$FORBIDDEN_THIN_PATH" ] || [ -L "$FORBIDDEN_THIN_PATH" ]; then
+            echo "ERROR: Thick-only configuration refused: stale Thin component remains:" >&2
+            echo "  $FORBIDDEN_THIN_PATH" >&2
+            echo "Do not use this node until package ownership and profile replacement are repaired." >&2
+            exit 1
+        fi
+    done
+    if ! THIN_GUARD_STATE=$(systemctl show --property ActiveState --value \
+        "$THIN_GUARD_SERVICE" 2>/dev/null); then
+        echo "ERROR: Thick-only configuration refused: ThinGuard runtime state is unavailable." >&2
+        exit 1
+    fi
+    case "$THIN_GUARD_STATE" in
+        inactive|failed) ;;
+        *)
+            echo "ERROR: Thick-only configuration refused: ThinGuard remains '$THIN_GUARD_STATE'." >&2
+            exit 1
+            ;;
+    esac
+    if systemctl is-enabled --quiet "$THIN_GUARD_SERVICE"; then
+        echo "ERROR: Thick-only configuration refused: ThinGuard remains enabled." >&2
+        exit 1
+    fi
+fi
 
 # Never restart an armed runtime guardian during a package transaction. Its
 # in-memory epoch/watchdog bindings remain authoritative until every protected
 # mapper has completed normal PVE teardown.
-if systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
+if [ "$MAINTENANCE_CONFIGURE" -eq 0 ] && [ "$PACKAGE_FLAVOR" = "dual" ] && \
+   systemctl is-active --quiet "$THIN_GUARD_SERVICE"; then
     echo "Active ThinGuard preserved without restart during package upgrade."
     echo "Drain protected VMs, verify the guardian is IDLE, then restart $THIN_GUARD_SERVICE."
 fi
@@ -78,6 +252,9 @@ fi
 # processes load it successfully. Refresh only consumers that are already
 # active; never start a disabled service and never touch corosync/VMs.
 PVE_REFRESH_OK=1
+if [ "$MAINTENANCE_CONFIGURE" -eq 1 ]; then
+    echo "Maintenance configure: PVE consumer refresh deferred."
+else
 for PVE_SERVICE in \
     pvedaemon.service \
     pvestatd.service \
@@ -93,9 +270,12 @@ do
         fi
     fi
 done
+fi
 
 # Existing web configuration is persistent and must never be overwritten.
-if [ -f "$CONF" ]; then
+if [ "$MAINTENANCE_CONFIGURE" -eq 1 ]; then
+    echo "Maintenance configure: dashboard enable/start/configuration deferred."
+elif [ -f "$CONF" ]; then
     echo "Existing web configuration detected."
     echo "Preserving $CONF"
 
@@ -171,14 +351,24 @@ if command -v update-initramfs >/dev/null 2>&1 && command -v lsinitramfs >/dev/n
     done
 
     if [ "$INITRAMFS_REBUILD" -eq 1 ]; then
-        echo "Rebuilding initramfs images without host-only LVM recovery archives..."
-        update-initramfs -u -k all
+        if [ "$MAINTENANCE_CONFIGURE" -eq 1 ]; then
+            echo "ERROR: maintenance configure found host-only LVM recovery archives in initramfs." >&2
+            echo "Prepare clean initramfs images before starting the package transaction." >&2
+            exit 1
+        else
+            echo "Rebuilding initramfs images without host-only LVM recovery archives..."
+            update-initramfs -u -k all
+        fi
     else
         echo "Initramfs images contain no host-only LVM recovery archives; rebuild skipped."
     fi
 fi
 
 HEALTH_OK=0
+if [ "$MAINTENANCE_CONFIGURE" -eq 1 ]; then
+    echo "SharedLvmThin installation preflight: DEFERRED while operation hold is active."
+    echo "This is not a PASS; finalize must run fresh Doctor and recovery checks."
+else
 set +e
 timeout --foreground --kill-after=10 60 /usr/sbin/sharedlvmthin doctor --quick
 DOCTOR_RC=$?
@@ -194,16 +384,36 @@ else
     echo "SharedLvmThin is installed but must NOT be treated as operational."
     echo "Review the output above. The full Doctor was not run automatically."
 fi
+fi
 
 echo
 echo "SharedLvmThin installation complete."
-echo "WARNING: BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL."
+if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
+    echo "WARNING: THICK GENERATIONS IS EXPERIMENTAL."
+else
+    echo "WARNING: BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL."
+fi
 echo "Use only disposable lab hosts, storage and guest data; no support or warranty is offered."
 if [ "$HEALTH_OK" -eq 1 ] && [ "$PVE_REFRESH_OK" -eq 1 ]; then
     echo "Installation status: BOUNDED PREFLIGHT PASSED"
     echo "Run 'sharedlvmthin doctor' for the full per-volume and Thick anchor audit."
 else
     echo "Operational status: NOT READY (installation preflight or PVE service refresh failed)"
+fi
+
+if [ "$MAINTENANCE_CONFIGURE" -eq 1 ]; then
+    if ! "$MAINTENANCE_CHECK" \
+        --phase CONFIG_COMMITTED \
+        --package "${DPKG_MAINTSCRIPT_PACKAGE:-pve-sharedlvmthin}" \
+        --version "$PACKAGE_VERSION" \
+        --flavor "$PACKAGE_FLAVOR" \
+        --artifact-sha256 "$PACKAGE_ARTIFACT" \
+        --record-phase PACKAGE_CONFIGURED_DEFERRED; then
+        echo "ERROR: deferred package configuration receipt was not recorded." >&2
+        exit 1
+    fi
+    echo "OPERATIONAL_READY=NO"
+    echo "PACKAGE_MAINTENANCE_HOLD=ACTIVE"
 fi
 echo
 echo "CLI:"

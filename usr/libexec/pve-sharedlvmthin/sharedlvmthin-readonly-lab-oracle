@@ -1,0 +1,85 @@
+#!/usr/bin/python3
+"""Independent oracle for mutation-free registration/config observations."""
+
+import argparse
+import json
+import re
+import sys
+
+
+def command_ok(row):
+    return isinstance(row, dict) and row.get("rc") == 0 \
+        and isinstance(row.get("stdout"), str) and isinstance(row.get("stderr"), str)
+
+
+def evaluate(document, scenario):
+    if not isinstance(document, dict) or document.get("kind") != "readonly-lab-observation" \
+            or document.get("schema") != 1 or not isinstance(document.get("observation"), dict):
+        raise ValueError("observation envelope is malformed")
+    row = document["observation"]
+    if row.get("scenario_id") != scenario \
+            or row.get("package_flavor") not in {"dual", "thick-only"} \
+            or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("plugin_sha256", ""))) \
+            or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("storage_cfg_sha256", ""))):
+        raise ValueError("common observation identity is invalid")
+    assertions = {}
+    if scenario == "web-ui-registration":
+        probe = row.get("api_probe")
+        assertions["api-probe-exited-cleanly"] = command_ok(probe)
+        try:
+            api = json.loads(probe["stdout"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            api = {}
+        assertions["api-policy-and-plugin-type"] = (
+            api.get("runtime") in (14, 15) and api.get("plugin") == api.get("runtime")
+            and api.get("type") == "sharedlvmthin")
+        assertions["required-hooks-callable"] = bool(api.get("hooks")) \
+            and all(value == 1 for value in api["hooks"].values())
+        assets = row.get("web_assets")
+        assertions["web-assets-present"] = isinstance(assets, dict) \
+            and assets.get("index.html", {}).get("size", 0) > 0 \
+            and re.fullmatch(r"[a-f0-9]{64}", str(
+                assets.get("index.html", {}).get("sha256", ""))) is not None
+        assertions["web-service-unit-loaded"] = command_ok(row.get("web_service")) \
+            and "not-found" not in row["web_service"]["stdout"]
+    elif scenario == "node-scope":
+        probe = row.get("cluster_nodes")
+        try:
+            members = set(json.loads(probe["stdout"])) if command_ok(probe) else set()
+        except (TypeError, json.JSONDecodeError):
+            members = set()
+        storages = row.get("sharedlvmthin_storages")
+        assertions["cluster-members-readable"] = bool(members)
+        assertions["shared-storage-config-present"] = isinstance(storages, dict) \
+            and bool(storages)
+        assertions["node-masks-reference-members-only"] = bool(storages) and all(
+            item.get("nodes") is None or set(item["nodes"]).issubset(members)
+            for item in storages.values())
+    elif scenario == "quorum-read-only":
+        assertions["native-pvecm-status-readable"] = command_ok(row.get("pvecm_status"))
+        assertions["native-quorum-positive"] = command_ok(row.get("quorum_probe")) \
+            and row["quorum_probe"]["stdout"] == "QUORATE\n"
+        assertions["corosync-config-identified"] = re.fullmatch(
+            r"[a-f0-9]{64}", str(row.get("corosync_sha256", ""))) is not None
+    else:
+        raise ValueError("unsupported read-only scenario")
+    return assertions
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("scenario", choices=(
+        "web-ui-registration", "node-scope", "quorum-read-only"))
+    args = parser.parse_args(argv)
+    document = json.load(sys.stdin)
+    assertions = evaluate(document, args.scenario)
+    passed = bool(assertions) and all(assertions.values())
+    print(json.dumps({"kind": "readonly-lab-oracle", "schema": 1,
+                      "scenario_id": args.scenario, "assertions": assertions,
+                      "result": "PASS" if passed else "REFUSE"},
+                     sort_keys=True, indent=2))
+    return 0 if passed else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

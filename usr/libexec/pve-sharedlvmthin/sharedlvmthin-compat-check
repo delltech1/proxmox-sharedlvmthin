@@ -4,6 +4,15 @@
 
 set -u
 
+tmpfiles=()
+cleanup() {
+    local path
+    for path in "${tmpfiles[@]}"; do
+        [ -z "$path" ] || rm -f -- "$path"
+    done
+}
+trap cleanup EXIT
+
 fail=0
 pass=0
 check() {
@@ -63,9 +72,15 @@ echo "COMPATIBILITY_CHECK_VERSION=1"
 echo "HOST=$(hostname)"
 echo "KERNEL=$(uname -r)"
 
-for command in perl python3 pvesm pvesh qm lvs vgs pvs lvcreate lvremove \
-    lvchange lvextend vgcfgbackup dmsetup multipath multipathd iscsiadm \
-    qemu-img qemu-io sha256sum timeout systemctl lsinitramfs update-initramfs; do
+SLT_REQUIRED_RUNTIME_COMMANDS='bash sh perl python3 pvesm pvesh pvecm qm pct lvs vgs pvs
+lvcreate lvremove lvchange lvextend lvconvert lvrename vgchange vgcfgbackup dmsetup
+multipath multipathd iscsiadm qemu-img qemu-io timeout systemctl ssh systemd-run
+blockdev blkdiscard thin_check dd env stat sha256sum sharedlvmthin lsinitramfs
+update-initramfs modinfo modprobe apt-cache apt-config dpkg dpkg-deb dpkg-query
+lsblk lvm pveversion uname dmeventd ip ss openssl ps awk sed grep cmp find flock
+sync cut tr sort wc head cat du date hostname sleep mkdir chmod chown mv rm dirname
+mktemp xargs'
+for command in $SLT_REQUIRED_RUNTIME_COMMANDS; do
     if command -v "$command" >/dev/null 2>&1; then
         echo "PASS=command:$command"
         pass=$((pass + 1))
@@ -75,6 +90,48 @@ for command in perl python3 pvesm pvesh qm lvs vgs pvs lvcreate lvremove \
     fi
 done
 
+thick_required=0
+[ "$(sed -n '1p' /usr/share/pve-sharedlvmthin/package-flavor 2>/dev/null)" != "thick-only" ] \
+    || thick_required=1
+if awk '
+    function emit() {
+        if (inside && disabled !~ /^(1|yes|on|true)$/ && mode ~ /^thick-generations(-lazy)?$/) found=1
+    }
+    /^sharedlvmthin:[[:space:]]+/ { emit(); inside=1; disabled="0"; mode="thin"; next }
+    /^[^[:space:]]/ { emit(); inside=0; next }
+    inside && $1=="disable" { disabled=(NF==1?"1":tolower($2)); next }
+    inside && $1=="slt-allocation-mode" { mode=$2; next }
+    END { emit(); exit found ? 0 : 1 }
+' /etc/pve/storage.cfg; then
+    thick_required=1
+fi
+
+if [ "$thick_required" -eq 1 ]; then
+    # Prove the running kernel can load the experimental target after a reboot
+    # without loading it as a side effect of this read-only compatibility check.
+    check dm-clone-module-available modprobe --dry-run --show-depends dm-clone
+
+    if targets=$(timeout --foreground --kill-after=5 60 dmsetup targets 2>/dev/null); then
+        clone_target=$(awk '$1 == "clone" { print $2 }' <<<"$targets")
+        if [ -z "$clone_target" ]; then
+            echo "PASS=dm-clone-target:not-loaded-module-available"
+            pass=$((pass + 1))
+        elif [[ "$clone_target" =~ ^v1([.]|$) ]]; then
+            echo "PASS=dm-clone-target:$clone_target"
+            pass=$((pass + 1))
+        else
+            echo "FAIL=dm-clone-target:unsupported-version:${clone_target:-ambiguous}"
+            fail=$((fail + 1))
+        fi
+    else
+        echo "FAIL=dm-clone-target:inventory-unavailable"
+        fail=$((fail + 1))
+    fi
+else
+    echo "PASS=dm-clone-target:not-required-by-enabled-storage"
+    pass=$((pass + 1))
+fi
+
 check perl-module-load perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e 1
 check api-and-hook-contract perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e '
     my $api = PVE::Storage::APIVER();
@@ -83,7 +140,8 @@ check api-and-hook-contract perl -MPVE::Storage -MPVE::Storage::Custom::SharedLv
     for my $hook (qw(type plugindata properties options status list_images alloc_image free_image
         activate_storage deactivate_storage activate_volume deactivate_volume volume_size_info
         volume_resize volume_snapshot volume_snapshot_delete volume_snapshot_rollback
-        volume_has_feature path parse_volname)) {
+        volume_snapshot_needs_fsfreeze volume_has_feature path parse_volname
+        filesystem_path clone_image volume_rollback_is_possible)) {
         die "missing hook $hook\n" if !PVE::Storage::Custom::SharedLvmThinPlugin->can($hook);
     }
 '
@@ -119,7 +177,20 @@ fi
 initrd_dirty=0
 for image in /boot/initrd.img-*; do
     [ -f "$image" ] || continue
-    if lsinitramfs "$image" 2>/dev/null | grep -qE '^etc/lvm/(archive|backup)/'; then
+    if ! initrd_inventory=$(mktemp); then
+        echo "FAIL=initramfs-inventory-temporary-file:$image"
+        fail=$((fail + 1))
+        initrd_dirty=1
+        continue
+    fi
+    tmpfiles+=("$initrd_inventory")
+    if ! lsinitramfs "$image" >"$initrd_inventory" 2>/dev/null; then
+        echo "FAIL=initramfs-inventory-unavailable:$image"
+        fail=$((fail + 1))
+        initrd_dirty=1
+        continue
+    fi
+    if grep -qE '^etc/lvm/(archive|backup)/' "$initrd_inventory"; then
         echo "FAIL=initramfs-host-lvm-recovery-copy:$image"
         fail=$((fail + 1))
         initrd_dirty=1
@@ -130,19 +201,32 @@ if [ "$initrd_dirty" -eq 0 ]; then
     pass=$((pass + 1))
 fi
 
-while IFS='|' read -r sid disabled nodes; do
-    [ -n "$sid" ] || continue
-    case "$disabled" in 1|yes|on|true) continue;; esac
-    if [ -n "$nodes" ]; then case ",$nodes," in *",$(hostname),"*) ;; *) continue;; esac; fi
-    check "recovery:$sid" /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$sid"
-done < <(awk '
+if ! storage_inventory=$(mktemp); then
+    echo "FAIL=storage-inventory-temporary-file"
+    fail=$((fail + 1))
+    storage_inventory=
+else
+    tmpfiles+=("$storage_inventory")
+fi
+if [ -n "$storage_inventory" ] && ! awk '
     function emit(){if(inside) print sid "|" disabled "|" nodes}
     /^sharedlvmthin:[[:space:]]+/{emit(); inside=1; sid=$2; disabled="0"; nodes=""; next}
     /^[^[:space:]]/{emit(); inside=0; next}
     inside && $1=="disable"{disabled=(NF==1?"1":tolower($2)); next}
     inside && $1=="nodes"{nodes=$2; next}
     END{emit()}
-' /etc/pve/storage.cfg)
+' /etc/pve/storage.cfg >"$storage_inventory"; then
+    echo "FAIL=storage-inventory-unavailable"
+    fail=$((fail + 1))
+    storage_inventory=
+fi
+
+while IFS='|' read -r sid disabled nodes; do
+    [ -n "$sid" ] || continue
+    case "$disabled" in 1|yes|on|true) continue;; esac
+    if [ -n "$nodes" ]; then case ",$nodes," in *",$(hostname),"*) ;; *) continue;; esac; fi
+    check "recovery:$sid" /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$sid"
+done < "${storage_inventory:-/dev/null}"
 
 if ps -eo stat= | grep -q '^D'; then
     echo "FAIL=global-dstate-present"
