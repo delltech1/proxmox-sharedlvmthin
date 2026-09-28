@@ -1024,6 +1024,8 @@ exit 0
         self.assertFalse(log.exists(), "dpkg was reached after termination")
 
     @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    @unittest.skipIf(os.environ.get("SLT_PORTABLE_CI") == "1",
+                     "execute environment gate requires a qualified package host")
     def test_package_profile_gate_execute_uses_clean_environment(self):
         old_values = {
             name: os.environ.get(name)

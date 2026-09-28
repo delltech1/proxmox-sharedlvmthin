@@ -19,6 +19,8 @@ class Crash(Exception):
     pass
 
 
+@unittest.skipIf(os.environ.get("SLT_PORTABLE_CI") == "1",
+                 "requires qualified inode replacement semantics")
 class LocalHoldReleaseFileLabTests(unittest.TestCase):
     def fixture(self):
         temp = tempfile.TemporaryDirectory()

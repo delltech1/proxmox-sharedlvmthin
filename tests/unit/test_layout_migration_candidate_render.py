@@ -31,6 +31,8 @@ def good():
     return [("./" + p, tarfile.REGTYPE, b"test", 0o644) for p in (M.PLUGIN, M.ARTIFACT, M.FLAVOR)]
 
 
+@unittest.skipIf(os.environ.get("SLT_PORTABLE_CI") == "1",
+                 "requires a qualified PVE host filesystem and /etc/pve fixture")
 class CandidateRender(unittest.TestCase):
     def test_select_only_modules_and_identity(self):
         rows = good() + [("./usr/sbin/should-not-run", tarfile.REGTYPE, b"bad", 0o755)]

@@ -6,6 +6,7 @@ def module(name,path):
  s=importlib.util.spec_from_file_location(name,path);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
 M=module("writer",ROOT/"experiments/thick-generations/layout-migration-live-hold-writer.py")
 A=module("adapter_test",ROOT/"tests/unit/test_layout_migration_v2_v1_adapter.py")
+@unittest.skipIf(os.environ.get("SLT_PORTABLE_CI") == "1", "requires qualified inode replacement semantics")
 class Tests(unittest.TestCase):
  def fixture(self,node="pve01"):
   af=A.Tests().fixture();projection=A.Tests().project(af);manifest=projection["manifest"];sidecar=projection["sidecar"];now=af[7];boot=next(x["boot_id"] for x in af[3]["nodes"] if x["name"]==node)
