@@ -26,7 +26,7 @@ jobs:
           bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
           node --check experiments/thick-generations/web-dual-mode-live-check.js
           perl -Itests/unit/lib -Iusr/share/perl5 -c usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize
-          python3 -m py_compile usr/libexec/pve-sharedlvmthin/sharedlvmthin-web usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
+          sudo python3 -m py_compile usr/libexec/pve-sharedlvmthin/sharedlvmthin-web usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
       - name: Shell static analysis
         run: |
           shellcheck -x scripts/*.sh experiments/thick-generations/*.sh \

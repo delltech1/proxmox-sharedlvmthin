@@ -31,7 +31,7 @@ jobs:
             DEBIAN/preinst DEBIAN/postinst DEBIAN/prerm DEBIAN/postrm \
             usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
-          python3 -m py_compile \
+          sudo python3 -m py_compile \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-web \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
