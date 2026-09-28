@@ -17,7 +17,10 @@ jobs:
       - name: Portable Python unit tests
         run: sudo env SLT_PORTABLE_CI=1 python3 -m unittest discover -s tests/unit -v
       - name: Perl unit tests
-        run: prove -Itests/unit/lib -v tests/unit/*.t
+        run: |
+          sudo install -d -m 0755 /usr/share/pve-sharedlvmthin
+          printf 'dual\n' | sudo tee /usr/share/pve-sharedlvmthin/package-flavor >/dev/null
+          prove -Itests/unit/lib -v tests/unit/*.t
       - name: Syntax checks
         run: |
           bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
