@@ -22,8 +22,7 @@ jobs:
 
       - name: Run qualification tests
         run: |
-          python3 -m unittest discover -s tests/unit -v
-          sudo python3 -m unittest -v tests.unit.test_profile_replacement
+          sudo python3 -m unittest discover -s tests/unit -v
           prove -Itests/unit/lib -v tests/unit/*.t
           bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/preinst DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
           shellcheck -x scripts/*.sh experiments/thick-generations/*.sh \
