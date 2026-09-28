@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo install -d -m 0755 /usr/share/pve-sharedlvmthin
           printf 'dual\n' | sudo tee /usr/share/pve-sharedlvmthin/package-flavor >/dev/null
-          prove -Itests/unit/lib -v tests/unit/*.t
+          sudo prove -Itests/unit/lib -v tests/unit/*.t
       - name: Syntax checks
         run: |
           bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm

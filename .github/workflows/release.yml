@@ -25,7 +25,7 @@ jobs:
           sudo env SLT_PORTABLE_CI=1 python3 -m unittest discover -s tests/unit -v
           sudo install -d -m 0755 /usr/share/pve-sharedlvmthin
           printf 'dual\n' | sudo tee /usr/share/pve-sharedlvmthin/package-flavor >/dev/null
-          prove -Itests/unit/lib -v tests/unit/*.t
+          sudo prove -Itests/unit/lib -v tests/unit/*.t
           bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/preinst DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
           shellcheck -x scripts/*.sh experiments/thick-generations/*.sh \
             DEBIAN/preinst DEBIAN/postinst DEBIAN/prerm DEBIAN/postrm \
