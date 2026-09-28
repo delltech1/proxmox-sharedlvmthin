@@ -32,6 +32,13 @@ class BridgePlanTests(unittest.TestCase):
     def test_partial_source_materialization_continues(self):
         self.assertEqual(self.classify(), "CONTINUE_MATERIALIZE")
 
+    def test_directional_materialization_failure_continues_only_on_source(self):
+        self.assertEqual(self.classify(phase="MATERIALIZE_FAILED"), "CONTINUE_MATERIALIZE")
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            self.classify(
+                phase="MATERIALIZE_FAILED", authority="target",
+                thin_count=1, thick_count=2, admission="exact")
+
     def test_all_thick_source_migrates(self):
         self.assertEqual(self.classify(thin_count=0, thick_count=3), "MIGRATE_THICK")
 
@@ -44,6 +51,13 @@ class BridgePlanTests(unittest.TestCase):
         self.assertEqual(self.classify(
             phase="RETURN_THIN_PREPARED", authority="target", thin_count=1,
             thick_count=2, admission="none"), "CONTINUE_RETURN_THIN")
+
+    def test_directional_return_failure_continues_only_on_target(self):
+        self.assertEqual(self.classify(
+            phase="RETURN_FAILED", authority="target", thin_count=1,
+            thick_count=2, admission="exact"), "CONTINUE_RETURN_THIN")
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            self.classify(phase="RETURN_FAILED")
 
     def test_all_thin_target_finalizes(self):
         self.assertEqual(self.classify(
@@ -63,11 +77,39 @@ class BridgePlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "foreign or duplicate"):
             self.classify(thin_count=1, thick_count=1)
 
-    def test_target_with_unreleased_admission_refuses(self):
-        with self.assertRaisesRegex(ValueError, "released VG admission"):
+    def test_target_exact_return_admission_can_resume(self):
+        self.assertEqual(self.classify(
+            phase="MIGRATED_THICK", authority="target", thin_count=0,
+            thick_count=3, admission="exact"), "PREPARE_RETURN_THIN")
+        self.assertEqual(self.classify(
+            phase="RETURNING_THIN", authority="target", thin_count=1,
+            thick_count=2, admission="exact"), "CONTINUE_RETURN_THIN")
+        self.assertEqual(self.classify(
+            phase="RETURNING_THIN", authority="target", thin_count=3,
+            thick_count=0, admission="exact"), "FINALIZE_THIN")
+
+    def test_keep_thick_target_with_admission_refuses(self):
+        with self.assertRaisesRegex(ValueError, "unexpected active admission"):
             self.classify(
-                phase="MIGRATED_THICK", authority="target", thin_count=0,
-                thick_count=3, admission="exact")
+                phase="MIGRATED_THICK", authority="target", return_thin=0,
+                thin_count=0, thick_count=3, admission="exact")
+
+    def test_durable_finalizing_thick_state_never_returns_to_copy_path(self):
+        for admission in ("none", "exact"):
+            self.assertEqual(self.classify(
+                phase="FINALIZING_THICK", authority="target", return_thin=0,
+                thin_count=0, thick_count=3, admission=admission,
+            ), "FINALIZE_THICK_ONLY")
+        with self.assertRaisesRegex(ValueError, "contradicts"):
+            self.classify(
+                phase="FINALIZING_THICK", authority="target", return_thin=1,
+                thin_count=0, thick_count=3, admission="exact",
+            )
+        with self.assertRaisesRegex(ValueError, "another transaction"):
+            self.classify(
+                phase="FINALIZING_THICK", authority="target", return_thin=0,
+                thin_count=0, thick_count=3, admission="foreign",
+            )
 
     def test_impossible_phase_authority_pair_refuses(self):
         with self.assertRaisesRegex(ValueError, "incompatible"):

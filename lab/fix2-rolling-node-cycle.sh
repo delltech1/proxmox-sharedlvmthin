@@ -75,7 +75,8 @@ validate_vmid_file() {
 
 snapshot() {
     require_cluster_health
-    mkdir -p -m 0700 "$state_dir"
+    mkdir -p "$state_dir"
+    chmod 0700 "$state_dir"
     local tmp="$state_dir/.running-before.$$"
     qm list | awk 'NR > 1 && $3 == "running" {print $1}' | sort -n >"$tmp"
     [[ -s "$tmp" ]] || { rm -f "$tmp"; die 'no running VMs found; refusing ambiguous snapshot'; }

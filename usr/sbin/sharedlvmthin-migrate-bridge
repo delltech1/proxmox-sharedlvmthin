@@ -9,12 +9,133 @@ set -Eeuo pipefail
 export LC_ALL=C
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
+cfg_value() {
+    local sid=$1 key=$2
+    awk -v sid="$sid" -v key="$key" '
+        $1 == "sharedlvmthin:" && $2 == sid { inside=1; next }
+        /^[^[:space:]]/ { inside=0 }
+        inside && $1 == key { print $2; found=1; exit }
+        END { if (!found) exit 1 }
+    ' /etc/pve/storage.cfg
+}
+
+cfg_optional() {
+    cfg_value "$1" "$2" 2>/dev/null || true
+}
+
+# Print one storage alias per distinct VG, ordered by the pinned VG UUID.  No
+# PVE/LVM lock is retained while a copy runs.  The durable VG tags are the
+# admission authority and every plugin mutation validates the exact tx/node
+# context before it can pass the canonical VG lock.
+bridge_admission_order() {
+    local thin=$1 thick=$2 thin_vg thick_vg thin_uuid thick_uuid
+    thin_vg=$(cfg_value "$thin" slt-vgname)
+    thick_vg=$(cfg_value "$thick" slt-vgname)
+    thin_uuid=$(cfg_value "$thin" slt-expected-vg-uuid)
+    thick_uuid=$(cfg_value "$thick" slt-expected-vg-uuid)
+    [[ $thin_uuid =~ ^[A-Za-z0-9-]+$ && $thick_uuid =~ ^[A-Za-z0-9-]+$ ]] \
+        || { echo "bridge requires pinned VG UUID identities" >&2; return 70; }
+    if [ "$thin_uuid" = "$thick_uuid" ]; then
+        [ "$thin_vg" = "$thick_vg" ] \
+            || { echo "one VG UUID resolves to different VG names" >&2; return 70; }
+        printf '%s\n' "$thin"
+    elif [[ $thin_uuid < $thick_uuid ]]; then
+        printf '%s\n%s\n' "$thin" "$thick"
+    else
+        printf '%s\n%s\n' "$thick" "$thin"
+    fi
+}
+
+bridge_acquire_local_set() {
+    local tx=$1 node=$2 thin=$3 thick=$4 store output failure_rc
+    local -a acquired=() ordered=()
+    mapfile -t ordered < <(bridge_admission_order "$thin" "$thick")
+    [ "${#ordered[@]}" -ge 1 ] || return 70
+    for store in "${ordered[@]}"; do
+        if ! output=$(/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+            acquire "$store" "$tx" "$node" 2>&1); then
+            failure_rc=70
+            grep -q "migration-bridge admission is held by node" <<<"$output" \
+                && failure_rc=75
+            while [ "${#acquired[@]}" -gt 0 ]; do
+                store=${acquired[-1]}; unset 'acquired[-1]'
+                /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                    release "$store" "$tx" "$node" >/dev/null \
+                    || { echo "partial bridge admission rollback is UNKNOWN; recovery required" >&2; return 70; }
+            done
+            printf '%s\n' "$output" >&2
+            return "$failure_rc"
+        fi
+        printf '%s\n' "$output"
+        grep -qx BRIDGE_ADMISSION_ACQUIRED <<<"$output" && acquired+=("$store")
+    done
+    return 0
+}
+
+bridge_release_local_set() {
+    local tx=$1 node=$2 thin=$3 thick=$4 store
+    local -a ordered=()
+    mapfile -t ordered < <(bridge_admission_order "$thin" "$thick")
+    for ((i=${#ordered[@]}-1; i>=0; i--)); do
+        store=${ordered[i]}
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+            release "$store" "$tx" "$node"
+    done
+}
+
+# Return: VG_FREE REQUIRED_WITH_RESERVE RESERVE PHYSICAL_GROWTH.  Use the same
+# reserve evaluator as the plugin and conservatively include one 8 MiB anchor
+# allowance plus one extent of rounding slack per destination disk.
+bridge_thick_capacity() {
+    local store=$1 vg=$2 growth=$3 disks=$4 fields percent gib
+    fields=$(/sbin/vgs --readonly --noheadings --units b --nosuffix --separator '|' \
+        -o vg_size,vg_free,vg_extent_size "$vg" | tr -d '[:space:]')
+    percent=$(cfg_optional "$store" slt-vg-reserve-percent); percent=${percent:-0}
+    gib=$(cfg_optional "$store" slt-vg-reserve-gib); gib=${gib:-0}
+    /usr/bin/perl -I/usr/share/perl5 -MPVE::SharedLvmThinSafety -e '
+        my ($fields, $growth, $disks, $percent, $gib) = @ARGV;
+        die "invalid aggregate bridge input\n"
+            if $growth !~ /^\d+$/ || $disks !~ /^[1-9]\d*$/
+            || $percent !~ /^\d+(?:\.\d+)?$/ || $gib !~ /^\d+(?:\.\d+)?$/;
+        my ($size, $free, $extent) = split(/\|/, $fields, -1);
+        die "invalid VG capacity observation\n"
+            if grep { !defined($_) || $_ !~ /^\d+(?:\.\d+)?$/ } ($size, $free, $extent);
+        my $overhead = $disks * (8 * 1024 * 1024 + int($extent));
+        my $d = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(
+            vg_size => int($size), vg_free => int($free), growth_bytes => int($growth),
+            overhead_bytes => $overhead, extent_bytes => int($extent),
+            reserve_percent => $percent, reserve_gib => $gib,
+        );
+        print int($free), " ", $d->{required_physical_bytes} + $d->{reserve_bytes},
+            " ", $d->{reserve_bytes}, " ", $d->{required_physical_bytes}, "\n";
+    ' "$fields" "$growth" "$disks" "$percent" "$gib"
+}
+
 usage() {
     echo "Usage: sharedlvmthin-migrate-bridge <preflight|run> <vmid> <target-node> <thin-storage> <thick-storage> [--keep-thick]" >&2
     echo "       sharedlvmthin-migrate-bridge inspect <vmid> [transaction]" >&2
     echo "       sharedlvmthin-migrate-bridge plan <vmid> [transaction]" >&2
     echo "       sharedlvmthin-migrate-bridge resume <vmid> [transaction]" >&2
+    echo "       sharedlvmthin-migrate-bridge finalize-thick <vmid> [transaction]" >&2
     exit 64
+}
+
+# A completed data move may settle while another independent transaction is
+# still mutating the same VG.  Preserve the exact recovery-check evidence and
+# let the caller publish an explicit finalization-pending result; never turn a
+# global health failure into PASS and never retry a data move.
+final_health_is_safe() {
+    local output rc
+    if output=$("$@" 2>&1); then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" -eq 0 ] && grep -qx 'SAFE_FOR_MUTATION=YES' <<<"$output"; then
+        return 0
+    fi
+    printf '%s\n' "$output" >&2
+    return 1
 }
 
 # Inspection is intentionally outside the per-VM mutation lock. It reads one
@@ -71,7 +192,7 @@ if [ "${1:-}" = inspect ]; then
     [ "$inspect_now" -ge "$inspect_updated" ] \
         || { echo "bridge state updated_at is in the future" >&2; exit 70; }
     awk -F= '
-        $1 ~ /^(version|tx|vmid|source_node|target_node|thin_storage|thick_storage|return_thin|phase|disk_count|completed_disks|current_disk|progress_percent|total_bytes|started_at|updated_at|config_sha256|disk_manifest_sha256)$/ {
+        $1 ~ /^(version|tx|vmid|source_node|target_node|thin_storage|thick_storage|thin_vg|thick_vg|thin_vg_uuid|thick_vg_uuid|return_thin|phase|disk_count|completed_disks|current_disk|progress_percent|total_bytes|started_at|updated_at|config_sha256|disk_manifest_sha256)$/ {
             print toupper($1) "=" substr($0, index($0, "=") + 1)
         }
     ' "$latest"
@@ -93,11 +214,11 @@ if [ "${1:-}" != --locked ]; then
 fi
 shift
 
-# Resume is deliberately evidence-scoped. The first supported recovery point
-# is a completed return-to-Thin copy whose final health check or state publish
-# was interrupted. Earlier/mixed phases remain fail-closed; they are not
-# guessed into completion.
-if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
+# Recovery is deliberately evidence-scoped. Resume follows the saved policy;
+# finalize-thick is a separate explicit operator decision for an already
+# migrated, QMP-proven Thick target. Earlier/mixed phases remain fail-closed;
+# they are never guessed into completion.
+if [[ ${1:-} =~ ^(plan|resume|finalize-thick)$ ]]; then
     [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || usage
     bridge_action=$1
     resume_vmid=$2
@@ -135,7 +256,7 @@ if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
     return_thin=$(state_value return_thin); phase=$(state_value phase)
     disk_count=$(state_value disk_count); completed_disks=$(state_value completed_disks)
     total_bytes=$(state_value total_bytes)
-    [[ $version =~ ^(2|3)$ && $tx =~ ^[0-9a-f]{32}$ && $vmid = "$resume_vmid" ]] \
+    [[ $version =~ ^(2|3|4)$ && $tx =~ ^[0-9a-f]{32}$ && $vmid = "$resume_vmid" ]] \
         || { echo "invalid bridge state identity" >&2; exit 70; }
     [[ -z $requested_tx || $tx = "$requested_tx" ]] \
         || { echo "bridge state transaction does not match the requested transaction" >&2; exit 70; }
@@ -146,7 +267,16 @@ if [[ ${1:-} =~ ^(plan|resume)$ ]]; then
     [[ $return_thin =~ ^[01]$ && $disk_count =~ ^[1-9][0-9]*$ \
         && $completed_disks =~ ^[0-9]+$ ]] \
         || { echo "invalid bridge policy or disk counters" >&2; exit 70; }
-    if [ "$version" = 3 ]; then
+    if [ "$version" = 4 ]; then
+        saved_thin_vg=$(state_value thin_vg); saved_thick_vg=$(state_value thick_vg)
+        saved_thin_uuid=$(state_value thin_vg_uuid); saved_thick_uuid=$(state_value thick_vg_uuid)
+        [ "$saved_thin_vg" = "$(cfg_value "$thin_store" slt-vgname)" ] \
+            && [ "$saved_thick_vg" = "$(cfg_value "$thick_store" slt-vgname)" ] \
+            && [ "$saved_thin_uuid" = "$(cfg_value "$thin_store" slt-expected-vg-uuid)" ] \
+            && [ "$saved_thick_uuid" = "$(cfg_value "$thick_store" slt-expected-vg-uuid)" ] \
+            || { echo "bridge VG identity changed since transaction creation" >&2; exit 70; }
+    fi
+    if [[ $version =~ ^(3|4)$ ]]; then
         manifest_digest=$(state_value disk_manifest_sha256)
         manifest_file="$resume_dir/$vmid-$tx.manifest"
         [[ $manifest_digest =~ ^[0-9a-f]{64}$ ]] \
@@ -189,7 +319,7 @@ print(rows[0].get("node", ""))' "$vmid"
         echo "authoritative VM node is neither saved source nor target" >&2
         exit 70
     fi
-    if [ "$version" = 3 ]; then
+    if [[ $version =~ ^(3|4)$ ]]; then
         cmp -s \
             <(cut -d'|' -f1 "$manifest_file" | sort) \
             <(printf '%s\n' "$authoritative_cfg" | awk '
@@ -243,18 +373,130 @@ print(rows[0].get("node", ""))' "$vmid"
             END {print n+0, t+0, k+0}
         '
     )
-    admission_output=$(
-        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
-            inspect "$thin_store" "$tx" "$source_node"
-    )
-    if grep -qx 'BRIDGE_ADMISSION_ACTIVE=NO' <<<"$admission_output"; then
+    mapfile -t resume_admission_stores < <(bridge_admission_order "$thin_store" "$thick_store")
+    [ "${#resume_admission_stores[@]}" -ge 1 ] \
+        || { echo "cannot derive canonical bridge admission set" >&2; exit 70; }
+    admission_owner=$source_node
+    [ "$authority" = target ] && admission_owner=$target
+    admission_none=0 admission_exact=0 admission_foreign=0
+    declare -A admission_by_store=()
+    for admission_store in "${resume_admission_stores[@]}"; do
+        admission_output=$(
+            /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                inspect "$admission_store" "$tx" "$admission_owner"
+        )
+        if grep -qx 'BRIDGE_ADMISSION_ACTIVE=NO' <<<"$admission_output"; then
+            admission_none=$((admission_none + 1))
+            admission_by_store["$admission_store"]=none
+        elif grep -qx 'BRIDGE_ADMISSION_ACTIVE=YES' <<<"$admission_output" \
+            && grep -qx "BRIDGE_ADMISSION_TX=$tx" <<<"$admission_output" \
+            && grep -qx "BRIDGE_ADMISSION_NODE=$admission_owner" <<<"$admission_output"; then
+            admission_exact=$((admission_exact + 1))
+            admission_by_store["$admission_store"]=exact
+        else
+            admission_foreign=$((admission_foreign + 1))
+            admission_by_store["$admission_store"]=foreign
+        fi
+    done
+    if [ "$admission_none" -eq "${#resume_admission_stores[@]}" ]; then
         admission=none
-    elif grep -qx 'BRIDGE_ADMISSION_ACTIVE=YES' <<<"$admission_output" \
-        && grep -qx "BRIDGE_ADMISSION_TX=$tx" <<<"$admission_output" \
-        && grep -qx "BRIDGE_ADMISSION_NODE=$source_node" <<<"$admission_output"; then
+    elif [ "$admission_exact" -eq "${#resume_admission_stores[@]}" ]; then
         admission=exact
     else
         admission=foreign
+    fi
+    resume_publish_state() {
+        local new_phase=$1 new_completed=$2 new_current=$3 new_progress=$4
+        local new_return_thin=${5:-} tmp="$resume_file.tmp.$$" now digest candidate
+        local -a config_paths=()
+        now=$(date +%s)
+        for candidate in /etc/pve/nodes/*/qemu-server/"$vmid".conf; do
+            [ -f "$candidate" ] && config_paths+=("$candidate")
+        done
+        [ "${#config_paths[@]}" -eq 1 ] \
+            || { echo "cannot prove one authoritative VM configuration while publishing recovery state" >&2; return 70; }
+        digest=$(sha256sum "${config_paths[0]}" | cut -d' ' -f1)
+        awk -F= -v phase="$new_phase" -v completed="$new_completed" \
+            -v current="$new_current" -v progress="$new_progress" \
+            -v now="$now" -v digest="$digest" -v policy="$new_return_thin" '
+            $1 == "phase" {print "phase=" phase; next}
+            $1 == "return_thin" && policy != "" {print "return_thin=" policy; next}
+            $1 == "completed_disks" {print "completed_disks=" completed; next}
+            $1 == "current_disk" {print "current_disk=" current; next}
+            $1 == "progress_percent" {print "progress_percent=" progress; next}
+            $1 == "updated_at" {print "updated_at=" now; next}
+            $1 == "config_sha256" {print "config_sha256=" digest; next}
+            {print}
+        ' "$resume_file" >"$tmp"
+        chmod 0600 "$tmp"; chown root:root "$tmp"; sync -f "$tmp"
+        mv -f "$tmp" "$resume_file"; sync -f "$resume_dir"
+    }
+    if [ "$bridge_action" = finalize-thick ]; then
+        [ "$version" = 4 ] && [ "$authority" = target ] \
+            && [ "$observed_disks" -eq "$disk_count" ] \
+            && [ "$observed_thin" -eq 0 ] \
+            && [ "$observed_thick" -eq "$disk_count" ] \
+            || { echo "finalize-Thick requires a version-4 migrated target with every disk proven Thick" >&2; exit 70; }
+        if [ "$phase" = MIGRATED_THICK ] && [ "$return_thin" = 1 ]; then
+            :
+        elif [ "$phase" = FINALIZING_THICK ] && [ "$return_thin" = 0 ]; then
+            :
+        else
+            echo "bridge recovery state is not eligible for explicit Thick settlement" >&2
+            exit 70
+        fi
+
+        # Re-inspect every independently tagged VG.  A retry after a crash may
+        # observe an exact claim on one VG and no claim on another; that is
+        # safe only for this no-more-data-moves settlement.  Any foreign claim
+        # remains an unconditional refusal.
+        finalize_release=()
+        for admission_store in "${resume_admission_stores[@]}"; do
+            if [ "${admission_by_store[$admission_store]}" = none ]; then
+                continue
+            fi
+            if [ "${admission_by_store[$admission_store]}" = exact ]; then
+                finalize_release+=("$admission_store")
+                continue
+            fi
+            echo "foreign bridge admission blocks explicit Thick settlement" >&2
+            exit 70
+        done
+        # Persist the operator's no-more-return-copy decision before releasing
+        # either VG.  A crash from here onward can be resumed only by this
+        # explicit settlement action; ordinary resume cannot authorize I/O.
+        if [ "$phase" = MIGRATED_THICK ]; then
+            resume_publish_state FINALIZING_THICK "$disk_count" none 100 0
+            phase=FINALIZING_THICK
+            return_thin=0
+        fi
+        "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+            PVE_SLT_BRIDGE_NODE="$target" sharedlvmthin recovery-check "$thin_store" \
+            | grep -qx 'SAFE_FOR_MUTATION=YES'
+        "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+            PVE_SLT_BRIDGE_NODE="$target" sharedlvmthin recovery-check "$thick_store" \
+            | grep -qx 'SAFE_FOR_MUTATION=YES'
+        for ((i=${#finalize_release[@]}-1; i>=0; i--)); do
+            "${ssh_base[@]}" -- \
+                /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                release "${finalize_release[i]}" "$tx" "$target"
+        done
+        for admission_store in "${resume_admission_stores[@]}"; do
+            admission_output=$(
+                /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                    inspect "$admission_store" "$tx" "$target"
+            )
+            grep -qx 'BRIDGE_ADMISSION_ACTIVE=NO' <<<"$admission_output" \
+                || { echo "bridge admission release is not positively proven" >&2; exit 70; }
+        done
+        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" \
+            | grep -qx 'SAFE_FOR_MUTATION=YES'
+        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store" \
+            | grep -qx 'SAFE_FOR_MUTATION=YES'
+        resume_publish_state COMPLETE_THICK "$disk_count" none 100 0
+        printf 'BRIDGE_RESUME=PASS\nTX=%s\nFINAL_PHASE=COMPLETE_THICK\nSTATE_FILE=%s\n' \
+            "$tx" "$resume_file"
+        exit 0
     fi
     recovery_plan=$(
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
@@ -269,47 +511,29 @@ print(rows[0].get("node", ""))' "$vmid"
         printf '%s\n' "$recovery_plan"
         exit 0
     fi
-    resume_publish_state() {
-        local new_phase=$1 new_completed=$2 new_current=$3 new_progress=$4
-        local tmp="$resume_file.tmp.$$" now digest candidate
-        local -a config_paths=()
-        now=$(date +%s)
-        for candidate in /etc/pve/nodes/*/qemu-server/"$vmid".conf; do
-            [ -f "$candidate" ] && config_paths+=("$candidate")
-        done
-        [ "${#config_paths[@]}" -eq 1 ] \
-            || { echo "cannot prove one authoritative VM configuration while publishing recovery state" >&2; return 70; }
-        digest=$(sha256sum "${config_paths[0]}" | cut -d' ' -f1)
-        awk -F= -v phase="$new_phase" -v completed="$new_completed" \
-            -v current="$new_current" -v progress="$new_progress" \
-            -v now="$now" -v digest="$digest" '
-            $1 == "phase" {print "phase=" phase; next}
-            $1 == "completed_disks" {print "completed_disks=" completed; next}
-            $1 == "current_disk" {print "current_disk=" current; next}
-            $1 == "progress_percent" {print "progress_percent=" progress; next}
-            $1 == "updated_at" {print "updated_at=" now; next}
-            $1 == "config_sha256" {print "config_sha256=" digest; next}
-            {print}
-        ' "$resume_file" >"$tmp"
-        chmod 0600 "$tmp"; chown root:root "$tmp"; sync -f "$tmp"
-        mv -f "$tmp" "$resume_file"; sync -f "$resume_dir"
-    }
     resume_progress_move() {
         local slot=$1 destination=$2 completed=$3 execution_node=${4:-local}
+        local active_phase=$5 failure_phase=$6
         local line observed now last_persist=0 rc
-        resume_publish_state MATERIALIZING "$completed" "$slot" 0
+        [[ $active_phase =~ ^(MATERIALIZING|RETURNING_THIN)$ \
+            && $failure_phase =~ ^(MATERIALIZE_FAILED|RETURN_FAILED)$ ]] \
+            || { echo "invalid directional move phase" >&2; return 70; }
+        resume_publish_state "$active_phase" "$completed" "$slot" 0
         set +e
         if [ "$execution_node" = local ]; then
-            qm disk move "$vmid" "$slot" "$destination" --delete 1 2>&1
+            env PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$source_node" \
+                qm disk move "$vmid" "$slot" "$destination" --delete 1 2>&1
         else
-            "${ssh_base[@]}" -- qm disk move "$vmid" "$slot" "$destination" --delete 1 2>&1
+            "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+                PVE_SLT_BRIDGE_NODE="$target" qm disk move "$vmid" "$slot" \
+                "$destination" --delete 1 2>&1
         fi \
         | while IFS= read -r line; do
             printf '%s\n' "$line"
             if [[ $line =~ \(([0-9]+([.][0-9]+)?)%\) ]]; then
                 observed=${BASH_REMATCH[1]}; now=$(date +%s)
                 if [ $((now - last_persist)) -ge 30 ]; then
-                    resume_publish_state MATERIALIZING "$completed" "$slot" "$observed"
+                    resume_publish_state "$active_phase" "$completed" "$slot" "$observed"
                     last_persist=$now
                 fi
             fi
@@ -317,30 +541,21 @@ print(rows[0].get("node", ""))' "$vmid"
         rc=${PIPESTATUS[0]}
         set -e
         [ "$rc" -eq 0 ] || {
-            resume_publish_state MOVE_FAILED "$completed" "$slot" 0
+            resume_publish_state "$failure_phase" "$completed" "$slot" 0
         return "$rc"
         }
     }
     if grep -qx 'RECOVERY_PLAN=CONTINUE_MATERIALIZE' <<<"$recovery_plan"; then
-        [ "$version" = 3 ] && [ "$authority" = source ] \
-            || { echo "materialization resume requires v3 source evidence" >&2; exit 70; }
+        [[ $version =~ ^(3|4)$ ]] && [ "$authority" = source ] \
+            || { echo "materialization resume requires v3/v4 source evidence" >&2; exit 70; }
         sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-        sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
-            acquire "$thin_store" "$tx" "$source_node" >/dev/null
-        thin_vg=$(awk -v sid="$thin_store" '
-            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
-            /^[^[:space:]]/ {inside=0}
-            inside && $1 == "slt-vgname" {print $2; exit}
-        ' /etc/pve/storage.cfg)
-        reserve_gib=$(awk -v sid="$thick_store" '
-            $1 == "sharedlvmthin:" && $2 == sid {inside=1; next}
-            /^[^[:space:]]/ {inside=0}
-            inside && $1 == "slt-vg-reserve-gib" {print $2; exit}
-        ' /etc/pve/storage.cfg); reserve_gib=${reserve_gib:-0}
-        [[ $thin_vg =~ ^[A-Za-z0-9+_.-]+$ && $reserve_gib =~ ^[0-9]+$ ]] \
+        env PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$source_node" \
+            sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        bridge_acquire_local_set "$tx" "$source_node" "$thin_store" "$thick_store" >/dev/null
+        thick_vg=$(cfg_value "$thick_store" slt-vgname)
+        [[ $thick_vg =~ ^[A-Za-z0-9+_.-]+$ ]] \
             || { echo "cannot prove resume VG capacity policy" >&2; exit 70; }
-        remaining_bytes=0
+        remaining_bytes=0 remaining_disks=0
         while IFS='|' read -r slot original bytes; do
             [[ $slot =~ ^(ide|sata|scsi|virtio)[0-9]+$ \
                 && $bytes =~ ^[1-9][0-9]*$ ]] \
@@ -355,14 +570,15 @@ print(rows[0].get("node", ""))' "$vmid"
                 [ "$(blockdev --getsize64 "$current_path")" = "$bytes" ] \
                     || { echo "runtime disk size differs from manifest for $slot" >&2; exit 70; }
                 remaining_bytes=$((remaining_bytes + bytes))
+                remaining_disks=$((remaining_disks + 1))
             elif [ "$current_store" != "$thick_store" ]; then
                 echo "runtime disk storage differs from recovery plan for $slot" >&2
                 exit 70
             fi
         done <"$manifest_file"
-        vg_free=$(vgs --readonly --noheadings --units b --nosuffix -o vg_free "$thin_vg" | tr -d '[:space:]')
-        vg_free=${vg_free%.*}
-        required_bytes=$((remaining_bytes + reserve_gib * 1024 * 1024 * 1024))
+        read -r vg_free required_bytes reserve_bytes physical_bytes < <(
+            bridge_thick_capacity "$thick_store" "$thick_vg" "$remaining_bytes" "$remaining_disks"
+        )
         [[ $vg_free =~ ^[0-9]+$ && $vg_free -ge $required_bytes ]] \
             || { echo "insufficient capacity to resume materialization" >&2; exit 28; }
         completed_now=$observed_thick
@@ -372,7 +588,8 @@ print(rows[0].get("node", ""))' "$vmid"
                 END {if (!found) exit 1}
             ')
             [ "${current_vol%%:*}" = "$thin_store" ] || continue
-            resume_progress_move "$slot" "$thick_store" "$completed_now"
+            resume_progress_move "$slot" "$thick_store" "$completed_now" local \
+                MATERIALIZING MATERIALIZE_FAILED
             qm config "$vmid" | grep -Eq "^${slot}: ${thick_store}:"
             completed_now=$((completed_now + 1))
             authoritative_cfg=$(qm config "$vmid")
@@ -380,9 +597,9 @@ print(rows[0].get("node", ""))' "$vmid"
         done <"$manifest_file"
         [ "$completed_now" -eq "$disk_count" ] \
             || { echo "materialization resume did not complete every disk" >&2; exit 70; }
-        sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
-            release "$thin_store" "$tx" "$source_node" >/dev/null
+        env PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$source_node" \
+            sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        bridge_release_local_set "$tx" "$source_node" "$thin_store" "$thick_store" >/dev/null
         resume_publish_state MATERIALIZED_THICK "$completed_now" none 100
         printf 'BRIDGE_RESUME_STEP=PASS\nTX=%s\nCOMPLETED_ACTION=CONTINUE_MATERIALIZE\nNEXT_ACTION=MIGRATE_THICK\n' "$tx"
         exit 0
@@ -419,14 +636,49 @@ print((rows[0].get("node", "?")+":"+rows[0].get("status", "?")) if len(rows)==1 
     fi
     if grep -Eqx 'RECOVERY_PLAN=(PREPARE_RETURN_THIN|CONTINUE_RETURN_THIN)' <<<"$recovery_plan"; then
         [ "$authority" = target ] && [ "$return_thin" -eq 1 ] \
-            && [ "$admission" = none ] \
+            && [[ $admission =~ ^(none|exact)$ ]] \
             || { echo "return-to-Thin resume evidence is incomplete" >&2; exit 70; }
         [[ $total_bytes =~ ^[1-9][0-9]*$ ]] \
             || { echo "invalid saved aggregate disk size" >&2; exit 70; }
-        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        if ! final_health_is_safe "${ssh_base[@]}" -- env \
+            PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$target" \
+            sharedlvmthin recovery-check "$thin_store"; then
+            resume_publish_state RETURN_HEALTH_PENDING "$completed_disks" none 0
+            printf 'BRIDGE_RESUME=RETURN_HEALTH_PENDING\nTX=%s\nDATA_MOVES_COMPLETED=NO\nRECOVERY_PLAN=PREPARE_RETURN_THIN\nSTATE_FILE=%s\n' \
+                "$tx" "$resume_file"
+            exit 75
+        fi
+        "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+            PVE_SLT_BRIDGE_NODE="$target" sharedlvmthin recovery-check "$thick_store" \
+            | grep -qx 'SAFE_FOR_MUTATION=YES'
+        if [ "$admission" = none ]; then
+            acquired_remote=()
+            for admission_store in "${resume_admission_stores[@]}"; do
+                if ! remote_output=$("${ssh_base[@]}" -- \
+                    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                    acquire "$admission_store" "$tx" "$target" 2>&1); then
+                    while [ "${#acquired_remote[@]}" -gt 0 ]; do
+                        rollback_store=${acquired_remote[-1]}; unset 'acquired_remote[-1]'
+                        "${ssh_base[@]}" -- \
+                            /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                            release "$rollback_store" "$tx" "$target" >/dev/null \
+                            || { echo "remote recovery admission rollback is UNKNOWN" >&2; exit 70; }
+                    done
+                    printf '%s\n' "$remote_output" >&2
+                    grep -q "migration-bridge admission is held by node" <<<"$remote_output" \
+                        && exit 75
+                    echo "remote recovery admission outcome is UNKNOWN" >&2
+                    exit 70
+                fi
+                grep -qx BRIDGE_ADMISSION_ACQUIRED <<<"$remote_output" \
+                    && acquired_remote+=("$admission_store")
+            done
+            admission=exact
+        fi
         if grep -qx 'RECOVERY_PLAN=PREPARE_RETURN_THIN' <<<"$recovery_plan"; then
-            "${ssh_base[@]}" -- /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+            "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+                PVE_SLT_BRIDGE_NODE="$target" \
+                /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
                 prepare "$thin_store" "$vmid" "$total_bytes" "$tx"
             resume_publish_state RETURN_THIN_PREPARED "$disk_count" none 0
         fi
@@ -437,14 +689,22 @@ print((rows[0].get("node", "?")+":"+rows[0].get("status", "?")) if len(rows)==1 
                 END {if (!found) exit 1}
             ')
             [ "${current_vol%%:*}" = "$thick_store" ] || continue
-            resume_progress_move "$slot" "$thin_store" "$completed_now" remote
+            resume_progress_move "$slot" "$thin_store" "$completed_now" remote \
+                RETURNING_THIN RETURN_FAILED
             "${ssh_base[@]}" -- qm config "$vmid" | grep -Eq "^${slot}: ${thin_store}:"
             completed_now=$((completed_now + 1))
-            resume_publish_state RETURN_THIN_PREPARED "$completed_now" none 100
+            resume_publish_state RETURNING_THIN "$completed_now" none 100
         done <"$manifest_file"
         [ "$completed_now" -eq $((disk_count * 2)) ] \
             || { echo "return-to-Thin resume did not complete every disk" >&2; exit 70; }
-        "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+            PVE_SLT_BRIDGE_NODE="$target" sharedlvmthin recovery-check "$thin_store" \
+            | grep -qx 'SAFE_FOR_MUTATION=YES'
+        for ((i=${#resume_admission_stores[@]}-1; i>=0; i--)); do
+            "${ssh_base[@]}" -- \
+                /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                release "${resume_admission_stores[i]}" "$tx" "$target"
+        done
         resume_publish_state RETURNED_THIN "$completed_now" none 100
         printf 'BRIDGE_RESUME=PASS\nTX=%s\nFINAL_PHASE=RETURNED_THIN\nSTATE_FILE=%s\n' \
             "$tx" "$resume_file"
@@ -454,6 +714,12 @@ print((rows[0].get("node", "?")+":"+rows[0].get("status", "?")) if len(rows)==1 
         [ "$authority" = target ] && [ "$return_thin" -eq 0 ] \
             && [ "$observed_thick" -eq "$disk_count" ] \
             || { echo "keep-Thick completion evidence is incomplete" >&2; exit 70; }
+        if ! final_health_is_safe "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" \
+            || ! final_health_is_safe "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store"; then
+            printf 'BRIDGE_RESUME=FINALIZATION_PENDING\nTX=%s\nDATA_MOVES_COMPLETED=YES\nRECOVERY_PLAN=FINALIZE_THICK\nSTATE_FILE=%s\n' \
+                "$tx" "$resume_file"
+            exit 75
+        fi
         resume_publish_state COMPLETE_THICK "$disk_count" none 100
         printf 'BRIDGE_RESUME=PASS\nTX=%s\nFINAL_PHASE=COMPLETE_THICK\nSTATE_FILE=%s\n' \
             "$tx" "$resume_file"
@@ -465,8 +731,20 @@ print((rows[0].get("node", "?")+":"+rows[0].get("status", "?")) if len(rows)==1 
         && [ "$completed_disks" -ge $((disk_count * 2)) ] \
         || { echo "return-to-Thin completion evidence is incomplete" >&2; exit 70; }
     "${ssh_base[@]}" -- qm status "$vmid" | grep -qx 'status: running'
-    "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-    "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+    if [ "$admission" = exact ]; then
+        for ((i=${#resume_admission_stores[@]}-1; i>=0; i--)); do
+            "${ssh_base[@]}" -- \
+                /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                release "${resume_admission_stores[i]}" "$tx" "$target"
+        done
+        admission=none
+    fi
+    if ! final_health_is_safe "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" \
+        || ! final_health_is_safe "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store"; then
+        printf 'BRIDGE_RESUME=FINALIZATION_PENDING\nTX=%s\nDATA_MOVES_COMPLETED=YES\nRECOVERY_PLAN=FINALIZE_THIN\nSTATE_FILE=%s\n' \
+            "$tx" "$resume_file"
+        exit 75
+    fi
     remote_digest=$(printf '%s\n' "$authoritative_cfg" | sha256sum | cut -d' ' -f1)
     resume_tmp="$resume_file.tmp.$$"
     now=$(date +%s)
@@ -500,24 +778,14 @@ local_node=$(hostname)
 state_dir=/var/lib/pve-sharedlvmthin/migration-bridge
 mkdir -p "$state_dir"
 
-cfg_value() {
-    local sid=$1 key=$2
-    awk -v sid="$sid" -v key="$key" '
-        $1 == "sharedlvmthin:" && $2 == sid { inside=1; next }
-        /^[^[:space:]]/ { inside=0 }
-        inside && $1 == key { print $2; found=1; exit }
-        END { if (!found) exit 1 }
-    ' /etc/pve/storage.cfg
-}
-
-cfg_optional() {
-    cfg_value "$1" "$2" 2>/dev/null || true
-}
-
 thin_vg=$(cfg_value "$thin_store" slt-vgname) || { echo "Thin storage is not SharedLvmThin" >&2; exit 65; }
 thick_vg=$(cfg_value "$thick_store" slt-vgname) || { echo "Thick storage is not SharedLvmThin" >&2; exit 65; }
-[ "$thin_vg" = "$thick_vg" ] || { echo "bridge currently requires same-VG Thin/Thick aliases" >&2; exit 65; }
-[ "$(cfg_optional "$thin_store" slt-allocation-mode)" != thick-generations ] || { echo "source alias is not Thin" >&2; exit 65; }
+mapfile -t admission_stores < <(bridge_admission_order "$thin_store" "$thick_store")
+[ "${#admission_stores[@]}" -ge 1 ] || exit 70
+case "$(cfg_optional "$thin_store" slt-allocation-mode)" in
+    ''|thin) ;;
+    *) echo "source alias is not Thin" >&2; exit 65 ;;
+esac
 [ "$(cfg_optional "$thick_store" slt-allocation-mode)" = thick-generations ] || { echo "target alias is not Thick Generations" >&2; exit 65; }
 
 status=$(qm status "$vmid" | awk '{print $2}')
@@ -562,19 +830,19 @@ for entry in "${disks[@]}"; do
     [[ $bytes =~ ^[1-9][0-9]*$ ]] || { echo "cannot determine exact disk size for $vol" >&2; exit 70; }
     total_bytes=$((total_bytes + bytes))
 done
-vg_free=$(vgs --readonly --noheadings --units b --nosuffix -o vg_free "$thin_vg" | tr -d '[:space:]')
-[[ $vg_free =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "cannot determine VG free capacity" >&2; exit 70; }
-vg_free=${vg_free%.*}
-reserve_gib=$(cfg_optional "$thick_store" slt-vg-reserve-gib); reserve_gib=${reserve_gib:-0}
-reserve_bytes=$((reserve_gib * 1024 * 1024 * 1024))
-required_bytes=$((total_bytes + reserve_bytes))
+read -r vg_free required_bytes reserve_bytes physical_bytes < <(
+    bridge_thick_capacity "$thick_store" "$thick_vg" "$total_bytes" "${#disks[@]}"
+)
+[[ $vg_free =~ ^[0-9]+$ && $required_bytes =~ ^[0-9]+$ ]] \
+    || { echo "cannot determine Thick VG capacity contract" >&2; exit 70; }
 [ "$vg_free" -ge "$required_bytes" ] || {
     echo "insufficient physical VG capacity: free=$vg_free required=$required_bytes" >&2
     exit 28
 }
 
-printf 'PREFLIGHT=PASS\nVMID=%s\nSOURCE_NODE=%s\nTARGET_NODE=%s\nDISKS=%s\nREQUIRED_BYTES=%s\nVG_FREE_BYTES=%s\n' \
-    "$vmid" "$local_node" "$target" "${#disks[@]}" "$required_bytes" "$vg_free"
+printf 'PREFLIGHT=PASS\nVMID=%s\nSOURCE_NODE=%s\nTARGET_NODE=%s\nDISKS=%s\nREQUIRED_BYTES=%s\nPHYSICAL_GROWTH_BYTES=%s\nRESERVE_BYTES=%s\nVG_FREE_BYTES=%s\n' \
+    "$vmid" "$local_node" "$target" "${#disks[@]}" "$required_bytes" \
+    "$physical_bytes" "$reserve_bytes" "$vg_free"
 [ "$action" = run ] || exit 0
 
 tx=$(printf '%s' "$vmid:$local_node:$target:$(date +%s%N):$$" | sha256sum | cut -c1-32)
@@ -618,8 +886,12 @@ write_state() {
     umask 077
     updated_at=$(date +%s)
     {
-        printf 'version=3\ntx=%s\nvmid=%s\nsource_node=%s\ntarget_node=%s\n' "$tx" "$vmid" "$local_node" "$target"
+        printf 'version=4\ntx=%s\nvmid=%s\nsource_node=%s\ntarget_node=%s\n' "$tx" "$vmid" "$local_node" "$target"
         printf 'thin_storage=%s\nthick_storage=%s\nreturn_thin=%s\nphase=%s\n' "$thin_store" "$thick_store" "$return_thin" "$phase"
+        printf 'thin_vg=%s\nthick_vg=%s\nthin_vg_uuid=%s\nthick_vg_uuid=%s\n' \
+            "$thin_vg" "$thick_vg" \
+            "$(cfg_value "$thin_store" slt-expected-vg-uuid)" \
+            "$(cfg_value "$thick_store" slt-expected-vg-uuid)"
         printf 'disk_count=%s\ncompleted_disks=%s\ncurrent_disk=%s\nprogress_percent=%s\n' \
             "${#disks[@]}" "$completed_disks" "$current_disk" "$progress_percent"
         printf 'total_bytes=%s\nstarted_at=%s\nupdated_at=%s\n' \
@@ -637,16 +909,23 @@ write_state
 # without imposing a wall-clock limit on large disks: silence is observable,
 # but a slow healthy 8-TB copy is not killed merely for taking hours.
 run_progress_move() {
-    local disk=$1 destination=$2 execution_node=$3
+    local disk=$1 destination=$2 execution_node=$3 active_phase=$4 failure_phase=$5
     local rc line now last_persist=0 observed
+    [[ $active_phase =~ ^(MATERIALIZING|RETURNING_THIN)$ \
+        && $failure_phase =~ ^(MATERIALIZE_FAILED|RETURN_FAILED)$ ]] \
+        || { echo "invalid directional move phase" >&2; return 70; }
+    phase=$active_phase
     current_disk=$disk
     progress_percent=0
     write_state
     set +e
     if [ "$execution_node" = local ]; then
-        qm disk move "$vmid" "$disk" "$destination" --delete 1 2>&1
+        env PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$local_node" \
+            qm disk move "$vmid" "$disk" "$destination" --delete 1 2>&1
     else
-        "${ssh_base[@]}" -- qm disk move "$vmid" "$disk" "$destination" --delete 1 2>&1
+        "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+            PVE_SLT_BRIDGE_NODE="$target" qm disk move "$vmid" "$disk" \
+            "$destination" --delete 1 2>&1
     fi | while IFS= read -r line; do
         printf '%s\n' "$line"
         if [[ $line =~ \(([0-9]+([.][0-9]+)?)%\) ]]; then
@@ -663,7 +942,7 @@ run_progress_move() {
     rc=${PIPESTATUS[0]}
     set -e
     [ "$rc" -eq 0 ] || {
-        phase=MOVE_FAILED
+        phase=$failure_phase
         write_state
         return "$rc"
     }
@@ -685,10 +964,17 @@ admission_last_heartbeat=0
 # Desynchronize a large worker set, then back off to a bounded 15-second probe
 # interval. Fifty queued evacuations therefore do not become a vgs poll storm.
 admission_poll_seconds=$((2 + 16#${tx:0:2} % 3))
-while ! admission_output=$(
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
-        acquire "$thin_store" "$tx" "$local_node" 2>&1
-); do
+while true; do
+    set +e
+    admission_output=$(bridge_acquire_local_set \
+        "$tx" "$local_node" "$thin_store" "$thick_store" 2>&1)
+    admission_rc=$?
+    set -e
+    [ "$admission_rc" -eq 0 ] && break
+    [ "$admission_rc" -eq 75 ] || {
+        echo "migration-bridge admission outcome is UNKNOWN: $admission_output" >&2
+        exit 70
+    }
     admission_now=$(date +%s)
     [ "$admission_now" -lt "$admission_deadline" ] || {
         echo "migration-bridge admission timed out: $admission_output" >&2
@@ -708,8 +994,9 @@ write_state
 
 # Capacity is sampled again after admission. Another completed bridge may have
 # consumed space while this transaction waited in the queue.
-vg_free=$(vgs --readonly --noheadings --units b --nosuffix -o vg_free "$thin_vg" | tr -d '[:space:]')
-vg_free=${vg_free%.*}
+read -r vg_free required_bytes reserve_bytes physical_bytes < <(
+    bridge_thick_capacity "$thick_store" "$thick_vg" "$total_bytes" "${#disks[@]}"
+)
 [ "$vg_free" -ge "$required_bytes" ] || {
     echo "physical VG capacity changed while waiting for admission; exact admission retained for recovery" >&2
     exit 28
@@ -717,14 +1004,14 @@ vg_free=${vg_free%.*}
 
 for entry in "${disks[@]}"; do
     disk=${entry%%|*}
-    run_progress_move "$disk" "$thick_store" local
+    run_progress_move "$disk" "$thick_store" local MATERIALIZING MATERIALIZE_FAILED
     qm config "$vmid" | grep -Eq "^${disk}: ${thick_store}:"
 done
 phase=MATERIALIZED_THICK
 write_state
-sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
-/usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
-    release "$thin_store" "$tx" "$local_node"
+env PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$local_node" \
+    sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+bridge_release_local_set "$tx" "$local_node" "$thin_store" "$thick_store"
 
 qm migrate "$vmid" "$target" --online 1
 settled=0
@@ -750,33 +1037,80 @@ done
 phase=MIGRATED_THICK
 write_state
 
-if [ "$return_thin" -eq 1 ]; then
-    member_ip=$(perl -MPVE::Cluster -e '
+member_ip=$(perl -MPVE::Cluster -e '
         PVE::Cluster::cfs_update();
         my ($node) = @ARGV;
         my $m = PVE::Cluster::get_members()->{$node} // die "unknown target\n";
         die "offline target\n" if !$m->{online};
         print $m->{ip};
     ' "$target")
-    ssh_base=(/usr/bin/ssh -n -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
-        -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
-        -o GlobalKnownHostsFile=none "root@$member_ip")
+ssh_base=(/usr/bin/ssh -n -e none -o BatchMode=yes -o "HostKeyAlias=$target" \
+    -o "UserKnownHostsFile=/etc/pve/nodes/$target/ssh_known_hosts" \
+    -o GlobalKnownHostsFile=none "root@$member_ip")
+
+if [ "$return_thin" -eq 1 ]; then
     # A fast full-copy can outrun asynchronous thin-pool autogrow. Prepare the
     # exact per-VM pool at the sum of all virtual disk sizes before QEMU writes
     # its first block. Capacity/reserve admission and inactive publication are
     # performed by the plugin under the canonical VG lock.
-    "${ssh_base[@]}" -- /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
+    # Reacquire the same canonical VG set on the target. A failed second
+    # acquisition releases the first exact claim before any mutation starts.
+    remote_acquired=()
+    for store in "${admission_stores[@]}"; do
+        if ! remote_output=$("${ssh_base[@]}" -- \
+            /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+            acquire "$store" "$tx" "$target" 2>&1); then
+            while [ "${#remote_acquired[@]}" -gt 0 ]; do
+                rollback_store=${remote_acquired[-1]}; unset 'remote_acquired[-1]'
+                "${ssh_base[@]}" -- \
+                    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+                    release "$rollback_store" "$tx" "$target" >/dev/null \
+                    || { echo "remote partial admission rollback is UNKNOWN; recovery required" >&2; exit 70; }
+            done
+            printf '%s\n' "$remote_output" >&2
+            if grep -q "migration-bridge admission is held by node" <<<"$remote_output"; then
+                phase=RETURN_ADMISSION_PENDING
+                write_state
+                exit 75
+            fi
+            echo "remote return admission outcome is UNKNOWN; recovery required" >&2
+            exit 70
+        fi
+        printf '%s\n' "$remote_output"
+        grep -qx BRIDGE_ADMISSION_ACQUIRED <<<"$remote_output" \
+            && remote_acquired+=("$store")
+    done
+    "${ssh_base[@]}" -- env PVE_SLT_BRIDGE_TX="$tx" \
+        PVE_SLT_BRIDGE_NODE="$target" \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import \
         prepare "$thin_store" "$vmid" "$total_bytes" "$tx"
     phase=RETURN_THIN_PREPARED
     write_state
     for entry in "${disks[@]}"; do
         disk=${entry%%|*}
-        run_progress_move "$disk" "$thin_store" remote
+        run_progress_move "$disk" "$thin_store" remote RETURNING_THIN RETURN_FAILED
         "${ssh_base[@]}" -- qm config "$vmid" | grep -Eq "^${disk}: ${thin_store}:"
     done
-    "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+    if ! final_health_is_safe "${ssh_base[@]}" -- env \
+        PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$target" \
+        sharedlvmthin recovery-check "$thin_store"; then
+        printf 'BRIDGE=FINALIZATION_PENDING\nTX=%s\nDATA_MOVES_COMPLETED=YES\nRECOVERY_PLAN=FINALIZE_THIN\nSTATE_FILE=%s\n' \
+            "$tx" "$state_file"
+        exit 75
+    fi
+    for ((i=${#admission_stores[@]}-1; i>=0; i--)); do
+        "${ssh_base[@]}" -- \
+            /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
+            release "${admission_stores[i]}" "$tx" "$target"
+    done
     phase=RETURNED_THIN
 else
+    if ! final_health_is_safe "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thin_store" \
+        || ! final_health_is_safe "${ssh_base[@]}" -- sharedlvmthin recovery-check "$thick_store"; then
+        printf 'BRIDGE=FINALIZATION_PENDING\nTX=%s\nDATA_MOVES_COMPLETED=YES\nRECOVERY_PLAN=FINALIZE_THICK\nSTATE_FILE=%s\n' \
+            "$tx" "$state_file"
+        exit 75
+    fi
     phase=COMPLETE_THICK
 fi
 write_state

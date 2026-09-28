@@ -1,0 +1,109 @@
+#!/usr/bin/python3
+"""Collect mutation-free raw observations for read-only lab scenarios."""
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+
+SCENARIOS = {"web-ui-registration", "node-scope", "quorum-read-only"}
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def run(argv):
+    result = subprocess.run(
+        argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=30, check=False,
+        env={"PATH": SAFE_PATH, "LC_ALL": "C", "LANG": "C"},
+    )
+    return {"argv": argv, "rc": result.returncode,
+            "stdout": result.stdout, "stderr": result.stderr}
+
+
+def sha256(path):
+    data = pathlib.Path(path).read_bytes()
+    return hashlib.sha256(data).hexdigest()
+
+
+def parse_storage_nodes(text):
+    result = {}
+    current = None
+    for line in text.splitlines():
+        match = re.fullmatch(r"sharedlvmthin:\s+([A-Za-z0-9][A-Za-z0-9_.-]*)", line)
+        if match:
+            current = match.group(1)
+            result[current] = {"nodes": None, "disabled": False}
+            continue
+        if line and not line[0].isspace():
+            current = None
+            continue
+        if current is None:
+            continue
+        fields = line.split()
+        if fields[:1] == ["nodes"] and len(fields) == 2:
+            result[current]["nodes"] = sorted(set(fields[1].split(",")))
+        elif fields[:1] == ["disable"]:
+            result[current]["disabled"] = len(fields) == 1 or fields[1] in {
+                "1", "yes", "on", "true"}
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("scenario", choices=sorted(SCENARIOS))
+    args = parser.parse_args(argv)
+    storage_path = pathlib.Path("/etc/pve/storage.cfg")
+    plugin_path = pathlib.Path(
+        "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm")
+    flavor_path = pathlib.Path("/usr/share/pve-sharedlvmthin/package-flavor")
+    common = {
+        "scenario_id": args.scenario,
+        "boot_id": pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "storage_cfg_sha256": sha256(storage_path),
+        "plugin_sha256": sha256(plugin_path),
+        "package_flavor": flavor_path.read_text().strip(),
+    }
+    if args.scenario == "web-ui-registration":
+        common["api_probe"] = run([
+            "perl", "-MPVE::Storage", "-MPVE::Storage::Custom::SharedLvmThinPlugin",
+            "-MJSON::PP", "-e",
+            "print encode_json({runtime=>PVE::Storage::APIVER(),"
+            "plugin=>PVE::Storage::Custom::SharedLvmThinPlugin->api(),"
+            "type=>PVE::Storage::Custom::SharedLvmThinPlugin->type(),"
+            "hooks=>{map {$_=>(PVE::Storage::Custom::SharedLvmThinPlugin->can($_)?1:0)}"
+            " qw(properties options status alloc_image free_image activate_volume "
+            "deactivate_volume volume_resize volume_snapshot volume_snapshot_rollback)}});",
+        ])
+        for name in ("index.html",):
+            path = f"/usr/share/pve-sharedlvmthin/web/{name}"
+            common.setdefault("web_assets", {})[name] = {
+                "sha256": sha256(path), "size": os.stat(path).st_size,
+            }
+        common["web_service"] = run([
+            "systemctl", "show", "pve-sharedlvmthin-web.service",
+            "--property=LoadState,UnitFileState,ActiveState", "--value",
+        ])
+    elif args.scenario == "node-scope":
+        text = storage_path.read_text(encoding="utf-8")
+        common["sharedlvmthin_storages"] = parse_storage_nodes(text)
+        common["cluster_nodes"] = run([
+            "perl", "-MPVE::Cluster", "-MJSON::PP", "-e",
+            "PVE::Cluster::cfs_update(); print encode_json([sort keys %{PVE::Cluster::get_members()}]);",
+        ])
+    else:
+        common["pvecm_status"] = run(["pvecm", "status"])
+        common["quorum_probe"] = run([
+            "perl", "-MPVE::Cluster", "-e",
+            "PVE::Cluster::cfs_update(); PVE::Cluster::check_cfs_quorum(); print qq{QUORATE\\n};",
+        ])
+        common["corosync_sha256"] = sha256("/etc/pve/corosync.conf")
+    print(json.dumps({"kind": "readonly-lab-observation", "schema": 1,
+                      "observation": common}, sort_keys=True, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

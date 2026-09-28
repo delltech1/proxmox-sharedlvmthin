@@ -107,5 +107,15 @@ curl --cacert /path/to/ca.crt https://<node-address>:9443/
 journalctl -u pve-sharedlvmthin-web.service --since today --no-pager
 ```
 
+On a disposable qualification node, the Playwright gate at
+`experiments/thick-generations/web-dual-mode-live-check.js` also validates the
+authenticated browser and health API. Set `SLT_WEB_URL`, `SLT_WEB_USER` and
+`SLT_WEB_PASSWORD` only in the invoking process, plus
+`SLT_EXPECT_PROFILE=dual` or `SLT_EXPECT_PROFILE=thick-only`. Despite its
+historical filename, the gate now verifies both package profiles. Thick-only
+qualification fails if the API or rendered storage pages expose a Thin
+storage; Dual qualification continues to require both configured modes in the
+test cluster. Do not save credentials in the repository or evidence bundle.
+
 If the dashboard was never configured, package installation leaves it disabled
 and inactive. This is intentional and does not affect the storage plugin.

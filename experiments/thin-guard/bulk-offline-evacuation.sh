@@ -53,12 +53,12 @@ remote() {
 
 current_node=$(hostname)
 if [[ $phase == start ]]; then
-    [[ ${current_node,,} == ${source_node,,} || ${current_node,,} == ${target_node,,} ]] || {
+    [[ ${current_node,,} == "${source_node,,}" || ${current_node,,} == "${target_node,,}" ]] || {
         echo "run start on source $source_node or target $target_node (current: $current_node)" >&2
         exit 64
     }
 else
-    [[ ${current_node,,} == ${source_node,,} ]] || {
+    [[ ${current_node,,} == "${source_node,,}" ]] || {
         echo "run this harness on source node $source_node (current: $current_node)" >&2
         exit 64
     }

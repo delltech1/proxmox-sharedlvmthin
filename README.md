@@ -65,6 +65,15 @@ from VMware is not a requirement:
 - **Thick Generations** — fully allocated independent generations with an
   ordinary linear steady-state device and temporary `dm-clone` transitions.
 
+New Thick Generations transitions currently use a deterministic **1 MiB
+dm-clone region candidate** by default; it is not selected dynamically from
+transient storage speed. This candidate still requires representative physical
+first-write and foreground-tail qualification. Existing and interrupted
+transitions always recover the exact signed region geometry with which they
+were created, including legacy 4/8 KiB objects—an upgrade never rewrites that
+geometry. A 4 KiB write mentioned by a latency test is simulated guest I/O,
+not the new dm-clone region default.
+
 Both modes integrate through the standard Proxmox Storage API and support
 snapshots, rollback, resize, backup and Storage Move. A running VM whose disks
 start in Thin can migrate online through the Materialized Migration Bridge:
@@ -87,46 +96,31 @@ probably do not need this project.
 
 ## Release status
 
-`RC5.11 TG32` (`0.9.0~rc5.11~tg32`) is the current experimental pre-release,
-intended exclusively for disposable Proxmox VE 9 laboratories. Both Thin and
-Thick Generations remain experimental. TG32 incorporates the previously
-published TG31+fix2 behavior plus additional timing, scale, ambiguity and
-postcondition hardening; it is not a new storage format. The inherited hotfix
-baseline passed 198 Python tests and 799 Perl tests plus targeted concurrent
-snapshot/rollback, restored-disk writes, resize and exact-cleanup lab checks.
-The final package was reinstalled one node at a time across the three-node lab,
-then exercised with the Thin/Thick add/remove matrix, exact offline cleanup and
-four concurrent 100 GiB Thin VMs on two owner nodes. This hotfix did not repeat
-the earlier long-duration endurance run.
+`RC5.31 TG52` (`0.9.0~rc5.31~tg52`) is the current experimental release
+candidate. It is intended exclusively for disposable Proxmox VE 9 labs with
+disposable storage and guest data. Both Thin and Thick Generations remain
+experimental, unsupported and without warranty.
 
-TG24 introduced the Thin/Thick Generations architecture;
-TG25 hardened package-update and reboot compatibility; TG26 added the
-fail-closed single-kernel Thin ownership protocol. TG29 added an opt-in,
-PVE-HA-fenced Thin takeover while direct overlapping Thin activation remains
-prohibited. Earlier qualification includes fault injection, two-node and
-three-node cluster checks, API 14/15 installation and reinstallation, and a
-four-hour dual-mode endurance run on the Proxmox VE 9.2.x release line.
-Historical results do not imply every scenario was rerun for this hotfix.
+This is a major hardening candidate. Existing materialized Thick v5 objects
+remain compatible; Lazy introduces persistent v6 transition state that requires
+a Lazy-aware runtime and recovery path and must not be downgraded blindly. It
+adds a separately installable Thick-only package,
+strict separation of Thin and Thick VGs, durable fail-closed mutation and
+package-replacement gates, and expanded upgrade/reboot compatibility checks.
+Eager and Lazy aliases may share one dedicated Thick VG. Thin must use a
+different dedicated VG.
 
-The TG24 disposable multi-node qualification ran 150 Thin and 150 Thick VMs
-concurrently and covered bounded parallel Thick migration, native HA relocation,
-snapshot/rollback, Thin-to-Thick and Thick-to-Thin storage moves, backup and
-restore, rolling API 14/15 installation, exact cleanup and endurance testing.
-TG25 additionally qualifies a full PVE package upgrade and reboot followed by
-automatic transport recovery, storage revalidation and Thin/Thick lifecycle
-operations. This is a laboratory release candidate, not validation of
-200--500 VM enterprise scale or universal certification of every SAN, HBA,
-array, multipath policy, firmware or failure mode. Evaluate it only on
-disposable storage matching the prospective design.
+The final source candidate passed 1,962 Python tests (one intentional skip),
+the 12 root-only package-replacement tests, and 1,224 Perl tests. Both package
+profiles were built reproducibly, inspected for forbidden/private content,
+and compared for shared-payload parity. The same executable lineage previously
+passed a rolling DUAL-package upgrade and controlled reboot with Eager, Lazy
+and Thin guest lifecycle checks; the TG52 public-byte candidate has an offline
+package gate only. These results apply only to the recorded disposable lab
+envelope; they are not production certification or proof for every SAN,
+kernel, firmware, topology, workload or failure sequence.
 
-TG30 hardens the online Thin migration bridge with observable progress,
-pre-sized return-to-Thin pools, a per-pool 95% mutation gate, and exact
-evidence-based finalization after an interrupted final health check.
-TG31 adds authenticated per-disk manifests, a deterministic recovery planner,
-and mandatory QMP live-path correlation so pmxcfs/runtime divergence after an
-interrupted block job fails closed instead of selecting a copy by inference.
-
-See the [RC5.11 TG32 release notes](docs/RELEASE-NOTES-RC5.11-TG32.md),
+See the [RC5.31 TG52 release notes](docs/RELEASE-NOTES-RC5.31-TG52.md),
 the historical [TG31+fix2 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX2.md),
 [TG31+fix1 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX1.md),
 [installation guide](docs/installation.md), [TG31 development notes](docs/RELEASE-NOTES-RC5.10-TG31.md), the
@@ -227,7 +221,11 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 
 ```bash
 sha256sum --check SHA256SUMS
-apt install './pve-sharedlvmthin_0.9.0.rc5.5.tg26_all.deb'
+# DUAL profile: experimental Thin + Thick Generations
+apt install './pve-sharedlvmthin_0.9.0.rc5.31.tg52_all.deb'
+
+# OR Thick-only profile: experimental Thick Generations only
+apt install './pve-sharedlvmthin-thick_0.9.0.rc5.31.tg52_all.deb'
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -240,15 +238,21 @@ unknown or unavailable device.
 
 ## Upgrade or reinstall
 
+Run the read-only gate first, then replace one node at a time:
+
 ```bash
-apt install './pve-sharedlvmthin_0.9.0.rc5.4.1.tg25_all.deb'
+sharedlvmthin upgrade-check
+apt install './pve-sharedlvmthin_0.9.0.rc5.31.tg52_all.deb'
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```
 
-The same command safely handles a same-version reinstall. Existing dashboard
-configuration, certificates, and administrator-owned LVM autogrow policy are
-preserved.
+Use the Thick-only filename instead only for a qualified Thick-only node.
+The profiles conflict and cannot coexist. Profile replacement has additional
+fail-closed requirements documented in the installation guide; uninstalling a
+profile is never a storage migration. Existing dashboard configuration,
+certificates, and administrator-owned LVM policy are preserved when their
+ownership can be proved.
 
 ## Optional HTTPS dashboard
 
@@ -267,12 +271,31 @@ It does not expose storage mutation endpoints. See the
 
 ```bash
 python3 -m unittest discover -s tests/unit -v
-prove -v tests/unit/plugin_lifecycle.t
-sh scripts/build.sh
+prove -Itests/unit/lib -v tests/unit/*.t
+sh scripts/check-reproducible-packages.sh
+sh scripts/build.sh dist/dual dual
+sh scripts/build.sh dist/thick-only thick-only
+sh scripts/compare-package-profiles.sh dist/dual/*.deb dist/thick-only/*.deb
 ```
 
-The reproducible package is written to `dist/` and validated for forbidden
-content and common credential leaks.
+The default dual-mode package is written to `dist/`. The Thick-only command
+uses a separate output directory so neither artifact nor checksum manifest can
+overwrite the other. Both are validated for forbidden content and common
+credential leaks.
+
+The separately installable `pve-sharedlvmthin-thick` profile exposes only
+experimental Thick Generations. It shares the same Thick implementation and
+on-disk format with the dual-mode package; it is not a second storage driver.
+The packages conflict intentionally and must never be installed together. See
+the [Thick-only package boundary](docs/thick-only-package.md). A CI artifact is
+only a build candidate, not a published or qualified release.
+
+Use separate VGs for Thin and Thick storage. Eager and Lazy Thick aliases may
+share the Thick VG because both reserve their full capacity. TG52 rejects a
+same-VG Thin+Thick topology in both package profiles. The parser retains the
+retired `mixed` token only so a rolling cluster can read old remote config;
+preinstall and every runtime operation reject it. The Thick-only package
+additionally never exposes a Thin allocation mode.
 
 ## Safety model
 
@@ -309,8 +332,8 @@ claimed.
 Multipathed iSCSI and virtual Linux FCoE were exercised. Representative
 physical enterprise FC hardware was not available; physical FC therefore
 remains outside the tested hardware envelope even though the plugin itself is
-transport-agnostic. See [compatibility](docs/compatibility.md) and the detailed
-[qualification record](docs/thick-generations-poc-status.md).
+transport-agnostic. See [compatibility](docs/compatibility.md) and the
+[sanitized qualification summary](docs/thick-generations-poc-status.md).
 
 ## Support the project
 

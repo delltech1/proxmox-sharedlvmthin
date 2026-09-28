@@ -12,7 +12,7 @@ jobs:
   build-and-release:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build and test dependencies
         run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
@@ -20,18 +20,31 @@ jobs:
       - name: Run qualification tests
         run: |
           python3 -m unittest discover -s tests/unit -v
+          sudo python3 -m unittest -v tests.unit.test_profile_replacement
           prove -Itests/unit/lib -v tests/unit/*.t
-          bash -n usr/sbin/* DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
-          shellcheck -x scripts/*.sh experiments/thick-generations/*.sh usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure
+          bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/preinst DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
+          shellcheck -x scripts/*.sh experiments/thick-generations/*.sh \
+            DEBIAN/preinst DEBIAN/postinst DEBIAN/prerm DEBIAN/postrm \
+            usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure \
+            usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
           python3 -m py_compile \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-web \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json \
             usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
 
-      - name: Build and validate package
+      - name: Build and validate both package profiles
         run: |
-          sh scripts/build.sh
-          sh scripts/check-release.sh dist/*.deb
+          python3 scripts/public-source-privacy-scan.py
+          sh scripts/check-reproducible-packages.sh
+          sh scripts/build.sh dist/dual dual
+          sh scripts/build.sh dist/thick-only thick-only
+          dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
+          thick=$(find dist/thick-only -maxdepth 1 -name '*.deb' -print -quit)
+          sh scripts/check-release.sh "$dual"
+          sh scripts/check-release.sh "$thick"
+          sh scripts/compare-package-profiles.sh "$dual" "$thick"
+          cp "$dual" dist/
+          cp "$thick" dist/
 
       - name: Prepare and verify GitHub-safe assets
         run: |

@@ -1,8 +1,10 @@
 # Allocation modes
 
-The same SharedLvmThin package supports two explicit storage definitions over
-one dedicated shared VG. The administrator chooses a mode by choosing the PVE
-storage ID when creating, restoring, importing, or moving a disk.
+The same SharedLvmThin package supports explicit Thin and Thick storage
+definitions. Thin and Thick use separate dedicated shared VGs. Eager and Lazy
+Thick definitions may share the dedicated Thick VG. The administrator chooses
+a mode by choosing the PVE storage ID when creating, restoring, importing, or
+moving a disk.
 
 ## Thin
 
@@ -30,10 +32,12 @@ therefore consume capacity substantially faster than Thin.
 
 ## Coexistence and conversion
 
-Both definitions may point to the same pinned VG, but they are aliases of one
-physical allocation domain. Their displayed capacities must never be added
-together. Keep the identity, reserve, path, shared, and node-scope properties
-identical between the pair.
+Thin and Thick definitions must not point to the same pinned VG. This prevents
+Thin autogrow/metadata failure domains from competing with fully reserved
+Thick capacity and keeps recovery ownership unambiguous. Eager and Lazy Thick
+aliases over one Thick VG must retain identical identity, reserve, path,
+shared and node-scope properties; their displayed capacities describe the
+same Thick allocation domain and must not be added together.
 
 There is no implicit conversion and no global mode switch. Existing disks keep
 their allocation model. To convert a disk, use the normal PVE Storage Move and

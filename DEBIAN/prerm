@@ -2,9 +2,265 @@
 set -e
 
 SERVICE=pve-sharedlvmthin-web.service
+THIN_GUARD_SERVICE=pve-sharedlvmthin-thin-guard.service
+
+if [ "${1:-}" = "failed-upgrade" ]; then
+    # dpkg may invoke the new package's prerm after the installed package's
+    # upgrade prerm refused.  Returning success here can allow that safety
+    # refusal to be bypassed.  This script has no authenticated reason for the
+    # earlier failure and therefore must neither stop services nor authorize
+    # replacement.  Leave the installed runtime unchanged for explicit
+    # operator recovery.
+    echo "ERROR: package upgrade fallback refused: the previous prerm failed; runtime was left unchanged." >&2
+    exit 1
+fi
 
 case "$1" in
     remove|deconfigure)
+        # A Conflicts/Replaces flavor switch invokes the old package's removal
+        # scripts. Never leave an in-memory Thin guardian running after its
+        # executable and unit are removed, but also never disarm it while a
+        # managed Thin object still exists. Ambiguous inventory refuses the
+        # removal before package files disappear. Perform this refusal gate
+        # before stopping even the non-data-path web service, so a rejected
+        # package transaction leaves the installed profile operationally
+        # unchanged.
+        PACKAGE_FLAVOR=dual
+        if [ "${DPKG_MAINTSCRIPT_PACKAGE:-}" = "pve-sharedlvmthin-thick" ]; then
+            PACKAGE_FLAVOR=thick-only
+        fi
+        PROFILE_REPLACEMENT=0
+        PROFILE_REPLACEMENT_PENDING=0
+        # Real dpkg Conflicts/Replaces transactions may call the displaced
+        # prerm as plain `remove`; maintscript arguments therefore cannot
+        # authorize a profile switch. Only a root-owned one-shot execution
+        # session created by the digest-pinning qualification gate can do so.
+        PROFILE_REPLACEMENT_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-profile-replacement
+        PROFILE_REPLACEMENT_READY=/var/lib/pve-sharedlvmthin/profile-replacement/ready.json
+        if [ -e "$PROFILE_REPLACEMENT_READY" ] || [ -L "$PROFILE_REPLACEMENT_READY" ]; then
+            [ -x "$PROFILE_REPLACEMENT_CHECK" ] || {
+                echo "ERROR: profile replacement authorization exists but its verifier is unavailable." >&2
+                exit 1
+            }
+            PROFILE_REPLACEMENT_PENDING=1
+        fi
+        if [ "$PROFILE_REPLACEMENT_PENDING" -eq 0 ]; then
+            STORAGECFG=${DPKG_ROOT:-}/etc/pve/storage.cfg
+            if [ ! -r "$STORAGECFG" ]; then
+                echo "ERROR: package removal refused: storage configuration is unreadable." >&2
+                exit 1
+            fi
+            if ! local_node=$(hostname); then
+                echo "ERROR: package removal refused: local node identity is unavailable." >&2
+                exit 1
+            fi
+            case "$local_node" in ''|*[!A-Za-z0-9_.-]*)
+                echo "ERROR: package removal refused: local node identity is invalid." >&2
+                exit 1
+                ;;
+            esac
+            if awk -v local_node="$local_node" '
+                function applies(value, n, a, i, hit) {
+                    if (value == "") return 1
+                    n=split(value, a, ","); hit=0; delete node_seen
+                    if (n < 1) { invalid=1; return 0 }
+                    for (i=1; i<=n; i++) {
+                        if (a[i] !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/ || node_seen[a[i]]++) {
+                            invalid=1; return 0
+                        }
+                        if (a[i] == local_node) hit=1
+                    }
+                    return hit
+                }
+                function save() { if (inside && applies(nodes)) local_storage=1 }
+                BEGIN { inside=0; nodes="" }
+                /^sharedlvmthin:/ {
+                    save(); inside=0; nodes=""
+                    if ($0 !~ /^sharedlvmthin:[[:space:]]*[A-Za-z0-9][A-Za-z0-9_.-]*[[:space:]]*$/) {
+                        invalid=1; next
+                    }
+                    inside=1; next
+                }
+                /^[^[:space:]]/ { save(); inside=0; next }
+                inside && $1 == "nodes" { nodes=$2; next }
+                END { save(); if (invalid) exit 2; exit local_storage ? 0 : 1 }
+            ' "$STORAGECFG"; then
+                echo "ERROR: package removal refused: SharedLvmThin storage configuration still exists." >&2
+                echo "Remove every SharedLvmThin storage definition after draining its guests." >&2
+                exit 1
+            else
+                scope_rc=$?
+                case "$scope_rc" in
+                    1) ;;
+                    2)
+                        echo "ERROR: package removal refused: SharedLvmThin configuration or node scope is ambiguous." >&2
+                        exit 1
+                        ;;
+                    *)
+                        echo "ERROR: package removal refused: storage configuration classifier failed ($scope_rc)." >&2
+                        exit 1
+                        ;;
+                esac
+            fi
+        fi
+        if ! command -v lvs >/dev/null 2>&1 || ! command -v vgs >/dev/null 2>&1; then
+            echo "ERROR: package removal refused: managed storage cannot be audited." >&2
+            exit 1
+        fi
+        if ! VOLUME_GROUPS=$(vgs --readonly --noheadings --separator '|' \
+            -o vg_name,vg_attr,vg_tags 2>/dev/null); then
+            echo "ERROR: package removal refused: VG inventory failed." >&2
+            exit 1
+        fi
+        AUDIT_FILE=$(mktemp /tmp/pve-sharedlvmthin-prerm.XXXXXX) || {
+            echo "ERROR: package removal refused: cannot create private audit input." >&2
+            exit 1
+        }
+        chmod 0600 "$AUDIT_FILE" || exit 1
+        trap 'rm -f -- "$AUDIT_FILE"' EXIT HUP INT TERM
+        if ! printf '%s\n' "$VOLUME_GROUPS" >"$AUDIT_FILE"; then
+            echo "ERROR: package removal refused: cannot preserve VG audit input." >&2
+            exit 1
+        fi
+        if awk -F'|' '{
+                        if ($0 ~ /^[[:space:]]*$/) next
+                        if (NF != 3) { bad=1; next }
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+                        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3)
+                        if ($1 == "" || length($2) < 4 || substr($2, 4, 1) == "p") bad=1
+                      }
+                        END { exit bad ? 0 : 1 }' "$AUDIT_FILE"; then
+            VG_AUDIT_RC=0
+        else
+            VG_AUDIT_RC=$?
+        fi
+        case "$VG_AUDIT_RC" in
+            0)
+                echo "ERROR: package removal refused: LVM reports a partial or ambiguous VG." >&2
+                echo "Absence of managed storage objects is unproven." >&2
+                exit 1
+                ;;
+            1) ;;
+            *)
+                echo "ERROR: package removal refused: VG audit classifier failed ($VG_AUDIT_RC)." >&2
+                exit 1
+                ;;
+        esac
+        if ! MANAGED_LVS=$(lvs --readonly --noheadings -o lv_tags 2>/dev/null); then
+            echo "ERROR: package removal refused: managed LVM inventory failed." >&2
+            exit 1
+        fi
+        if ! printf '%s\n' "$MANAGED_LVS" >"$AUDIT_FILE"; then
+            echo "ERROR: package removal refused: cannot preserve LV audit input." >&2
+            exit 1
+        fi
+        if awk '$0 ~ /pve-slt-sid-/ { found=1 } END { exit found ? 0 : 1 }' \
+           "$AUDIT_FILE"; then
+            THIN_AUDIT_RC=0
+        else
+            THIN_AUDIT_RC=$?
+        fi
+        case "$THIN_AUDIT_RC" in
+        0)
+            echo "ERROR: package removal refused: managed Thin objects still exist." >&2
+            echo "Drain/migrate them before removing or replacing this package, regardless of ThinGuard state." >&2
+            exit 1
+            ;;
+        1) ;;
+        *) echo "ERROR: package removal refused: Thin LV classifier failed ($THIN_AUDIT_RC)." >&2; exit 1 ;;
+        esac
+        if [ "$PROFILE_REPLACEMENT_PENDING" -eq 0 ]; then
+            if awk '$0 ~ /slt_tg_|slt_tgo_|slt_tgt_/ { found=1 } END { exit found ? 0 : 1 }' \
+               "$AUDIT_FILE"; then
+                THICK_AUDIT_RC=0
+            else
+                THICK_AUDIT_RC=$?
+            fi
+            case "$THICK_AUDIT_RC" in
+            0)
+                echo "ERROR: package removal refused: managed Thick objects still exist." >&2
+                echo "Drain/migrate them before removing the package and its recovery tools." >&2
+                exit 1
+                ;;
+            1) ;;
+            *) echo "ERROR: package removal refused: Thick LV classifier failed ($THICK_AUDIT_RC)." >&2; exit 1 ;;
+            esac
+        fi
+        # Replacement preserves the Thick implementation, but must never
+        # cross an open or unknown storage mutation boundary.
+        if ! printf '%s\n' "$VOLUME_GROUPS" >"$AUDIT_FILE"; then
+            echo "ERROR: package removal refused: cannot restore VG audit input." >&2
+            exit 1
+        fi
+        if awk -F'|' '$3 ~ /slt_tg_vgi_/ { found=1 } END { exit found ? 0 : 1 }' \
+           "$AUDIT_FILE"; then
+            INTENT_AUDIT_RC=0
+        else
+            INTENT_AUDIT_RC=$?
+        fi
+        case "$INTENT_AUDIT_RC" in
+        0)
+            echo "ERROR: package removal refused: a Thick VG mutation intent still exists." >&2
+            echo "Complete explicit recovery before removing or replacing the package." >&2
+            exit 1
+            ;;
+        1) ;;
+        *) echo "ERROR: package removal refused: VG-intent classifier failed ($INTENT_AUDIT_RC)." >&2; exit 1 ;;
+        esac
+        # Consume the one-shot authorization only after every read-only
+        # storage refusal check has passed, but before the first service
+        # effect. A refused audit therefore cannot create PRERM_INTENT.
+        if [ "$PROFILE_REPLACEMENT_PENDING" -eq 1 ]; then
+            if ! SOURCE_VERSION=$(dpkg-query -W -f='${Version}' \
+                "${DPKG_MAINTSCRIPT_PACKAGE:-}" 2>/dev/null); then
+                echo "ERROR: installed package version is unavailable during profile replacement." >&2
+                exit 1
+            fi
+            if ! "$PROFILE_REPLACEMENT_CHECK" verify-prerm \
+                --source-package "${DPKG_MAINTSCRIPT_PACKAGE:-}" \
+                --source-version "$SOURCE_VERSION" --action "${1:-}"; then
+                echo "ERROR: exact profile replacement authorization was refused." >&2
+                exit 1
+            fi
+            PROFILE_REPLACEMENT=1
+        fi
+        if [ "$PACKAGE_FLAVOR" = dual ]; then
+            if ! GUARD_STATE=$(systemctl show --property ActiveState --value \
+                "$THIN_GUARD_SERVICE" 2>/dev/null); then
+                echo "ERROR: package removal refused: ThinGuard state is unavailable." >&2
+                exit 1
+            fi
+            case "$GUARD_STATE" in
+                active|activating|reloading|deactivating)
+                    systemctl stop "$THIN_GUARD_SERVICE"
+                    if ! GUARD_STATE=$(systemctl show --property ActiveState --value \
+                        "$THIN_GUARD_SERVICE" 2>/dev/null); then
+                        echo "ERROR: package removal refused: stopped ThinGuard state is unavailable." >&2
+                        exit 1
+                    fi
+                    case "$GUARD_STATE" in
+                        inactive|failed) ;;
+                        *)
+                            echo "ERROR: package removal refused: ThinGuard stop is unconfirmed ($GUARD_STATE)." >&2
+                            exit 1
+                            ;;
+                    esac
+                    ;;
+                inactive|failed) ;;
+                *)
+                    echo "ERROR: package removal refused: ambiguous ThinGuard state '$GUARD_STATE'." >&2
+                    exit 1
+                    ;;
+            esac
+            if ! systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1; then
+                echo "ERROR: package removal refused: ThinGuard disable failed." >&2
+                exit 1
+            fi
+        fi
+        if [ "$PACKAGE_FLAVOR" = thick-only ]; then
+            systemctl disable "$THIN_GUARD_SERVICE" >/dev/null 2>&1 || true
+        fi
         systemctl stop "$SERVICE" >/dev/null 2>&1 || true
         systemctl disable "$SERVICE" >/dev/null 2>&1 || true
         ;;

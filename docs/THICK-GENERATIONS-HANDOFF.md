@@ -1,11 +1,9 @@
 # Thick Generations TG24 milestone handoff
 
-> Historical milestone record. The current unpublished development candidate
-> is RC5.5 TG26. TG26 preserves Thick Generations semantics but replaces the
-> legacy Thin activation model with persistent single-kernel ownership. Any
+> Historical milestone record. Do not infer current qualification from this
+> document; see the current release notes and installation guide. Any
 > Thin live-migration success recorded below is historical evidence only and
-> is not inside the current support envelope. See
-> `RELEASE-NOTES-RC5.5-TG26.md` for current package identity.
+> is not inside the current support envelope.
 
 ## Candidate
 
@@ -86,7 +84,7 @@ supported-console restore are qualified; replication is not claimed.
 ## Authoritative records
 
 - `docs/original-cluster-qualification-plan.md` is the executable checklist.
-- `docs/thick-generations-poc-status.md` is the chronological evidence log.
+- `docs/thick-generations-poc-status.md` is the sanitized public summary.
 - `docs/thick-generations-release-gate.md` is the support decision table.
 - `docs/known-issues.md` contains the current limitations.
 - `docs/RELEASE-NOTES-RC5.4-TG24.md` contains the milestone release wording.

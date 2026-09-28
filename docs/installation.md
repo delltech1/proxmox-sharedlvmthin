@@ -15,9 +15,9 @@ dedicated LVM VG**. It does not turn local disks into shared storage and it
 does not configure a SAN. Complete the storage preparation below before
 installing or registering the plugin.
 
-For the same-VG Thin/Thick waiting behavior and the
-`slt-mutation-admission-timeout` setting, see [mutation admission](mutation-admission.md).
-This does not replace the rolling-update checks below.
+For VG-scoped serialization and the `slt-mutation-admission-timeout` setting,
+see [mutation admission](mutation-admission.md). Thin and Thick must use
+separate VGs; this does not replace the rolling-update checks below.
 
 ## 1. Prepare the SAN and hosts
 
@@ -118,11 +118,16 @@ before registering the plugin.
 
 ## 5. Install the plugin on every node
 
-Install the same package version one node at a time:
+Choose exactly one package profile and install the same version one node at a
+time. The profiles conflict and cannot coexist:
 
 ```bash
 sha256sum --check SHA256SUMS
+# DUAL: Thin and Thick Generations
 apt install ./pve-sharedlvmthin_<version>_all.deb
+
+# OR Thick-only: Thick Generations only
+apt install ./pve-sharedlvmthin-thick_<version>_all.deb
 ```
 
 Existing `/etc/pve-sharedlvmthin/web.conf` and TLS files are preserved during
@@ -173,16 +178,26 @@ for compatibility and explicit operational choices. See
 
 ### Thin and Thick Generations coexistence
 
-The dual-mode package does not guess which capacity model an administrator
-wants. Create one storage definition for each mode you intend to expose. To
-offer both modes over one VG, create exactly two SharedLvmThin definitions.
-Both must use the same identity, reserve, expected-path, shared, and node-scope
-values:
+Use separate VGs for Thin and Thick. This is the default and recommended
+failure-domain layout: Thin pool growth, metadata exhaustion and ownership do
+not then compete with fully reserved Thick capacity or its transition objects.
+Eager and Lazy Thick aliases may share the dedicated Thick VG.
+
+TG52 does not support same-VG Thin+Thick operation, including as an advanced
+opt-in. Every Thin storage definition must resolve to a different physical VG
+from every Eager/Lazy Thick definition. `isolated` is the only operational
+layout. The schema can parse the retired `mixed` token during a rolling
+migration, but preinstall and runtime refuse it. Existing mixed layouts must
+move their volumes and settle `storage.cfg` before installing or upgrading to
+TG52 on a participating node.
+
+Example separated topology:
 
 ```bash
 pvesm add sharedlvmthin <THIN_STORAGE_ID> \
-  --slt-vgname <DEDICATED_VG_NAME> \
+  --slt-vgname <DEDICATED_THIN_VG_NAME> \
   --slt-allocation-mode thin \
+  --slt-vg-layout isolated \
   --slt-initial-pool-mode elastic \
   --slt-burst-headroom-gib 64 \
   --slt-expected-vg-uuid <VG_UUID> \
@@ -194,8 +209,9 @@ pvesm add sharedlvmthin <THIN_STORAGE_ID> \
   --shared 1 --content images,rootdir
 
 pvesm add sharedlvmthin <THICK_STORAGE_ID> \
-  --slt-vgname <DEDICATED_VG_NAME> \
+  --slt-vgname <DEDICATED_THICK_VG_NAME> \
   --slt-allocation-mode thick-generations \
+  --slt-vg-layout isolated \
   --slt-expected-vg-uuid <VG_UUID> \
   --slt-expected-pv-uuid <PV_UUID> \
   --slt-expected-wwid <WWID> \
@@ -205,18 +221,20 @@ pvesm add sharedlvmthin <THICK_STORAGE_ID> \
   --shared 1 --content images,rootdir
 ```
 
-Omit `--nodes` from both definitions when the LUN is intentionally available
-on every cluster node. Never configure a third SharedLvmThin alias or a native
-PVE `lvm`/`lvmthin` storage over this VG. The plugin rejects mismatched or
-half-visible pairs before activation or mutation.
+Omit `--nodes` only when the relevant LUN is intentionally available on every
+cluster node. Never configure native PVE `lvm`/`lvmthin` storage over either
+managed VG. The plugin checks physical inventory and rejects a Thin pool in a
+Thick VG, a Thick Generations object in a Thin VG, or aliases that expose both
+families through one pinned VG.
 
-Both storage entries report the same physical VG capacity. They are two views
-of one allocation domain, not two independent capacity pools; never add their
-reported capacities together. Doctor validates and explains this relationship.
 The chosen PVE storage ID is the user-visible mode selector when creating,
 restoring or moving a disk. Existing volumes retain their own allocation mode;
 changing the default does not silently convert them. Use a normal PVE Storage
 Move for an explicit Thin-to-Thick or Thick-to-Thin conversion.
+
+Both package profiles operate only with `slt-vg-layout isolated`. Eager and Lazy
+Thick aliases may share the dedicated Thick VG because both reserve their full
+capacity and use the same Thick lifecycle. Thin must use another VG.
 
 ## 7. Validate before storing a VM
 

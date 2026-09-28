@@ -24,7 +24,7 @@ my $scfg = PVE::Storage::storage_config($cfg, $storeid);
 die "storage '$storeid' is not SharedLvmThin\n"
     if ($scfg->{type} // '') ne 'sharedlvmthin';
 die "storage '$storeid' is configured for Thick Generations\n"
-    if ($scfg->{'slt-allocation-mode'} // 'thin') eq 'thick-generations';
+    if ($scfg->{'slt-allocation-mode'} // 'thin') ne 'thin';
 
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
 my (undef, undef, $vmid) = $class->parse_volname($volname);

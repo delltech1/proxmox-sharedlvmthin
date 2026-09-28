@@ -83,12 +83,12 @@ upgrade, so TG26 does not claim that it can technically prevent an explicit
 administrator-forced downgrade. Keep TG26 or newer on every node.
 
 Real external host fencing has now passed on the disposable two-disk VM 992600.
-The owning PVE03 virtual host was powered off from its external ESXi hypervisor.
+The owning lab node was powered off from its external hypervisor.
 The surviving cluster remained quorate, had no local pool mapping, and refused
-target start while the durable owner still named PVE03. Only after positive
-hypervisor fencing was the exact former owner cleared. PVE02 then activated
+target start while the durable owner still named the prior node. Only after positive
+hypervisor fencing was the exact former owner cleared. A peer then activated
 the pool with a fresh epoch, started the VM and reproduced the pre-fault 4 KiB
-canary SHA-256 exactly. After PVE03 rejoined, all three nodes reported
+canary SHA-256 exactly. After the fenced node rejoined, all three nodes reported
 `HEALTHY`, `SAFE_FOR_MUTATION=YES`, no relevant D-state and no test-pool map.
 
 Forced downgrade was tested and is explicitly outside the support envelope

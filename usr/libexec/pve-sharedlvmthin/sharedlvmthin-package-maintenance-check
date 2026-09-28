@@ -1,0 +1,661 @@
+#!/usr/bin/env python3
+"""Verify the fixed-path package-maintenance transaction contract.
+
+The optional record operation writes only an idempotent local receipt after a
+successful verification. It cannot create, update, renew or finalize the
+coordinator manifest, release the runtime hold, touch storage or control a
+service. There is no environment/path override.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+import time
+import uuid
+from pathlib import Path
+
+
+MAINTENANCE_DIR = "/var/lib/pve-sharedlvmthin/maintenance"
+ACTIVE_NAME = "active.json"
+LOCK_NAME = ".maintenance.lock"
+LOCK_TIMEOUT_SEC = 30.0
+MAX_MANIFEST = 1024 * 1024
+MAX_RECEIPT = 64 * 1024
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+SAFE_VERSION = re.compile(r"^[A-Za-z0-9.+:~_-]+$")
+TX = re.compile(r"^[0-9a-f]{32}$")
+PHASES = {"PREPARE_READY", "CONFIG_COMMITTED", "PACKAGE_CONFIGURED_DEFERRED",
+          "FINALIZED"}
+
+
+class Refusal(Exception):
+    pass
+
+
+class HoldAbsent(Refusal):
+    pass
+
+
+def require(value, message):
+    if not value:
+        raise Refusal(message)
+
+
+def no_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Refusal(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def decode_exact(data: bytes):
+    try:
+        return json.loads(data, object_pairs_hook=no_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise Refusal(f"maintenance manifest is invalid JSON: {error}") from error
+
+
+class MaintenanceContext:
+    def __init__(self, *, timeout_sec=LOCK_TIMEOUT_SEC):
+        require(type(timeout_sec) in (int, float)
+                and type(timeout_sec) is not bool
+                and 0 < timeout_sec <= 30,
+                "maintenance lock timeout is invalid")
+        self.timeout_sec = timeout_sec
+        self.descriptors = []
+        self.identities = []
+        self.components = Path(MAINTENANCE_DIR).parts
+        self.directory = None
+        self.receipts = None
+        self.receipts_identity = None
+        self.manifest_identity = None
+        self.manifest_bytes = None
+        self.lock = None
+        self.authorization_wall_deadline = None
+        self.authorization_monotonic_deadline = None
+
+    def require_open_prefix(self):
+        for index in range(1, len(self.descriptors)):
+            # Lock and receipts descriptors are appended only after the full
+            # path chain and are checked separately by require_namespace().
+            if index >= len(self.identities):
+                break
+            component = self.components[index]
+            opened = os.fstat(self.descriptors[index])
+            named = os.stat(component, dir_fd=self.descriptors[index - 1],
+                            follow_symlinks=False)
+            expected = self.identities[index]
+            require(stat.S_ISDIR(named.st_mode)
+                    and (opened.st_dev, opened.st_ino)
+                        == (expected.st_dev, expected.st_ino)
+                        == (named.st_dev, named.st_ino)
+                    and opened.st_uid == expected.st_uid == named.st_uid == 0
+                    and stat.S_IMODE(opened.st_mode)
+                        == stat.S_IMODE(expected.st_mode)
+                        == stat.S_IMODE(named.st_mode)
+                    and stat.S_IMODE(opened.st_mode) & 0o022 == 0,
+                    "maintenance directory prefix changed")
+
+    def __enter__(self):
+        flags_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags_dir |= os.O_NOFOLLOW
+        require(self.components and self.components[0] == "/",
+                "maintenance directory is not absolute")
+        deadline = time.monotonic() + self.timeout_sec
+        try:
+            current = os.open("/", flags_dir)
+            self.descriptors.append(current)
+            self.identities.append(os.fstat(current))
+            for component in self.components[1:]:
+                try:
+                    current = os.open(component, flags_dir, dir_fd=current)
+                except FileNotFoundError as error:
+                    self.require_open_prefix()
+                    try:
+                        os.stat(component, dir_fd=current,
+                                follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise Refusal(
+                            "maintenance path component appeared during probe")
+                    raise HoldAbsent(
+                        f"maintenance path component is absent: {component}") \
+                        from error
+                self.descriptors.append(current)
+                info = os.fstat(current)
+                self.identities.append(info)
+                require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0
+                        and stat.S_IMODE(info.st_mode) & 0o022 == 0,
+                        f"maintenance path component '{component}' is unsafe")
+            self.directory = current
+            final = self.identities[-1]
+            require(stat.S_ISDIR(final.st_mode) and final.st_uid == 0
+                    and stat.S_IMODE(final.st_mode) == 0o700,
+                    "maintenance directory must be root-owned mode 0700")
+            flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            self.lock = os.open(LOCK_NAME, flags, 0o600,
+                                dir_fd=self.directory)
+            self.descriptors.append(self.lock)
+            lock_info = os.fstat(self.lock)
+            require(stat.S_ISREG(lock_info.st_mode) and lock_info.st_uid == 0
+                    and stat.S_IMODE(lock_info.st_mode) == 0o600
+                    and lock_info.st_nlink == 1,
+                    "maintenance lock inode is unsafe")
+            while True:
+                require(time.monotonic() <= deadline,
+                        "maintenance lock acquisition timed out")
+                try:
+                    fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    require(time.monotonic() <= deadline,
+                            "maintenance lock acquisition timed out")
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.01, max(0.0,
+                               deadline - time.monotonic())))
+            self.require_namespace()
+            return self
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        for descriptor in reversed(self.descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        self.descriptors = []
+        self.directory = None
+        self.receipts = None
+        self.lock = None
+
+    def __exit__(self, _kind, _value, _traceback):
+        self.close()
+
+    def require_namespace(self):
+        require(self.directory is not None and self.lock is not None,
+                "maintenance context is not active")
+        self.require_open_prefix()
+        lock_info = os.fstat(self.lock)
+        named_lock = os.stat(LOCK_NAME, dir_fd=self.directory,
+                             follow_symlinks=False)
+        require(stat.S_ISREG(named_lock.st_mode)
+                and (lock_info.st_dev, lock_info.st_ino)
+                    == (named_lock.st_dev, named_lock.st_ino)
+                and lock_info.st_uid == named_lock.st_uid == 0
+                and lock_info.st_nlink == named_lock.st_nlink == 1
+                and stat.S_IMODE(lock_info.st_mode)
+                    == stat.S_IMODE(named_lock.st_mode) == 0o600,
+                "maintenance lock namespace changed")
+        if self.receipts is not None:
+            opened = os.fstat(self.receipts)
+            named = os.stat("receipts", dir_fd=self.directory,
+                            follow_symlinks=False)
+            expected = self.receipts_identity
+            require(stat.S_ISDIR(named.st_mode)
+                    and (opened.st_dev, opened.st_ino)
+                        == (expected.st_dev, expected.st_ino)
+                        == (named.st_dev, named.st_ino)
+                    and opened.st_uid == expected.st_uid == named.st_uid == 0
+                    and stat.S_IMODE(opened.st_mode)
+                        == stat.S_IMODE(expected.st_mode)
+                        == stat.S_IMODE(named.st_mode) == 0o700,
+                    "receipt directory changed")
+
+    def _read_regular(self, directory, name, maximum, label, *, missing=False,
+                      fsync_file=False):
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(name, flags, dir_fd=directory)
+        except FileNotFoundError:
+            if missing:
+                return None, None
+            raise Refusal(f"{label} is unavailable")
+        try:
+            info = os.fstat(descriptor)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0
+                    and stat.S_IMODE(info.st_mode) == 0o600
+                    and info.st_nlink == 1 and 0 < info.st_size <= maximum,
+                    f"{label} metadata is unsafe")
+            chunks = []
+            remaining = info.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 65536))
+                require(chunk, f"{label} read was incomplete")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            require(os.read(descriptor, 1) == b"", f"{label} grew while read")
+            named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            after = os.fstat(descriptor)
+            require((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                     info.st_nlink)
+                    == (after.st_dev, after.st_ino, after.st_size,
+                        after.st_mtime_ns, after.st_nlink)
+                    == (named.st_dev, named.st_ino, named.st_size,
+                        named.st_mtime_ns, named.st_nlink),
+                    f"{label} namespace changed while read")
+            if fsync_file:
+                os.fsync(descriptor)
+            return b"".join(chunks), info
+        finally:
+            os.close(descriptor)
+
+    def read_manifest(self):
+        self.require_namespace()
+        data, info = self._read_regular(
+            self.directory, ACTIVE_NAME, MAX_MANIFEST,
+            "active maintenance manifest")
+        self.manifest_bytes = data
+        self.manifest_identity = info
+        return data
+
+    def freeze_authorization(self, valid_until):
+        require(type(valid_until) is int and type(valid_until) is not bool,
+                "maintenance authorization deadline is invalid")
+        require(self.authorization_monotonic_deadline is None,
+                "maintenance authorization deadline is already frozen")
+        wall_now = time.time()
+        monotonic_now = time.monotonic()
+        require(wall_now <= valid_until,
+                "maintenance authorization expired before admission")
+        self.authorization_wall_deadline = valid_until
+        self.authorization_monotonic_deadline = (
+            monotonic_now + (valid_until - wall_now))
+        self.require_authorization("after admission")
+
+    def require_authorization(self, boundary):
+        require(self.authorization_monotonic_deadline is not None
+                and self.authorization_wall_deadline is not None,
+                "maintenance authorization deadline is not frozen")
+        require(time.monotonic() <= self.authorization_monotonic_deadline
+                and time.time() <= self.authorization_wall_deadline,
+                f"maintenance authorization expired {boundary}")
+
+    def require_manifest(self, expected):
+        current, info = self._read_regular(
+            self.directory, ACTIVE_NAME, MAX_MANIFEST,
+            "active maintenance manifest")
+        original = self.manifest_identity
+        require(self.manifest_bytes == expected == current
+                and original is not None
+                and (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+                    == (original.st_dev, original.st_ino, original.st_size,
+                        original.st_mtime_ns),
+                "active maintenance manifest changed")
+
+    def open_receipts(self):
+        if self.receipts is None:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            self.receipts = os.open("receipts", flags, dir_fd=self.directory)
+            self.descriptors.append(self.receipts)
+            self.receipts_identity = os.fstat(self.receipts)
+            require(stat.S_ISDIR(self.receipts_identity.st_mode)
+                    and self.receipts_identity.st_uid == 0
+                    and stat.S_IMODE(self.receipts_identity.st_mode) == 0o700,
+                    "receipt directory must be root-owned mode 0700")
+        self.require_namespace()
+        return self.receipts
+
+
+def secure_manifest_read(context=None) -> bytes:
+    if context is not None:
+        require(type(context) is MaintenanceContext,
+                "maintenance context is invalid")
+        return context.read_manifest()
+    try:
+        with MaintenanceContext() as opened:
+            return opened.read_manifest()
+    except Refusal:
+        raise
+    except OSError as error:
+        raise Refusal(f"maintenance directory is unavailable: {error}") from error
+
+
+def probe_hold():
+    try:
+        with MaintenanceContext() as context:
+            data, _ = context._read_regular(
+                context.directory, ACTIVE_NAME, MAX_MANIFEST,
+                "active maintenance manifest", missing=True)
+            context.require_namespace()
+            if data is None:
+                return "ABSENT"
+            # Probe establishes only safe presence.  The normal checker path
+            # owns schema, phase, candidate and live-cluster validation.
+            return "VERIFIED_HOLD"
+    except HoldAbsent:
+        return "ABSENT"
+
+
+def secure_receipt_record(*, context, manifest_bytes, manifest, result, record_phase,
+                          package, version, flavor, artifact_sha256,
+                          storage_sha256, hostname, boot_id, now):
+    expected_record = {
+        "PREPARE_READY": "PREINST_ACCEPTED",
+        "CONFIG_COMMITTED": "PACKAGE_CONFIGURED_DEFERRED",
+    }.get(manifest["phase"])
+    require(record_phase == expected_record,
+            "receipt phase is not valid for the verified manifest phase")
+    require(type(context) is MaintenanceContext
+            and context.directory is not None and context.lock is not None,
+            "receipt writer requires the live maintenance context")
+    try:
+        receipts = context.open_receipts()
+        context.require_manifest(manifest_bytes)
+        context.require_authorization("before receipt")
+
+        receipt = {
+            "schema": "slt-package-maintenance-receipt/v1",
+            "tx": result["tx"], "generation": result["generation"],
+            "phase": record_phase, "node": hostname, "boot_id": boot_id,
+            "package": package, "version": version, "flavor": flavor,
+            "artifact_sha256": artifact_sha256,
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "storage_cfg_sha256": storage_sha256, "recorded_at": now,
+        }
+        encoded = (json.dumps(receipt, sort_keys=True,
+                              separators=(",", ":")) + "\n").encode("utf-8")
+        require(len(encoded) <= MAX_RECEIPT, "receipt exceeds size bound")
+        name = f"{result['tx']}.json"
+        previous = None
+        try:
+            previous_raw, _ = context._read_regular(
+                receipts, name, MAX_RECEIPT, "existing receipt",
+                missing=True)
+        except FileNotFoundError:
+            previous_raw = None
+        except OSError as error:
+            raise Refusal(f"existing receipt is unavailable: {error}") from error
+        if previous_raw is not None:
+            previous = decode_exact(previous_raw)
+        transition = receipt_transition(previous, receipt, record_phase)
+        if transition == "IDEMPOTENT":
+            exact, _ = context._read_regular(
+                receipts, name, MAX_RECEIPT, "existing receipt",
+                fsync_file=True)
+            require(decode_exact(exact) == previous,
+                    "idempotent receipt changed before fsync")
+            os.fsync(receipts)
+            context.require_namespace()
+            context.require_manifest(manifest_bytes)
+            context.require_authorization("before receipt replay")
+            return "IDEMPOTENT"
+
+        temporary = f".{result['tx']}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+        create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            create_flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, create_flags, 0o600, dir_fd=receipts)
+        try:
+            written = 0
+            while written < len(encoded):
+                count = os.write(descriptor, encoded[written:])
+                require(count > 0, "receipt write was incomplete")
+                written += count
+            os.fsync(descriptor)
+            info = os.fstat(descriptor)
+            require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o600
+                    and info.st_nlink == 1 and info.st_size == len(encoded),
+                    "new receipt metadata is unsafe")
+        finally:
+            os.close(descriptor)
+        try:
+            context.require_namespace()
+            context.require_manifest(manifest_bytes)
+            context.require_authorization("before receipt rename")
+            os.rename(temporary, name, src_dir_fd=receipts, dst_dir_fd=receipts)
+            os.fsync(receipts)
+        except Exception:
+            try:
+                os.unlink(temporary, dir_fd=receipts)
+            except OSError:
+                pass
+            raise
+        exact, _ = context._read_regular(
+            receipts, name, MAX_RECEIPT, "published receipt", fsync_file=True)
+        require(exact == encoded, "published receipt bytes differ")
+        context.require_namespace()
+        context.require_manifest(manifest_bytes)
+        context.require_authorization("before receipt success")
+        return "RECORDED"
+    except Refusal:
+        raise
+    except OSError as error:
+        raise Refusal(f"maintenance receipt is unavailable: {error}") from error
+
+
+def exact_keys(value, expected, label):
+    require(type(value) is dict and set(value) == set(expected),
+            f"{label} fields do not match schema")
+
+
+def receipt_transition(previous, receipt, record_phase):
+    if type(previous) is dict and previous.get("phase") == record_phase:
+        previous_stable = {key: value for key, value in previous.items()
+                           if key != "recorded_at"}
+        receipt_stable = {key: value for key, value in receipt.items()
+                          if key != "recorded_at"}
+        require(previous_stable == receipt_stable,
+                "existing same-phase receipt has different evidence")
+        return "IDEMPOTENT"
+    if record_phase == "PREINST_ACCEPTED":
+        require(previous is None, "PREINST receipt already exists with different evidence")
+    else:
+        require(type(previous) is dict
+                and previous.get("schema") == "slt-package-maintenance-receipt/v1"
+                and previous.get("tx") == receipt["tx"]
+                and previous.get("generation") == receipt["generation"]
+                and previous.get("phase") == "PREINST_ACCEPTED"
+                and previous.get("node") == receipt["node"]
+                and previous.get("boot_id") == receipt["boot_id"]
+                and previous.get("package") == receipt["package"]
+                and previous.get("version") == receipt["version"]
+                and previous.get("flavor") == receipt["flavor"]
+                and previous.get("artifact_sha256") == receipt["artifact_sha256"],
+                "PACKAGE_CONFIGURED receipt lacks exact PREINST predecessor")
+    return "WRITE"
+
+
+def validate_manifest(manifest, *, expected_phase, package, version, flavor,
+                      artifact_sha256, storage_sha256, hostname, boot_id,
+                      cluster_name, corosync_sha256, now):
+    exact_keys(manifest, {
+        "schema", "tx", "phase", "generation", "issued_at", "expires_at",
+        "cluster_name", "corosync_conf_sha256", "nodes", "candidate",
+        "baseline_storage_cfg_sha256", "target_storage_cfg_sha256",
+        "allowed_effects", "plan_sha256", "node_evidence",
+    }, "maintenance manifest")
+    require(manifest["schema"] == "slt-package-maintenance/v1",
+            "maintenance schema is unsupported")
+    require(type(manifest["tx"]) is str and TX.fullmatch(manifest["tx"]),
+            "maintenance transaction identity is invalid")
+    require(manifest["phase"] == expected_phase and expected_phase in PHASES,
+            "maintenance phase does not match package operation")
+    require(type(manifest["generation"]) is int and manifest["generation"] > 0,
+            "maintenance generation is invalid")
+    require(type(manifest["issued_at"]) is int and type(manifest["expires_at"]) is int,
+            "maintenance time bounds are invalid")
+    require(manifest["issued_at"] <= now <= manifest["expires_at"]
+            and manifest["expires_at"] - manifest["issued_at"] <= 1800,
+            "maintenance authorization is stale, future or overlong")
+    require(manifest["cluster_name"] == cluster_name,
+            "maintenance cluster identity differs")
+    require(manifest["corosync_conf_sha256"] == corosync_sha256,
+            "maintenance corosync identity differs")
+    require(SHA256.fullmatch(manifest["baseline_storage_cfg_sha256"])
+            and SHA256.fullmatch(manifest["target_storage_cfg_sha256"])
+            and manifest["baseline_storage_cfg_sha256"]
+                != manifest["target_storage_cfg_sha256"],
+            "maintenance storage identities are invalid")
+    expected_storage = (manifest["baseline_storage_cfg_sha256"]
+                        if expected_phase == "PREPARE_READY"
+                        else manifest["target_storage_cfg_sha256"])
+    require(storage_sha256 == expected_storage,
+            "live storage configuration is not the expected transaction phase")
+    require(manifest["allowed_effects"]
+            == ["package-unpack", "package-configure-deferred"],
+            "maintenance effects are not the exact allowlist")
+    require(SHA256.fullmatch(manifest["plan_sha256"]),
+            "maintenance plan identity is invalid")
+
+    candidate = manifest["candidate"]
+    exact_keys(candidate, {"package", "version", "flavor", "artifact_sha256",
+                           "deb_sha256"}, "candidate")
+    require(candidate["package"] == package and candidate["version"] == version
+            and candidate["flavor"] == flavor
+            and candidate["artifact_sha256"] == artifact_sha256,
+            "candidate package identity differs from maintenance transaction")
+    require(package == "pve-sharedlvmthin" and flavor == "dual"
+            and SAFE_VERSION.fullmatch(version)
+            and SHA256.fullmatch(candidate["deb_sha256"])
+            and SHA256.fullmatch(artifact_sha256),
+            "candidate package identity is unsupported")
+
+    nodes = manifest["nodes"]
+    require(type(nodes) is list and len(nodes) >= 3, "maintenance node set is incomplete")
+    names = []
+    local_found = False
+    for node in nodes:
+        exact_keys(node, {"name", "boot_id"}, "maintenance node")
+        require(type(node["name"]) is str and SAFE_NAME.fullmatch(node["name"]),
+                "maintenance node name is invalid")
+        try:
+            parsed_boot = str(uuid.UUID(node["boot_id"]))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise Refusal("maintenance boot identity is invalid") from error
+        names.append(node["name"])
+        if node["name"] == hostname:
+            require(parsed_boot == str(uuid.UUID(boot_id)),
+                    "local boot identity differs from maintenance transaction")
+            local_found = True
+    require(names == sorted(names) and len(set(names)) == len(names) and local_found,
+            "maintenance node set is unordered, duplicated or lacks local node")
+
+    evidence = manifest["node_evidence"]
+    require(type(evidence) is list and len(evidence) == len(nodes),
+            "maintenance evidence does not cover every node")
+    evidence_names = []
+    for record in evidence:
+        exact_keys(record, {"node", "challenge", "evidence_sha256",
+                            "barrier", "workers_clear", "guard_idle_disarmed",
+                            "old_consumers_absent"}, "maintenance node evidence")
+        require(record["node"] in names and type(record["challenge"]) is str
+                and TX.fullmatch(record["challenge"])
+                and SHA256.fullmatch(record["evidence_sha256"]),
+                "maintenance node evidence identity is invalid")
+        require(record["barrier"] is True and record["workers_clear"] is True
+                and record["guard_idle_disarmed"] is True
+                and record["old_consumers_absent"] is True,
+                "maintenance barrier evidence is not positive")
+        evidence_names.append(record["node"])
+    require(sorted(evidence_names) == names and len(set(evidence_names)) == len(names),
+            "maintenance node evidence is duplicated or incomplete")
+    return {"tx": manifest["tx"], "generation": manifest["generation"],
+            "phase": manifest["phase"], "candidate_deb_sha256": candidate["deb_sha256"]}
+
+
+def file_sha256(path: str, label: str, maximum: int) -> str:
+    file_path = Path(path)
+    info = file_path.lstat()
+    require(stat.S_ISREG(info.st_mode) and not file_path.is_symlink()
+            and 0 < info.st_size <= maximum, f"{label} is unsafe")
+    data = file_path.read_bytes()
+    require(len(data) == info.st_size, f"{label} read is incomplete")
+    return hashlib.sha256(data).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--probe-hold", action="store_true")
+    parser.add_argument("--phase", choices=("PREPARE_READY", "CONFIG_COMMITTED"),
+                        required=False)
+    parser.add_argument("--package")
+    parser.add_argument("--version")
+    parser.add_argument("--flavor")
+    parser.add_argument("--artifact-sha256")
+    parser.add_argument("--record-phase",
+                        choices=("PREINST_ACCEPTED", "PACKAGE_CONFIGURED_DEFERRED"))
+    args = parser.parse_args()
+    if args.probe_hold:
+        if any(value is not None for value in (
+                args.phase, args.package, args.version, args.flavor,
+                args.artifact_sha256, args.record_phase)):
+            parser.error("--probe-hold does not accept transaction arguments")
+        try:
+            state = probe_hold()
+        except (Refusal, OSError, UnicodeDecodeError) as error:
+            print(f"MAINTENANCE_HOLD=REFUSED\nREASON={error}")
+            return 2
+        print(f"MAINTENANCE_HOLD={state}")
+        return 0 if state == "VERIFIED_HOLD" else 3
+    if any(value is None for value in (
+            args.phase, args.package, args.version, args.flavor,
+            args.artifact_sha256)):
+        parser.error("transaction validation arguments are required")
+    try:
+        with MaintenanceContext() as context:
+            manifest_bytes = secure_manifest_read(context)
+            manifest = decode_exact(manifest_bytes)
+            hostname = os.uname().nodename
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            storage_sha = file_sha256(
+                "/etc/pve/storage.cfg", "storage configuration",
+                16 * 1024 * 1024)
+            corosync_sha = file_sha256(
+                "/etc/pve/corosync.conf", "corosync configuration",
+                16 * 1024 * 1024)
+            corosync = Path("/etc/pve/corosync.conf").read_text()
+            match = re.search(r"^\s*cluster_name:\s*(\S+)\s*$",
+                              corosync, re.MULTILINE)
+            require(match is not None, "live cluster name is unavailable")
+            result = validate_manifest(
+                manifest, expected_phase=args.phase, package=args.package,
+                version=args.version, flavor=args.flavor,
+                artifact_sha256=args.artifact_sha256,
+                storage_sha256=storage_sha, hostname=hostname,
+                boot_id=boot_id, cluster_name=match.group(1),
+                corosync_sha256=corosync_sha, now=int(time.time()))
+            context.freeze_authorization(manifest["expires_at"])
+            receipt_result = None
+            if args.record_phase:
+                receipt_result = secure_receipt_record(
+                    context=context, manifest_bytes=manifest_bytes,
+                    manifest=manifest, result=result,
+                    record_phase=args.record_phase, package=args.package,
+                    version=args.version, flavor=args.flavor,
+                    artifact_sha256=args.artifact_sha256,
+                    storage_sha256=storage_sha, hostname=hostname,
+                    boot_id=boot_id, now=int(time.time()))
+            context.require_authorization("before checker success")
+    except (Refusal, OSError, UnicodeDecodeError) as error:
+        print(f"MAINTENANCE_TRANSACTION=REFUSED\nREASON={error}")
+        return 2
+    print("MAINTENANCE_TRANSACTION=VERIFIED")
+    for key in sorted(result):
+        print(f"{key.upper()}={result[key]}")
+    if receipt_result is not None:
+        print(f"RECEIPT={receipt_result}")
+    print("AUTHORIZES_STORAGE_MUTATION=NO")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

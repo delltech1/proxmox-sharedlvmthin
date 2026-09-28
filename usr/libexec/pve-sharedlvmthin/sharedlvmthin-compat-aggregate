@@ -1,0 +1,537 @@
+#!/usr/bin/python3
+"""Fail-closed aggregation of atomic per-node compatibility evidence."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+REQUIRED_STEPS = {
+    "contract-catalogue", "upstream-inventory", "compat-check", "upgrade-check",
+    "upstream-inventory-final",
+}
+OPTIONAL_STEPS = {"candidate-inspect"}
+STEP_TOOLS = {
+    "contract-catalogue": "sharedlvmthin-contract-check",
+    "upstream-inventory": "sharedlvmthin-upstream-inventory",
+    "upstream-inventory-final": "sharedlvmthin-upstream-inventory",
+    "compat-check": "sharedlvmthin-compat-check",
+    "upgrade-check": "sharedlvmthin-upgrade-check",
+    "candidate-inspect": "sharedlvmthin-candidate-inspect",
+}
+HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+HEX_RE = re.compile(r"[a-f0-9]{64}\Z")
+BOOT_RE = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
+
+
+def _reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def read_regular(path, limit):
+    descriptor = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size < 0 or before.st_size > limit:
+            raise ValueError("input is non-regular or exceeds its size limit")
+        chunks = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                raise ValueError("input ended before its recorded size")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError("input grew while being read")
+        after = os.fstat(descriptor)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode")
+        if tuple(getattr(before, field) for field in fields) \
+                != tuple(getattr(after, field) for field in fields):
+            raise ValueError("input changed while being read")
+        return b"".join(chunks)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def strict_load_bytes(data):
+    return json.loads(data.decode("utf-8"), object_pairs_hook=_reject_duplicates)
+
+
+def strict_load(path):
+    return strict_load_bytes(read_regular(path, 4 * 1024 * 1024))
+
+
+def sha256(path):
+    return hashlib.sha256(read_regular(path, 4 * 1024 * 1024)).hexdigest()
+
+
+def load_plan(path, now):
+    plan = strict_load(path)
+    expected_keys = {
+        "kind", "schema", "run_id", "phase", "cluster_id_sha256",
+        "upgrade_plan_sha256", "collector_sha256", "valid_from", "valid_until",
+        "eligible_nodes", "candidate_packages", "plugin_artifacts",
+        "lab_runner_sha256", "required_transitions", "class_descriptors",
+    }
+    if set(plan) != expected_keys:
+        raise ValueError("collection plan has missing or unknown fields")
+    if plan.get("kind") != "cluster-compatibility-plan" \
+            or type(plan.get("schema")) is not int or plan.get("schema") != 1:
+        raise ValueError("unsupported collection plan")
+    if not BOOT_RE.fullmatch(str(plan.get("run_id", ""))):
+        raise ValueError("invalid collection run id")
+    if plan.get("phase") not in ("pre-upgrade", "post-reboot"):
+        raise ValueError("invalid collection phase")
+    for field in (
+        "cluster_id_sha256", "upgrade_plan_sha256", "collector_sha256", "lab_runner_sha256",
+    ):
+        if not HEX_RE.fullmatch(str(plan.get(field, ""))):
+            raise ValueError(f"invalid plan field: {field}")
+    valid_from = _parse_time(plan.get("valid_from"))
+    valid_until = _parse_time(plan.get("valid_until"))
+    if valid_from > now or now > valid_until \
+            or (valid_until - valid_from).total_seconds() <= 0 \
+            or (valid_until - valid_from).total_seconds() > 86400:
+        raise ValueError("plan validity interval is inactive or excessive")
+    rows = plan.get("eligible_nodes")
+    if not isinstance(rows, list) or not rows or len(rows) > 4096:
+        raise ValueError("plan has no eligible nodes")
+    nodes = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"host", "storage_scope_sha256"}:
+            raise ValueError("invalid eligible-node row")
+        host = row["host"]
+        if not isinstance(host, str) or not HOST_RE.fullmatch(host) or host in nodes \
+                or not isinstance(row["storage_scope_sha256"], str) \
+                or not HEX_RE.fullmatch(row["storage_scope_sha256"]):
+            raise ValueError("invalid or duplicate eligible node")
+        nodes[host] = row["storage_scope_sha256"]
+    candidates = plan.get("candidate_packages")
+    if not isinstance(candidates, list) or len(candidates) > 512:
+        raise ValueError("plan candidate_packages is not a list")
+    normalized = []
+    for row in candidates:
+        if not isinstance(row, dict) or set(row) != {"package", "version", "architecture", "sha256"} \
+                or any(not isinstance(row[key], str) or not row[key]
+                       for key in ("package", "version", "architecture")) \
+                or not isinstance(row["sha256"], str) or not HEX_RE.fullmatch(row["sha256"]):
+            raise ValueError("invalid candidate package row")
+        normalized.append((row["package"], row["version"], row["architecture"], row["sha256"]))
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("duplicate candidate package row")
+    artifacts = plan.get("plugin_artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != {"dual_sha256", "thick_sha256"} \
+            or any(not isinstance(artifacts.get(key), str) or not HEX_RE.fullmatch(artifacts[key])
+                   for key in artifacts):
+        raise ValueError("invalid plugin artifact set")
+    transitions = plan.get("required_transitions")
+    if not isinstance(transitions, list) or len(transitions) > 128:
+        raise ValueError("invalid required transition set")
+    transition_ids = set()
+    for row in transitions:
+        required = {"id", "source_class", "destination_class", "direction", "order", "peer_classes"}
+        if not isinstance(row, dict) or set(row) != required \
+                or not isinstance(row["id"], str) or not HOST_RE.fullmatch(row["id"]) \
+                or row["id"] in transition_ids \
+                or not HEX_RE.fullmatch(str(row["source_class"])) \
+                or not HEX_RE.fullmatch(str(row["destination_class"])) \
+                or row["direction"] not in ("old-to-new", "new-to-old") \
+                or type(row["order"]) is not int or row["order"] < 1 \
+                or not isinstance(row["peer_classes"], list) \
+                or any(not isinstance(item, str) or not HEX_RE.fullmatch(item)
+                       for item in row["peer_classes"]) \
+                or len(row["peer_classes"]) != len(set(row["peer_classes"])):
+            raise ValueError("invalid required transition row")
+        transition_ids.add(row["id"])
+    descriptors = plan.get("class_descriptors")
+    if not isinstance(descriptors, list) or not descriptors or len(descriptors) > 256:
+        raise ValueError("invalid class descriptor set")
+    descriptor_ids = set()
+    for row in descriptors:
+        required = {"contract_fingerprint", "package_flavor", "running_kernel",
+                    "plugin_payload_sha256"}
+        if not isinstance(row, dict) or set(row) != required \
+                or not isinstance(row["contract_fingerprint"], str) \
+                or not HEX_RE.fullmatch(row["contract_fingerprint"]) \
+                or row["contract_fingerprint"] in descriptor_ids \
+                or row["package_flavor"] not in ("dual", "thick-only") \
+                or not isinstance(row["running_kernel"], str) or not row["running_kernel"] \
+                or not isinstance(row["plugin_payload_sha256"], str) \
+                or not HEX_RE.fullmatch(row["plugin_payload_sha256"]):
+            raise ValueError("invalid class descriptor row")
+        descriptor_ids.add(row["contract_fingerprint"])
+    referenced_classes = set()
+    for row in transitions:
+        referenced_classes.update([row["source_class"], row["destination_class"]])
+        referenced_classes.update(row["peer_classes"])
+    if not referenced_classes.issubset(descriptor_ids):
+        raise ValueError("transition references an undescribed contract class")
+    plan["_nodes"] = nodes
+    plan["_candidates"] = sorted(normalized)
+    return plan
+
+
+def _parse_time(value):
+    if not isinstance(value, str):
+        raise ValueError("missing collection timestamp")
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("collection timestamp has no timezone")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _verify_evidence(directory, step, stream):
+    evidence = step.get(stream)
+    if not isinstance(evidence, dict) or evidence.get("truncated") is not False \
+            or type(evidence.get("size")) is not int or evidence["size"] < 0 \
+            or evidence["size"] > 4 * 1024 * 1024 \
+            or not isinstance(evidence.get("sha256"), str) \
+            or not HEX_RE.fullmatch(evidence["sha256"]):
+        raise ValueError(f"{step.get('name')}: invalid {stream} evidence metadata")
+    path = directory / f"{step['name']}.{stream}"
+    data = read_regular(path, 4 * 1024 * 1024)
+    if len(data) != evidence["size"] or hashlib.sha256(data).hexdigest() != evidence["sha256"]:
+        raise ValueError(f"{step['name']}: {stream} evidence digest/size mismatch")
+    return data
+
+
+def inspect_bundle(result_path, plan, plan_sha256, now, max_age_sec):
+    path = pathlib.Path(result_path).absolute()
+    if not path.is_file() or path.is_symlink() or path.name != "gate-result.json":
+        raise ValueError("node result must be a regular gate-result.json")
+    document = strict_load(path)
+    if document.get("kind") != "node-compatibility-gate" or document.get("schema") != 1:
+        raise ValueError("unsupported node gate schema")
+    if document.get("phase") != plan["phase"]:
+        raise ValueError("node gate phase mismatch")
+    if document.get("run_id") != plan["run_id"] \
+            or document.get("collection_plan_sha256") != plan_sha256 \
+            or document.get("cluster_id_sha256") != plan["cluster_id_sha256"] \
+            or document.get("upgrade_plan_sha256") != plan["upgrade_plan_sha256"] \
+            or document.get("collector_sha256") != plan["collector_sha256"] \
+            or document.get("lab_runner_sha256") != plan["lab_runner_sha256"] \
+            or document.get("plugin_artifacts") != plan["plugin_artifacts"] \
+            or document.get("class_descriptors") != plan["class_descriptors"]:
+        raise ValueError("node gate belongs to another run or expected plan")
+    started = _parse_time(document.get("started_at"))
+    collected = _parse_time(document.get("collected_at"))
+    if started > collected or (collected - started).total_seconds() > 1800:
+        raise ValueError("node gate collection interval is invalid or excessive")
+    age = (now - collected).total_seconds()
+    if age < -300 or age > max_age_sec:
+        raise ValueError("node gate evidence is stale or from the future")
+    host = document.get("host")
+    boot_id = document.get("boot_id_at_start")
+    if not isinstance(host, str) or not HOST_RE.fullmatch(host):
+        raise ValueError("invalid node hostname")
+    if not isinstance(boot_id, str) or not BOOT_RE.fullmatch(boot_id):
+        raise ValueError(f"{host}: invalid boot identity")
+    if document.get("boot_id_at_finish") != boot_id:
+        raise ValueError(f"{host}: boot identity changed during collection")
+    if host not in plan["_nodes"] \
+            or document.get("expected_storage_scope_sha256") != plan["_nodes"][host]:
+        raise ValueError(f"{host}: storage eligibility/scope plan mismatch")
+    if document.get("upgrade_authorized") is not False:
+        raise ValueError(f"{host}: node gate contains forbidden authorization")
+    if document.get("verdict") != "RETEST_REQUIRED" or document.get("blocking_steps") != []:
+        raise ValueError(f"{host}: node gate is not a complete non-blocking observation")
+    rows = document.get("steps")
+    if not isinstance(rows, list):
+        raise ValueError(f"{host}: node steps are malformed")
+    steps = {}
+    contract_terminal = None
+    for step in rows:
+        if not isinstance(step, dict) or not isinstance(step.get("name"), str):
+            raise ValueError(f"{host}: malformed node step")
+        name = step["name"]
+        if name in steps or name not in REQUIRED_STEPS | OPTIONAL_STEPS:
+            raise ValueError(f"{host}: duplicate or unknown node step: {name}")
+        if step.get("complete") is not True or step.get("timed_out") is not False \
+                or step.get("error") is not None:
+            raise ValueError(f"{host}: incomplete or failed node step: {name}")
+        step_argv = step.get("argv")
+        if not isinstance(step_argv, list) or not step_argv \
+                or not isinstance(step_argv[0], str) \
+                or os.path.basename(step_argv[0]) != STEP_TOOLS[name]:
+            raise ValueError(f"{host}: unexpected tool identity for {name}")
+        stdout_data = _verify_evidence(path.parent, step, "stdout")
+        _verify_evidence(path.parent, step, "stderr")
+        accepted = {0}
+        if name == "candidate-inspect":
+            accepted = {3}
+        elif name in ("upstream-inventory", "upstream-inventory-final") \
+                and "--compare" in step.get("argv", []):
+            accepted = {0, 3}
+        if step.get("returncode") not in accepted:
+            raise ValueError(f"{host}: unacceptable return code for {name}")
+        if name == "contract-catalogue":
+            terminal = strict_load_bytes(stdout_data)
+            if terminal.get("valid") is not True or terminal.get("upgrade_authorized") is not False:
+                raise ValueError(f"{host}: contract catalogue terminal result is invalid")
+            if terminal.get("qualification_ready") is not True:
+                raise ValueError(f"{host}: contract catalogue has unexecutable required scenarios")
+            registry_sha256 = terminal.get("scenario_registry_sha256")
+            if not isinstance(registry_sha256, str) or not HEX_RE.fullmatch(registry_sha256):
+                raise ValueError(f"{host}: scenario registry identity is missing or malformed")
+            if terminal.get("blocked_scenarios") != []:
+                raise ValueError(f"{host}: contract catalogue reports blocked scenarios")
+            contract_terminal = terminal
+        elif name == "compat-check":
+            lines = stdout_data.decode("utf-8").splitlines()
+            if lines.count("COMPATIBILITY=PASS") != 1 or "COMPATIBILITY=FAIL" in lines:
+                raise ValueError(f"{host}: compatibility terminal marker is not a unique PASS")
+        elif name == "upgrade-check":
+            lines = stdout_data.decode("utf-8").splitlines()
+            if lines.count("UPGRADE_SAFE=YES") != 1 \
+                    or lines.count("UPGRADE_SCAN_COMPLETE=YES") != 1 \
+                    or "UPGRADE_SAFE=NO" in lines \
+                    or "UPGRADE_STORAGE_RESULT=FAIL" in lines:
+                raise ValueError(f"{host}: upgrade terminal markers are incomplete or unsafe")
+        steps[name] = step
+    if not REQUIRED_STEPS.issubset(steps):
+        raise ValueError(f"{host}: required node steps are missing")
+    if contract_terminal is None:
+        raise ValueError(f"{host}: contract catalogue evidence is missing")
+    inventory_path = path.parent / "upstream-inventory.stdout"
+    inventory_document = strict_load_bytes(read_regular(inventory_path, 4 * 1024 * 1024))
+    inventory = inventory_document.get("inventory")
+    if not isinstance(inventory, dict) or inventory.get("kind") != "inventory" \
+            or inventory.get("collection_complete") is not True or inventory.get("host") != host:
+        raise ValueError(f"{host}: upstream inventory is incomplete or belongs to another host")
+    fingerprint = inventory.get("contract_fingerprint")
+    if not isinstance(fingerprint, str) or not HEX_RE.fullmatch(fingerprint):
+        raise ValueError(f"{host}: invalid contract fingerprint")
+    expected_boot_hash = hashlib.sha256((boot_id + "\n").encode("ascii")).hexdigest()
+    if inventory.get("boot_id_file_sha256") != expected_boot_hash:
+        raise ValueError(f"{host}: gate and inventory boot identities differ")
+    catalogue = inventory.get("contract", {}).get("compatibility_contract_catalogue", {})
+    if not isinstance(catalogue, dict) or catalogue.get("ok") is not True \
+            or not isinstance(catalogue.get("sha256"), str) \
+            or not HEX_RE.fullmatch(catalogue["sha256"]):
+        raise ValueError(f"{host}: compatibility catalogue evidence is incomplete")
+    registry_path = "/usr/share/pve-sharedlvmthin/pve-lab-scenarios.json"
+    registry_digest = inventory.get("contract", {}).get("critical_files", {}).get(registry_path)
+    if registry_digest != contract_terminal.get("scenario_registry_sha256"):
+        raise ValueError(f"{host}: scenario registry differs between catalogue and inventory")
+    canonical_contract = json.dumps(
+        inventory.get("contract"), sort_keys=True, separators=(",", ":")
+    ).encode()
+    if hashlib.sha256(canonical_contract).hexdigest() != fingerprint:
+        raise ValueError(f"{host}: contract fingerprint does not match canonical contract")
+    storage_scope = inventory.get("contract", {}).get("storage_contract", {}).get("canonical_sha256")
+    if storage_scope != plan["_nodes"][host]:
+        raise ValueError(f"{host}: observed storage scope differs from collection plan")
+    final_document = strict_load_bytes(read_regular(
+        path.parent / "upstream-inventory-final.stdout", 4 * 1024 * 1024
+    ))
+    final_inventory = final_document.get("inventory")
+    if not isinstance(final_inventory, dict) or final_inventory.get("collection_complete") is not True \
+            or final_inventory.get("host") != host \
+            or final_inventory.get("contract_fingerprint") != fingerprint \
+            or final_inventory.get("boot_id_file_sha256") != expected_boot_hash:
+        raise ValueError(f"{host}: boot/configuration changed during collection")
+    final_contract = json.dumps(
+        final_inventory.get("contract"), sort_keys=True, separators=(",", ":")
+    ).encode()
+    if hashlib.sha256(final_contract).hexdigest() != fingerprint:
+        raise ValueError(f"{host}: final contract fingerprint is not canonical")
+    candidates = []
+    if "candidate-inspect" in steps:
+        candidate = strict_load_bytes(read_regular(
+            path.parent / "candidate-inspect.stdout", 4 * 1024 * 1024
+        ))
+        if candidate.get("kind") != "candidate-static-inspection" \
+                or candidate.get("verdict") != "RETEST_REQUIRED" \
+                or candidate.get("candidate_runtime_authorized") is not False \
+                or candidate.get("errors") != [] \
+                or candidate.get("current_contract_fingerprint") != fingerprint:
+            raise ValueError(f"{host}: candidate inspection is incomplete or misbound")
+        candidates = sorted(
+            (row["identity"]["package"], row["identity"]["version"],
+             row["identity"]["architecture"], row["deb_sha256"])
+            for row in candidate.get("packages", [])
+        )
+        if not candidates or any(not HEX_RE.fullmatch(row[3]) for row in candidates):
+            raise ValueError(f"{host}: candidate package set is empty or malformed")
+    if candidates != plan["_candidates"]:
+        raise ValueError(f"{host}: inspected candidate set differs from collection plan")
+    return {
+        "host": host,
+        "boot_id": boot_id,
+        "collected_at": collected.isoformat(),
+        "started_at": started.isoformat(),
+        "contract_fingerprint": fingerprint,
+        "catalogue_sha256": catalogue["sha256"],
+        "scenario_registry_sha256": registry_digest,
+        "package_flavor": inventory.get("contract", {}).get("package_flavor"),
+        "running_kernel": inventory.get("contract", {}).get("running_kernel"),
+        "plugin_payload_sha256": inventory.get("contract", {}).get(
+            "installed_profile_payload", {}
+        ).get("payload_sha256"),
+        "candidates": candidates,
+        "result_sha256": sha256(path),
+    }
+
+
+def aggregate(nodes, expected):
+    errors = []
+    by_host = {}
+    for node in nodes:
+        host = node["host"]
+        if host in by_host:
+            errors.append(f"duplicate node evidence: {host}")
+        by_host[host] = node
+    observed = sorted(by_host)
+    if observed != sorted(expected):
+        errors.append("observed node set does not exactly match expected node set")
+    catalogue_hashes = {node["catalogue_sha256"] for node in nodes}
+    if len(catalogue_hashes) != 1:
+        errors.append("nodes use different compatibility catalogues")
+    candidate_sets = {json.dumps(node["candidates"], sort_keys=True) for node in nodes}
+    if len(candidate_sets) != 1:
+        errors.append("nodes do not inspect the same candidate package set")
+    classes = {}
+    for node in nodes:
+        key = node["contract_fingerprint"]
+        if key not in classes:
+            classes[key] = {
+                "nodes": [],
+                "package_flavor": node["package_flavor"],
+                "running_kernel": node["running_kernel"],
+                "plugin_payload_sha256": node["plugin_payload_sha256"],
+            }
+        elif classes[key]["package_flavor"] != node["package_flavor"] \
+                or classes[key]["running_kernel"] != node["running_kernel"] \
+                or classes[key]["plugin_payload_sha256"] != node["plugin_payload_sha256"]:
+            errors.append(f"contract class metadata mismatch: {key}")
+        classes[key]["nodes"].append(node["host"])
+    return {
+        "verdict": "BLOCKED" if errors else "RETEST_REQUIRED",
+        "errors": sorted(errors),
+        "observed_nodes": observed,
+        "classes": [
+            {
+                "contract_fingerprint": key,
+                "nodes": sorted(value["nodes"]),
+                "package_flavor": value["package_flavor"],
+                "running_kernel": value["running_kernel"],
+                "plugin_payload_sha256": value["plugin_payload_sha256"],
+            }
+            for key, value in sorted(classes.items())
+        ],
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--collection-plan", required=True)
+    parser.add_argument("--node-result", action="append", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--max-age-sec", type=int, default=3600)
+    parser.add_argument("--max-spread-sec", type=int, default=900)
+    args = parser.parse_args(argv)
+    if args.max_age_sec < 60 or args.max_age_sec > 86400:
+        parser.error("max-age-sec must be between 60 and 86400")
+    if args.max_spread_sec < 1 or args.max_spread_sec > 3600:
+        parser.error("max-spread-sec must be between 1 and 3600")
+    output = pathlib.Path(args.output).absolute()
+    if output.exists():
+        parser.error("output file already exists")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    errors = []
+    nodes = []
+    try:
+        plan = load_plan(args.collection_plan, now)
+        expected = sorted(plan["_nodes"])
+        plan_sha256 = sha256(args.collection_plan)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        plan = None
+        expected = []
+        plan_sha256 = None
+        errors.append(f"expected node inventory unavailable: {exc}")
+    for path in args.node_result:
+        try:
+            if plan is None:
+                raise ValueError("collection plan is unavailable")
+            nodes.append(inspect_bundle(path, plan, plan_sha256, now, args.max_age_sec))
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            errors.append(f"node bundle rejected: {path}: {exc}")
+    result = aggregate(nodes, expected)
+    if plan is not None:
+        descriptors = {row["contract_fingerprint"]: row for row in plan["class_descriptors"]}
+        for observed in result["classes"]:
+            descriptor = descriptors.get(observed["contract_fingerprint"])
+            if descriptor is None or any(
+                observed[key] != descriptor[key]
+                for key in ("package_flavor", "running_kernel", "plugin_payload_sha256")
+            ):
+                errors.append(
+                    f"observed class differs from collection plan descriptor: "
+                    f"{observed['contract_fingerprint']}"
+                )
+    if nodes:
+        timestamps = [_parse_time(node["collected_at"]) for node in nodes]
+        if (max(timestamps) - min(timestamps)).total_seconds() > args.max_spread_sec:
+            errors.append("node evidence collection spread exceeds configured limit")
+    result["errors"] = sorted(set(result["errors"] + errors))
+    if result["errors"]:
+        result["verdict"] = "BLOCKED"
+    document = {
+        "kind": "cluster-compatibility-aggregate",
+        "schema": 1,
+        "phase": plan.get("phase") if plan else None,
+        "run_id": plan.get("run_id") if plan else None,
+        "collection_plan_sha256": plan_sha256,
+        "cluster_id_sha256": plan.get("cluster_id_sha256") if plan else None,
+        "upgrade_plan_sha256": plan.get("upgrade_plan_sha256") if plan else None,
+        "lab_runner_sha256": plan.get("lab_runner_sha256") if plan else None,
+        "plugin_artifacts": plan.get("plugin_artifacts") if plan else None,
+        "required_transitions": plan.get("required_transitions") if plan else None,
+        "class_descriptors": plan.get("class_descriptors") if plan else None,
+        "catalogue_sha256": (
+            next(iter({node["catalogue_sha256"] for node in nodes}))
+            if len({node["catalogue_sha256"] for node in nodes}) == 1 else None
+        ),
+        "scenario_registry_sha256": (
+            next(iter({node["scenario_registry_sha256"] for node in nodes}))
+            if len({node["scenario_registry_sha256"] for node in nodes}) == 1 else None
+        ),
+        "collected_at": now.isoformat(),
+        "verdict": result["verdict"],
+        "cluster_upgrade_authorized": False,
+        "expected_nodes": expected,
+        "observed_nodes": result["observed_nodes"],
+        "classes": result["classes"],
+        "errors": result["errors"],
+        "limitations": [
+            "physical and mixed-version lab qualification is not evaluated by this command",
+            "a clean aggregate remains RETEST_REQUIRED and cannot authorize an upgrade",
+        ],
+    }
+    temporary = pathlib.Path(f"{output}.tmp.{os.getpid()}")
+    with open(temporary, "x", encoding="utf-8") as handle:
+        json.dump(document, handle, sort_keys=True, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, output)
+    print(json.dumps(document, sort_keys=True, indent=2))
+    return 2 if document["verdict"] == "BLOCKED" else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

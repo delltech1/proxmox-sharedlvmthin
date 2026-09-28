@@ -39,7 +39,7 @@ ok(!grep { tainted($_) } @$tags,
         return [$dirty . 'vg-uuid|7|8|4096'];
     };
     my $digest = PVE::Storage::Custom::SharedLvmThinPlugin->_vg_state_digest(
-        'vg', undef,
+        { 'slt-tg-command-deadline-sec' => 42 }, 'vg', undef,
     );
     ok(!tainted($digest), 'VG state digest is untainted after grammar validation');
 }

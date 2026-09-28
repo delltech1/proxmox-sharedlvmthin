@@ -11,15 +11,34 @@ PROBE_TIMEOUT=150
 failures=0
 checked=0
 skipped=0
-skipped_disabled=0
+checked_disabled=0
 skipped_node_scope=0
 result=
+inventory_result=
+fail_fast=0
+scan_complete=1
 declare -A seen=()
+
+case "$#" in
+    0) ;;
+    1)
+        [ "$1" = "--fail-fast" ] || {
+            echo "Usage: sharedlvmthin-upgrade-check [--fail-fast]" >&2
+            exit 64
+        }
+        fail_fast=1
+        ;;
+    *)
+        echo "Usage: sharedlvmthin-upgrade-check [--fail-fast]" >&2
+        exit 64
+        ;;
+esac
 
 # Invoked through the signal and exit trap below.
 # shellcheck disable=SC2317,SC2329
 cleanup() {
     [ -z "$result" ] || rm -f -- "$result"
+    [ -z "$inventory_result" ] || rm -f -- "$inventory_result"
 }
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
@@ -89,6 +108,19 @@ inventory() {
 
 local_node=$(hostname)
 
+if ! inventory_result=$(mktemp); then
+    echo "UPGRADE_SCAN_COMPLETE=NO"
+    echo "UPGRADE_SAFE=NO"
+    echo "ERROR=could not create private storage inventory"
+    exit 2
+fi
+if ! inventory >"$inventory_result"; then
+    echo "UPGRADE_SCAN_COMPLETE=NO"
+    echo "UPGRADE_SAFE=NO"
+    echo "ERROR=storage inventory failed"
+    exit 2
+fi
+
 while IFS='|' read -r sid disabled mode nodes; do
     [ -n "$sid" ] || continue
 
@@ -97,6 +129,7 @@ while IFS='|' read -r sid disabled mode nodes; do
         echo "RESULT=FAIL"
         echo "DETAIL=invalid storage identifier"
         failures=$((failures + 1))
+        if [ "$fail_fast" -eq 1 ]; then scan_complete=0; break; fi
         continue
     fi
 
@@ -105,16 +138,19 @@ while IFS='|' read -r sid disabled mode nodes; do
         echo "RESULT=FAIL"
         echo "DETAIL=duplicate storage identifier"
         failures=$((failures + 1))
+        if [ "$fail_fast" -eq 1 ]; then scan_complete=0; break; fi
         continue
     fi
     seen[$sid]=1
 
     case "$disabled" in
-        1|yes|on|true)
+        0|no|off|false|1|yes|on|true) ;;
+        *)
             echo "STORAGE_ID=$sid"
-            echo "RESULT=SKIP_DISABLED"
-            skipped=$((skipped + 1))
-            skipped_disabled=$((skipped_disabled + 1))
+            echo "RESULT=FAIL"
+            echo "DETAIL=invalid disable value"
+            failures=$((failures + 1))
+            if [ "$fail_fast" -eq 1 ]; then scan_complete=0; break; fi
             continue
             ;;
     esac
@@ -133,13 +169,21 @@ while IFS='|' read -r sid disabled mode nodes; do
     fi
 
     case "$mode" in
-        thin|thick-generations) ;;
+        thin|thick-generations|thick-generations-lazy) ;;
         *)
             echo "STORAGE_ID=$sid"
             echo "RESULT=FAIL"
             echo "DETAIL=unsupported allocation mode"
             failures=$((failures + 1))
+            if [ "$fail_fast" -eq 1 ]; then scan_complete=0; break; fi
             continue
+            ;;
+    esac
+
+    case "$disabled" in
+        1|yes|on|true)
+            checked_disabled=$((checked_disabled + 1))
+            echo "UPGRADE_STORAGE_DISABLED=YES"
             ;;
     esac
 
@@ -150,6 +194,7 @@ while IFS='|' read -r sid disabled mode nodes; do
         echo "UPGRADE_STORAGE_RESULT=FAIL"
         echo "UPGRADE_STORAGE_DETAIL=could not create private probe output"
         failures=$((failures + 1))
+        if [ "$fail_fast" -eq 1 ]; then scan_complete=0; break; fi
         continue
     fi
     if timeout --foreground --kill-after=10 "$PROBE_TIMEOUT" \
@@ -164,23 +209,36 @@ while IFS='|' read -r sid disabled mode nodes; do
     healthy=$(grep -c '^STATE=HEALTHY$' "$result" || true)
     safe=$(grep -c '^SAFE_FOR_MUTATION=YES$' "$result" || true)
     anchors=$(grep -c '^THICK_ANCHORS_HEALTHY=PASS$' "$result" || true)
+    intent_clear=$(grep -c '^VG_INTENT_CLEAR=PASS$' "$result" || true)
 
     rm -f -- "$result"
     result=
 
     if [ "$rc" -eq 0 ] && [ "$healthy" -eq 1 ] && \
-       [ "$safe" -eq 1 ] && [ "$anchors" -eq 1 ]; then
+       [ "$safe" -eq 1 ] && [ "$anchors" -eq 1 ] && \
+       [ "$intent_clear" -eq 1 ]; then
         echo "UPGRADE_STORAGE_RESULT=PASS"
     else
         echo "UPGRADE_STORAGE_RESULT=FAIL"
         echo "UPGRADE_STORAGE_DETAIL=recovery gate did not positively prove a healthy mutation-safe state"
         failures=$((failures + 1))
+        if [ "$fail_fast" -eq 1 ]; then scan_complete=0; break; fi
     fi
-done < <(inventory)
+done <"$inventory_result"
 
+if [ "$fail_fast" -eq 1 ]; then
+    echo "UPGRADE_FAIL_FAST=YES"
+else
+    echo "UPGRADE_FAIL_FAST=NO"
+fi
+if [ "$scan_complete" -eq 1 ]; then
+    echo "UPGRADE_SCAN_COMPLETE=YES"
+else
+    echo "UPGRADE_SCAN_COMPLETE=NO"
+fi
 echo "UPGRADE_STORAGES_CHECKED=$checked"
-echo "UPGRADE_STORAGES_SKIPPED_DISABLED=$skipped"
-echo "UPGRADE_STORAGES_SKIPPED_EXPLICITLY_DISABLED=$skipped_disabled"
+echo "UPGRADE_STORAGES_SKIPPED_DISABLED=0"
+echo "UPGRADE_STORAGES_CHECKED_EXPLICITLY_DISABLED=$checked_disabled"
 echo "UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=$skipped_node_scope"
 
 if [ "$failures" -ne 0 ]; then

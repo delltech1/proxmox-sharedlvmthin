@@ -5,8 +5,8 @@ additional restriction on the rights granted by GPLv3.
 
 BASTRIX SharedLVM release candidates, including **both Thin mode and Thick
 Generations mode**, are experimental software for disposable laboratory hosts,
-disposable storage, and disposable guest data only. Neither mode is
-not a production storage product, certification, warranty, service-level
+disposable storage, and disposable guest data only. Neither mode is a
+production storage product, certification, warranty, service-level
 commitment, or promise of fitness for a particular workload, array, fabric,
 failure mode, or Proxmox update.
 

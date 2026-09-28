@@ -1,0 +1,699 @@
+#!/usr/bin/python3
+"""Read-only PVE/upstream contract inventory and qualified-baseline evaluator."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import stat
+import subprocess
+import sys
+
+SCHEMA = 1
+CATALOGUE = "pve-upstream-contracts-v1"
+CONTRACT_CATALOGUE = "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json"
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+PACKAGES = (
+    "libpve-storage-perl", "pve-manager", "qemu-server", "pve-qemu-kvm",
+    "pve-cluster", "libpve-cluster-api-perl", "libpve-common-perl",
+    "pve-container", "corosync", "pve-ha-manager", "lvm2",
+    "thin-provisioning-tools", "multipath-tools", "open-iscsi", "systemd",
+    "udev", "util-linux", "coreutils", "openssh-client", "sqlite3",
+    "libsqlite3-0", "kmod", "apt", "dpkg", "iproute2", "openssl", "procps",
+    "findutils", "grep", "sed", "mawk", "diffutils", "hostname",
+)
+COMMANDS = (
+    "bash", "sh", "perl", "python3", "pvesm", "pvesh", "pvecm", "qm", "pct", "lvs", "vgs",
+    "pvs", "lvcreate", "lvremove", "lvchange", "lvextend", "lvconvert",
+    "lvrename", "vgchange", "vgcfgbackup", "dmsetup", "multipath", "multipathd",
+    "iscsiadm", "qemu-img", "qemu-io", "timeout", "systemctl", "ssh",
+    "systemd-run", "blockdev", "blkdiscard", "thin_check", "dd", "env", "stat",
+    "sha256sum", "sharedlvmthin", "lsinitramfs", "update-initramfs", "modinfo",
+    "modprobe", "apt-cache", "apt-config", "dpkg", "dpkg-deb", "dpkg-query",
+    "lsblk", "lvm", "pveversion", "uname", "dmeventd", "ip", "ss", "openssl",
+    "ps", "awk", "sed", "grep", "cmp", "find", "flock", "sync", "cut", "tr",
+    "sort", "wc", "head", "cat", "du", "date", "hostname", "sleep", "mkdir",
+    "chmod", "chown", "mv", "rm", "dirname", "mktemp", "xargs",
+)
+CRITICAL_FILES = (
+    "/usr/share/perl5/PVE/Storage/Plugin.pm",
+    "/usr/share/perl5/PVE/Storage.pm",
+    "/usr/share/perl5/PVE/Tools.pm",
+    "/usr/share/perl5/PVE/Cluster.pm",
+    "/usr/share/perl5/PVE/HA/Config.pm",
+    "/usr/share/perl5/PVE/INotify.pm",
+    "/usr/share/perl5/PVE/QemuConfig.pm",
+    "/usr/share/perl5/PVE/QemuServer.pm",
+    "/usr/share/perl5/PVE/QemuServer/Drive.pm",
+    "/usr/share/perl5/PVE/SSHInfo.pm",
+    "/usr/share/perl5/PVE/Storage/LVMPlugin.pm",
+    "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm",
+    "/usr/share/perl5/PVE/SharedLvmThinThick.pm",
+    "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check",
+    "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json",
+    "/usr/share/pve-sharedlvmthin/pve-lab-scenarios.json",
+)
+REQUIRED_HOOKS = (
+    "type", "plugindata", "properties", "options", "status", "list_images",
+    "alloc_image", "free_image", "activate_storage", "deactivate_storage",
+    "activate_volume", "deactivate_volume", "volume_size_info",
+    "volume_resize", "volume_snapshot", "volume_snapshot_delete",
+    "volume_snapshot_rollback", "volume_snapshot_needs_fsfreeze",
+    "volume_has_feature", "path", "parse_volname",
+    "filesystem_path", "clone_image", "volume_rollback_is_possible",
+)
+REQUIRED_PVE_SYMBOLS = (
+    "PVE::Cluster::cfs_update", "PVE::Cluster::cfs_lock_storage",
+    "PVE::Cluster::check_cfs_quorum", "PVE::Cluster::get_members",
+    "PVE::HA::Config::read_manager_status", "PVE::HA::Config::read_resources_config",
+    "PVE::INotify::nodename", "PVE::QemuConfig::load_config",
+    "PVE::QemuServer::check_running", "PVE::QemuServer::foreach_volid",
+    "PVE::SSHInfo::ssh_info_to_command", "PVE::Storage::APIAGE",
+    "PVE::Storage::APIVER", "PVE::Storage::LVMPlugin::lvm_list_volumes",
+    "PVE::Storage::LVMPlugin::lvm_vgs", "PVE::Storage::Plugin::cluster_lock_storage",
+    "PVE::Storage::Plugin::find_free_diskname",
+    "PVE::Storage::Plugin::parse_lvm_name", "PVE::Storage::config",
+    "PVE::Storage::storage_config", "PVE::Tools::run_command", "PVE::Tools::trim",
+)
+
+
+def _run(argv, timeout=20):
+    clean_env = {"LC_ALL": "C", "LANG": "C", "PATH": SAFE_PATH}
+    try:
+        result = subprocess.run(
+            argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout, check=False, env=clean_env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "rc": None, "stdout": "", "error": str(exc)}
+    return {
+        "ok": result.returncode == 0,
+        "rc": result.returncode,
+        "stdout": result.stdout.strip(),
+        "error": result.stderr.strip(),
+    }
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    descriptor = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError("not a regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = os.fstat(descriptor)
+        identity_before = (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+            before.st_ctime_ns, before.st_mode, before.st_uid, before.st_gid,
+        )
+        identity_after = (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+            after.st_ctime_ns, after.st_mode, after.st_uid, after.st_gid,
+        )
+        if identity_before != identity_after:
+            raise OSError("file changed while being hashed")
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return {
+        "ok": True, "sha256": digest.hexdigest(),
+        "mode": before.st_mode & 0o7777, "uid": before.st_uid, "gid": before.st_gid,
+        "size": before.st_size,
+    }
+
+
+def _command_evidence(command):
+    lexical = shutil.which(command, path=SAFE_PATH)
+    if lexical is None:
+        return {"ok": False, "path": None, "error": "command not found"}
+    chain = []
+    current = lexical
+    seen = set()
+    try:
+        for _ in range(16):
+            absolute = os.path.abspath(current)
+            if absolute in seen:
+                raise OSError("symlink loop")
+            seen.add(absolute)
+            chain.append(absolute)
+            if not os.path.islink(absolute):
+                break
+            target = os.readlink(absolute)
+            current = target if os.path.isabs(target) else os.path.join(
+                os.path.dirname(absolute), target)
+        else:
+            raise OSError("symlink chain exceeds limit")
+        canonical = os.path.realpath(lexical)
+        digest = _sha256(canonical)
+        if not digest.get("ok"):
+            return {"ok": False, "path": canonical, "lexical_path": lexical,
+                    "symlink_chain": chain, "error": digest.get("error")}
+        owners = set()
+        owner_probes = {}
+        for candidate in dict.fromkeys((lexical, canonical)):
+            evidence = _run(["dpkg-query", "-S", candidate])
+            owner_probes[candidate] = evidence
+            if evidence.get("ok"):
+                for row in evidence.get("stdout", "").splitlines():
+                    package, separator, owned_path = row.partition(": ")
+                    if separator and owned_path == candidate and package:
+                        owners.add(package)
+        if not owners:
+            return {"ok": False, "path": canonical, "lexical_path": lexical,
+                    "symlink_chain": chain, "owners": [],
+                    "owner_probes": owner_probes,
+                    "error": "package owner unavailable"}
+        return {"ok": True, "path": canonical, "lexical_path": lexical,
+                "symlink_chain": chain, "owners": sorted(owners),
+                "owner_probes": owner_probes, **digest}
+    except OSError as exc:
+        return {"ok": False, "path": None, "lexical_path": lexical,
+                "symlink_chain": chain, "error": str(exc)}
+
+
+def _package_version(name):
+    installed = _run([
+        "dpkg-query", "-W",
+        "-f=${binary:Package}|${Version}|${Architecture}|${db:Status-Status}|${db:Status-Eflag}",
+        name,
+    ])
+    policy = _run(["apt-cache", "policy", name])
+    candidate = None
+    if policy["ok"]:
+        match = re.search(r"^\s*Candidate:\s*(\S+)\s*$", policy["stdout"], re.M)
+        candidate = match.group(1) if match else None
+    return {
+        "installed": installed["stdout"] if installed["ok"] else None,
+        "candidate": candidate,
+        "installed_probe_ok": installed["ok"],
+        "candidate_probe_ok": policy["ok"] and candidate is not None,
+    }
+
+
+def _kernel_packages():
+    result = _run([
+        "dpkg-query", "-W",
+        "-f=${binary:Package}|${Version}|${Architecture}|${db:Status-Status}|${db:Status-Eflag}\\n",
+        "proxmox-kernel-*",
+    ])
+    rows = sorted(
+        line for line in result["stdout"].splitlines()
+        if line and line.split("|")[-2:] == ["installed", "ok"]
+    )
+    return {"ok": result["ok"], "rows": rows, "error": result["error"]}
+
+
+def _pve_api():
+    code = (
+        "use JSON::PP; use PVE::Storage; use PVE::Storage::Plugin; "
+        "use PVE::Storage::LVMPlugin; use PVE::Tools; use PVE::Cluster; use PVE::SSHInfo; "
+        "use PVE::HA::Config; use PVE::INotify; use PVE::QemuConfig; use PVE::QemuServer; "
+        "use PVE::Storage::Custom::SharedLvmThinPlugin; "
+        "my @h=qw(" + " ".join(REQUIRED_HOOKS) + "); "
+        "my @s=qw(" + " ".join(REQUIRED_PVE_SYMBOLS) + "); "
+        "sub has_symbol { my ($s)=@_; $s =~ /^(.*)::([^:]+)$/ or return 0; "
+        "return $1->can($2) ? 1 : 0; } "
+        "print encode_json({apiver=>PVE::Storage::APIVER(),"
+        "apiage=>PVE::Storage::APIAGE(),"
+        "plugin_api=>PVE::Storage::Custom::SharedLvmThinPlugin->api(),"
+        "hooks=>{map {$_ => (PVE::Storage::Custom::SharedLvmThinPlugin->can($_)?1:0)} @h},"
+        "symbols=>{map {$_ => has_symbol($_)} @s},"
+        "loaded_paths=>{map {$_ => ($INC{$_}//q{})} "
+        "qw(PVE/Storage.pm PVE/Storage/Plugin.pm PVE/Storage/LVMPlugin.pm PVE/Tools.pm "
+        "PVE/Cluster.pm PVE/HA/Config.pm PVE/INotify.pm PVE/QemuConfig.pm PVE/QemuServer.pm "
+        "PVE/SSHInfo.pm PVE/Storage/Custom/SharedLvmThinPlugin.pm)}});"
+    )
+    result = _run(["perl", "-I/usr/share/perl5", "-e", code])
+    if not result["ok"]:
+        return {"ok": False, "error": result["error"], "rc": result["rc"]}
+    try:
+        value = json.loads(result["stdout"])
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": f"invalid API JSON: {exc}"}
+    value["ok"] = True
+    return value
+
+
+def _installed_profile_payload(flavor):
+    expected = "pve-sharedlvmthin-thick" if flavor == "thick-only" else "pve-sharedlvmthin"
+    forbidden = "pve-sharedlvmthin" if flavor == "thick-only" else "pve-sharedlvmthin-thick"
+    identity = _run([
+        "dpkg-query", "-W", "-f=${binary:Package}|${Version}|${Architecture}|${db:Status-Status}|${db:Status-Eflag}",
+        expected,
+    ])
+    identity_fields = identity["stdout"].split("|") if identity["ok"] else []
+    if len(identity_fields) != 5 or identity_fields[0] != expected \
+            or identity_fields[3:] != ["installed", "ok"]:
+        return {"ok": False, "error": f"expected profile package is not cleanly installed: {expected}"}
+    other = _run([
+        "dpkg-query", "-W", "-f=${db:Status-Status}|${db:Status-Eflag}", forbidden,
+    ])
+    if other["rc"] not in (0, 1):
+        return {"ok": False, "error": f"opposite profile package state is unavailable: {forbidden}"}
+    if other["ok"] and other["stdout"] not in ("not-installed|ok", "config-files|ok"):
+        return {"ok": False, "error": f"opposite package profile is not cleanly absent: {forbidden}: {other['stdout']}"}
+    verification = _run(["dpkg", "--verify", expected])
+    if not verification["ok"] or verification["stdout"].strip():
+        return {"ok": False, "error": "installed profile failed dpkg payload verification"}
+    listing = _run(["dpkg-query", "-L", expected])
+    if not listing["ok"]:
+        return {"ok": False, "error": "installed profile payload listing is unavailable"}
+    owned = set()
+    rows = []
+    for raw_path in listing["stdout"].splitlines():
+        path = os.path.normpath(raw_path)
+        if not path.startswith("/"):
+            return {"ok": False, "error": "installed profile contains a non-absolute payload path"}
+        if not os.path.isfile(path):
+            continue
+        if os.path.islink(path):
+            return {"ok": False, "error": f"installed profile contains a symlink file: {path}"}
+        evidence = _sha256(path)
+        if not evidence.get("ok"):
+            return {"ok": False, "error": f"installed profile file is unreadable: {path}"}
+        if evidence["uid"] != 0 or evidence["gid"] != 0:
+            return {"ok": False, "error": f"installed profile file is not root-owned: {path}"}
+        owned.add(path)
+        rows.append(
+            f"{path}\0{evidence['mode']:o}\0{evidence['uid']}\0{evidence['gid']}"
+            f"\0{evidence['sha256']}"
+        )
+    if not rows:
+        return {"ok": False, "error": "installed profile contains no regular files"}
+    managed_roots = (
+        "/usr/libexec/pve-sharedlvmthin",
+        "/usr/share/pve-sharedlvmthin",
+    )
+    residue = []
+    walk_errors = []
+    for root in managed_roots:
+        if not os.path.isdir(root):
+            return {"ok": False, "error": f"managed runtime root is missing or not a directory: {root}"}
+        if os.path.islink(root):
+            return {"ok": False, "error": f"managed runtime root is a symlink: {root}"}
+        root_metadata = os.stat(root)
+        if root_metadata.st_uid != 0 or root_metadata.st_gid != 0 \
+                or root_metadata.st_mode & 0o022:
+            return {"ok": False, "error": f"managed runtime root permissions are unsafe: {root}"}
+        for directory, dirnames, filenames in os.walk(
+                root, followlinks=False, onerror=lambda exc: walk_errors.append(str(exc))):
+            if any(os.path.islink(os.path.join(directory, name)) for name in dirnames):
+                return {"ok": False, "error": f"managed runtime tree contains a symlink directory: {directory}"}
+            for filename in filenames:
+                path = os.path.join(directory, filename)
+                if os.path.islink(path) or path not in owned:
+                    residue.append(path)
+    if walk_errors:
+        return {"ok": False, "error": "managed runtime residue scan failed", "scan_errors": walk_errors}
+    for pattern in (
+        "/usr/share/perl5/PVE/SharedLvm*",
+        "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm",
+        "/usr/sbin/sharedlvmthin*",
+        "/lib/systemd/system/pve-sharedlvmthin*",
+    ):
+        for candidate in pathlib.Path("/").glob(pattern.lstrip("/")):
+            path = str(candidate)
+            if (candidate.is_file() or candidate.is_symlink()) and path not in owned:
+                residue.append(path)
+    required = {
+        "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm",
+        "/usr/share/perl5/PVE/SharedLvmThinThick.pm",
+        "/usr/sbin/sharedlvmthin",
+        "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upstream-inventory",
+        "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-contract-check",
+        "/usr/share/pve-sharedlvmthin/package-flavor",
+        "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json",
+        "/usr/share/pve-sharedlvmthin/pve-lab-scenarios.json",
+    }
+    missing = sorted(required - owned)
+    if missing or residue:
+        return {
+            "ok": False,
+            "error": "installed profile ownership is incomplete or has unmanaged residue",
+            "missing_required": missing,
+            "unmanaged_residue": sorted(set(residue)),
+        }
+    identity_after = _run([
+        "dpkg-query", "-W", "-f=${binary:Package}|${Version}|${Architecture}|${db:Status-Status}|${db:Status-Eflag}",
+        expected,
+    ])
+    listing_after = _run(["dpkg-query", "-L", expected])
+    try:
+        marker_after = pathlib.Path("/usr/share/pve-sharedlvmthin/package-flavor").read_text(
+            encoding="ascii"
+        ).strip()
+    except OSError as exc:
+        return {"ok": False, "error": f"package flavor marker cannot be revalidated: {exc}"}
+    if not identity_after["ok"] or identity_after["stdout"] != identity["stdout"] \
+            or not listing_after["ok"] or listing_after["stdout"] != listing["stdout"] \
+            or marker_after != flavor:
+        return {"ok": False, "error": "installed profile changed during attestation"}
+    encoded = "\n".join(sorted(rows)).encode()
+    return {
+        "ok": True,
+        "package_identity": identity["stdout"],
+        "regular_file_count": len(rows),
+        "payload_sha256": hashlib.sha256(encoded).hexdigest(),
+        "other_profile_installed": False,
+    }
+
+
+def _storage_contract():
+    path = pathlib.Path("/etc/pve/storage.cfg")
+    try:
+        before = path.read_bytes()
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    code = r'''
+        use PVE::Cluster;
+        use PVE::Storage;
+        use JSON::PP;
+        PVE::Cluster::cfs_update();
+        my $cfg = PVE::Storage::config();
+        my @rows;
+        for my $sid (sort keys %{$cfg->{ids}}) {
+            my $item = $cfg->{ids}->{$sid};
+            next if ($item->{type} // '') ne 'sharedlvmthin';
+            push @rows, { sid => $sid, %$item };
+        }
+        print JSON::PP->new->canonical(1)->encode(\@rows);
+    '''
+    parsed = _run(["perl", "-I/usr/share/perl5", "-e", code])
+    if not parsed["ok"]:
+        return {"ok": False, "error": parsed["error"] or "PVE storage parser failed"}
+    try:
+        rows = json.loads(parsed["stdout"])
+        if not isinstance(rows, list):
+            raise ValueError("PVE storage parser did not return a list")
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": f"invalid PVE storage JSON: {exc}"}
+    try:
+        after = path.read_bytes()
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    if before != after:
+        return {"ok": False, "error": "storage configuration changed during collection"}
+    canonical = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+    modes = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return {"ok": False, "error": "PVE storage row is not an object"}
+        nodes = str(row.get("nodes", "all"))
+        modes.append({
+            "definition": hashlib.sha256(str(row.get("sid", "")).encode()).hexdigest(),
+            "mode": str(row.get("slt-allocation-mode", "thin")),
+            "disabled": str(row.get("disable", "0")).lower(),
+            "node_scope": "all" if nodes == "all" else hashlib.sha256(nodes.encode()).hexdigest(),
+        })
+    return {
+        "ok": True,
+        "raw_sha256": hashlib.sha256(before).hexdigest(),
+        "canonical_sha256": hashlib.sha256(canonical).hexdigest(),
+        "sharedlvmthin": sorted(modes, key=lambda item: json.dumps(item, sort_keys=True)),
+    }
+
+
+def _contract_catalogue():
+    try:
+        with open(CONTRACT_CATALOGUE, "rb") as handle:
+            raw = handle.read()
+        document = json.loads(raw)
+        if document.get("schema") != 1 \
+                or document.get("catalogue") != "pve-compatibility-contracts-v1":
+            raise ValueError("unsupported compatibility contract catalogue")
+        contracts = document.get("contracts")
+        if not isinstance(contracts, list) or not contracts:
+            raise ValueError("empty compatibility contract catalogue")
+        ids = [row.get("id") for row in contracts if isinstance(row, dict)]
+        if len(ids) != len(contracts) or any(not isinstance(item, str) or not item for item in ids) \
+                or len(ids) != len(set(ids)):
+            raise ValueError("invalid compatibility contract identifiers")
+        surface = document.get("source_dependency_coverage", {}).get(
+            "exact_surface_tests"
+        )
+        if not isinstance(surface, dict):
+            raise ValueError("exact surface test policy is missing")
+        surface_ids = []
+        coverage = document.get("source_dependency_coverage", {})
+        for name in ("commands", "perl_symbols", "hooks"):
+            binding = surface.get(name)
+            if not isinstance(binding, dict) \
+                    or not isinstance(binding.get("file"), str) \
+                    or not isinstance(binding.get("id"), str):
+                raise ValueError(f"exact surface test binding is malformed: {name}")
+            items = coverage.get(name)
+            if not isinstance(items, dict) or not items:
+                raise ValueError(f"exact surface is empty: {name}")
+            surface_ids.extend(
+                f"{binding['file']}::{binding['id']}[{name}={item}]"
+                for item in sorted(items)
+            )
+        if len(surface_ids) != len(set(surface_ids)):
+            raise ValueError("exact surface test identifiers are not unique")
+        return {
+            "ok": True,
+            "catalogue": document["catalogue"],
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "contract_ids": sorted(ids),
+            "surface_test_ids": sorted(surface_ids),
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def collect():
+    errors = []
+    commands = {}
+    for command in COMMANDS:
+        commands[command] = _command_evidence(command)
+        if not commands[command].get("ok"):
+            errors.append(f"required command/provider unavailable: {command}")
+
+    files = {path: _sha256(path) for path in CRITICAL_FILES}
+    for path, evidence in files.items():
+        if not evidence["ok"]:
+            errors.append(f"critical file unreadable: {path}")
+
+    api = _pve_api()
+    if not api.get("ok"):
+        errors.append("PVE Storage API inventory unavailable")
+    elif api.get("apiver") not in (14, 15) or api.get("plugin_api") != api.get("apiver"):
+        errors.append("PVE Storage API/plugin policy mismatch")
+    elif not all(api.get("hooks", {}).get(hook) == 1 for hook in REQUIRED_HOOKS):
+        errors.append("required PVE Storage hook missing")
+    elif not all(api.get("symbols", {}).get(symbol) == 1 for symbol in REQUIRED_PVE_SYMBOLS):
+        errors.append("required upstream PVE Perl symbol missing")
+    else:
+        expected_loaded = {
+            "PVE/Storage.pm": "/usr/share/perl5/PVE/Storage.pm",
+            "PVE/Storage/Plugin.pm": "/usr/share/perl5/PVE/Storage/Plugin.pm",
+            "PVE/Storage/LVMPlugin.pm": "/usr/share/perl5/PVE/Storage/LVMPlugin.pm",
+            "PVE/Tools.pm": "/usr/share/perl5/PVE/Tools.pm",
+            "PVE/Cluster.pm": "/usr/share/perl5/PVE/Cluster.pm",
+            "PVE/HA/Config.pm": "/usr/share/perl5/PVE/HA/Config.pm",
+            "PVE/INotify.pm": "/usr/share/perl5/PVE/INotify.pm",
+            "PVE/QemuConfig.pm": "/usr/share/perl5/PVE/QemuConfig.pm",
+            "PVE/QemuServer.pm": "/usr/share/perl5/PVE/QemuServer.pm",
+            "PVE/SSHInfo.pm": "/usr/share/perl5/PVE/SSHInfo.pm",
+            "PVE/Storage/Custom/SharedLvmThinPlugin.pm":
+                "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm",
+        }
+        if api.get("loaded_paths") != expected_loaded:
+            errors.append("PVE/plugin Perl modules loaded from unexpected paths")
+
+    storage = _storage_contract()
+    if not storage.get("ok"):
+        errors.append("storage configuration inventory unavailable")
+
+    contract_catalogue = _contract_catalogue()
+    if not contract_catalogue.get("ok"):
+        errors.append("compatibility contract catalogue unavailable")
+
+    package_data = {name: _package_version(name) for name in PACKAGES}
+    for name, evidence in package_data.items():
+        if not evidence["installed_probe_ok"] or not evidence["candidate_probe_ok"]:
+            errors.append(f"package evidence incomplete: {name}")
+        elif not evidence["installed"].endswith("|installed|ok"):
+            errors.append(f"required package is not cleanly installed: {name}")
+
+    kernel = _run(["uname", "-r"])
+    boot = _sha256("/proc/sys/kernel/random/boot_id")
+    dm_targets = _run(["dmsetup", "targets"])
+    if not kernel["ok"] or not boot["ok"] or not dm_targets["ok"]:
+        errors.append("running kernel/device-mapper evidence incomplete")
+
+    flavor_path = "/usr/share/pve-sharedlvmthin/package-flavor"
+    try:
+        flavor = pathlib.Path(flavor_path).read_text(encoding="ascii").strip()
+    except OSError as exc:
+        flavor = None
+        errors.append(f"package flavor unavailable: {exc}")
+    if flavor not in ("dual", "thick-only"):
+        errors.append("package flavor is invalid")
+        profile_payload = {"ok": False, "error": "package flavor is invalid"}
+    else:
+        profile_payload = _installed_profile_payload(flavor)
+        if not profile_payload.get("ok"):
+            errors.append("installed package profile payload is incomplete or ambiguous")
+
+    contract = {
+        "package_flavor": flavor,
+        "installed_profile_payload": profile_payload,
+        "packages": package_data,
+        "kernel_packages": _kernel_packages(),
+        "running_kernel": kernel["stdout"] if kernel["ok"] else None,
+        "dm_targets": sorted(dm_targets["stdout"].splitlines()) if dm_targets["ok"] else None,
+        "commands": commands,
+        "critical_files": files,
+        "pve_storage_api": api,
+        "storage_contract": storage,
+        "compatibility_contract_catalogue": contract_catalogue,
+    }
+    if not contract["kernel_packages"]["ok"]:
+        errors.append("kernel package inventory unavailable")
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "kind": "inventory",
+        "schema": SCHEMA,
+        "catalogue": CATALOGUE,
+        "collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "host": os.uname().nodename,
+        "boot_id_file_sha256": boot.get("sha256"),
+        "contract": contract,
+        "contract_fingerprint": hashlib.sha256(encoded).hexdigest(),
+        "collection_complete": not errors,
+        "errors": sorted(errors),
+    }
+
+
+def evaluate(current, baseline):
+    if current.get("kind") != "inventory" or current.get("schema") != SCHEMA \
+            or current.get("catalogue") != CATALOGUE or not current.get("collection_complete"):
+        return {"verdict": "BLOCKED", "reasons": current.get("errors") or ["current inventory invalid"]}
+    if not isinstance(baseline, dict) or baseline.get("kind") != "qualification" \
+            or baseline.get("schema") != SCHEMA or baseline.get("catalogue") != CATALOGUE:
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["qualified baseline missing or wrong schema"]}
+    if baseline.get("contract_fingerprint") != current.get("contract_fingerprint"):
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["exact dependency/configuration contract changed"]}
+    qualification = baseline.get("qualification")
+    required = (
+        "plugin_commit", "dual_sha256", "thick_sha256", "lab_matrix_id", "node",
+        "contract_catalogue_sha256", "passed_contract_ids",
+        "surface_test_report_sha256", "surface_test_report",
+    )
+    if not isinstance(qualification, dict) or qualification.get("verdict") != "COMPATIBLE" \
+            or qualification.get("scope") != "node":
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["exact inventory has no reviewed compatible qualification"]}
+    string_required = tuple(
+        key for key in required
+        if key not in ("passed_contract_ids", "surface_test_report")
+    )
+    if any(not isinstance(qualification.get(key), str) or not qualification[key] for key in string_required):
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["qualification evidence is incomplete"]}
+    for key in ("dual_sha256", "thick_sha256"):
+        if not re.fullmatch(r"[a-f0-9]{64}", qualification[key]):
+            return {"verdict": "RETEST_REQUIRED", "reasons": ["qualification package digest is malformed"]}
+    if qualification.get("node") != current.get("host"):
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["qualification does not cover this node"]}
+    if qualification.get("contract_fingerprint") != current.get("contract_fingerprint"):
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["qualification is not bound to this contract fingerprint"]}
+    catalogue = current.get("contract", {}).get("compatibility_contract_catalogue", {})
+    if qualification.get("contract_catalogue_sha256") != catalogue.get("sha256"):
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["qualification uses another contract catalogue"]}
+    passed = qualification.get("passed_contract_ids")
+    if not isinstance(passed, list) or len(passed) != len(set(passed)) \
+            or sorted(passed) != catalogue.get("contract_ids"):
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["qualification does not cover every required contract"]}
+    report = qualification.get("surface_test_report")
+    report_digest = qualification.get("surface_test_report_sha256")
+    if not isinstance(report, dict) or set(report) != {
+            "kind", "schema", "catalogue_sha256", "contract_fingerprint",
+            "node", "plugin_commit", "results"} \
+            or report.get("kind") != "exact-surface-test-report" \
+            or type(report.get("schema")) is not int or report.get("schema") != 1:
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["surface test report is malformed"]}
+    calculated_report_digest = hashlib.sha256(
+        json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if not re.fullmatch(r"[a-f0-9]{64}", str(report_digest)) \
+            or report_digest != calculated_report_digest:
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["surface test report digest mismatch"]}
+    if report.get("catalogue_sha256") != catalogue.get("sha256") \
+            or report.get("contract_fingerprint") != current.get("contract_fingerprint") \
+            or report.get("node") != current.get("host") \
+            or report.get("plugin_commit") != qualification.get("plugin_commit"):
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["surface test report identity mismatch"]}
+    results = report.get("results")
+    expected_test_ids = catalogue.get("surface_test_ids")
+    if not isinstance(results, list) or not isinstance(expected_test_ids, list) \
+            or any(not isinstance(row, dict) or set(row) != {"id", "status"}
+                   for row in results) \
+            or any(not isinstance(row.get("id"), str) for row in results) \
+            or any(row.get("status") != "PASS" for row in results) \
+            or len(results) != len({row.get("id") for row in results}) \
+            or sorted(row.get("id") for row in results) != expected_test_ids:
+        return {"verdict": "RETEST_REQUIRED", "reasons": ["surface tests are missing, skipped or not PASS"]}
+    return {
+        "verdict": "COMPATIBLE", "scope": "node",
+        "cluster_upgrade_authorized": False,
+        "reasons": ["exact reviewed node baseline tuple reused"],
+    }
+
+
+def _strict_json_load(handle):
+    def reject_duplicates(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+    return json.load(handle, object_pairs_hook=reject_duplicates)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", help="write current inventory to this new/replaceable file")
+    parser.add_argument("--compare", help="compare current inventory with a reviewed baseline JSON")
+    args = parser.parse_args(argv)
+    current = collect()
+    result = None
+    if args.compare:
+        try:
+            with open(args.compare, encoding="utf-8") as handle:
+                baseline = _strict_json_load(handle)
+        except (OSError, ValueError) as exc:
+            baseline = None
+            result = {"verdict": "RETEST_REQUIRED", "reasons": [f"baseline unreadable: {exc}"]}
+        if result is None:
+            result = evaluate(current, baseline)
+    document = {"inventory": current, "evaluation": result}
+    rendered = json.dumps(document, sort_keys=True, indent=2) + "\n"
+    if args.output:
+        temporary = f"{args.output}.tmp.{os.getpid()}"
+        with open(temporary, "x", encoding="utf-8") as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, args.output)
+    sys.stdout.write(rendered)
+    if not current["collection_complete"] or (result and result["verdict"] == "BLOCKED"):
+        return 2
+    if result and result["verdict"] == "RETEST_REQUIRED":
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -6,9 +6,10 @@ use lib "$FindBin::Bin/../../usr/share/perl5";
 use Test::More;
 
 use PVE::SharedLvmThinThick qw(
-    anchor_tags decode_anchor_tags generation_tags validate_anchor_transition
+    anchor_name anchor_tags decode_anchor_tags generation_name generation_tags mapper_name
+    validate_anchor_transition
     validate_generation_tags vg_intent_tags decode_vg_intent_tags clone_geometry
-    transition_tags validate_transition_tags materialized_rebase_state
+    transition_tags decode_transition_tags validate_transition_tags materialized_rebase_state
     classify_recovery
 );
 
@@ -25,6 +26,29 @@ sub state {
 
 my $prepared = state();
 my $encoded = anchor_tags(%$prepared);
+is_deeply($encoded, [
+    'slt_tg_v=5',
+    'slt_tg_sid=store-a',
+    'slt_tg_vol=vm-100-disk-0',
+    'slt_tg_phase=PREPARED',
+    'slt_tg_tx=0123456789abcdef0123456789abcdef',
+    'slt_tg_op=SNAPSHOT',
+    'slt_tg_snapshot=snap1',
+    'slt_tg_source=g0',
+    'slt_tg_old=g0',
+    'slt_tg_new=g1',
+    'slt_tg_head=g0',
+    'slt_tg_generation=0',
+    'slt_tg_region=8',
+    'slt_tg_sha256=7c44f5baca6c44c18efb9597f00b02a1',
+], 'v5 anchor encoding remains byte-for-byte compatible with the golden schema');
+is(anchor_name('store-a', 'vm-100-disk-0'),
+    'sltg-a-2345f20287eadf3985496abe', 'anchor name remains format-compatible');
+is(mapper_name('store-a', 'vm-100-disk-0'),
+    'sltg-2345f20287eadf3985496abe', 'frontend mapper name remains format-compatible');
+is(generation_name('store-a', 'vm-100-disk-0', 7),
+    'sltg-g-2345f20287eadf3985496abe-00000007',
+    'generation LV name remains format-compatible');
 is_deeply(
     { map { $_ => $prepared->{$_} } keys %$prepared },
     { map { $_ => decode_anchor_tags($encoded)->{$_} } keys %$prepared },
@@ -148,6 +172,13 @@ my $transition = transition_tags(
     sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
     kind => 'metadata', generation => 1, region => 8,
 );
+my $decoded_transition = decode_transition_tags($transition);
+is_deeply(
+    { map { $_ => $decoded_transition->{$_} } qw(v sid vol tx kind generation region) },
+    { v => 1, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
+      kind => 'metadata', generation => 1, region => 8 },
+    'transition ownership proof round-trips through the strict decoder',
+);
 ok(validate_transition_tags(
     $transition, sid => 'store-a', vol => 'vm-100-disk-0', tx => $tx,
     kind => 'metadata', generation => 1, region => 8,
@@ -157,6 +188,12 @@ eval { validate_transition_tags(
     kind => 'metadata', generation => 1, region => 8,
 ) };
 like($@, qr/ownership proof mismatch/, 'foreign transition metadata is rejected');
+my @tampered_transition = @$transition;
+$tampered_transition[2] = 'slt_tgt_vol=vm-999-disk-0';
+eval { decode_transition_tags(\@tampered_transition) };
+like($@, qr/digest mismatch/, 'tampered transition ownership proof fails closed');
+eval { decode_transition_tags([@$transition, 'slt_tgt_kind=metadata']) };
+like($@, qr/duplicate/, 'duplicate transition ownership field fails closed');
 
 my $intent = vg_intent_tags(
     tx => $tx, state => 'OPEN', op => 'DM_CUTOVER', object => 'sltg-a-test',
@@ -171,12 +208,13 @@ is(decode_vg_intent_tags($remove_snapshot_intent)->{op}, 'REMOVE_SNAPSHOT',
     'snapshot deletion has an explicit transaction intent');
 
 my $small_geometry = clone_geometry(32 * 1024 * 1024 * 1024);
-is($small_geometry->{region_sectors}, 8, 'ordinary VM disk retains 4 KiB regions');
+is($small_geometry->{region_sectors}, 2048,
+    'new VM generations use the candidate universal 1 MiB geometry');
 cmp_ok($small_geometry->{metadata_bytes}, '>=', 16 * 1024 * 1024,
     'ordinary VM metadata includes structural headroom');
 my $large_geometry = clone_geometry(30 * 1024 * 1024 * 1024 * 1024);
-cmp_ok($large_geometry->{region_sectors}, '>', 8,
-    'large disk automatically bounds dm-clone region count');
+cmp_ok($large_geometry->{region_sectors}, '>=', 2048,
+    'large disk retains or grows the universal dm-clone geometry');
 cmp_ok($large_geometry->{regions}, '<=', 134_217_728,
     'large disk in-core bitmap cardinality is bounded');
 cmp_ok($large_geometry->{metadata_bytes}, '>', 16 * 1024 * 1024,
@@ -196,6 +234,27 @@ like($@, qr/exceeds supported dm-clone geometry/,
     'geometry above the exact 128 PiB boundary fails closed without integer wrap');
 eval { clone_geometry(513) };
 like($@, qr/sector-aligned/, 'unaligned clone geometry fails closed');
+is(clone_geometry(400 * 1024 * 1024 * 1024, 8)->{region_sectors}, 8,
+    'an in-flight legacy 4 KiB transition retains its signed geometry');
+eval { clone_geometry(1024 * 1024 * 1024, 7) };
+like($@, qr/persisted dm-clone region size is invalid/,
+    'malformed persisted geometry fails closed');
+
+my @candidate_kib = (64, 256, 512, 1024, 2048, 4096);
+my @matrix_gib = (1, 8, 32, 100, 400, 1024, 8192);
+for my $kib (@candidate_kib) {
+    for my $gib (@matrix_gib) {
+        my $geometry = clone_geometry(
+            $gib * 1024 * 1024 * 1024, $kib * 2, 1,
+        );
+        cmp_ok($geometry->{region_sectors}, '>=', $kib * 2,
+            "$gib GiB/$kib KiB never shrinks the configured minimum");
+        cmp_ok($geometry->{regions}, '<=', 134_217_728,
+            "$gib GiB/$kib KiB retains the global region-count bound");
+        cmp_ok($geometry->{metadata_bytes}, '<=', 16 * 1024 * 1024 * 1024,
+            "$gib GiB/$kib KiB retains the metadata-size bound");
+    }
+}
 
 my $anchor_object = 'sltg-a-recoverytest';
 my $old_tx = '1' x 32;
@@ -293,6 +352,18 @@ is($c6_suspended->{materialization_state}, 'PUBLISH_REQUIRED',
     'C6 suspended old-generation runtime is an exact resumable publication state');
 is($c6_suspended->{safe_for_mutation}, 0,
     'C6 publication recovery remains fail-closed');
+my $c9_suspended = classify_recovery(
+    anchor => { %$recovery_prepared, phase => 'HYDRATION_COMPLETE', head => 'g1', generation => 1 },
+    intent => $cutover_intent, objects => { %transition_objects },
+    runtime => 'clone', runtime_suspended => 1, clone_status => 'complete',
+    clone_source => 'source', expected_anchor => $anchor_object,
+);
+is($c9_suspended->{data_state}, 'VALID',
+    'a complete clone suspended at the pivot boundary retains deterministic authority');
+is($c9_suspended->{materialization_state}, 'PIVOT_READY',
+    'a suspended complete clone is explicitly resumable without replaying hydration');
+is($c9_suspended->{safe_for_mutation}, 0,
+    'suspended pivot recovery still blocks unrelated mutation');
 my $c6_active = classify_recovery(
     anchor => { %$recovery_prepared, phase => 'COMMITTED', head => 'g1', generation => 1 },
     intent => $cutover_intent, objects => { %transition_objects },
@@ -340,6 +411,30 @@ for my $case (
     is($classification->{data_state}, 'VALID', "rollback $phase has deterministic data authority");
     is($classification->{safe_for_mutation}, 0, "rollback $phase remains fail-closed");
 }
+
+my $post_pivot_partial_cleanup = classify_recovery(
+    anchor => { %$rollback_recovery, phase => 'LINEAR_PIVOTED', head => 'g2', generation => 2 },
+    intent => $rollback_intent,
+    objects => { head => 1, source => 1, new => 1 },
+    runtime => 'linear-new', clone_status => 'none', clone_source => 'none',
+    expected_anchor => $anchor_object,
+);
+is($post_pivot_partial_cleanup->{data_state}, 'VALID',
+    'linear-pivoted rollback remains deterministic after metadata and old HEAD cleanup');
+is($post_pivot_partial_cleanup->{materialization_state}, 'FINALIZE_READY',
+    'post-pivot partial cleanup can finalize without recreating removed objects');
+
+my $post_pivot_reboot = classify_recovery(
+    anchor => { %$rollback_recovery, phase => 'LINEAR_PIVOTED', head => 'g2', generation => 2 },
+    intent => $rollback_intent,
+    objects => { head => 1, source => 1, new => 1 },
+    runtime => 'absent', clone_status => 'none', clone_source => 'none',
+    expected_anchor => $anchor_object,
+);
+is($post_pivot_reboot->{data_state}, 'VALID',
+    'linear-pivoted rollback retains deterministic authority after host reboot');
+is($post_pivot_reboot->{materialization_state}, 'RECONSTRUCT_REQUIRED',
+    'post-pivot reboot requires exact linear frontend reconstruction before cleanup');
 
 my $rollback_materialized = {
     %$rollback_recovery, phase => 'MATERIALIZED', head => 'g2', generation => 2,

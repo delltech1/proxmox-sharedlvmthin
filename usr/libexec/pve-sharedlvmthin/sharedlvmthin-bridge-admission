@@ -22,8 +22,9 @@ my $scfg = PVE::Storage::storage_config($cfg, $storeid);
 die "storage '$storeid' is not SharedLvmThin\n"
     if ($scfg->{type} // '') ne 'sharedlvmthin';
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
-die "migration-bridge admission must use the Thin alias\n"
-    if $class->_allocation_mode($scfg) ne 'thin';
+my $mode = $class->_allocation_mode($scfg);
+die "migration-bridge admission requires a Thin or Thick Generations alias\n"
+    if $mode ne 'thin' && $mode ne 'thick-generations';
 if ($action eq 'inspect') {
     my $vg = $scfg->{'slt-vgname'};
     my $device = defined($scfg->{'slt-expected-wwid'})

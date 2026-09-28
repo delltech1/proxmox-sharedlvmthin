@@ -6,6 +6,15 @@ use FindBin;
 use lib "$FindBin::Bin/../../usr/share/perl5";
 use Test::More;
 
+# The monitor is deliberately coupled to the Proxmox runtime and imports
+# PVE::Tools at compile time.  Keep this test mandatory on PVE, but report an
+# explicit platform skip on ordinary Perl/Linux builders instead of producing
+# a misleading parse failure before TAP can start.
+BEGIN {
+    eval { require PVE::Tools; 1 }
+        or plan skip_all => 'requires the Proxmox PVE::Tools runtime';
+}
+
 my $monitor = "$FindBin::Bin/../../usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor";
 do $monitor or die $@ || $!;
 

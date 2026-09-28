@@ -13,12 +13,23 @@ our @EXPORT_OK = qw(
     anchor_name anchor_tags decode_anchor_tags generation_name generation_tags
     decode_generation_tags mapper_name object_key validate_generation_tags vg_intent_tags
     decode_vg_intent_tags validate_anchor_transition clone_geometry
-    transition_tags validate_transition_tags classify_recovery materialized_rebase_state
+    transition_tags decode_transition_tags validate_transition_tags classify_recovery materialized_rebase_state
+    lazy_object_tags decode_lazy_object_tags validate_lazy_object_tags
 );
 
-my @ANCHOR_FIELDS = qw(v sid vol phase tx op snapshot source old new head generation region);
-my %PHASE = map { $_ => 1 } qw(
+my @ANCHOR_FIELDS_V5 = qw(v sid vol phase tx op snapshot source old new head generation region);
+my @ANCHOR_FIELDS_V6 = qw(
+    v sid vol phase tx op snapshot source old new head generation region
+    policy bytes metadata data_uuid metadata_uuid zero_source publication
+    owner_node owner_boot owner_epoch
+);
+my %ANCHOR_FIELD = map { $_ => 1 } (@ANCHOR_FIELDS_V5, @ANCHOR_FIELDS_V6);
+my %PHASE_V5 = map { $_ => 1 } qw(
     PREPARED SOURCE_READY COMMITTED HYDRATING HYDRATION_COMPLETE LINEAR_PIVOTED MATERIALIZED
+);
+my %PHASE_V6 = map { $_ => 1 } qw(
+    LAZY_PREPARED LAZY_DORMANT LAZY_CLAIMED LAZY_ACTIVE MATERIALIZING
+    HYDRATION_COMPLETE LINEAR_PIVOTED MATERIALIZED
 );
 my $TOKEN = qr/[A-Za-z0-9_.+-]+/;
 my $TX = qr/[0-9a-f]{32}/;
@@ -30,6 +41,15 @@ my %ALLOWED_TRANSITION = (
     HYDRATION_COMPLETE => { LINEAR_PIVOTED => 1 },
     LINEAR_PIVOTED => { MATERIALIZED => 1 },
     MATERIALIZED => { PREPARED => 1 },
+);
+my %ALLOWED_LAZY_TRANSITION = (
+    LAZY_PREPARED => { LAZY_DORMANT => 1 },
+    LAZY_DORMANT => { LAZY_CLAIMED => 1 },
+    LAZY_CLAIMED => { LAZY_ACTIVE => 1, LAZY_DORMANT => 1 },
+    LAZY_ACTIVE => { LAZY_DORMANT => 1, MATERIALIZING => 1 },
+    MATERIALIZING => { HYDRATION_COMPLETE => 1 },
+    HYDRATION_COMPLETE => { LINEAR_PIVOTED => 1 },
+    LINEAR_PIVOTED => { MATERIALIZED => 1 },
 );
 
 sub _token {
@@ -63,17 +83,30 @@ sub generation_name {
 }
 
 sub clone_geometry {
-    my ($bytes) = @_;
+    my ($bytes, $persisted_region, $allow_growth) = @_;
     die "clone size must be a positive sector-aligned integer\n"
         if !defined($bytes) || $bytes !~ /^\d+$/ || $bytes < 512 || $bytes % 512;
 
-    # Keep the three in-core dm-clone bitmaps bounded while avoiding a large
-    # region for ordinary VM disks.  The chosen value is persisted in the
-    # anchor, so future code changes cannot silently alter recovery geometry.
+    # New Thick Generations use the qualified deterministic policy supplied by
+    # the caller; the current candidate default is 1 MiB. This removes region
+    # cardinality from the hot path without using transient storage performance
+    # as an on-disk input. Grow further only when required to retain the
+    # established in-core bitmap bound.
+    #
+    # Recovery is different: the exact region is persisted in the signed
+    # anchor and is part of the live dm-clone identity. Accepting it explicitly
+    # preserves old 4/8 KiB transitions without letting a new default silently
+    # reinterpret their on-disk state.
     my $max_regions = 134_217_728;
     my $sectors = int($bytes / 512);
-    my $region = 8;
+    my $region = defined($persisted_region) ? $persisted_region : 2048;
+    die "persisted dm-clone region size is invalid\n"
+        if !defined($region) || $region !~ /^\d+$/
+        || $region < 8 || $region > 2_097_152
+        || ($region & ($region - 1));
     while (int(($sectors + $region - 1) / $region) > $max_regions) {
+        die "persisted dm-clone geometry exceeds the supported region bound\n"
+            if defined($persisted_region) && !$allow_growth;
         $region *= 2;
         die "clone size exceeds supported dm-clone geometry\n" if $region > 2_097_152;
     }
@@ -95,15 +128,26 @@ sub clone_geometry {
     };
 }
 
+sub _anchor_fields {
+    my ($version) = @_;
+    return \@ANCHOR_FIELDS_V5 if "$version" eq '5';
+    return \@ANCHOR_FIELDS_V6 if "$version" eq '6';
+    die "unsupported Thick Generations anchor version\n";
+}
+
 sub _canonical {
     my ($values) = @_;
-    return join('|', map { "$_=$values->{$_}" } @ANCHOR_FIELDS);
+    my $fields = _anchor_fields($values->{v});
+    return join('|', map { "$_=$values->{$_}" } @$fields);
 }
 
 sub anchor_tags {
     my (%values) = @_;
     $values{v} = 5 if !defined($values{v});
-    die "unsupported Thick Generations anchor version\n" if "$values{v}" ne '5';
+    my $fields = _anchor_fields($values{v});
+    if ("$values{v}" eq '6') {
+        return _lazy_anchor_tags(\%values, $fields);
+    }
     for my $field (qw(sid vol snapshot source old new head)) {
         _token("anchor $field", $values{$field});
     }
@@ -111,7 +155,7 @@ sub anchor_tags {
     die "unknown Thick Generations operation '$values{op}'\n"
         if $values{op} !~ /^(?:ALLOC|SNAPSHOT|ROLLBACK)$/;
     $values{phase} = uc(_token('anchor phase', $values{phase}));
-    die "unknown Thick Generations phase '$values{phase}'\n" if !$PHASE{$values{phase}};
+    die "unknown Thick Generations phase '$values{phase}'\n" if !$PHASE_V5{$values{phase}};
     die "invalid Thick Generations transaction ID\n"
         if !defined($values{tx}) || $values{tx} !~ /^$TX$/;
     die "generation must be an integer from 0 through 99999999\n"
@@ -152,7 +196,74 @@ sub anchor_tags {
     }
     my $digest = substr(sha256_hex(_canonical(\%values)), 0, 32);
     return [
-        (map { "slt_tg_$_=$values{$_}" } @ANCHOR_FIELDS),
+        (map { "slt_tg_$_=$values{$_}" } @$fields),
+        "slt_tg_sha256=$digest",
+    ];
+}
+
+sub _lazy_anchor_tags {
+    my ($values, $fields) = @_;
+    for my $field (qw(
+        sid vol snapshot source old new head policy metadata data_uuid metadata_uuid
+        zero_source owner_node owner_boot owner_epoch
+    )) {
+        _token("lazy anchor $field", $values->{$field});
+    }
+    $values->{op} = uc(_token('lazy anchor operation', $values->{op}));
+    die "unknown Lazy Thick operation '$values->{op}'\n" if $values->{op} ne 'ALLOC';
+    $values->{phase} = uc(_token('lazy anchor phase', $values->{phase}));
+    die "unknown Lazy Thick phase '$values->{phase}'\n"
+        if !$PHASE_V6{$values->{phase}};
+    die "invalid Lazy Thick transaction ID\n"
+        if !defined($values->{tx}) || $values->{tx} !~ /^$TX$/;
+    die "Lazy Thick allocation policy must be lazy-zero\n"
+        if $values->{policy} ne 'lazy-zero';
+    die "Lazy Thick zero source must be dm-zero\n"
+        if $values->{zero_source} ne 'dm-zero';
+    die "Lazy Thick allocation must use the reserved snapshot marker\n"
+        if $values->{snapshot} ne 'none';
+    die "Lazy Thick allocation must retain one authoritative data generation\n"
+        if $values->{source} ne $values->{old}
+        || $values->{old} ne $values->{new}
+        || $values->{new} ne $values->{head};
+    die "invalid Lazy Thick generation\n"
+        if !defined($values->{generation}) || $values->{generation} !~ /^\d+$/
+        || $values->{generation} > 99_999_999;
+    $values->{generation} = int($values->{generation});
+    die "invalid Lazy Thick region size\n"
+        if !defined($values->{region}) || $values->{region} !~ /^\d+$/
+        || $values->{region} < 8 || $values->{region} > 2_097_152
+        || ($values->{region} & ($values->{region} - 1));
+    $values->{region} = int($values->{region});
+    die "invalid Lazy Thick byte size\n"
+        if !defined($values->{bytes}) || $values->{bytes} !~ /^\d+$/
+        || $values->{bytes} < 512 || $values->{bytes} % 512;
+    $values->{bytes} = int($values->{bytes});
+    die "invalid Lazy Thick publication epoch\n"
+        if !defined($values->{publication}) || $values->{publication} !~ /^\d+$/
+        || $values->{publication} > 9_999_999_999;
+    $values->{publication} = int($values->{publication});
+
+    my $owned = $values->{phase} =~ /^(?:LAZY_CLAIMED|LAZY_ACTIVE|MATERIALIZING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+    if ($owned) {
+        die "owned Lazy Thick phase requires an exact owner identity\n"
+            if $values->{owner_node} eq 'none' || $values->{owner_boot} eq 'none'
+            || $values->{owner_epoch} eq 'none'
+            || $values->{owner_boot} !~ /^[0-9a-f-]{36}$/
+            || $values->{owner_epoch} !~ /^$TX$/;
+    } else {
+        die "unowned Lazy Thick phase must clear owner identity\n"
+            if $values->{owner_node} ne 'none' || $values->{owner_boot} ne 'none'
+            || $values->{owner_epoch} ne 'none';
+    }
+    die "prepared Lazy Thick state cannot have a publication epoch\n"
+        if $values->{phase} eq 'LAZY_PREPARED' && $values->{publication} != 0;
+    die "published Lazy Thick state requires a positive publication epoch\n"
+        if $values->{phase} ne 'LAZY_PREPARED' && $values->{publication} < 1;
+
+    my $digest = substr(sha256_hex(_canonical($values)), 0, 32);
+    return [
+        (map { "slt_tg_$_=$values->{$_}" } @$fields),
         "slt_tg_sha256=$digest",
     ];
 }
@@ -170,10 +281,12 @@ sub decode_anchor_tags {
         die "duplicate Thick Generations anchor field '$field'\n"
             if exists($values{$field});
         die "unknown Thick Generations anchor field '$field'\n"
-            if !grep { $_ eq $field } (@ANCHOR_FIELDS, 'sha256');
+            if !$ANCHOR_FIELD{$field} && $field ne 'sha256';
         $values{$field} = $value;
     }
-    my %expected = map { $_ => 1 } (@ANCHOR_FIELDS, 'sha256');
+    die "incomplete Thick Generations anchor\n" if !defined($values{v});
+    my $fields = _anchor_fields($values{v});
+    my %expected = map { $_ => 1 } (@$fields, 'sha256');
     die "incomplete Thick Generations anchor\n"
         if keys(%values) != keys(%expected)
         || grep { !exists($values{$_}) } keys(%expected);
@@ -193,6 +306,11 @@ sub validate_anchor_transition {
     # partially decoded data.
     anchor_tags(%$before);
     anchor_tags(%$after);
+
+    die "anchor transition changed immutable field 'v'\n"
+        if "$before->{v}" ne "$after->{v}";
+    return _validate_lazy_anchor_transition($before, $after)
+        if "$before->{v}" eq '6';
 
     my $from = uc($before->{phase});
     my $to = uc($after->{phase});
@@ -247,11 +365,60 @@ sub validate_anchor_transition {
     return 1;
 }
 
+sub _validate_lazy_anchor_transition {
+    my ($before, $after) = @_;
+    my $from = $before->{phase};
+    my $to = $after->{phase};
+    if ($from eq $to) {
+        die "idempotent Lazy Thick anchor transition changed persistent state\n"
+            if _canonical($before) ne _canonical($after);
+        return 1;
+    }
+    die "illegal Lazy Thick anchor phase transition '$from->$to'\n"
+        if !$ALLOWED_LAZY_TRANSITION{$from}
+        || !$ALLOWED_LAZY_TRANSITION{$from}->{$to};
+    for my $field (qw(
+        v sid vol tx op snapshot source old new head generation region policy bytes
+        metadata data_uuid metadata_uuid zero_source
+    )) {
+        die "Lazy Thick anchor transition changed immutable field '$field'\n"
+            if "$before->{$field}" ne "$after->{$field}";
+    }
+
+    if ($from eq 'LAZY_PREPARED' && $to eq 'LAZY_DORMANT') {
+        die "Lazy Thick publication must advance from epoch zero to one\n"
+            if $before->{publication} != 0 || $after->{publication} != 1;
+    } elsif ($from eq 'LAZY_DORMANT' && $to eq 'LAZY_CLAIMED') {
+        die "Lazy Thick claim must advance the publication epoch exactly once\n"
+            if $after->{publication} != $before->{publication} + 1;
+    } else {
+        die "Lazy Thick transition unexpectedly changed the publication epoch\n"
+            if $after->{publication} != $before->{publication};
+    }
+
+    if ($to eq 'LAZY_DORMANT' || $to eq 'MATERIALIZED') {
+        die "Lazy Thick owner was not cleared at an unowned boundary\n"
+            if $after->{owner_node} ne 'none' || $after->{owner_boot} ne 'none'
+            || $after->{owner_epoch} ne 'none';
+    } elsif ($from eq 'LAZY_DORMANT' && $to eq 'LAZY_CLAIMED') {
+        die "Lazy Thick claim did not install a new owner epoch\n"
+            if $after->{owner_epoch} eq 'none';
+    } else {
+        for my $field (qw(owner_node owner_boot owner_epoch)) {
+            die "Lazy Thick transition changed active owner field '$field'\n"
+                if "$before->{$field}" ne "$after->{$field}";
+        }
+    }
+    return 1;
+}
+
 sub materialized_rebase_state {
     my ($before, $tx) = @_;
     die "materialized anchor rebase requires an anchor state\n"
         if ref($before) ne 'HASH';
     anchor_tags(%$before);
+    die "generic materialized anchor rebase is unavailable for Lazy Thick v6 state\n"
+        if int($before->{v} // 0) == 6;
     die "only a MATERIALIZED anchor can be rebased\n"
         if $before->{phase} ne 'MATERIALIZED';
     die "materialized anchor rebase requires a fresh transaction ID\n"
@@ -333,6 +500,69 @@ sub decode_generation_tags {
     return \%values;
 }
 
+sub lazy_object_tags {
+    my (%values) = @_;
+    $values{v} = 1 if !defined($values{v});
+    die "unsupported Lazy Thick object version\n" if "$values{v}" ne '1';
+    for my $field (qw(sid vol kind)) {
+        _token("Lazy Thick object $field", $values{$field});
+    }
+    die "invalid Lazy Thick object kind\n"
+        if $values{kind} ne 'data' && $values{kind} ne 'metadata';
+    die "invalid Lazy Thick object transaction ID\n"
+        if !defined($values{tx}) || $values{tx} !~ /^$TX$/;
+    die "invalid Lazy Thick object byte size\n"
+        if !defined($values{bytes}) || $values{bytes} !~ /^\d+$/
+        || $values{bytes} < 512 || $values{bytes} % 512;
+    die "invalid Lazy Thick object region size\n"
+        if !defined($values{region}) || $values{region} !~ /^\d+$/
+        || $values{region} < 8 || $values{region} > 2_097_152
+        || ($values{region} & ($values{region} - 1));
+    my @fields = qw(v sid vol tx kind bytes region);
+    $values{bytes} = int($values{bytes});
+    $values{region} = int($values{region});
+    my $canonical = join('|', map { "$_=$values{$_}" } @fields);
+    return [
+        (map { "slt_tgl_$_=$values{$_}" } @fields),
+        'slt_tgl_sha256=' . substr(sha256_hex($canonical), 0, 32),
+    ];
+}
+
+sub decode_lazy_object_tags {
+    my ($tags) = @_;
+    my @tags = ref($tags) eq 'ARRAY' ? @$tags : split(/,/, $tags // '');
+    my %values;
+    for my $tag (@tags) {
+        $tag =~ s/^\s+|\s+$//g;
+        next if $tag !~ /^slt_tgl_/;
+        die "malformed Lazy Thick object tag\n"
+            if $tag !~ /^slt_tgl_([A-Za-z0-9_]+)=($TOKEN)$/;
+        my ($field, $value) = ($1, $2);
+        die "duplicate Lazy Thick object field '$field'\n" if exists($values{$field});
+        die "unknown Lazy Thick object field '$field'\n"
+            if !grep { $_ eq $field } qw(v sid vol tx kind bytes region sha256);
+        $values{$field} = $value;
+    }
+    my @required = qw(v sid vol tx kind bytes region sha256);
+    die "incomplete Lazy Thick object ownership proof\n"
+        if keys(%values) != @required || grep { !exists($values{$_}) } @required;
+    my $wanted = lazy_object_tags(%values);
+    my ($digest) = map { /^slt_tgl_sha256=(.*)$/ ? $1 : () } @$wanted;
+    die "Lazy Thick object ownership digest mismatch\n"
+        if $values{sha256} ne $digest;
+    return \%values;
+}
+
+sub validate_lazy_object_tags {
+    my ($tags, %expected) = @_;
+    my $observed = decode_lazy_object_tags($tags);
+    my $wanted = decode_lazy_object_tags(lazy_object_tags(%expected));
+    die "Lazy Thick object ownership proof mismatch\n"
+        if grep { !exists($observed->{$_}) || "$observed->{$_}" ne "$wanted->{$_}" }
+            keys %$wanted;
+    return 1;
+}
+
 sub transition_tags {
     my (%values) = @_;
     for my $field (qw(sid vol kind)) {
@@ -359,14 +589,38 @@ sub transition_tags {
 
 sub validate_transition_tags {
     my ($tags, %expected) = @_;
-    my @observed = ref($tags) eq 'ARRAY' ? @$tags : split(/,/, $tags // '');
-    @observed = map { s/^\s+|\s+$//gr } grep { /^\s*slt_tgt_/ } @observed;
-    my $wanted = transition_tags(%expected);
-    die "transition artifact ownership tag count mismatch\n" if @observed != @$wanted;
-    my %observed = map { $_ => 1 } @observed;
+    my $observed = decode_transition_tags($tags);
+    my $wanted = decode_transition_tags(transition_tags(%expected));
     die "transition artifact ownership proof mismatch\n"
-        if grep { !$observed{$_} } @$wanted;
+        if grep { !exists($observed->{$_}) || "$observed->{$_}" ne "$wanted->{$_}" }
+            keys %$wanted;
     return 1;
+}
+
+sub decode_transition_tags {
+    my ($tags) = @_;
+    my @tags = ref($tags) eq 'ARRAY' ? @$tags : split(/,/, $tags // '');
+    my %values;
+    for my $tag (@tags) {
+        $tag =~ s/^\s+|\s+$//g;
+        next if $tag !~ /^slt_tgt_/;
+        die "malformed transition artifact ownership tag\n"
+            if $tag !~ /^slt_tgt_([A-Za-z0-9_]+)=($TOKEN)$/;
+        my ($field, $value) = ($1, $2);
+        die "duplicate transition artifact ownership field '$field'\n"
+            if exists($values{$field});
+        die "unknown transition artifact ownership field '$field'\n"
+            if !grep { $_ eq $field } qw(v sid vol tx kind generation region sha256);
+        $values{$field} = $value;
+    }
+    my @required = qw(v sid vol tx kind generation region sha256);
+    die "incomplete transition artifact ownership proof\n"
+        if keys(%values) != @required || grep { !exists($values{$_}) } @required;
+    my $wanted = transition_tags(%values);
+    my ($digest) = map { /^slt_tgt_sha256=(.*)$/ ? $1 : () } @$wanted;
+    die "transition artifact ownership digest mismatch\n"
+        if $values{sha256} ne $digest;
+    return \%values;
 }
 
 sub classify_recovery {
@@ -392,6 +646,8 @@ sub classify_recovery {
     return $blocked->('object evidence is missing') if ref($objects) ne 'HASH';
     eval { anchor_tags(%$anchor); };
     return $blocked->("anchor evidence is invalid: $@") if $@;
+    return $blocked->('Lazy Thick v6 recovery requires its dedicated identity and owner classifier')
+        if int($anchor->{v} // 0) == 6;
     return $blocked->('runtime evidence is invalid')
         if $runtime !~ /^(?:absent|linear-old|linear-head|linear-new|clone|unknown)$/;
     return $blocked->('clone source evidence is invalid')
@@ -504,8 +760,11 @@ sub classify_recovery {
         if $intent->{op} ne $expected_op;
     return $blocked->('VG intent refers to another anchor')
         if !defined($expected_anchor) || $intent->{object} ne $expected_anchor;
-    return $blocked->('transition source, old HEAD, or destination is missing')
-        if !$objects->{source} || !$objects->{old} || !$objects->{new};
+    return $blocked->('transition source or destination is missing')
+        if !$objects->{source} || !$objects->{new};
+    return $blocked->('transition old HEAD is missing before post-pivot rollback cleanup')
+        if !$objects->{old}
+        && !($anchor->{phase} eq 'LINEAR_PIVOTED' && $anchor->{op} eq 'ROLLBACK');
 
     if ($anchor->{phase} eq 'PREPARED') {
         return $blocked->('PREPARED transition metadata is missing') if !$objects->{meta};
@@ -549,14 +808,14 @@ sub classify_recovery {
             'runtime mapping is absent; persistent clone metadata must be reopened and verified')
             if $runtime eq 'absent';
         if ($runtime eq 'clone') {
-            return $blocked->('hydration-complete clone frontend is suspended')
-                if $runtime_suspended;
             return $blocked->('clone runtime dependency does not prove the signed source generation')
                 if $clone_source ne 'source';
             return $blocked->('anchor claims complete hydration but clone status does not')
                 if $clone_status ne 'complete';
             return $result->('RECOVERY_REQUIRED', 'HYDRATION_COMPLETE', 'PIVOT_READY',
-                'complete clone mapping is ready for an explicit linear pivot');
+                $runtime_suspended
+                    ? 'complete clone is suspended at the verified pivot boundary; explicit recovery may reload and publish the exact linear table'
+                    : 'complete clone mapping is ready for an explicit linear pivot');
         }
         return $result->('RECOVERY_REQUIRED', 'PIVOT_UNRECORDED', 'MATERIALIZED',
             'linear destination is live but LINEAR_PIVOTED was not recorded')
@@ -567,6 +826,9 @@ sub classify_recovery {
         return $blocked->('linear-pivoted transition has an unexpected runtime mapping')
             if $runtime !~ /^(?:absent|linear-new|linear-head)$/;
         return $blocked->('linear-pivoted frontend is suspended') if $runtime_suspended;
+        return $result->('RECOVERY_REQUIRED', 'LINEAR_PIVOTED', 'RECONSTRUCT_REQUIRED',
+            'destination is authoritative; canonical linear frontend must be reconstructed before cleanup')
+            if $runtime eq 'absent';
         return $result->('RECOVERY_REQUIRED', 'LINEAR_PIVOTED', 'FINALIZE_READY',
             'destination is authoritative; detached transition artifacts require exact cleanup');
     }

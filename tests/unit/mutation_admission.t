@@ -43,6 +43,8 @@ local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub
     die "identity lost\n" if $identity_error && $reads;
 };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration = sub { 1 };
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_vg_failure_domain_inventory = sub { 1 };
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_bridge_admission_compatible = sub { 1 };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub {
     $reads++;
     die "malformed intent\n" if $read_error;

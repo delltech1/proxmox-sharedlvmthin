@@ -1,5 +1,6 @@
 import pathlib
 import re
+import shutil
 import subprocess
 import unittest
 
@@ -10,6 +11,9 @@ CLASSIFIER = ROOT / "experiments/thick-generations/classify-evidence.pl"
 DELETE_FAULT_DRIVER = ROOT / "experiments/thick-generations/snapshot-delete-fault-driver.pl"
 PLUGIN = ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 FAULT_DRIVER = ROOT / "experiments/thick-generations/fault-driver.pl"
+RESIZE_FAULT_DRIVER = ROOT / "experiments/thick-generations/resize-fault-driver.pl"
+CANDIDATE_RECOVERY_DRIVER = ROOT / "experiments/thick-generations/candidate-recovery-driver.pl"
+CANDIDATE_PROVENANCE = ROOT / "experiments/thick-generations/lib/SharedLvmCandidateProvenance.pm"
 PREPARE_RECOVERY = ROOT / "experiments/thick-generations/recover-prepare-incomplete.pl"
 UNRECORDED_RECOVERY = ROOT / "experiments/thick-generations/recover-unrecorded-prepare.pl"
 PRIOR_RECOVERY = ROOT / "experiments/thick-generations/recover-prepared-from-prior-evidence.pl"
@@ -23,6 +27,8 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         cls.source = COLLECTOR.read_text(encoding="utf-8")
 
     def test_shell_syntax(self):
+        if shutil.which("sh") is None:
+            self.skipTest("requires POSIX sh")
         result = subprocess.run(
             ["sh", "-n", str(COLLECTOR)], capture_output=True, text=True
         )
@@ -75,6 +81,8 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertIn("/^D[0-4]$/", source)
 
     def test_classifier_syntax(self):
+        if shutil.which("perl") is None:
+            self.skipTest("requires Perl")
         result = subprocess.run(
             [
                 "perl", f"-I{ROOT / 'usr/share/perl5'}", "-c", str(CLASSIFIER),
@@ -84,7 +92,7 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
 
     def test_fault_boundaries_are_explicit_and_production_inert(self):
         source = PLUGIN.read_text(encoding="utf-8")
-        for point in range(10):
+        for point in range(11):
             self.assertEqual(
                 source.count(f"_thick_fault_point('C{point}'"), 1,
                 f"C{point} must identify exactly one crash boundary",
@@ -96,12 +104,110 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
         self.assertEqual(body.group("body").strip(), "return;")
         self.assertNotIn("SLT_FAULT", source)
 
+        pivot = source[source.index("if ($tr->{state}->{phase} eq 'HYDRATION_COMPLETE')"):
+                       source.index("if ($tr->{state}->{phase} eq 'LINEAR_PIVOTED')")]
+        self.assertLess(
+            pivot.index("_thick_suspend_mapper_exact("),
+            pivot.index("_thick_fault_point('C10'"),
+        )
+        self.assertLess(
+            pivot.index("_thick_fault_point('C10'"),
+            pivot.index("_thick_resume_mapper_exact("),
+        )
+
     def test_fault_driver_requires_disposable_ack_and_process_local_override(self):
         source = FAULT_DRIVER.read_text(encoding="utf-8")
         self.assertIn("DISPOSABLE-DATA-WILL-BE-LEFT-INCOMPLETE", source)
         self.assertIn("no warnings 'redefine'", source)
         self.assertIn("POSIX::_exit(137)", source)
-        self.assertNotIn("$ENV", source)
+        self.assertIn("PERL5LIB and PERL5OPT to be absent at interpreter start", source)
+        self.assertIn("verify_candidate_provenance(", source)
+        self.assertIn("'slt-tg-online-materialization' => 'synchronous'", source)
+        self.assertIn("_thick_frontend_open_count", source)
+        self.assertIn("qualification requires an active zero-open frontend", source)
+        self.assertLess(
+            source.index("_thick_frontend_open_count"),
+            source.index("$class->_thick_volume_snapshot("),
+        )
+
+    def test_resize_fault_driver_targets_only_confirmed_suspend_boundary(self):
+        source = RESIZE_FAULT_DRIVER.read_text(encoding="utf-8")
+        plugin = PLUGIN.read_text(encoding="utf-8")
+        self.assertIn("DISPOSABLE-RESIZE-WILL-BE-LEFT-INCOMPLETE", source)
+        self.assertIn("_thick_volume_resize", source)
+        self.assertIn("POSIX::_exit(137)", source)
+        self.assertIn("PERL5LIB and PERL5OPT to be absent at interpreter start", source)
+        self.assertIn("verify_candidate_provenance(", source)
+        self.assertIn("qualification requires a strictly larger sector-aligned size", source)
+        self.assertIn("_thick_frontend_open_count", source)
+        self.assertIn("qualification requires an active zero-open frontend", source)
+        self.assertLess(
+            source.index("_thick_frontend_open_count"),
+            source.index("$class->_thick_volume_resize("),
+        )
+        self.assertEqual(plugin.count("_thick_fault_point('R0'"), 1)
+        resize = plugin[plugin.index("sub _thick_volume_resize"):plugin.index("sub volume_resize")]
+        self.assertLess(
+            resize.index("_thick_suspend_mapper_exact("),
+            resize.index("_thick_fault_point('R0'"),
+        )
+        self.assertLess(
+            resize.index("_thick_fault_point('R0'"),
+            resize.index("_thick_resume_mapper_exact("),
+        )
+
+    def test_candidate_recovery_driver_never_falls_back_to_installed_worker(self):
+        source = CANDIDATE_RECOVERY_DRIVER.read_text(encoding="utf-8")
+        provenance = CANDIDATE_PROVENANCE.read_text(encoding="utf-8")
+        self.assertIn("DISPOSABLE-CANDIDATE-RECOVERY", source)
+        self.assertIn("candidate plugin provenance mismatch", provenance)
+        self.assertIn("candidate plugin SHA-256 mismatch", provenance)
+        self.assertIn("candidate Perl root escaped the candidate checkout", provenance)
+        self.assertIn("candidate module '$key' escaped its exact candidate path", provenance)
+        self.assertIn("candidate code-set SHA-256 mismatch", provenance)
+        self.assertIn("PERL5LIB and PERL5OPT to be absent at interpreter start", source)
+        self.assertIn("candidate plugin may not be a symlink", provenance)
+        self.assertIn("candidate module '$key' may not be a symlink", provenance)
+        self.assertIn("verify_candidate_provenance(", source)
+        self.assertIn("_read_vg_intent", source)
+        self.assertIn("$expected_tx", source)
+        self.assertIn("$expected_object", source)
+        self.assertIn("invalid transaction identity", source)
+        self.assertIn("invalid anchor identity", source)
+        self.assertIn("a different VG intent targets this materialization anchor", source)
+        self.assertIn("anchor-scoped materialization does not match transaction", source)
+        self.assertIn("_thick_volume_snapshot(", source)
+        self.assertIn("_thick_recover_resize(", source)
+        self.assertIn("lazy-activate-close", source)
+        self.assertIn("lazy-materialize", source)
+        self.assertIn("_lazy_activate_volume(", source)
+        self.assertIn("_lazy_deactivate_volume(", source)
+        self.assertIn("_lazy_materialize_volume(", source)
+        self.assertIn("LAZY_DORMANT", source)
+        self.assertNotIn("/usr/libexec/pve-sharedlvmthin", source)
+        self.assertNotIn("system(", source)
+        self.assertNotIn("exec(", source)
+        self.assertNotIn("unlink", source)
+
+    def test_candidate_recovery_driver_is_bound_to_its_own_checkout(self):
+        source = CANDIDATE_RECOVERY_DRIVER.read_text(encoding="utf-8")
+        provenance = CANDIDATE_PROVENANCE.read_text(encoding="utf-8")
+        self.assertIn('use lib "$FindBin::Bin/../../usr/share/perl5"', source)
+        self.assertIn('realpath("$bin/../..")', provenance)
+        self.assertIn("realpath($INC{$plugin_key} // '')", provenance)
+        self.assertIn('if $loaded ne $expected', provenance)
+
+    def test_every_candidate_fault_and_recovery_driver_attests_same_code_set(self):
+        for path in (FAULT_DRIVER, RESIZE_FAULT_DRIVER, CANDIDATE_RECOVERY_DRIVER):
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("'plugin-sha256=s'", source, path.name)
+            self.assertIn("'candidate-code-sha256=s'", source, path.name)
+            self.assertIn("verify_candidate_provenance(", source, path.name)
+            self.assertIn(
+                "PERL5LIB and PERL5OPT to be absent at interpreter start",
+                source,
+                path.name,
+            )
 
     def test_prepare_recovery_is_exact_and_refuses_partial_objects(self):
         source = PREPARE_RECOVERY.read_text(encoding="utf-8")
@@ -140,6 +246,8 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
 
     def test_same_vg_coexistence_driver_is_disposable_and_fail_closed(self):
         source = COEXISTENCE.read_text(encoding="utf-8")
+        if shutil.which("bash") is None:
+            self.skipTest("requires Bash syntax checker")
         result = subprocess.run(
             ["bash", "-n", str(COEXISTENCE)], capture_output=True, text=True
         )
@@ -160,6 +268,8 @@ class ThickRecoveryHarnessTests(unittest.TestCase):
 
     def test_long_soak_rechecks_only_a_sole_unscoped_dstate_unknown(self):
         source = LONG_SOAK.read_text(encoding="utf-8")
+        if shutil.which("bash") is None:
+            self.skipTest("requires Bash syntax checker")
         result = subprocess.run(
             ["bash", "-n", str(LONG_SOAK)], capture_output=True, text=True
         )
