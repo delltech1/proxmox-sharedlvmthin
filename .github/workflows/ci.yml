@@ -15,9 +15,7 @@ jobs:
       - name: Install build and test dependencies
         run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
       - name: Python unit tests
-        run: python3 -m unittest discover -s tests/unit -v
-      - name: Root-only package replacement tests
-        run: sudo python3 -m unittest -v tests.unit.test_profile_replacement
+        run: sudo python3 -m unittest discover -s tests/unit -v
       - name: Perl unit tests
         run: prove -Itests/unit/lib -v tests/unit/*.t
       - name: Syntax checks
