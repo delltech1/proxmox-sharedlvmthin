@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
 
@@ -12,7 +10,6 @@ permissions:
 
 jobs:
   build-and-release:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.head_commit.message == 'Publish RC5.31 TG52 pre-release'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,11 +62,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
-            tag_name="${GITHUB_REF_NAME##*/}"
-          else
-            tag_name="v0.9.0-rc5.31-tg52"
-          fi
+          tag_name="${GITHUB_REF_NAME##*/}"
           case "$tag_name" in
             v0.9.0-*) release_name="${tag_name#v0.9.0-}" ;;
             v*) release_name="${tag_name#v}" ;;
