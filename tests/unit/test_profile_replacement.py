@@ -71,15 +71,27 @@ class ProfileReplacementTests(unittest.TestCase):
         with self.m.Locked():
             self.m.verify_prerm(verify)
 
-    def fake_installed(self):
+    def fake_installed(self, target_status="ii "):
         original = self.m.subprocess.run
         self.addCleanup(setattr, self.m.subprocess, "run", original)
 
         def run(argv, **_kwargs):
             if argv[-1] == "pve-sharedlvmthin":
-                return subprocess.CompletedProcess(argv, 0, f"ii  {VERSION}", "")
+                return subprocess.CompletedProcess(argv, 0,
+                                                   f"{target_status} {VERSION}", "")
             return subprocess.CompletedProcess(argv, 1, "", "not installed")
         self.m.subprocess.run = run
+
+    def test_held_exact_target_is_installed_and_pending_removal_is_not(self):
+        record = self.prepare()
+        self.fake_installed("hi ")
+        self.m.installed_exact(record)
+
+        # The exact same verifier must not reinterpret a pending remove as a
+        # successfully installed target merely because files still exist.
+        self.fake_installed("ri ")
+        with self.assertRaisesRegex(self.m.Refusal, "not exactly installed"):
+            self.m.installed_exact(record)
 
     def write_done(self, rc=0):
         intent = self.m.read_record(self.m.INTENT)
@@ -228,8 +240,8 @@ class ProfileReplacementTests(unittest.TestCase):
                                              b"pve-sharedlvmthin"]
         with self.assertRaisesRegex(self.m.Refusal, "arguments changed"):
             self.real_exact_dpkg_process(record)
-        self.m.proc_cmdline = lambda _pid: [b"/usr/bin/dpkg", b"-i",
-                                             record["candidate"].encode()]
+        self.m.proc_cmdline = lambda _pid: [b"/usr/bin/dpkg", b"--force-hold",
+                                                b"-i", record["candidate"].encode()]
         self.real_exact_dpkg_process(record)
         record["boot_id"] = "22222222-2222-2222-2222-222222222222"
         self.m.proc_start = lambda _pid: (_ for _ in ()).throw(AssertionError("must not inspect old boot"))

@@ -183,13 +183,13 @@ failure-domain layout: Thin pool growth, metadata exhaustion and ownership do
 not then compete with fully reserved Thick capacity or its transition objects.
 Eager and Lazy Thick aliases may share the dedicated Thick VG.
 
-TG52 does not support same-VG Thin+Thick operation, including as an advanced
+TG53 does not support same-VG Thin+Thick operation, including as an advanced
 opt-in. Every Thin storage definition must resolve to a different physical VG
 from every Eager/Lazy Thick definition. `isolated` is the only operational
 layout. The schema can parse the retired `mixed` token during a rolling
 migration, but preinstall and runtime refuse it. Existing mixed layouts must
 move their volumes and settle `storage.cfg` before installing or upgrading to
-TG52 on a participating node.
+TG53 on a participating node.
 
 Example separated topology:
 
@@ -279,6 +279,31 @@ Python cache/state. PVE Storage APIs 14 and 15 are explicitly supported; other
 runtime API versions refuse mutation until separately qualified.
 
 ## Rolling package upgrade
+
+Select one update policy explicitly on every participating node:
+
+- `freeze` holds the watched storage stack and refuses ordinary changes; use
+  the exact package-profile settlement workflow for an intentional plugin
+  replacement.
+- `qualified-auto` permits only an exact manifest-qualified APT transition.
+  It does not start APT, restart services or reboot the node.
+- `warn` permits one exact administrator-authorized unqualified package plan,
+  but the resulting runtime remains `UNQUALIFIED` and storage mutations stay
+  blocked until a later qualification succeeds.
+
+Older candidates named the last two modes `qualified-only` and
+`manual-override`. They remain readable during an upgrade but are renamed only
+by `sharedlvmthin update-policy migrate-policy-schema`; there is no silent
+policy conversion.
+
+Every watched update has two distinct settlements. `PACKAGE_SETTLED` proves
+the exact dpkg/artifact result. Runtime permission additionally requires a
+root-owned receipt matching the code identity actually loaded by the calling
+PVE process, the current boot ID, running kernel and qualified plan. A stale
+worker, manual payload replacement, reboot or different kernel therefore
+blocks mutation even when all services merely report `active`. After a
+qualified reboot use `package-post-reboot-gate.sh --settle-runtime`; the
+default invocation remains read-only.
 
 A package upgrade replaces the plugin and diagnostic files and refreshes only
 active PVE management consumers. It does not restart QEMU, deactivate an LVM

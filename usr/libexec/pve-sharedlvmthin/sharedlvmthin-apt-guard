@@ -1,0 +1,331 @@
+#!/usr/bin/python3
+"""APT protocol-v3 fail-closed guard for BASTRIX watched packages."""
+
+import importlib.util
+import fcntl
+from email.parser import Parser
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import time
+
+# A pre-install decision must be read-only outside its explicit state receipts;
+# importing the shared policy core must not leave package-directory bytecode.
+sys.dont_write_bytecode = True
+
+LIB = "/usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py"
+MANIFEST = "/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json"
+FLAVOR = "/usr/share/pve-sharedlvmthin/package-flavor"
+STATE = pathlib.Path("/var/lib/pve-sharedlvmthin/update-guard")
+POLICY = STATE / "policy.json"
+FREEZE = STATE / "freeze-owned.json"
+PROPOSAL = STATE / "proposal.json"
+AUTH = STATE / "authorization.json"
+POST_GATE = STATE / "post-gate-required.json"
+PACKAGE_TRANSITION = STATE / "package-transition.json"
+RUNTIME_QUALIFICATION = STATE / "runtime-qualification-pending.json"
+FREEZE_MIGRATION = STATE / "freeze-schema-migration.json"
+LOCK = STATE / "policy.lock"
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+SOURCE_CLASSIFICATION_SECONDS = 45
+
+
+def module():
+    spec = importlib.util.spec_from_file_location("slt_update_policy", LIB)
+    value = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(value)
+    return value
+
+
+def safe_read(path):
+    info = path.lstat()
+    if path.is_symlink() or not path.is_file() or info.st_uid != 0 or info.st_mode & 0o077:
+        raise RuntimeError(f"unsafe state file: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def atomic(path, value):
+    # The admin command created and validated this root-only directory.
+    if not STATE.is_dir() or STATE.is_symlink():
+        raise RuntimeError("update-policy state directory is missing or unsafe")
+    temporary = STATE / f".{path.name}.{os.getpid()}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        os.write(descriptor, data)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, path)
+    directory = os.open(STATE, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def unlink(path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    directory = os.open(STATE, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def acquire_policy_lock():
+    descriptor = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(descriptor)
+    if info.st_uid != 0 or info.st_mode & 0o077:
+        os.close(descriptor)
+        raise RuntimeError("unsafe update-policy lock file")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        raise RuntimeError("another update-policy operation is active")
+    return descriptor
+
+
+def run(argv, timeout=15):
+    env = {"PATH": SAFE_PATH, "LC_ALL": "C", "LANG": "C"}
+    return subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=timeout, check=False, env=env)
+
+
+def version(package):
+    value = run(["dpkg-query", "-W", "-f=${Version}|${db:Status-Status}", package])
+    fields = value.stdout.split("|")
+    return fields[0] if value.returncode == 0 and fields[1:] == ["installed"] else None
+
+
+def compare(left, operation, right):
+    return run(["dpkg", "--compare-versions", left, operation, right]).returncode == 0
+
+
+def source_watched(source, manifest):
+    if source in manifest.get("watched_source_packages", []):
+        return True
+    return any(re.fullmatch(pattern, source)
+               for pattern in manifest.get("watched_source_patterns", []))
+
+
+def payload_source(action, deadline=None):
+    """Return and authenticate the Debian source package for one APT action."""
+    remaining = 15
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("APT source-family classification deadline exceeded")
+        remaining = min(15, remaining)
+    path = action["action"]
+    if path.startswith("/"):
+        value = run(["dpkg-deb", "-f", path], timeout=remaining)
+        if value.returncode:
+            raise RuntimeError(value.stderr.strip() or f"cannot inspect APT payload: {path}")
+        fields = Parser().parsestr(value.stdout, headersonly=True)
+        for name in ("Package", "Version", "Architecture"):
+            if len(fields.get_all(name, [])) != 1:
+                raise RuntimeError(f"ambiguous {name} field in APT payload: {path}")
+        package = fields["Package"]
+        package_version = fields["Version"]
+        architecture = fields["Architecture"]
+        sources = fields.get_all("Source", [])
+        if len(sources) > 1:
+            raise RuntimeError(f"ambiguous Source field in APT payload: {path}")
+        source = (sources[0].split(" ", 1)[0] if sources else package)
+        if package != action["package"].split(":", 1)[0] \
+                or package_version != action["new_version"] \
+                or architecture != action["new_arch"]:
+            raise RuntimeError(f"APT payload identity differs from its protocol row: {path}")
+        return source
+
+    # Configure/remove rows have no archive path. Query the exact dpkg record;
+    # a missing or ambiguous source identity is not safe to call unrelated.
+    value = run(["dpkg-query", "-W", "-f=${binary:Package}|${Version}|"
+                 "${Architecture}|${source:Package}|${db:Status-Status}", action["package"]],
+                timeout=remaining)
+    fields = value.stdout.split("|")
+    if value.returncode or len(fields) != 5:
+        raise RuntimeError(f"cannot inspect package source identity: {action['package']}")
+    binary, package_version, architecture, source, status = fields
+    expected_version = (action["old_version"] if action["new_version"] == "-"
+                        else action["new_version"])
+    expected_arch = action["old_arch"] if action["new_arch"] == "-" else action["new_arch"]
+    acceptable_states = {
+        "installed", "config-files", "unpacked", "half-configured",
+        "triggers-awaited", "triggers-pending",
+    }
+    if binary != action["package"] or package_version != expected_version \
+            or architecture != expected_arch or status not in acceptable_states:
+        raise RuntimeError(f"dpkg source identity differs from APT row: {action['package']}")
+    return source or action["package"].split(":", 1)[0]
+
+
+def extend_manifest_for_source_families(plan, manifest, library):
+    discovered = set()
+    archive_sources = {}
+    deadline = time.monotonic() + SOURCE_CLASSIFICATION_SECONDS
+    # Authenticate archive rows first. A normal protocol contains both an
+    # archive action and a later **CONFIGURE** row; once its binary is promoted
+    # by the archive's Source field, never compare that configure row against
+    # the still-old pre-dpkg installed version.
+    ordered = sorted(plan["actions"], key=lambda row: 0 if row["action"].startswith("/") else 1)
+    for action in ordered:
+        name = library.base_package(action["package"])
+        if name in discovered or library.watched(action, manifest):
+            continue
+        if not action["action"].startswith("/") and name in archive_sources:
+            source = archive_sources[name]
+        else:
+            source = payload_source(action, deadline=deadline)
+            if action["action"].startswith("/"):
+                previous = archive_sources.get(name)
+                if previous is not None and previous != source:
+                    raise RuntimeError(
+                        f"APT plan has conflicting source identities for {name}"
+                    )
+                archive_sources[name] = source
+        if source_watched(source, manifest):
+            discovered.add(name)
+    if not discovered:
+        return manifest
+    result = dict(manifest)
+    result["watched_packages"] = sorted(
+        set(manifest.get("watched_packages", [])) | discovered
+    )
+    return result
+
+
+def context(manifest):
+    packages = {name: version(name) for name in manifest.get("watched_packages", [])}
+    api = run(["perl", "-I/usr/share/perl5", "-MPVE::Storage", "-e", "print PVE::Storage::APIVER()"])
+    flavor = pathlib.Path(FLAVOR).read_text(encoding="ascii").strip()
+    plugin_package = "pve-sharedlvmthin-thick" if flavor == "thick-only" else "pve-sharedlvmthin"
+    return {"installed": packages, "profile": flavor,
+            "api": int(api.stdout) if api.returncode == 0 and api.stdout.isdigit() else None,
+            "running_kernel": os.uname().release, "plugin_version": version(plugin_package)}
+
+
+def watched_state(manifest, library):
+    result = run(["dpkg-query", "-W", "-f=${Package}|${binary:Package}|${Version}|"
+                  "${Architecture}|${db:Status-Status}\\n"])
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "dpkg-query state inventory failed")
+    records = []
+    seen = set()
+    for line in result.stdout.splitlines():
+        fields = line.split("|")
+        if len(fields) != 5:
+            raise RuntimeError("malformed dpkg state inventory")
+        name, binary, package_version, architecture, status = fields
+        if status != "installed" or not library.watched({"package": name}, manifest):
+            continue
+        if name in seen:
+            raise RuntimeError(f"ambiguous multiarch package state for {name}")
+        seen.add(name)
+        records.append({"package": name, "binary": binary, "version": package_version,
+                        "architecture": architecture, "status": status})
+    return sorted(records, key=lambda row: row["package"])
+
+
+def authorization_context(manifest, library, policy):
+    value = {
+        "schema": 1,
+        "node": os.uname().nodename,
+        "boot_id": pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        "manifest_sha256": library.digest(manifest),
+        "policy_sha256": library.digest(policy),
+        "watched_state": watched_state(manifest, library),
+    }
+    value["context_sha256"] = library.digest(value)
+    return value
+
+
+def plan_identity(library, plan):
+    payloads = library.hash_payloads(plan)
+    identity = {"schema": 1, "actions": plan["actions"], "payloads": payloads}
+    return library.digest(identity), payloads
+
+
+def refuse(verdict, digest, related, payloads):
+    atomic(PROPOSAL, {"schema": 1, "verdict": verdict, "plan_digest": digest,
+                      "payloads": payloads, "packages": sorted({r["package"] for r in related})})
+    print("[BASTRIX SharedLVM] UPDATE STOPPED BEFORE DPKG", file=sys.stderr)
+    print(f"Reason: {verdict}", file=sys.stderr)
+    for row in related:
+        print(f"  {row['package']}: {row['old_version']} -> {row['new_version']} ({row['action']})",
+              file=sys.stderr)
+    print("Use 'sharedlvmthin update-policy status' and intentionally select a policy.", file=sys.stderr)
+    print("For an unqualified exact one-shot plan: select warn, review the proposal,",
+          file=sys.stderr)
+    print("then run 'sharedlvmthin update-policy authorize-proposal' and repeat APT.", file=sys.stderr)
+    return 1
+
+
+def main():
+    try:
+        library = module()
+        raw = sys.stdin.buffer.read(library.MAX_PROTOCOL_BYTES + 1)
+        plan = library.parse_protocol_v3(raw)
+        manifest = library.strict_json(MANIFEST)
+        manifest = extend_manifest_for_source_families(plan, manifest, library)
+        related = library.relevant_actions(plan, manifest)
+        if not related:
+            return 0
+        lock = acquire_policy_lock()
+        try:
+            policy = safe_read(POLICY)
+            digest, payloads = plan_identity(library, plan)
+            if POST_GATE.exists():
+                return refuse("PREVIOUS_POST_GATE_REQUIRED", digest, related, payloads)
+            if PACKAGE_TRANSITION.exists():
+                return refuse("PACKAGE_TRANSITION_PENDING", digest, related, payloads)
+            if RUNTIME_QUALIFICATION.exists():
+                return refuse("RUNTIME_QUALIFICATION_PENDING", digest, related, payloads)
+            if FREEZE_MIGRATION.exists():
+                return refuse("FREEZE_SCHEMA_MIGRATION_PENDING", digest, related, payloads)
+            result = library.evaluate(plan, manifest, policy, context(manifest), compare)
+            verdict = result["verdict"]
+            if verdict in {"ALLOW_QUALIFIED", "ALLOW_QUALIFIED_EDGE"}:
+                atomic(POST_GATE, {"schema": 1, "plan_digest": digest, "verdict": verdict,
+                                   "state": "DPKG_DISPATCHED_RESULT_UNKNOWN",
+                                   "actions": plan["actions"], "payloads": payloads,
+                                   "boot_id": pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip()})
+                return 0
+            if verdict == "REQUIRE_EXACT_MANUAL_AUTHORIZATION":
+                try:
+                    authorization = safe_read(AUTH)
+                except FileNotFoundError:
+                    return refuse(verdict, digest, related, payloads)
+                expected_context = authorization_context(manifest, library, policy)
+                if not library.manual_authorization_matches(
+                        authorization, digest, payloads, expected_context):
+                    return refuse("MANUAL_AUTHORIZATION_MISMATCH", digest, related, payloads)
+                # Consume before dispatch. A crash is safe: the exact plan must be authorized again.
+                unlink(AUTH)
+                warning_verdict = "WARN_UNQUALIFIED" if policy.get("mode") == "WARN" \
+                    else "MANUAL_OVERRIDE"
+                atomic(POST_GATE, {"schema": 1, "plan_digest": digest, "verdict": warning_verdict,
+                                   "state": "DPKG_DISPATCHED_RESULT_UNKNOWN",
+                                   "actions": plan["actions"], "payloads": payloads,
+                                   "authorization_id": authorization["authorization_id"],
+                                   "authorization_context_sha256": expected_context["context_sha256"],
+                                   "boot_id": pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip()})
+                return 0
+            return refuse(verdict, digest, result.get("relevant", related), payloads)
+        finally:
+            os.close(lock)
+    except Exception as exc:
+        print(f"[BASTRIX SharedLVM] UPDATE STOPPED: guard result is unknown: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -10,6 +10,7 @@ use Errno qw(ENOENT);
 
 use Digest::SHA qw(sha256_hex);
 use JSON::PP qw(decode_json);
+use POSIX ();
 use Scalar::Util qw(tainted);
 use Time::HiRes ();
 use PVE::Storage::Plugin;
@@ -41,6 +42,107 @@ sub api {
 
 use constant MIN_TESTED_PVE_STORAGE_API => 14;
 use constant MAX_TESTED_PVE_STORAGE_API => 15;
+
+# scripts/build.sh replaces this template token in the staged package only.
+# A long-lived PVE worker retains the value it actually loaded, while the
+# root-owned marker on disk changes with the installed payload.  Their exact
+# comparison prevents old workers from mutating storage after a package swap.
+sub _loaded_runtime_build_id {
+    return '__SLT_RUNTIME_BUILD_ID__';
+}
+
+sub _runtime_build_id_path {
+    return '/usr/share/pve-sharedlvmthin/runtime-build-id';
+}
+
+sub _runtime_release_path {
+    return '/var/lib/pve-sharedlvmthin/update-guard/runtime-release.json';
+}
+
+sub _maintenance_state_dir {
+    return '/var/lib/pve-sharedlvmthin/maintenance';
+}
+
+sub _update_guard_state_dir {
+    return '/var/lib/pve-sharedlvmthin/update-guard';
+}
+
+sub _current_boot_id {
+    open(my $fh, '<', '/proc/sys/kernel/random/boot_id')
+        or die "cannot read current boot identity: $!\n";
+    my $boot = <$fh>;
+    my $extra = <$fh>;
+    close($fh) or die "cannot close current boot identity: $!\n";
+    $boot =~ s/\s+$// if defined($boot);
+    die "current boot identity is malformed\n"
+        if !defined($boot) || defined($extra)
+        || $boot !~ /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    return $boot;
+}
+
+sub _current_kernel_release {
+    my ($release) = (POSIX::uname())[2];
+    die "current kernel release is malformed\n"
+        if !defined($release) || $release !~ /^([A-Za-z0-9_.+~-]{1,127})$/;
+    return $1;
+}
+
+sub _assert_runtime_release_identity {
+    my ($class, $operation, $path) = @_;
+    $path //= $class->_runtime_release_path();
+    die "runtime release identity path is unsafe\n"
+        if $path !~ m{^(/[A-Za-z0-9_.-]+)+$};
+    my @identity = lstat($path);
+    die "RUNTIME_NOT_QUALIFIED: $operation is refused because no safe runtime "
+        . "release receipt exists\n"
+        if !@identity || !S_ISREG($identity[2]) || $identity[4] != 0
+        || ($identity[2] & 0022) || $identity[7] < 2 || $identity[7] > 16_384;
+    open(my $fh, '<', $path)
+        or die "RUNTIME_NOT_QUALIFIED: cannot read runtime release receipt: $!\n";
+    local $/;
+    my $raw = <$fh>;
+    close($fh) or die "RUNTIME_NOT_QUALIFIED: cannot close runtime release receipt: $!\n";
+    my $receipt = eval { decode_json($raw) };
+    die "RUNTIME_NOT_QUALIFIED: runtime release receipt is malformed\n"
+        if ref($receipt) ne 'HASH' || ($receipt->{schema} // 0) != 1
+        || ($receipt->{qualified} // '') ne 'QUALIFIED'
+        || ($receipt->{runtime_build_id} // '') !~ /^[0-9a-f]{64}$/
+        || ($receipt->{plan_digest} // '') !~ /^[0-9a-f]{64}$/;
+    my $loaded = $class->_loaded_runtime_build_id();
+    die "RUNTIME_NOT_QUALIFIED: runtime receipt belongs to another loaded build\n"
+        if $receipt->{runtime_build_id} ne $loaded;
+    die "RUNTIME_NOT_QUALIFIED: runtime receipt belongs to another boot\n"
+        if ($receipt->{boot_id} // '') ne $class->_current_boot_id();
+    die "RUNTIME_NOT_QUALIFIED: runtime receipt belongs to another kernel\n"
+        if ($receipt->{kernel_release} // '') ne $class->_current_kernel_release();
+    return 1;
+}
+
+sub _assert_loaded_runtime_identity {
+    my ($class, $operation, $path) = @_;
+    $path //= $class->_runtime_build_id_path();
+    die "runtime build identity path is unsafe\n"
+        if $path !~ m{^(/[A-Za-z0-9_.-]+)+$};
+    my @identity = lstat($path);
+    die "LOADED_RUNTIME_UNVERIFIED: $operation is refused because the installed "
+        . "runtime identity is missing or unsafe\n"
+        if !@identity || !S_ISREG($identity[2]) || $identity[4] != 0
+        || ($identity[2] & 0022);
+    open(my $fh, '<', $path)
+        or die "LOADED_RUNTIME_UNVERIFIED: cannot read installed runtime identity: $!\n";
+    my $installed = <$fh>;
+    my $extra = <$fh>;
+    close($fh)
+        or die "LOADED_RUNTIME_UNVERIFIED: cannot close installed runtime identity: $!\n";
+    $installed =~ s/\s+$// if defined($installed);
+    my $loaded = $class->_loaded_runtime_build_id();
+    die "LOADED_RUNTIME_UNVERIFIED: installed runtime identity is malformed\n"
+        if !defined($installed) || defined($extra) || $installed !~ /^[0-9a-f]{64}$/;
+    die "LOADED_RUNTIME_UNVERIFIED: loaded runtime $loaded differs from installed "
+        . "$installed; restart and verify the relevant PVE services before $operation\n"
+        if !defined($loaded) || $loaded !~ /^[0-9a-f]{64}$/ || $loaded ne $installed;
+    return 1;
+}
 
 # PVE workers run with Perl taint checks.  Every external command crosses this
 # single argv-only boundary.  Values derived from the API, LVM, sysfs or DM are
@@ -104,35 +206,57 @@ sub _package_flavor {
 }
 
 sub _assert_package_operations_released {
-    my ($class, $operation, $maintenance_dir) = @_;
+    my ($class, $operation, $maintenance_dir, $update_guard_dir, $runtime_id_path,
+        $runtime_release_path) = @_;
     die "package maintenance operation name is invalid\n"
         if !defined($operation) || $operation !~ /^([a-z][a-z0-9 -]{0,63})$/;
     $operation = $1;
-    $maintenance_dir //= '/var/lib/pve-sharedlvmthin/maintenance';
+    $maintenance_dir //= $class->_maintenance_state_dir();
+    $update_guard_dir //= $class->_update_guard_state_dir();
     die "package maintenance directory argument is unsafe\n"
         if $maintenance_dir !~ m{^(/[A-Za-z0-9_.-]+)+$};
+    die "package update-guard directory argument is unsafe\n"
+        if $update_guard_dir !~ m{^(/[A-Za-z0-9_.-]+)+$};
 
-    my @directory = lstat($maintenance_dir);
-    if (!@directory) {
-        return 1 if $! == ENOENT;
-        die "cannot inspect package maintenance hold directory: $!\n";
+    my @holds = (
+        [$maintenance_dir, 'active.json', 'package maintenance',
+            'PACKAGE_MAINTENANCE_HOLD',
+            'the explicit cluster maintenance transaction is finalized'],
+        [$update_guard_dir, 'post-gate-required.json', 'package update-guard',
+            'PACKAGE_UPDATE_UNSETTLED',
+            'installed, loaded and boot runtime identities are explicitly verified'],
+        [$update_guard_dir, 'package-transition.json', 'package baseline transition',
+            'PACKAGE_BASELINE_TRANSITION',
+            'the exact package baseline and runtime qualification are settled'],
+        [$update_guard_dir, 'runtime-qualification-pending.json', 'runtime qualification',
+            'RUNTIME_QUALIFICATION_PENDING',
+            'the exact post-install PVE operational gate is finalized'],
+    );
+    for my $hold (@holds) {
+        my ($directory_path, $file, $label, $code, $release) = @$hold;
+        my @directory = lstat($directory_path);
+        if (!@directory) {
+            next if $! == ENOENT;
+            die "cannot inspect $label directory: $!\n";
+        }
+        die "$label directory is unsafe; refusing $operation\n"
+            if !S_ISDIR($directory[2]) || $directory[4] != 0
+            || ($directory[2] & 0777) != 0700;
+
+        my $path = "$directory_path/$file";
+        my @manifest = lstat($path);
+        if (!@manifest) {
+            next if $! == ENOENT;
+            die "cannot inspect $label hold: $!\n";
+        }
+
+        # Presence alone means HOLD. Runtime admission must never parse a
+        # malformed/symlinked receipt, infer expiry, or reinterpret an unknown
+        # package outcome as permission to mutate shared storage.
+        die "$code: $operation is refused until $release\n";
     }
-    die "package maintenance hold directory is unsafe; refusing $operation\n"
-        if !S_ISDIR($directory[2]) || $directory[4] != 0
-        || ($directory[2] & 0777) != 0700;
-
-    my $active = "$maintenance_dir/active.json";
-    my @manifest = lstat($active);
-    if (!@manifest) {
-        return 1 if $! == ENOENT;
-        die "cannot inspect package maintenance hold: $!\n";
-    }
-
-    # Any object at the fixed active path means HOLD. The verifier owns the
-    # stronger manifest/phase checks; runtime admission must not reinterpret a
-    # malformed, symlinked or expired object as release permission.
-    die "PACKAGE_MAINTENANCE_HOLD: $operation is refused until the explicit "
-        . "cluster maintenance transaction is finalized\n";
+    $class->_assert_loaded_runtime_identity($operation, $runtime_id_path);
+    return $class->_assert_runtime_release_identity($operation, $runtime_release_path);
 }
 
 sub _outer_lock_yield {
@@ -964,8 +1088,161 @@ sub _lazy_front_pivot_state {
     die "Lazy Thick pivot frontend '$mapper' is outside the exact recoverable graph states\n";
 }
 
+my %lazy_move_allocation;
+
+sub _lazy_move_context {
+    my ($class, $storeid, $scfg, $vmid, $volname, $stage, $frames) = @_;
+    my @names = (__PACKAGE__ . ($stage eq 'allocate' ? '::alloc_image' : '::activate_volume'),
+        $stage eq 'allocate' ? 'PVE::Storage::vdisk_alloc' : 'PVE::Storage::activate_volumes',
+        'PVE::QemuServer::clone_disk', 'PVE::AbstractConfig::lock_config_full',
+        'PVE::AbstractConfig::lock_config');
+    my (@rows, $previous);
+    for my $name (@names) {
+        my @indices = grep { ($frames->[$_]->{sub} // '') eq $name } 0 .. $#$frames;
+        die "Lazy move requires exact upstream caller '$name'\n"
+            if @indices != 1 || (defined($previous) && $indices[0] <= $previous);
+        $previous = $indices[0];
+        push @rows, $frames->[$indices[0]];
+    }
+    my ($hook, $storage, $clone, $full_lock, $lock) = map { $_->{args} } @rows;
+    die "Lazy move clone callsite is unqualified\n"
+        if ($rows[2]->{package} // '') ne 'PVE::API2::Qemu'
+        || ($rows[2]->{file} // '') ne '/usr/share/perl5/PVE/API2/Qemu.pm';
+    die "Lazy move clone signature is unqualified\n"
+        if @$clone != 9 || ref($clone->[0]) ne 'HASH' || ref($clone->[1]) ne 'HASH'
+        || ref($clone->[2]) ne 'HASH' || ($clone->[3] // '') ne '1'
+        || ref($clone->[4]) ne 'ARRAY' || defined($clone->[5]) || defined($clone->[6]);
+    my ($storecfg, $source, $dest, undef, $newvols) = @$clone;
+    my $drive = $source->{drive};
+    die "Lazy move requires stopped same-VM ordinary-disk full copy\n"
+        if ($source->{vmid} // '') ne "$vmid" || ($dest->{vmid} // '') ne "$vmid"
+        || $source->{running} || defined($source->{snapname}) || ref($drive) ne 'HASH'
+        || ($source->{drivename} // '') !~ /^(?:scsi|virtio|sata|ide)[0-9]+$/
+        || ($dest->{drivename} // '') ne $source->{drivename}
+        || ($dest->{storage} // '') ne $storeid || ($dest->{format} // '') ne 'raw'
+        || defined($dest->{efisize}) || ($drive->{media} // '') eq 'cdrom'
+        || ($drive->{file} // '') !~ /^([A-Za-z][A-Za-z0-9_.-]*):vm-\Q$vmid\E-disk-[0-9]+$/
+        || ($drive->{discard} // 'ignore') ne 'ignore'
+        || ($drive->{detect_zeroes} // '0') ne '0'
+        || ($source->{size} // '') !~ /^[1-9][0-9]*$/;
+    my ($source_sid, $source_vol) = split(/:/, $drive->{file}, 2);
+    die "Lazy move source and destination storage must differ\n" if $source_sid eq $storeid;
+    die "Lazy move requires exact held VM config lock\n"
+        if @$lock != 3 || $lock->[0] ne 'PVE::QemuConfig' || $lock->[1] ne "$vmid"
+        || ref($lock->[2]) ne 'CODE' || @$full_lock != 4
+        || $full_lock->[0] ne $lock->[0] || $full_lock->[1] ne $lock->[1]
+        || $full_lock->[2] ne '10' || $full_lock->[3] ne $lock->[2];
+    die "Lazy move storage configuration identity changed\n"
+        if ref($storecfg->{ids}) ne 'HASH' || ($storecfg->{ids}->{$storeid} // '') ne $scfg
+        || $storage->[0] ne $storecfg || @$hook != 7 || $hook->[0] ne __PACKAGE__
+        || $hook->[1] ne $storeid || $hook->[2] ne $scfg;
+    if ($stage eq 'allocate') {
+        die "Lazy move allocation arguments changed\n"
+            if @$storage != 6 || $storage->[1] ne $storeid || $storage->[2] ne "$vmid"
+            || $storage->[3] ne 'raw' || defined($storage->[4])
+            || $storage->[5] * 1024 != $source->{size}
+            || $hook->[3] ne "$vmid" || $hook->[4] ne 'raw' || defined($hook->[5])
+            || $hook->[6] != $storage->[5] || @$newvols || defined($dest->{volid});
+    } else {
+        die "Lazy move target activation arguments changed\n"
+            if @$storage != 2 || ref($storage->[1]) ne 'ARRAY' || @{$storage->[1]} != 1
+            || $storage->[1]->[0] ne "$storeid:$volname" || $hook->[3] ne $volname
+            || defined($hook->[4]) || defined($hook->[6])
+            || ($dest->{volid} // '') ne "$storeid:$volname"
+            || @$newvols != 1 || $newvols->[0] ne "$storeid:$volname";
+    }
+    return { source => $source, dest => $dest, newvols => $newvols, lock => $lock->[2],
+        source_sid => $source_sid, source_vol => $source_vol, vmid => "$vmid",
+        slot => $source->{drivename}, bytes => $source->{size} };
+}
+
+sub _lazy_move_source_policy {
+    my ($class, $context) = @_;
+    my $node = $class->_thin_local_node();
+    die "Lazy move node identity is ambiguous\n" if $node !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+    my $path = "/etc/pve/nodes/$node/qemu-server/$context->{vmid}.conf";
+    my $refs = $class->_thick_pve_reference_files($context->{source_sid}, $context->{source_vol});
+    my $text = $class->_thick_owner_reference_text({ path => $path, vmid => $context->{vmid} }, $refs);
+    die "Lazy move source config has snapshots, pending or special sections\n" if $text =~ /^\[/m;
+    $class->_thick_validate_destroy_config($context->{source_sid}, $context->{source_vol}, $text, {});
+    my $volid = "$context->{source_sid}:$context->{source_vol}";
+    my @matches = grep { /\Q$volid\E(?:,|\s|$)/ } split(/\n/, $text);
+    die "Lazy move cannot prove exact source slot policy\n"
+        if @matches != 1 || $matches[0] !~ /^\Q$context->{slot}\E:\s*\Q$volid\E(?:,|\s|$)/
+        || ($matches[0] =~ /(?:^|,)discard=([^,\s]+)/ && $1 ne 'ignore')
+        || ($matches[0] =~ /(?:^|,)detect_zeroes=([^,\s]+)/ && $1 ne '0');
+    return sha256_hex($text);
+}
+
+sub _lazy_prepare_move_allocation {
+    my ($class, $storeid, $scfg, $vmid) = @_;
+    my $frames = $class->_thick_destroy_call_frames();
+    return undef if !grep { ($_->{sub} // '') eq 'PVE::QemuServer::clone_disk' } @$frames;
+    my $context = $class->_lazy_move_context($storeid, $scfg, $vmid, undef, 'allocate', $frames);
+    $context->{config_digest} = $class->_lazy_move_source_policy($context);
+    return $context;
+}
+
+sub _lazy_efi_allocation_requires_eager {
+    my ($class) = @_;
+    my $frames = $class->_thick_destroy_call_frames();
+    my @efi = grep {
+        ($_->{sub} // '') eq 'PVE::QemuServer::OVMF::create_efidisk'
+    } @$frames;
+    return 0 if !@efi;
+    die "Lazy EFI allocation caller is ambiguous\n" if @efi != 1;
+    die "Lazy EFI allocation callsite is unqualified\n"
+        if ($efi[0]->{package} // '') ne 'PVE::API2::Qemu'
+        || ($efi[0]->{file} // '') ne '/usr/share/perl5/PVE/API2/Qemu.pm';
+    return 1;
+}
+
+sub _lazy_record_move_allocation {
+    my ($class, $storeid, $volname, $context, $state) = @_;
+    return if !$context;
+    die "Lazy move publication is not the exact fresh dormant allocation\n"
+        if $state->{phase} ne 'LAZY_DORMANT' || $state->{publication} != 1
+        || $state->{generation} != 0 || $state->{bytes} != $context->{bytes};
+    my $now = $class->_thick_progress_clock();
+    for my $key (keys %lazy_move_allocation) {
+        delete $lazy_move_allocation{$key}
+            if $lazy_move_allocation{$key}->{pid} != $$ || $lazy_move_allocation{$key}->{expires} < $now;
+    }
+    die "Lazy move capability budget exceeded\n" if keys(%lazy_move_allocation) >= 16;
+    my $key = "$storeid:$volname";
+    die "Lazy move capability already exists\n" if exists($lazy_move_allocation{$key});
+    $lazy_move_allocation{$key} = { %$context, pid => $$, expires => $now + 120,
+        anchor_digest => sha256_hex(join('|', map { "$_=$state->{$_}" } sort keys %$state)) };
+    return;
+}
+
+sub _lazy_recheck_move_capability {
+    my ($class, $storeid, $scfg, $volname, $state, $cap) = @_;
+    die "Lazy move capability is absent, expired or from another process\n"
+        if !$cap || $cap->{pid} != $$ || $class->_thick_progress_clock() > $cap->{expires};
+    die "Lazy move target allocation identity changed\n"
+        if sha256_hex(join('|', map { "$_=$state->{$_}" } sort keys %$state)) ne $cap->{anchor_digest};
+    die "Lazy move target is already referenced\n"
+        if @{$class->_thick_pve_reference_files($storeid, $volname)};
+    my $current = $class->_lazy_move_context($storeid, $scfg, $cap->{vmid}, $volname,
+        'activate', $class->_thick_destroy_call_frames());
+    for my $field (qw(source dest newvols lock source_sid source_vol vmid slot bytes)) {
+        die "Lazy move capability context changed at '$field'\n" if $current->{$field} ne $cap->{$field};
+    }
+    die "Lazy move source configuration changed\n"
+        if $class->_lazy_move_source_policy($current) ne $cap->{config_digest};
+    return $cap;
+}
+
+sub _lazy_consume_move_allocation {
+    my ($class, $storeid, $scfg, $volname, $state) = @_;
+    # Consumed before validation/effects: even a failed attempt cannot replay.
+    my $cap = delete $lazy_move_allocation{"$storeid:$volname"};
+    return $class->_lazy_recheck_move_capability($storeid, $scfg, $volname, $state, $cap);
+}
+
 sub _lazy_verify_guest_discard_config {
-    my ($class, $storeid, $volname) = @_;
+    my ($class, $storeid, $volname, $scfg, $state) = @_;
     my $volid = "$storeid:$volname";
     my $matched = 0;
     for my $file (@{$class->_thick_pve_reference_files($storeid, $volname)}) {
@@ -980,6 +1257,8 @@ sub _lazy_verify_guest_discard_config {
         }
         close($fh) or die "closing PVE disk policy '$file' failed: $!\n";
     }
+    return $class->_lazy_consume_move_allocation($storeid, $scfg, $volname, $state)
+        if !$matched && $scfg && $state;
     die "Lazy Thick activation cannot prove an exact PVE disk policy for '$volid'\n"
         if $matched != 1;
     return 1;
@@ -2215,18 +2494,33 @@ sub _thick_activate_volume {
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
+    if ($state->{phase} ne 'MATERIALIZED') {
+        # An asynchronous materializer may pivot the published clone frontend
+        # while a later VM start is verifying it.  Serialize only this
+        # transitional activation with the exact materializer.  After the
+        # bounded wait, discard all pre-lock observations and classify the
+        # anchor and runtime again.
+        return $class->_with_thick_transition_executor_lock(
+            $storeid, $scfg, $volname,
+            sub {
+                my ($locked_state) =
+                    $class->_thick_read_anchor($storeid, $scfg, $volname);
+                return $class->_thick_activate_volume(
+                    $storeid, $scfg, $volname, $snapname, $cache,
+                ) if $locked_state->{phase} eq 'MATERIALIZED';
+                die "thick-generations volume '$storeid:$volname' is materializing and its exact frontend is missing; recovery required\n"
+                    if !$class->_thick_frontend_present($scfg, $volname);
+                $class->_thick_verify_published_transition_frontend(
+                    $storeid, $scfg, $volname, $locked_state,
+                );
+                return 1;
+            },
+        );
+    }
     if ($class->_thick_frontend_present($scfg, $volname)) {
-        if ($state->{phase} eq 'MATERIALIZED') {
-            $class->_thick_verify_frontend($scfg, $volname, $state->{head});
-        } else {
-            $class->_thick_verify_published_transition_frontend(
-                $storeid, $scfg, $volname, $state,
-            );
-        }
+        $class->_thick_verify_frontend($scfg, $volname, $state->{head});
         return 1;
     }
-    die "thick-generations volume '$storeid:$volname' is materializing and its exact frontend is missing; recovery required\n"
-        if $state->{phase} ne 'MATERIALIZED';
     $class->_thick_activate_exact_lvs(
         $scfg, $vg, $device,
         "activating thick-generations state for '$vg/$volname' failed",
@@ -2264,6 +2558,28 @@ sub _lazy_activate_volume {
     );
 }
 
+sub _lazy_require_local_owner {
+    my ($class, $storeid, $volname, $state, $node, $boot) = @_;
+    my $owner_node = $state->{owner_node} // '';
+    my $owner_boot = $state->{owner_boot} // '';
+
+    if ($owner_node ne $node) {
+        die "Unmaterialized Lazy Thick volume '$storeid:$volname' is owned by node "
+            . "'$owner_node' and cannot be activated concurrently on '$node'. "
+            . "For live migration, run 'sharedlvmthin thick-lazy-materialize "
+            . "$storeid $volname' on the active owner while the VM is running, "
+            . "verify completed materialization, then retry the migration. "
+            . "No target activation effect was issued.\n";
+    }
+    if ($owner_boot ne $boot) {
+        die "Unmaterialized Lazy Thick volume '$storeid:$volname' has a stale boot "
+            . "epoch on local node '$node'. Do not materialize or reclaim it blindly; "
+            . "stop and use the documented ownership recovery procedure. "
+            . "No activation effect was issued.\n";
+    }
+    return 1;
+}
+
 sub _lazy_activate_volume_locked {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
@@ -2273,10 +2589,11 @@ sub _lazy_activate_volume_locked {
         $class->_thick_read_anchor($storeid, $scfg, $volname);
     return $class->_thick_activate_volume(
         $storeid, $scfg, $volname, $snapname, $cache,
-    ) if $initial_state->{phase} eq 'MATERIALIZED';
+    ) if $initial_state->{phase} eq 'MATERIALIZED'
+        || ($initial_state->{op} // '') =~ /^(?:SNAPSHOT|ROLLBACK)$/;
     die "Lazy Thick snapshots are unavailable until explicit materialization\n"
         if defined($snapname);
-    $class->_lazy_verify_guest_discard_config($storeid, $volname);
+    my $move_cap = $class->_lazy_verify_guest_discard_config($storeid, $volname, $scfg, $initial_state);
     $class->_assert_no_active_storage_worker($vg);
     my ($node, $boot) = $class->_lazy_local_identity();
     my $owner_epoch = $class->_new_transaction_id();
@@ -2286,16 +2603,20 @@ sub _lazy_activate_volume_locked {
         $class->_require_no_vg_intent($scfg, $vg, $device);
         my ($state, undef, $anchor_name) =
             $class->_thick_read_anchor($storeid, $scfg, $volname);
+        $class->_lazy_recheck_move_capability($storeid, $scfg, $volname, $state, $move_cap)
+            if ref($move_cap) eq 'HASH';
         $anchor = $anchor_name;
         if ($state->{phase} eq 'LAZY_ACTIVE') {
-            die "Lazy Thick volume is owned by another node or boot epoch\n"
-                if $state->{owner_node} ne $node || $state->{owner_boot} ne $boot;
+            $class->_lazy_require_local_owner(
+                $storeid, $volname, $state, $node, $boot,
+            );
             $claimed = $state;
             return;
         }
         if ($state->{phase} eq 'LAZY_CLAIMED') {
-            die "Lazy Thick claimed volume belongs to another node or boot epoch\n"
-                if $state->{owner_node} ne $node || $state->{owner_boot} ne $boot;
+            $class->_lazy_require_local_owner(
+                $storeid, $volname, $state, $node, $boot,
+            );
             $claimed = $state;
             return;
         }
@@ -2468,6 +2789,50 @@ sub _thick_deactivate_volume {
         $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
     my $vg = $scfg->{'slt-vgname'};
     my $mapper = mapper_name($class->_thick_namespace($scfg), $volname);
+    if ($state->{phase} ne 'MATERIALIZED') {
+        # Snapshot materialization may pivot the published frontend between
+        # the anchor read above and exact table verification.  Serialize with
+        # that one per-volume executor, then discard every pre-lock
+        # observation.  This mirrors transitional activation and prevents a
+        # normal guest stop from comparing a post-pivot mapper with a stale
+        # pre-pivot anchor.  If a worker died, acquiring the lock does not
+        # invent completion: the exact surviving transition is verified and
+        # retained for explicit recovery.
+        return $class->_with_thick_transition_executor_lock(
+            $storeid, $scfg, $volname,
+            sub {
+                my ($locked_state) =
+                    $class->_thick_read_anchor($storeid, $scfg, $volname);
+                return $class->_thick_deactivate_volume(
+                    $storeid, $scfg, $volname, $snapname, $cache,
+                ) if $locked_state->{phase} eq 'MATERIALIZED';
+                die "thick-generations volume '$storeid:$volname' is materializing and its exact frontend is missing; recovery required\n"
+                    if !$class->_thick_frontend_present($scfg, $volname);
+                $class->_thick_verify_published_transition_frontend(
+                    $storeid, $scfg, $volname, $locked_state,
+                );
+                my $opens;
+                my $close_timeout = $class->_thick_close_timeout($scfg);
+                my $close_deadline = $class->_thick_progress_clock() + $close_timeout;
+                while (1) {
+                    $opens = $class->_thick_frontend_open_count(
+                        $mapper, $class->_thick_command_deadline($scfg),
+                    );
+                    last if $opens == 0;
+                    last if $class->_thick_progress_clock() >= $close_deadline;
+                    my $remaining = $close_deadline - $class->_thick_progress_clock();
+                    my $pause = $remaining < 0.1 ? $remaining : 0.1;
+                    select(undef, undef, undef, $pause) if $pause > 0;
+                }
+                die "refusing to deactivate open thick-generations frontend '$mapper' after ${close_timeout}s close wait\n"
+                    if $opens != 0;
+                $class->_thick_verify_published_transition_frontend(
+                    $storeid, $scfg, $volname, $locked_state,
+                );
+                return 1;
+            },
+        );
+    }
     if ($class->_thick_frontend_present($scfg, $volname)) {
         if ($state->{phase} eq 'MATERIALIZED') {
             $class->_thick_verify_frontend(
@@ -2547,6 +2912,29 @@ sub _with_lazy_volume_executor_lock {
     return $code->();
 }
 
+sub _with_thick_transition_executor_lock {
+    my ($class, $storeid, $scfg, $volname, $code) = @_;
+    die "invalid Thick transition executor lock callback\n" if ref($code) ne 'CODE';
+    die "invalid Thick transition executor lock identity\n"
+        if !defined($storeid) || $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+        || !defined($volname) || $volname !~ /^(?:vm|base)-\d+-disk-\d+$/;
+    my $timeout = $scfg->{'slt-mutation-admission-timeout'} // 600;
+    die "invalid Thick transition executor lock timeout\n"
+        if $timeout !~ /^\d+$/ || $timeout < 10 || $timeout > 86400;
+    my $lock_path = "/run/lock/pve-sharedlvmthin-thick-transition-$storeid-$volname.lock";
+    sysopen(my $executor_lock, $lock_path, O_CREAT | O_RDWR, 0600)
+        or die "cannot open Thick transition executor lock: $!\n";
+    my $deadline = $class->_thick_progress_clock() + $timeout;
+    while (!flock($executor_lock, LOCK_EX | LOCK_NB)) {
+        die "timed out waiting for the exact Thick transition executor for '$storeid:$volname'; no activation effect was issued\n"
+            if $class->_thick_progress_clock() >= $deadline;
+        select(undef, undef, undef, 0.1);
+    }
+    defined(fcntl($executor_lock, F_SETFD, 0))
+        or die "cannot make Thick transition executor latch child-persistent: $!\n";
+    return $code->();
+}
+
 sub _lazy_deactivate_volume {
     my ($class, $storeid, $scfg, $volname, @rest) = @_;
     return $class->_with_lazy_volume_executor_lock(
@@ -2564,9 +2952,15 @@ sub _lazy_deactivate_volume_locked {
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my ($state, undef, $anchor) =
         $class->_thick_read_anchor($storeid, $scfg, $volname);
+    # A Lazy-default storage alias may reference a v5 object after explicit
+    # materialization.  Snapshot/rollback then use the ordinary Thick v5
+    # transition protocol.  Dispatch by the authenticated on-disk protocol,
+    # not by the alias or only by the final MATERIALIZED phase: otherwise a
+    # normal guest stop during HYDRATING/LINEAR_PIVOTED is misrouted into the
+    # v6 LAZY_ACTIVE teardown path.
     return $class->_thick_deactivate_volume(
         $storeid, $scfg, $volname, $snapname, $cache,
-    ) if $state->{phase} eq 'MATERIALIZED';
+    ) if int($state->{v} // 0) != 6;
     die "Lazy Thick snapshots are unavailable until explicit materialization\n"
         if defined($snapname);
     $class->_assert_no_active_storage_worker($vg);
@@ -2657,6 +3051,18 @@ sub _lazy_deactivate_volume_locked {
         || $fresh_before_close->{metadata_uuid} ne $state->{metadata_uuid};
     run_command(['/sbin/blockdev', '--flushbufs', "/dev/mapper/$front"],
         errmsg => "flushing Lazy Thick frontend '$front' failed");
+
+    # The bounded close wait is an observation window. Re-prove the complete
+    # mapper identities and I/O guards after it, immediately before the first
+    # removal effect, so a replaced mapper incarnation can never inherit an
+    # earlier proof.
+    $class->_lazy_verify_public_io_guard(
+        $scfg, $front, $front_uuid, $front_table,
+    );
+    $class->_lazy_verify_private_io_guard(
+        $scfg, $clone, $clone_uuid, $clone_table,
+    );
+    $class->_lazy_mapper_identity($scfg, $zero, $zero_uuid, $zero_table);
 
     for my $entry (
         [$front, $front_uuid, 'stable frontend'],
@@ -3543,9 +3949,101 @@ sub _verify_vg_failure_domain_inventory {
     return 1;
 }
 
+sub _thick_foreign_intent_admission {
+    my ($class, $storeid, $scfg, $requested_anchor, $previous) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $intent = $class->_read_vg_intent($scfg, $vg, $device);
+    return { action => 'GRANT' } if !defined($intent);
+
+    die "existing VG intent is not an exact foreign Thick transition; mutation refused\n"
+        if ($intent->{state} // '') ne 'OPEN'
+        || ($intent->{op} // '') !~ /^(?:DM_CUTOVER|DM_PIVOT)$/
+        || ($intent->{tx} // '') !~ /^[0-9a-f]{32}$/
+        || ($intent->{object} // '') eq '';
+    die "the requested Thick volume already owns an unresolved transition; implicit retry refused\n"
+        if ($intent->{object} // '') eq $requested_anchor;
+
+    my $cfg = PVE::Storage::config();
+    my $ids = $cfg->{ids};
+    die "PVE storage configuration inventory is unavailable\n"
+        if ref($ids) ne 'HASH';
+    my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+    my ($foreign_sid, $foreign_scfg, $foreign_state, $foreign_vol);
+    for my $sid (sort keys %$ids) {
+        my $candidate = $ids->{$sid};
+        next if ref($candidate) ne 'HASH'
+            || ($candidate->{type} // '') ne 'sharedlvmthin'
+            || ($candidate->{'slt-vgname'} // '') ne $vg;
+        next if ($candidate->{'slt-expected-vg-uuid'} // '') ne
+            ($scfg->{'slt-expected-vg-uuid'} // '');
+        for my $name (sort keys %{$lvs->{$vg}}) {
+            next if $name ne $intent->{object};
+            my $decoded = eval { decode_anchor_tags($lvs->{$vg}->{$name}->{tags} // '') };
+            next if $@ || ref($decoded) ne 'HASH'
+                || ($decoded->{sid} // '') ne $sid;
+            die "foreign Thick intent resolves to more than one storage identity\n"
+                if defined($foreign_sid);
+            ($foreign_sid, $foreign_scfg, $foreign_state, $foreign_vol) =
+                ($sid, $candidate, $decoded, $decoded->{vol});
+        }
+    }
+    die "foreign Thick intent has no exact configured sibling anchor owner\n"
+        if !defined($foreign_sid) || !defined($foreign_vol);
+    $class->_require_thick_identity_config($foreign_sid, $foreign_scfg);
+    die "foreign Thick sibling identity differs from the requesting storage\n"
+        if grep {
+            lc($foreign_scfg->{$_} // '') ne lc($scfg->{$_} // '')
+        } qw(slt-expected-vg-uuid slt-expected-pv-uuid slt-expected-wwid);
+
+    my ($state, undef, $anchor) = $class->_thick_read_anchor(
+        $foreign_sid, $foreign_scfg, $foreign_vol, $lvs,
+    );
+    die "foreign Thick intent anchor identity changed during admission\n"
+        if $anchor ne $intent->{object}
+        || int($state->{v} // 0) != 5
+        || ($state->{tx} // '') ne $intent->{tx};
+    my $operation = $state->{op} // '';
+    my $expected_intent_op = $operation eq 'SNAPSHOT' ? 'DM_CUTOVER'
+        : $operation eq 'ROLLBACK' ? 'DM_PIVOT' : '';
+    die "foreign Thick intent operation does not match its signed anchor\n"
+        if $expected_intent_op eq '' || $intent->{op} ne $expected_intent_op
+        || ($state->{phase} // '') !~ /^(?:PREPARED|SOURCE_READY|COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+
+    # _thick_resume_transition is read-only here.  It proves the exact
+    # generations, metadata LV, source, geometry, tags and transaction rather
+    # than treating a syntactically valid VG tag as waitable evidence.
+    $class->_thick_resume_transition(
+        $foreign_scfg, $foreign_sid, $foreign_vol, $state->{snapshot},
+        $operation, $intent, $lvs, 1,
+    );
+
+    if (defined($previous) && ($previous->{tx} // '') ne $intent->{tx}) {
+        my $old_scfg = $ids->{$previous->{sid}};
+        die "foreign Thick blocker was replaced and its prior owner is unavailable\n"
+            if ref($old_scfg) ne 'HASH';
+        my ($old_state, undef, $old_anchor) = $class->_thick_read_anchor(
+            $previous->{sid}, $old_scfg, $previous->{vol}, $lvs,
+        );
+        die "foreign Thick blocker replacement is not a proven anchor handoff\n"
+            if $old_anchor ne $previous->{anchor}
+            || ($old_state->{tx} // '') ne $previous->{tx}
+            || ($old_state->{phase} // '') !~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED|MATERIALIZED)$/;
+    }
+
+    return {
+        action => 'WAIT_EXACT_FOREIGN',
+        receipt => {
+            tx => $intent->{tx}, op => $intent->{op}, anchor => $anchor,
+            sid => $foreign_sid, vol => $foreign_vol,
+            phase => $state->{phase}, before => $intent->{before},
+        },
+    };
+}
+
 sub _with_vg_lock {
     my ($class, $storeid, $scfg, $code, $device, $acquire_budget,
-        $bridge_admission_bypass) = @_;
+        $bridge_admission_bypass, $admission_classifier) = @_;
     my $lockid = $class->_canonical_vg_lock_id($scfg);
     # Fail immediately when quorum is already absent. The same gate is repeated
     # under the lock because quorum may disappear while the caller waits.
@@ -3562,6 +4060,15 @@ sub _with_vg_lock {
             $class->_require_bridge_admission_compatible(
                 $scfg, $scfg->{'slt-vgname'}, $device,
             ) if !$bridge_admission_bypass;
+            if (defined($admission_classifier)) {
+                die "invalid VG admission classifier\n"
+                    if ref($admission_classifier) ne 'CODE';
+                my $decision = $admission_classifier->();
+                die "VG admission classifier returned an invalid decision\n"
+                    if ref($decision) ne 'HASH'
+                    || ($decision->{action} // '') !~ /^(?:GRANT|WAIT_EXACT_FOREIGN)$/;
+                return $decision if $decision->{action} eq 'WAIT_EXACT_FOREIGN';
+            }
             $class->_assert_no_active_storage_worker($scfg->{'slt-vgname'});
             return $code->();
         },
@@ -4026,6 +4533,7 @@ sub _thick_capacity_gate {
         . "$decision->{free_after_bytes} bytes would cross protected reserve "
         . "$decision->{reserve_bytes} bytes; no LV was created\n"
         if !$decision->{allowed};
+    $decision->{extent_bytes} = int($extent_size);
     return $decision;
 }
 
@@ -4285,6 +4793,7 @@ sub _thick_recover_partial_allocation {
     my $anchor = anchor_name($namespace, $volname);
     my $head = generation_name($namespace, $volname, 0);
     my $key = object_key($namespace, $volname);
+    my $metadata = sprintf('sltg-m-%s-%08d', $key, 0);
     my $mapper = mapper_name($namespace, $volname);
 
     return $class->_with_vg_lock($storeid, $scfg, sub {
@@ -4302,66 +4811,99 @@ sub _thick_recover_partial_allocation {
         } keys %$objects;
         my $anchor_present = exists($objects->{$anchor});
         my $head_present = exists($objects->{$head});
-        die "partial-allocation recovery requires one or both exact signed allocation objects\n"
-            if !@related || grep { $_ ne $anchor && $_ ne $head } @related;
+        my $metadata_present = exists($objects->{$metadata});
+        my $anchor_state = $anchor_present
+            ? decode_anchor_tags($objects->{$anchor}->{tags} // '') : undef;
+        my $lazy = $metadata_present || ($anchor_state && int($anchor_state->{v} // 0) == 6);
+        my %allowed = map { $_ => 1 } ($anchor, $head, ($lazy ? $metadata : ()));
+        die "partial-allocation recovery requires at least one exact signed allocation object\n"
+            if !@related || grep { !$allowed{$_} } @related;
         die "partial-allocation recovery refused: transaction frontend '$mapper' exists\n"
             if _block_device_exists("/dev/mapper/$mapper");
 
         if ($anchor_present) {
-            my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
-            die "partial-allocation anchor does not match the exact OPEN ALLOC transaction\n"
-                if $state->{sid} ne $storeid || $state->{vol} ne $volname
-                || $state->{phase} ne 'PREPARED' || $state->{op} ne 'ALLOC'
-                || $state->{tx} ne $intent->{tx} || $state->{snapshot} ne 'none'
-                || $state->{generation} != 0 || $state->{head} ne $head
-                || $state->{source} ne $head || $state->{old} ne $head
-                || $state->{new} ne $head;
+            my $state = $anchor_state;
+            if ($lazy) {
+                die "partial Lazy allocation anchor does not match the exact OPEN ALLOC transaction\n"
+                    if int($state->{v} // 0) != 6 || $state->{sid} ne $storeid
+                    || $state->{vol} ne $volname || $state->{phase} ne 'LAZY_PREPARED'
+                    || $state->{op} ne 'ALLOC' || $state->{tx} ne $intent->{tx}
+                    || $state->{snapshot} ne 'none' || $state->{generation} != 0
+                    || $state->{head} ne $head || $state->{source} ne $head
+                    || $state->{old} ne $head || $state->{new} ne $head
+                    || $state->{metadata} ne $metadata || $state->{policy} ne 'lazy-zero'
+                    || $state->{publication} != 0 || $state->{owner_node} ne 'none'
+                    || $state->{owner_boot} ne 'none' || $state->{owner_epoch} ne 'none';
+            } else {
+                die "partial-allocation anchor does not match the exact OPEN ALLOC transaction\n"
+                    if $state->{sid} ne $storeid || $state->{vol} ne $volname
+                    || $state->{phase} ne 'PREPARED' || $state->{op} ne 'ALLOC'
+                    || $state->{tx} ne $intent->{tx} || $state->{snapshot} ne 'none'
+                    || $state->{generation} != 0 || $state->{head} ne $head
+                    || $state->{source} ne $head || $state->{old} ne $head
+                    || $state->{new} ne $head;
+            }
         }
-        validate_generation_tags(
-            $objects->{$head}->{tags} // '', sid => $storeid, vol => $volname,
-            role => 'head', generation => 0,
-        ) if $head_present;
+        if ($lazy) {
+            my $data_state = $head_present
+                ? decode_lazy_object_tags($objects->{$head}->{tags} // '') : undef;
+            my $metadata_state = $metadata_present
+                ? decode_lazy_object_tags($objects->{$metadata}->{tags} // '') : undef;
+            die "partial Lazy data object does not match the exact OPEN ALLOC transaction\n"
+                if $data_state && ($data_state->{sid} ne $storeid
+                    || $data_state->{vol} ne $volname || $data_state->{tx} ne $intent->{tx}
+                    || $data_state->{kind} ne 'data');
+            die "partial Lazy metadata object does not match the exact OPEN ALLOC transaction\n"
+                if $metadata_state && ($metadata_state->{sid} ne $storeid
+                    || $metadata_state->{vol} ne $volname
+                    || $metadata_state->{tx} ne $intent->{tx}
+                    || $metadata_state->{kind} ne 'metadata');
+            die "partial Lazy allocation object geometry is inconsistent\n"
+                if $data_state && $metadata_state
+                && $data_state->{region} != $metadata_state->{region};
+            if ($anchor_state) {
+                die "partial Lazy allocation data identity changed\n"
+                    if $head_present && (($objects->{$head}->{lv_uuid} // '') eq ''
+                        || $objects->{$head}->{lv_uuid} ne $anchor_state->{data_uuid}
+                        || $data_state->{bytes} != $anchor_state->{bytes}
+                        || $data_state->{region} != $anchor_state->{region});
+                die "partial Lazy allocation metadata identity changed\n"
+                    if $metadata_present && (($objects->{$metadata}->{lv_uuid} // '') eq ''
+                        || $objects->{$metadata}->{lv_uuid} ne $anchor_state->{metadata_uuid}
+                        || $metadata_state->{region} != $anchor_state->{region});
+            }
+        } else {
+            validate_generation_tags(
+                $objects->{$head}->{tags} // '', sid => $storeid, vol => $volname,
+                role => 'head', generation => 0,
+            ) if $head_present;
+        }
         my $references = $class->_thick_pve_reference_files($storeid, $volname);
         die "partial-allocation recovery refused: PVE still references '$storeid:$volname' in "
             . join(', ', @$references) . "\n" if @$references;
-        for my $object (grep { exists($objects->{$_}) } ($anchor, $head)) {
+        my @remove = $lazy ? ($metadata, $head, $anchor) : ($head, $anchor);
+        my $kernel_inventory = _dm_kernel_inventory($command_timeout);
+        for my $object (grep { exists($objects->{$_}) } @remove) {
             $class->_thick_verify_autoactivation_disabled($scfg, $vg, $object, $device);
-            my $active = _command_lines(
-                ['/usr/bin/timeout', '--foreground', '--kill-after=5s', "${command_timeout}s",
-                    '/sbin/lvs', '--readonly', '--noheadings', '--devices', $device,
-                    '-o', 'lv_attr', "$vg/$object"],
-                "reading partial-allocation LV state '$vg/$object' failed",
-            );
-            die "partial-allocation recovery refused: '$vg/$object' active state is ambiguous\n"
-                if @$active != 1 || $active->[0] !~ /^....([a-]).*$/;
-            if ($1 eq 'a') {
+            my $object_mapper = _thick_lv_mapper_name($vg, $object);
+            if (exists($kernel_inventory->{$object_mapper})) {
                 $class->_thick_deactivate_exact_lvs(
                     $scfg, $vg, $device,
                     "deactivating partial-allocation object '$vg/$object' failed",
                     $object,
                 );
-                my $after = _command_lines(
-                    ['/usr/bin/timeout', '--foreground', '--kill-after=5s', "${command_timeout}s",
-                        '/sbin/lvs', '--readonly', '--noheadings', '--devices', $device,
-                        '-o', 'lv_attr', "$vg/$object"],
-                    "verifying partial-allocation LV state '$vg/$object' failed",
-                );
-                die "partial-allocation recovery refused: '$vg/$object' did not become inactive\n"
-                    if @$after != 1 || $after->[0] !~ /^....-.*$/;
+                $kernel_inventory = _dm_kernel_inventory($command_timeout);
             }
         }
         my $command_error = '';
         eval {
-            run_command(
-                ['/usr/bin/timeout', '--foreground', '--kill-after=5s', "${command_timeout}s",
-                    '/sbin/lvremove', '--devices', $device, '-f', "$vg/$head"],
-                errmsg => "removing partial thick generation '$vg/$head' failed",
-            ) if $head_present;
-            run_command(
-                ['/usr/bin/timeout', '--foreground', '--kill-after=5s', "${command_timeout}s",
-                    '/sbin/lvremove', '--devices', $device, '-f', "$vg/$anchor"],
-                errmsg => "removing partial thick anchor '$vg/$anchor' failed",
-            ) if $anchor_present;
+            for my $object (grep { exists($objects->{$_}) } @remove) {
+                run_command(
+                    ['/usr/bin/timeout', '--foreground', '--kill-after=5s', "${command_timeout}s",
+                        '/sbin/lvremove', '--devices', $device, '-f', "$vg/$object"],
+                    errmsg => "removing partial thick object '$vg/$object' failed",
+                );
+            }
         };
         $command_error = $@ if $@;
         my $after = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
@@ -4371,13 +4913,119 @@ sub _thick_recover_partial_allocation {
         my $after_objects = $after->{$vg} // {};
         die "PARTIAL ALLOCATION CLEANUP: exact objects remain; OPEN ALLOC intent preserved"
             . ($command_error ? ": $command_error" : "\n")
-            if exists($after_objects->{$head}) || exists($after_objects->{$anchor});
+            if grep { exists($after_objects->{$_}) } @remove;
         die "PARTIAL ALLOCATION CLEANUP: removal reported an error after exact objects disappeared; "
             . "OPEN ALLOC intent preserved and no command was retried: $command_error"
             if $command_error;
         $class->_clear_vg_intent($scfg, $vg, %$intent, _device => $device);
         return 'PARTIAL_ALLOCATION_RECOVERED';
     }, $device);
+}
+
+sub _thick_recover_lazy_orphan_allocation {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my (undef, $name) = $class->parse_volname($volname);
+    die "Lazy orphan recovery requires the canonical volume name\n"
+        if $name ne $volname;
+
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $command_timeout = $class->_thick_command_deadline($scfg);
+    my $namespace = $class->_thick_namespace($scfg);
+    my $key = object_key($namespace, $volname);
+    my $anchor = anchor_name($namespace, $volname);
+    my $head = generation_name($namespace, $volname, 0);
+    my $metadata = sprintf('sltg-m-%s-%08d', $key, 0);
+    my $mapper = mapper_name($namespace, $volname);
+
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($scfg, $vg, $device);
+        my $references = $class->_thick_pve_reference_files($storeid, $volname);
+        die "Lazy orphan recovery refused: PVE still references '$storeid:$volname' in "
+            . join(', ', @$references) . "\n" if @$references;
+        die "Lazy orphan recovery refused: frontend '$mapper' exists\n"
+            if _block_device_exists("/dev/mapper/$mapper");
+
+        my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+        die "Lazy orphan recovery inventory is unavailable\n" if !$lvs->{$vg};
+        my $objects = $lvs->{$vg};
+        my @related = sort grep {
+            $_ eq $volname || $_ eq $anchor || /^sltg-(?:g|m)-\Q$key\E-/
+        } keys %$objects;
+        my %allowed = map { $_ => 1 } ($anchor, $head, $metadata);
+        die "Lazy orphan recovery requires exactly one signed generation-zero triple\n"
+            if @related != 3 || scalar(grep { !$allowed{$_} } @related)
+            || scalar(grep { !exists($objects->{$_}) } keys %allowed);
+
+        my $state = decode_anchor_tags($objects->{$anchor}->{tags} // '');
+        die "Lazy orphan anchor is not an exact closed unreferenced allocation\n"
+            if int($state->{v} // 0) != 6 || $state->{sid} ne $storeid
+            || $state->{vol} ne $volname || $state->{phase} ne 'LAZY_DORMANT'
+            || $state->{op} ne 'ALLOC' || $state->{snapshot} ne 'none'
+            || $state->{generation} != 0 || $state->{head} ne $head
+            || $state->{source} ne $head || $state->{old} ne $head
+            || $state->{new} ne $head || $state->{metadata} ne $metadata
+            || $state->{policy} ne 'lazy-zero' || $state->{publication} != 1
+            || $state->{owner_node} ne 'none' || $state->{owner_boot} ne 'none'
+            || $state->{owner_epoch} ne 'none';
+        my $data = decode_lazy_object_tags($objects->{$head}->{tags} // '');
+        my $meta = decode_lazy_object_tags($objects->{$metadata}->{tags} // '');
+        die "Lazy orphan data identity or geometry changed\n"
+            if $data->{sid} ne $storeid || $data->{vol} ne $volname
+            || $data->{tx} ne $state->{tx} || $data->{kind} ne 'data'
+            || $data->{bytes} != $state->{bytes} || $data->{region} != $state->{region}
+            || ($objects->{$head}->{lv_uuid} // '') ne $state->{data_uuid};
+        die "Lazy orphan metadata identity or geometry changed\n"
+            if $meta->{sid} ne $storeid || $meta->{vol} ne $volname
+            || $meta->{tx} ne $state->{tx} || $meta->{kind} ne 'metadata'
+            || $meta->{region} != $state->{region}
+            || ($objects->{$metadata}->{lv_uuid} // '') ne $state->{metadata_uuid};
+
+        my @remove = ($metadata, $head, $anchor);
+        my $kernel_inventory = _dm_kernel_inventory($command_timeout);
+        for my $object (@remove) {
+            $class->_thick_verify_autoactivation_disabled($scfg, $vg, $object, $device);
+            my $object_mapper = _thick_lv_mapper_name($vg, $object);
+            if (exists($kernel_inventory->{$object_mapper})) {
+                $class->_thick_deactivate_exact_lvs(
+                    $scfg, $vg, $device,
+                    "deactivating Lazy orphan '$vg/$object' failed", $object,
+                );
+                $kernel_inventory = _dm_kernel_inventory($command_timeout);
+            }
+        }
+        my $command_error = '';
+        eval {
+            for my $object (@remove) {
+                run_command(
+                    ['/usr/bin/timeout', '--foreground', '--kill-after=5s', "${command_timeout}s",
+                        '/sbin/lvremove', '--devices', $device, '-f', "$vg/$object"],
+                    errmsg => "removing Lazy orphan '$vg/$object' failed",
+                );
+            }
+        };
+        $command_error = $@ if $@;
+        my $after = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+        eval { $class->_verify_storage_identity($storeid, $scfg, $device); };
+        die "LAZY ORPHAN CLEANUP: storage identity could not be revalidated: $@" if $@;
+        my $after_objects = $after->{$vg} // {};
+        die "LAZY ORPHAN CLEANUP: exact objects remain"
+            . ($command_error ? ": $command_error" : "\n")
+            if grep { exists($after_objects->{$_}) } @remove;
+        die "LAZY ORPHAN CLEANUP: removal reported an error after exact objects disappeared; "
+            . "no command was retried: $command_error" if $command_error;
+        return 'LAZY_ORPHAN_ALLOCATION_RECOVERED';
+    }, $device);
+}
+
+sub _thick_recover_orphan_allocation {
+    my ($class, $scfg, $storeid, $volname) = @_;
+    my ($state) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+    return $class->_thick_recover_lazy_orphan_allocation($scfg, $storeid, $volname)
+        if int($state->{v} // 0) == 6 && ($state->{policy} // '') eq 'lazy-zero';
+    $class->_thick_free_image($storeid, $scfg, $volname, 0, 1);
+    return 'ORPHAN_ALLOCATION_RECOVERED';
 }
 
 sub _thick_recover_volume_delete {
@@ -4815,8 +5463,30 @@ sub _lazy_alloc_image {
     die "unsupported format '$fmt'\n" if defined($fmt) && $fmt ne 'raw';
     $class->_require_thick_identity_config($storeid, $scfg);
     $name = $class->find_free_diskname($storeid, $scfg, $vmid) if !$name;
+    # PVE creates an EFI vars disk and activates it before the VM config can
+    # reference the new volume.  An unreferenced Lazy disk may be activated
+    # only by the one-shot Storage Move capability, which EFI creation does
+    # not and must not receive.  EFI is tiny, so route only the exact upstream
+    # OVMF creation callsite through the already-qualified Eager lifecycle.
+    # Do not infer EFI from size or the generated vm-*-disk-* name.
+    if ($class->_lazy_efi_allocation_requires_eager()) {
+        return $class->_thick_alloc_image(
+            $storeid, $scfg, $vmid, $fmt, $name, $size,
+        );
+    }
+    # Lazy materialization is meaningful only for persistent guest disks.
+    # PVE auxiliary RAW objects (RAM/vmstate, fleecing and cloud-init) remain
+    # fully allocated but use the already-qualified Eager initialization path.
+    # This preserves one Thick on-disk format while allowing RAM snapshots on
+    # a Lazy-default storage without exposing a partially materialized vmstate.
+    if ($name =~ /^vm-\Q$vmid\E-(?:state-[A-Za-z0-9][A-Za-z0-9_.-]*|fleece-\d+|cloudinit)$/) {
+        return $class->_thick_alloc_image(
+            $storeid, $scfg, $vmid, $fmt, $name, $size,
+        );
+    }
     die "Lazy Thick supports canonical guest disks only\n"
         if $name !~ /^vm-\Q$vmid\E-disk-\d+$/;
+    my $move_context = $class->_lazy_prepare_move_allocation($storeid, $scfg, $vmid);
     die "invalid Lazy Thick allocation size\n"
         if !defined($size) || $size !~ /^\d+$/ || $size < 1;
 
@@ -4825,14 +5495,29 @@ sub _lazy_alloc_image {
     my $vg = $scfg->{'slt-vgname'};
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my $namespace = $class->_thick_namespace($scfg);
-    my $geometry = $class->_thick_new_geometry($scfg, $bytes);
+    my $geometry;
+    my $allocated_bytes;
     my $tx = $class->_new_transaction_id();
     my ($anchor, $data, $metadata, %intent);
 
     $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_no_vg_intent($scfg, $vg, $device);
+        # Learn the exact VG extent before signing any Lazy object. LVM rounds
+        # small auxiliary-style guest disks (notably EFI disks) to a complete
+        # extent; signing the unrounded PVE request makes our own backing LV
+        # fail identity validation after creation. This first admission is
+        # read-only and preliminary; the second one below includes the exact
+        # rounded data and metadata/anchor consumption before any lvcreate.
+        my $capacity = $class->_thick_capacity_gate(
+            $storeid, $scfg, $size, 0,
+        );
+        my $extent_bytes = $capacity->{extent_bytes};
+        die "Lazy Thick allocation cannot determine the VG extent size\n"
+            if !defined($extent_bytes) || $extent_bytes !~ /^\d+$/ || $extent_bytes < 512;
+        $allocated_bytes = int(($bytes + $extent_bytes - 1) / $extent_bytes) * $extent_bytes;
+        $geometry = $class->_thick_new_geometry($scfg, $allocated_bytes);
         $class->_thick_capacity_gate(
-            $storeid, $scfg, $size,
+            $storeid, $scfg, int(($allocated_bytes + 1023) / 1024),
             $geometry->{metadata_bytes} + 8 * 1024 * 1024,
         );
         my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
@@ -4861,12 +5546,12 @@ sub _lazy_alloc_image {
 
         my $data_tags = lazy_object_tags(
             sid => $storeid, vol => $name, tx => $tx, kind => 'data',
-            bytes => $bytes, region => $geometry->{region_sectors},
+            bytes => $allocated_bytes, region => $geometry->{region_sectors},
         );
         my @data_create = (
             '/sbin/lvcreate', '--yes', '--wipesignatures', 'n',
             '--ignoreactivationskip', '--devices', $device,
-            '-L', "${size}K", '-n', $data,
+            '-L', int($allocated_bytes / 1024) . 'K', '-n', $data,
             '--setactivationskip', 'y', '--setautoactivation', 'n',
         );
         push @data_create, map { ('--addtag', $_) } @$data_tags;
@@ -4875,10 +5560,10 @@ sub _lazy_alloc_image {
             $scfg, $device, \@data_create,
             "creating Lazy Thick data LV '$vg/$data' failed",
             sub { $class->_thick_verify_created_lv_exact(
-                $scfg, $vg, $data, $device, $bytes,
+                $scfg, $vg, $data, $device, $allocated_bytes,
                 sub { validate_lazy_object_tags(
                     $_[0], sid => $storeid, vol => $name, tx => $tx,
-                    kind => 'data', bytes => $bytes,
+                    kind => 'data', bytes => $allocated_bytes,
                     region => $geometry->{region_sectors},
                 ) },
             ) },
@@ -4923,7 +5608,7 @@ sub _lazy_alloc_image {
             snapshot => 'none', source => $data, old => $data,
             new => $data, head => $data, generation => 0,
             region => $geometry->{region_sectors}, policy => 'lazy-zero',
-            bytes => $bytes, metadata => $metadata,
+            bytes => $allocated_bytes, metadata => $metadata,
             data_uuid => $data_info->{lv_uuid},
             metadata_uuid => $metadata_info->{lv_uuid}, zero_source => 'dm-zero',
             publication => 0, owner_node => 'none', owner_boot => 'none',
@@ -4997,6 +5682,7 @@ sub _lazy_alloc_image {
             if $published->{phase} ne 'LAZY_DORMANT'
             || int($published->{publication}) != 1;
         $class->_clear_vg_intent($scfg, $vg, %intent, _device => $device);
+        $class->_lazy_record_move_allocation($storeid, $name, $move_context, $published);
         return;
     }, $device);
     return $name;
@@ -5771,6 +6457,34 @@ sub volume_size_info {
     die "unsupported volume format '$format' for '$storeid:$volname'\n"
         if $format ne 'raw';
 
+    # QemuServer activates a named source snapshot before a full clone, but
+    # its volume_size_info API does not carry the snapshot name.  A Thick
+    # snapshot activation intentionally publishes only the immutable private
+    # generation, not the mutable stable HEAD frontend.  Requiring that
+    # frontend here therefore makes a supported named-snapshot clone fail on
+    # an otherwise healthy, inactive volume.  Read the authenticated
+    # anchor->HEAD inventory instead.  Snapshot copy admission below proves
+    # that the selected snapshot has this exact geometry before PVE can reach
+    # this size call; unequal geometry fails closed before target allocation.
+    if ($class->_is_thick_mode($scfg)) {
+        my ($state, $head) = $class->_thick_read_anchor(
+            $storeid, $scfg, $volname,
+        );
+        if (($state->{phase} // '') ne 'MATERIALIZED') {
+            my $guidance = ($state->{phase} // '') =~ /^(?:LAZY_ACTIVE|LAZY_DORMANT)$/
+                ? "; materialize it first with 'sharedlvmthin thick-lazy-materialize "
+                    . "$storeid $volname' and retry only after the command and "
+                    . "recovery-check both pass"
+                : "; do not retry while the transition result is unresolved";
+            die "thick-generations size is unavailable while '$storeid:$volname' "
+                . "is in phase '$state->{phase}'$guidance\n";
+        }
+        my $size = int($head->{lv_size} // 0);
+        die "thick-generations HEAD size is missing for '$storeid:$volname'\n"
+            if $size <= 0;
+        return wantarray ? ($size, 'raw', 0, undef) : $size;
+    }
+
     my $path = $class->filesystem_path($scfg, $volname);
     my $size;
     my %options = (
@@ -5792,16 +6506,19 @@ sub volume_size_info {
 
 sub activate_storage {
     my ($class, $storeid, $scfg, $cache) = @_;
-    $class->_assert_package_operations_released('storage activation');
+    # This hook is an identity/inventory inspection only.  It must remain
+    # usable while mutation admission is closed so PVE can report storage
+    # health during package/runtime qualification.  Every actual volume or VG
+    # effect is guarded at its own entry point.  A source-contract regression
+    # test rejects effectful commands added to this call graph.
+    $class->_assert_loaded_runtime_identity('storage inspection');
     $class->_require_thick_identity_config($storeid, $scfg)
         if $class->_is_thick_mode($scfg);
 
     my $vg = $scfg->{'slt-vgname'};
-
-    my $vgs = PVE::Storage::LVMPlugin::lvm_vgs();
-
+    my $inventory = $class->_scoped_vg_status($scfg);
     die "shared LVM VG '$vg' not found\n"
-        if !defined($vgs->{$vg});
+        if $inventory->{state} eq 'ABSENT';
 
     $class->_verify_storage_identity($storeid, $scfg);
     $class->_verify_same_vg_alias_configuration($storeid, $scfg);
@@ -5820,17 +6537,8 @@ sub status {
     my ($class, $storeid, $scfg, $cache) = @_;
     $class->_allocation_mode($scfg);
 
-    my $vg = $scfg->{'slt-vgname'};
-
-    my $vgs = PVE::Storage::LVMPlugin::lvm_vgs();
-
-    return if !defined($vgs->{$vg});
-
-    my $info = $vgs->{$vg};
-
-    #
-    # lvm_vgs reports bytes in these fields in current PVE.
-    #
+    my $info = $class->_scoped_vg_status($scfg);
+    return if $info->{state} eq 'ABSENT';
     my $total = $info->{size};
     my $free  = $info->{free};
 
@@ -5839,6 +6547,70 @@ sub status {
     my $used = $total - $free;
 
     return ($total, $free, $used, 1);
+}
+
+sub _scoped_vg_status {
+    my ($class, $scfg) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    die "scoped VG status requires a valid VG name\n"
+        if !defined($vg) || $vg !~ /^[A-Za-z0-9][A-Za-z0-9+_.-]*$/;
+
+    my $deadline = $class->_thick_command_deadline($scfg);
+    my @command = (
+        '/usr/bin/timeout', '--foreground', '--kill-after=5s', "${deadline}s",
+        '/sbin/vgs', '--readonly', '--reportformat', 'json', '--units', 'b',
+        '--nosuffix', '--select', "vg_name=$vg",
+        '-o', 'vg_name,vg_uuid,vg_size,vg_free',
+    );
+    if (defined($scfg->{'slt-expected-wwid'})) {
+        my $wwid = $scfg->{'slt-expected-wwid'};
+        die "scoped VG status requires a valid expected WWID\n"
+            if $wwid !~ /^[0-9A-Fa-f]+$/;
+        push @command, '--devices', "/dev/mapper/$wwid";
+    }
+    my @json;
+    run_command(
+        \@command,
+        outfunc => sub { push @json, $_[0]; },
+        errmsg => "reading scoped status of VG '$vg' failed",
+    );
+    my $report = eval { decode_json(join("\n", @json)) };
+    die "scoped status of VG '$vg' is malformed: $@\n"
+        if $@ || ref($report) ne 'HASH'
+        || ref($report->{report}) ne 'ARRAY' || @{$report->{report}} != 1
+        || ref($report->{report}->[0]->{vg}) ne 'ARRAY';
+    my $rows = $report->{report}->[0]->{vg};
+    return { state => 'ABSENT' } if !@$rows;
+    die "scoped status of VG '$vg' is ambiguous\n" if @$rows != 1;
+    my $row = $rows->[0];
+    die "scoped status of VG '$vg' contains an invalid row\n"
+        if ref($row) ne 'HASH' || ($row->{vg_name} // '') ne $vg
+        || ($row->{vg_uuid} // '') eq '';
+    if (defined($scfg->{'slt-expected-vg-uuid'})) {
+        die "scoped status of VG '$vg' UUID mismatch\n"
+            if $row->{vg_uuid} ne $scfg->{'slt-expected-vg-uuid'};
+    }
+    my @values;
+    for my $field (qw(vg_size vg_free)) {
+        my $value = $row->{$field} // '';
+        die "scoped status of VG '$vg' contains invalid $field\n"
+            if $value !~ /^(\d+)(?:\.0+)?$/;
+        my $integer = $1;
+        $integer =~ s/^0+(?=\d)//;
+        die "scoped status of VG '$vg' contains overflowing $field\n"
+            if length($integer) > 19
+            || (length($integer) == 19 && $integer gt '9223372036854775807');
+        push @values, int($integer);
+    }
+    my ($size, $free) = @values;
+    die "scoped status of VG '$vg' contains impossible capacity\n"
+        if $size <= 0 || $free < 0 || $free > $size;
+    return {
+        state => 'FOUND',
+        size => $size,
+        free => $free,
+        uuid => $row->{vg_uuid},
+    };
 }
 
 sub list_images {
@@ -6541,6 +7313,15 @@ sub _alloc_image_locked {
 sub activate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     $class->_assert_package_operations_released('volume activation');
+    # Lazy is a provisioning default for canonical guest disks, not a second
+    # representation for PVE's short-lived auxiliary RAW objects.  vmstate,
+    # fleecing and cloud-init volumes are allocated fully materialized and must
+    # use the matching Thick activation lifecycle.  Sending one through the
+    # guest-disk-only Lazy executor would reject its identity during snapshot
+    # cleanup and could mask the original QMP result.
+    return $class->_thick_activate_volume($storeid, $scfg, $volname, $snapname, $cache)
+        if $class->_is_lazy_mode($scfg)
+        && $volname =~ /^vm-\d+-(?:state-[A-Za-z0-9][A-Za-z0-9_.-]*|fleece-\d+|cloudinit)$/;
     return $class->_lazy_activate_volume($storeid, $scfg, $volname, $snapname, $cache)
         if $class->_is_lazy_mode($scfg);
     return $class->_thick_activate_volume($storeid, $scfg, $volname, $snapname, $cache)
@@ -6701,6 +7482,9 @@ sub _thin_pool_members {
 
 sub deactivate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
+    return $class->_thick_deactivate_volume($storeid, $scfg, $volname, $snapname, $cache)
+        if $class->_is_lazy_mode($scfg)
+        && $volname =~ /^vm-\d+-(?:state-[A-Za-z0-9][A-Za-z0-9_.-]*|fleece-\d+|cloudinit)$/;
     return $class->_lazy_deactivate_volume($storeid, $scfg, $volname, $snapname, $cache)
         if $class->_is_lazy_mode($scfg);
     return $class->_thick_deactivate_volume($storeid, $scfg, $volname, $snapname, $cache)
@@ -6823,7 +7607,8 @@ sub _deactivate_thin_volume_locked {
 }
 
 sub _thick_resume_transition {
-    my ($class, $scfg, $storeid, $volname, $snap, $operation, $intent, $lvs) = @_;
+    my ($class, $scfg, $storeid, $volname, $snap, $operation, $intent, $lvs,
+        $persistent_only) = @_;
     my $vg = $scfg->{'slt-vgname'};
     my $namespace = $class->_thick_namespace($scfg);
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
@@ -6906,6 +7691,19 @@ sub _thick_resume_transition {
     $class->_thick_verify_autoactivation_disabled($scfg, $vg, $meta, $device)
         if $lvs->{$vg}->{$meta};
     my $source_map = $class->_thick_source_mapper_name($scfg, $volname, $source_gen);
+    my $persistent = {
+        state => $state, anchor => $anchor, old => $old, new => $new,
+        source => $source, source_gen => $source_gen,
+        old_gen => $old_gen, new_gen => $new_gen, meta => $meta,
+        source_map => $source_map, size => int($size), old_size => int($old_size),
+        geometry => $geometry, operation => $operation, snapshot => $snap,
+    };
+    # Admission may inspect a foreign transaction while its owning worker is
+    # changing node-local DM runtime.  Persistent-only proof deliberately
+    # stops before mapper inspection and, crucially, before the resume path is
+    # allowed to advance PREPARED to SOURCE_READY.  It proves the signed
+    # anchor/LV/UUID/tag/geometry graph and nothing more.
+    return $persistent if $persistent_only;
     if ($class->_thick_managed_mapper_present(
         $scfg, $source_map, "SLT-TG3-SOURCE-$intent->{tx}",
         "thick-generations source mapper '$source_map'",
@@ -6937,13 +7735,8 @@ sub _thick_resume_transition {
         );
     }
 
-    return {
-        state => $state, anchor => $anchor, old => $old, new => $new,
-        source => $source, source_gen => $source_gen,
-        old_gen => $old_gen, new_gen => $new_gen, meta => $meta,
-        source_map => $source_map, size => int($size), old_size => int($old_size),
-        geometry => $geometry, operation => $operation, snapshot => $snap,
-    };
+    $persistent->{state} = $state;
+    return $persistent;
 }
 
 sub _thick_reconstruct_missing_transition_runtime {
@@ -7170,7 +7963,14 @@ sub _thick_volume_snapshot {
             if $open != 0;
     }
 
-    $class->_with_vg_lock($storeid, $scfg, sub {
+    my $admission_deadline = $class->_thick_progress_clock()
+        + ($scfg->{'slt-mutation-admission-timeout'} // 600);
+    my ($previous_blocker, $wait_round) = (undef, 0);
+    while (1) {
+    my $remaining = $admission_deadline - $class->_thick_progress_clock();
+    die "timed out waiting for an exact foreign Thick transition; no storage mutation was issued\n"
+        if !$materialize_now && $remaining <= 0;
+    my $decision = $class->_with_vg_lock($storeid, $scfg, sub {
         my $existing_intent = $class->_read_vg_intent($scfg, $vg, $device);
         my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
         my $this_anchor = anchor_name($namespace, $volname);
@@ -7344,7 +8144,32 @@ sub _thick_volume_snapshot {
         };
         $class->_thick_fault_point('C3', $operation, $storeid, $volname);
         return;
-    }, $device);
+    }, $device, ($materialize_now ? undef : int($remaining + 1)), undef,
+        ($materialize_now ? undef : sub {
+            return $class->_thick_foreign_intent_admission(
+                $storeid, $scfg, anchor_name($namespace, $volname),
+                $previous_blocker,
+            );
+        }));
+    last if ref($decision) ne 'HASH'
+        || ($decision->{action} // '') ne 'WAIT_EXACT_FOREIGN';
+    my $receipt = $decision->{receipt};
+    die "foreign Thick admission returned no exact blocker receipt\n"
+        if ref($receipt) ne 'HASH';
+    if (!defined($previous_blocker)
+        || ($previous_blocker->{tx} // '') ne ($receipt->{tx} // '')) {
+        warn "waiting for exact foreign Thick transition tx=$receipt->{tx} "
+            . "storage=$receipt->{sid} volume=$receipt->{vol} phase=$receipt->{phase}; "
+            . "no storage mutation has been issued by this request\n";
+    }
+    $previous_blocker = { %$receipt };
+    $wait_round++;
+    my $pause = 50 + ($wait_round * 25);
+    $pause = 500 if $pause > 500;
+    $pause += int(rand(51));
+    $pause = 1000 if $pause > 1000;
+    $class->_thick_observation_pause($pause);
+    }
 
     $class->_thick_reconstruct_missing_transition_runtime(
         $scfg, $volname, $tr, \%intent,
@@ -7873,9 +8698,385 @@ sub _thick_volume_snapshot {
     return;
 }
 
+# This is a narrowly qualified in-process PVE call contract, not authority from
+# argv, process names, disk ownership, or a persistent bypass flag. Unknown
+# upstream stack/argument shapes refuse referenced-tree deletion.
+sub _thick_destroy_call_frames {
+    my @frames;
+    for my $depth (0 .. 95) {
+        my (@frame, @args);
+        {
+            package DB;
+            @frame = caller($depth);
+            @args = @DB::args;
+        }
+        last if !@frame;
+        push @frames, { sub => $frame[3], args => [@args], package => $frame[0], file => $frame[1] };
+    }
+    die "qmdestroy caller chain exceeds admission budget\n" if @frames == 96;
+    return \@frames;
+}
+
+sub _thick_validate_destroy_frames {
+    my ($class, $storeid, $volname, $frames) = @_;
+    my ($vmid) = $volname =~ /^vm-([1-9][0-9]*)-disk-[0-9]+$/;
+    die "referenced-tree delete requires a canonical VM disk\n" if !$vmid;
+    my @wanted = (__PACKAGE__ . '::free_image', 'PVE::Storage::vdisk_free',
+        'PVE::QemuServer::destroy_vm', 'PVE::AbstractConfig::lock_config_full',
+        'PVE::AbstractConfig::lock_config');
+    my (%found, $previous);
+    for my $name (@wanted) {
+        my @indices = grep { ($frames->[$_]->{sub} // '') eq $name } 0 .. $#$frames;
+        die "unqualified qmdestroy caller chain: '$name'\n"
+            if @indices != 1 || (defined($previous) && $indices[0] <= $previous);
+        $previous = $indices[0];
+        $found{$name} = $frames->[$indices[0]]->{args};
+    }
+    my $free = $found{$wanted[0]};
+    my $disk = $found{$wanted[1]};
+    my $destroy = $found{$wanted[2]};
+    my $full = $found{$wanted[3]};
+    my $lock = $found{$wanted[4]};
+    die "qmdestroy public free_image arguments changed\n"
+        if @$free != 6 || $free->[0] ne __PACKAGE__ || $free->[1] ne $storeid
+        || ref($free->[2]) ne 'HASH' || $free->[3] ne $volname || $free->[4]
+        || ($free->[5] // '') ne 'raw';
+    die "qmdestroy vdisk_free identity changed\n"
+        if @$disk != 2 || ref($disk->[0]) ne 'HASH' || $disk->[1] ne "$storeid:$volname"
+        || ref($disk->[0]->{ids}) ne 'HASH' || !exists($disk->[0]->{ids}->{$storeid})
+        || $disk->[0]->{ids}->{$storeid} ne $free->[2];
+    die "qmdestroy exact non-skiplock destroy contract is absent\n"
+        if @$destroy != 5 || ref($destroy->[0]) ne 'HASH' || $destroy->[0] ne $disk->[0]
+        || $destroy->[1] ne $vmid
+        || $destroy->[2] || ref($destroy->[3]) ne 'HASH'
+        || keys(%{$destroy->[3]}) != 1 || ($destroy->[3]->{lock} // '') ne 'destroyed';
+    die "qmdestroy enclosing VM config lock is absent\n"
+        if @$lock != 3 || $lock->[0] ne 'PVE::QemuConfig' || $lock->[1] ne $vmid
+        || ref($lock->[2]) ne 'CODE';
+    die "qmdestroy full config lock contract changed\n"
+        if @$full != 4 || $full->[0] ne $lock->[0] || $full->[1] ne $vmid
+        || $full->[2] ne '10' || $full->[3] ne $lock->[2];
+    return $vmid;
+}
+
+sub _thick_validate_destroy_config {
+    my ($class, $storeid, $volname, $text, $snapshots) = @_;
+    die "qmdestroy config is empty, oversized or contains binary data\n"
+        if !defined($text) || !length($text) || length($text) > 4 * 1024 * 1024
+        || $text =~ /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+    my ($section, $references) = ('', 0);
+    my (%sections, %keys);
+    my $volid = "$storeid:$volname";
+    for my $line (split(/\n/, $text)) {
+        next if $line =~ /^\s*$/;
+        # Comments containing the identity are intentionally ambiguous too.
+        next if $line =~ /^#/ && index($line, $volid) < 0;
+        if ($line =~ /^\[([^\]]+)\]\s*$/) {
+            $section = $1;
+            die "qmdestroy pending/special/ambiguous section is not admissible\n"
+                if $section eq 'PENDING' || $section =~ /^special:/ || $sections{$section}++;
+            _thick_snapshot_name($section);
+            next;
+        }
+        die "qmdestroy config has an unknown or duplicate field\n"
+            if $line !~ /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*?)\s*$/
+            || $keys{"$section:$1"}++;
+        my ($key, $value) = ($1, $2);
+        die "qmdestroy config contains a lock or unfinished snapshot\n"
+            if $key eq 'lock' || $key eq 'snapstate';
+        die "qmdestroy config is protected or a template\n"
+            if ($key eq 'template' || $key eq 'protection') && $value ne '0';
+        next if index($value, $volid) < 0;
+        die "qmdestroy volume reference has unknown semantics\n"
+            if $key !~ /^(?:(?:ide|sata|scsi|virtio|unused)[0-9]+|efidisk0|tpmstate0)$/
+            || $value !~ /^\Q$volid\E(?:,[^\s]*)?$/ || $value =~ /(?:^|,)media=cdrom(?:,|$)/;
+        die "qmdestroy config references an unsigned snapshot\n"
+            if length($section) && !exists($snapshots->{$section});
+        $references++;
+    }
+    die "qmdestroy scanner/config reference mismatch\n" if !$references;
+    return sha256_hex($text);
+}
+
+sub _thick_owner_reference_text {
+    my ($class, $admission, $refs) = @_;
+    my $path = $admission->{path};
+    die "qmdestroy has foreign or ambiguous PVE references\n" if @$refs != 1
+        || ($refs->[0] ne $path && $refs->[0] ne "/etc/pve/qemu-server/$admission->{vmid}.conf");
+    my @before = lstat($path);
+    die "qmdestroy owner config is missing or unsafe\n"
+        if !@before || !S_ISREG($before[2]);
+    my @reference = stat($refs->[0]);
+    die "qmdestroy reference does not identify the canonical owner config\n"
+        if !@reference || $reference[0] != $before[0] || $reference[1] != $before[1];
+    open(my $fh, '<', $path) or die "opening qmdestroy owner config failed: $!\n";
+    my @opened = stat($fh);
+    die "qmdestroy owner config changed while opening\n"
+        if !@opened || $opened[0] != $before[0] || $opened[1] != $before[1];
+    my $text = '';
+    my $bytes = read($fh, $text, 4 * 1024 * 1024 + 1);
+    die "reading qmdestroy owner config failed\n" if !defined($bytes);
+    close($fh) or die "closing qmdestroy owner config failed: $!\n";
+    my @after = lstat($path);
+    die "qmdestroy owner config changed while reading\n"
+        if !@after || !S_ISREG($after[2]) || $after[0] != $before[0]
+        || $after[1] != $before[1] || $after[7] != $before[7]
+        || $after[9] != $before[9] || $bytes != $after[7];
+    return $text;
+}
+
+sub _thick_destroy_reference_digest {
+    my ($class, $storeid, $volname, $admission, $refs) = @_;
+    return $class->_thick_validate_destroy_config($storeid, $volname,
+        $class->_thick_owner_reference_text($admission, $refs), $admission->{snapshots});
+}
+
+sub _thick_tree_delete_admission {
+    my ($class, $storeid, $volname, $plan) = @_;
+    my $refs = $class->_thick_pve_reference_files($storeid, $volname);
+    return undef if !@$refs;
+    my $vmid = $class->_thick_validate_destroy_frames(
+        $storeid, $volname, $class->_thick_destroy_call_frames());
+    my $node = $class->_thin_local_node();
+    die "qmdestroy local node is ambiguous\n" if $node !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+    my $admission = { vmid => $vmid, path => "/etc/pve/nodes/$node/qemu-server/$vmid.conf",
+        snapshots => { %{$plan->{snapshots}} } };
+    $admission->{digest} = $class->_thick_destroy_reference_digest($storeid, $volname, $admission, $refs);
+    return $admission;
+}
+
+sub _thick_assert_tree_references {
+    my ($class, $storeid, $volname, $admission) = @_;
+    my $refs = $class->_thick_pve_reference_files($storeid, $volname);
+    if ($admission) {
+        $class->_thick_validate_destroy_frames($storeid, $volname, $class->_thick_destroy_call_frames());
+        die "qmdestroy owner config changed during tree deletion\n"
+            if $class->_thick_destroy_reference_digest($storeid, $volname, $admission, $refs)
+                ne $admission->{digest};
+    } else {
+        die "Thick tree removal refused: PVE still references '$storeid:$volname'\n" if @$refs;
+    }
+    return;
+}
+
+sub _thick_tree_plan {
+    my ($class, $storeid, $scfg, $volname, $lvs) = @_;
+    my ($state, undef, $anchor) = $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+    my $namespace = $class->_thick_namespace($scfg);
+    my $key = object_key($namespace, $volname);
+    my $objects = $lvs->{$scfg->{'slt-vgname'}} // {};
+    my (%entries, %snapshots, %uuids);
+    for my $name (sort keys %$objects) {
+        my $info = $objects->{$name};
+        my $tags = $info->{tags} // '';
+        my $named = $name =~ /^sltg-[A-Za-z]+-\Q$key\E(?:-|$)/;
+        my $tagged = $tags =~ /(?:^|,)slt_[^,=]*_sid=\Q$storeid\E(?:,|$)/
+            && $tags =~ /(?:^|,)slt_[^,=]*_vol=\Q$volname\E(?:,|$)/;
+        next if !$named && !$tagged;
+        die "Thick tree contains transition metadata or an unexpected owned object '$name'\n"
+            if $name ne $anchor && $name !~ /^sltg-g-\Q$key\E-\d{8}$/;
+        my $uuid = $info->{lv_uuid} // '';
+        (my $normalized = $uuid) =~ s/-//g;
+        die "Thick tree has ambiguous LV identity for '$name'\n"
+            if $uuid !~ /^[A-Za-z0-9-]+$/ || !$normalized || $uuids{$normalized}++;
+        die "Thick tree has invalid size for '$name'\n"
+            if ($info->{lv_size} // '') !~ /^[1-9][0-9]*$/;
+        $entries{$name} = { uuid => $uuid, bytes => $info->{lv_size}, tags => $tags };
+        next if $name eq $anchor || $name eq $state->{head};
+        my $owned = decode_generation_tags($tags);
+        die "Thick tree has ambiguous snapshot ownership for '$name'\n"
+            if $owned->{sid} ne $storeid || $owned->{vol} ne $volname
+            || $owned->{role} ne 'snapshot'
+            || generation_name($namespace, $volname, $owned->{generation}) ne $name;
+        my $snap = _thick_snapshot_name($owned->{snapshot});
+        die "Thick tree has duplicate snapshot name '$snap'\n" if exists($snapshots{$snap});
+        $snapshots{$snap} = $name;
+    }
+    die "Thick tree is missing its exact anchor or HEAD\n"
+        if !$entries{$anchor} || !$entries{$state->{head}};
+    die "Thick tree exceeds automatic removal budget; use explicit recovery\n"
+        if keys(%snapshots) > 32;
+    return { anchor => $anchor, head => $state->{head}, generation => $state->{generation},
+        entries => \%entries, snapshots => \%snapshots };
+}
+
+# A complete kernel inventory, not /dev symlink absence. No activation or
+# remote shell interpolation is used; names/UUIDs are compared locally.
+sub _thick_tree_kernel_rows {
+    my ($class, $ssh) = @_;
+    my @command = (@{$ssh // []}, '/usr/bin/env', 'LC_ALL=C', '/sbin/dmsetup',
+        'info', '-c', '--noheadings', '--separator=:', '-o', 'name,uuid,open');
+    my (@rows, @errors);
+    run_command(\@command, timeout => 5,
+        outfunc => sub { push @rows, $_[0]; die "oversized Thick tree kernel inventory\n" if @rows > 8192; },
+        errfunc => sub { push @errors, $_[0]; });
+    die "Thick tree kernel inventory has diagnostics\n" if @errors;
+    return [] if @rows == 1 && $rows[0] =~ /^\s*No devices found\s*$/;
+    my (%names, @parsed);
+    for my $line (@rows) {
+        my @fields = split(/:/, $line, -1);
+        s/^\s+|\s+$//g for @fields;
+        die "malformed Thick tree kernel inventory\n"
+            if @fields != 3 || $fields[0] !~ /^[A-Za-z0-9_.+-]+$/
+            || $fields[1] !~ /^[A-Za-z0-9_.+-]*$/ || $fields[2] !~ /^\d+$/
+            || $names{$fields[0]}++;
+        push @parsed, \@fields;
+    }
+    return \@parsed;
+}
+
+sub _thick_tree_check_kernel_rows {
+    my ($class, $scfg, $volname, $plan, $rows, $remote) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    (my $vg_uuid = $scfg->{'slt-expected-vg-uuid'}) =~ s/-//g;
+    my (%expected, %uuid_names);
+    for my $name (keys %{$plan->{entries}}) {
+        (my $dm = "$vg/$name") =~ s/-/--/g;
+        $dm =~ s{/}{-};
+        (my $uuid = $plan->{entries}->{$name}->{uuid}) =~ s/-//g;
+        $expected{$dm} = "LVM-$vg_uuid$uuid";
+    }
+    my $front = mapper_name($class->_thick_namespace($scfg), $volname);
+    $expected{$front} = 'SLT-TG2-' . object_key($class->_thick_namespace($scfg), $volname);
+    $uuid_names{$expected{$_}} = $_ for keys %expected;
+    my %observed;
+    for my $row (@$rows) {
+        my ($name, $uuid, $opens) = @$row;
+        next if !exists($expected{$name}) && !exists($uuid_names{$uuid});
+        die "Thick tree mapper identity conflict on '$name'\n"
+            if !exists($expected{$name}) || $expected{$name} ne $uuid || exists($observed{$name});
+        die "Thick tree is still mapped on a peer\n" if $remote;
+        $observed{$name} = $opens;
+    }
+    if (exists($observed{$front})) {
+        die "Thick tree HEAD has an open frontend\n" if $observed{$front} != 0;
+        $class->_thick_verify_frontend($scfg, $volname, $plan->{head});
+    }
+    (my $head_dm = "$vg/$plan->{head}") =~ s/-/--/g;
+    $head_dm =~ s{/}{-};
+    for my $name (keys %observed) {
+        next if $name eq $front;
+        my $expected_opens = $name eq $head_dm && exists($observed{$front}) ? 1 : 0;
+        die "Thick tree has an open or ambiguous backing '$name'\n"
+            if $observed{$name} != $expected_opens;
+    }
+    return 1;
+}
+
+sub _thick_tree_peer_absence {
+    my ($class, $scfg, $volname, $plan) = @_;
+    return 1 if !$scfg->{shared};
+    PVE::Cluster::cfs_update();
+    my $members = PVE::Cluster::get_members();
+    my $nodes = PVE::Cluster::get_nodelist();
+    my $local = $class->_thin_local_node();
+    die "Thick tree cluster coverage is unavailable\n"
+        if ref($members) ne 'HASH' || ref($nodes) ne 'ARRAY' || !@$nodes || @$nodes > 16;
+    my %seen;
+    my $deadline = $class->_thick_progress_clock() + 60;
+    for my $node (sort @$nodes) {
+        die "Thick tree cluster node identity is ambiguous\n"
+            if $node !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/ || $seen{$node}++;
+        next if $node eq $local;
+        my $member = $members->{$node};
+        die "Thick tree peer '$node' is offline or unknown\n"
+            if ref($member) ne 'HASH' || !$member->{online}
+            || ($member->{ip} // '') !~ /^[A-Fa-f0-9:.]+$/;
+        die "Thick tree peer proof exceeded its observation budget\n"
+            if $class->_thick_progress_clock() >= $deadline;
+        my $ssh = PVE::SSHInfo::ssh_info_to_command(
+            { name => $node, ip => $member->{ip} }, '-o', 'BatchMode=yes',
+            '-o', 'ConnectTimeout=3', '-o', 'NumberOfPasswordPrompts=0');
+        push @$ssh, '--';
+        $class->_thick_tree_check_kernel_rows($scfg, $volname, $plan,
+            $class->_thick_tree_kernel_rows($ssh), 1);
+    }
+    die "Thick tree local node is absent from configured membership\n" if !$seen{$local};
+    return 1;
+}
+
+sub _thick_remove_unreferenced_tree_locked {
+    my ($class, $storeid, $scfg, $volname, $lvs) = @_;
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $plan = $class->_thick_tree_plan($storeid, $scfg, $volname, $lvs);
+    my $admission = $class->_thick_tree_delete_admission($storeid, $volname, $plan);
+    my %remaining = %{$plan->{entries}};
+    my $check = sub {
+        $class->_verify_mutation_quorum($storeid, $scfg);
+        $class->_verify_storage_identity($storeid, $scfg, $device);
+        $class->_require_no_vg_intent($scfg, $vg, $device);
+        $class->_assert_no_active_storage_worker($vg);
+        $class->_thick_assert_tree_references($storeid, $volname, $admission);
+        my $current = $class->_thick_tree_plan($storeid, $scfg, $volname,
+            $class->_thick_list_volumes_scoped($scfg, $vg, $device));
+        die "Thick tree membership or HEAD changed during removal\n"
+            if $current->{head} ne $plan->{head} || $current->{anchor} ne $plan->{anchor}
+            || $current->{generation} != $plan->{generation}
+            || join('|', sort keys %remaining) ne join('|', sort keys %{$current->{entries}});
+        for my $name (keys %remaining) {
+            my $now = $current->{entries}->{$name};
+            my $before = $remaining{$name};
+            die "Thick tree object identity changed for '$name'\n"
+                if $now->{uuid} ne $before->{uuid} || $now->{bytes} != $before->{bytes}
+                || ($name ne $plan->{anchor} && $now->{tags} ne $before->{tags});
+            $class->_thick_verify_autoactivation_disabled($scfg, $vg, $name, $device);
+        }
+        for my $name (values %{$current->{snapshots}}) {
+            $class->_thick_verify_snapshot_readonly($scfg, $vg, $name, $device);
+        }
+        $class->_thick_tree_check_kernel_rows($scfg, $volname, $current,
+            $class->_thick_tree_kernel_rows(), 0);
+        return $current;
+    };
+    # Every object, including HEAD and the LAST snapshot, is checked before
+    # the first REMOVE_SNAPSHOT intent. Remote UNKNOWN is never absence.
+    my $current = $check->();
+    $class->_thick_tree_peer_absence($scfg, $volname, $current);
+    for my $snap (sort { $plan->{snapshots}->{$a} cmp $plan->{snapshots}->{$b} }
+        keys %{$plan->{snapshots}}) {
+        $check->();
+        $class->_thick_volume_snapshot_delete_locked($scfg, $storeid, $volname, $snap, 1, $admission);
+        delete $remaining{$plan->{snapshots}->{$snap}};
+    }
+    $check->();
+    return $admission;
+}
+
 sub _thick_free_image {
+    my ($class, $storeid, $scfg, $volname, $isBase, $orphan_alloc, $orphan_tree) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        $class->_require_no_vg_intent($scfg, $vg, $device);
+        my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+        my $admission;
+        my $key = object_key($class->_thick_namespace($scfg), $volname);
+        my @generations = grep { /^sltg-g-\Q$key\E-\d{8}$/ } keys %{$lvs->{$vg} // {}};
+        my @related = grep {
+            my $tags = $lvs->{$vg}->{$_}->{tags} // '';
+            /^sltg-[A-Za-z]+-\Q$key\E(?:-|$)/
+                || ($tags =~ /(?:^|,)slt_[^,=]*_sid=\Q$storeid\E(?:,|$)/
+                    && $tags =~ /(?:^|,)slt_[^,=]*_vol=\Q$volname\E(?:,|$)/)
+        } keys %{$lvs->{$vg} // {}};
+        if ((@generations > 1 || @related > 2) && !$orphan_alloc && !$orphan_tree) {
+            die "automatic Thick tree removal refuses base volumes\n" if $isBase;
+            $admission = $class->_thick_remove_unreferenced_tree_locked($storeid, $scfg, $volname, $lvs);
+            $lvs = undef;
+            $orphan_tree = 1;
+        }
+        return $class->_thick_free_image_single_locked(
+            $storeid, $scfg, $volname, $isBase, $orphan_alloc, $orphan_tree, $lvs, $admission,
+        );
+    }, $device);
+}
+
+# Caller owns the canonical VG lock for the complete tree operation. Never
+# re-enter the public wrappers from here: PVE storage locks are not recursive.
+sub _thick_free_image_single_locked {
     my ($class, $storeid, $scfg, $volname, $isBase, $require_orphan_alloc,
-        $require_orphan_tree) = @_;
+        $require_orphan_tree, $initial_lvs, $admission) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
 
     my $vg = $scfg->{'slt-vgname'};
@@ -7884,9 +9085,9 @@ sub _thick_free_image {
     my $namespace = $class->_thick_namespace($scfg);
     my $mapper = mapper_name($namespace, $volname);
 
-    return $class->_with_vg_lock($storeid, $scfg, sub {
+    {
         $class->_require_no_vg_intent($scfg, $vg, $device);
-        my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+        my $lvs = $initial_lvs // $class->_thick_list_volumes_scoped($scfg, $vg, $device);
         die "thick-generations storage '$storeid' is unavailable: VG '$vg' is not visible\n"
             if !$lvs->{$vg};
 
@@ -7898,9 +9099,7 @@ sub _thick_free_image {
                 || $state->{snapshot} ne 'none';
             die "orphan-allocation recovery requires generation zero\n"
                 if $require_orphan_alloc && $state->{generation} != 0;
-            my $references = $class->_thick_pve_reference_files($storeid, $volname);
-            die "orphan recovery refused: PVE still references '$storeid:$volname' in "
-                . join(', ', @$references) . "\n" if @$references;
+            $class->_thick_assert_tree_references($storeid, $volname, $admission);
         }
         my $head = $state->{head};
         my $key = object_key($namespace, $volname);
@@ -7998,28 +9197,66 @@ sub _thick_free_image {
             if $command_error;
         $class->_clear_vg_intent($scfg, $vg, %intent, _device => $device);
         return undef;
-    }, $device);
+    }
 }
 
 sub _lazy_free_image {
+    my ($class, $storeid, $scfg, $volname, $isBase) = @_;
+    return $class->_with_lazy_volume_executor_lock(
+        $storeid, $volname,
+        sub { $class->_lazy_free_image_locked(
+            $storeid, $scfg, $volname, $isBase,
+        ) },
+    );
+}
+
+sub _lazy_free_image_locked {
     my ($class, $storeid, $scfg, $volname, $isBase) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my ($zero, $clone, $front) = $class->_lazy_runtime_names($scfg, $volname);
-    my $materialized = $class->_with_vg_lock($storeid, $scfg, sub {
+    my $initial_pair = $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_no_vg_intent($scfg, $vg, $device);
-        my ($state) = $class->_thick_read_anchor($storeid, $scfg, $volname);
-        return $state->{phase} eq 'MATERIALIZED' ? 1 : 0;
+        my ($state, undef, $anchor) =
+            $class->_thick_read_anchor($storeid, $scfg, $volname);
+        return [{ %$state }, $anchor];
     }, $device);
+    my ($initial, $initial_anchor) = @$initial_pair;
     return $class->_thick_free_image($storeid, $scfg, $volname, $isBase)
-        if $materialized;
+        if $initial->{phase} eq 'MATERIALIZED';
+
+    if ($initial->{phase} eq 'LAZY_ACTIVE') {
+        # PVE can activate a stopped Lazy disk before a later operation is
+        # refused. Reuse the exact normal close lifecycle while the same
+        # per-volume executor latch remains held; it proves local ownership,
+        # the complete graph and zero frontend opens before any removal.
+        $class->_lazy_deactivate_volume_locked(
+            $storeid, $scfg, $volname, undef, undef,
+        );
+    } elsif ($initial->{phase} ne 'LAZY_DORMANT') {
+        die "Lazy Thick delete requires local LAZY_ACTIVE or closed LAZY_DORMANT; "
+            . "found '$initial->{phase}'\n";
+    }
+
     return $class->_with_vg_lock($storeid, $scfg, sub {
         $class->_require_no_vg_intent($scfg, $vg, $device);
         my ($state, undef, $anchor) =
             $class->_thick_read_anchor($storeid, $scfg, $volname);
+        die "Lazy Thick delete anchor identity changed before removal\n"
+            if $anchor ne $initial_anchor;
+        for my $field (qw(v tx head metadata data_uuid metadata_uuid bytes region)) {
+            my $before = defined($initial->{$field}) ? "$initial->{$field}" : '';
+            my $after = defined($state->{$field}) ? "$state->{$field}" : '';
+            die "Lazy Thick delete object identity changed at '$field' before removal\n"
+                if $before ne $after;
+        }
         die "Lazy Thick delete requires a closed LAZY_DORMANT volume\n"
             if $state->{phase} ne 'LAZY_DORMANT';
+        die "Lazy Thick delete found residual owner authority\n"
+            if ($state->{owner_node} // '') ne 'none'
+            || ($state->{owner_boot} // '') ne 'none'
+            || ($state->{owner_epoch} // '') ne 'none';
         for my $mapper ($front, $clone, $zero) {
             $class->_thick_verify_mapper_absent(
                 $scfg, $mapper,
@@ -8072,6 +9309,14 @@ sub _lazy_free_image {
 sub free_image {
     my ($class, $storeid, $scfg, $volname, $isBase) = @_;
     $class->_assert_package_operations_released('volume removal');
+
+    # Auxiliary objects on a Lazy-default storage are deliberately allocated
+    # as fully materialized Thick objects.  Their teardown must therefore use
+    # the matching Thick path and must not enter the guest-disk-only Lazy
+    # executor namespace.
+    return $class->_thick_free_image($storeid, $scfg, $volname, $isBase)
+        if $class->_is_lazy_mode($scfg)
+        && $volname =~ /^vm-\d+-(?:state-[A-Za-z0-9][A-Za-z0-9_.-]*|fleece-\d+|cloudinit)$/;
 
     return $class->_lazy_free_image($storeid, $scfg, $volname, $isBase)
         if $class->_is_lazy_mode($scfg);
@@ -8806,15 +10051,17 @@ sub volume_snapshot_delete {
     $class->_assert_package_operations_released('snapshot removal');
 
     if ($class->_is_lazy_mode($scfg)) {
+        my ($state) = $class->_thick_read_anchor($storeid, $scfg, $volname);
         return $class->_lazy_integration_pending('snapshot delete')
-            if !$class->_lazy_materialized($storeid, $scfg, $volname);
-        return $class->_thick_volume_snapshot_delete(
-            $scfg, $storeid, $volname, $snap,
-        );
+            if int($state->{v} // 0) == 6
+            && ($state->{phase} // '') ne 'MATERIALIZED';
+        # A v5 snapshot transition may exist under a Lazy-default alias after
+        # that disk converged to ordinary Thick.  Let the exact waiter below
+        # observe that one transaction instead of misclassifying it as v6.
     }
 
     return $class->_thick_volume_snapshot_delete($scfg, $storeid, $volname, $snap)
-        if $class->_allocation_mode($scfg) eq 'thick-generations';
+        if $class->_is_thick_mode($scfg);
 
     return $class->_with_mutation_lock($storeid, $scfg, sub {
         return $class->_volume_snapshot_delete_locked(
@@ -8823,27 +10070,147 @@ sub volume_snapshot_delete {
     });
 }
 
+sub _thick_wait_snapshot_delete_admission {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    $snap = _thick_snapshot_name($snap);
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $budget = $scfg->{'slt-mutation-admission-timeout'} // 600;
+    die "invalid snapshot-delete admission timeout\n"
+        if $budget !~ /^\d+$/ || $budget < 10 || $budget > 86400;
+    my $deadline = $class->_thick_progress_clock() + $budget;
+    my $delay_ms = 250;
+    my $pinned;
+
+    while (1) {
+        $class->_verify_mutation_quorum($storeid, $scfg);
+        $class->_verify_storage_identity($storeid, $scfg, $device);
+        my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+        my ($state, undef, $anchor) =
+            $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
+        my $anchor_info = $lvs->{$vg}->{$anchor}
+            // die "snapshot-delete admission anchor disappeared\n";
+        my $anchor_uuid = $anchor_info->{lv_uuid} // '';
+        die "snapshot-delete admission anchor UUID is unavailable\n"
+            if $anchor_uuid eq '';
+
+        if (($state->{phase} // '') eq 'MATERIALIZED') {
+            my ($snapshot, $generation, $snapshot_info) = $class->_thick_find_snapshot(
+                $storeid, $scfg, $volname, $snap, $lvs,
+            );
+            my $snapshot_uuid = $snapshot_info->{lv_uuid} // '';
+            die "snapshot-delete admission snapshot UUID is unavailable\n"
+                if $snapshot_uuid eq '';
+            my $receipt = {
+                anchor => $anchor, anchor_uuid => $anchor_uuid,
+                tx => $state->{tx}, head => $state->{head},
+                generation => int($state->{generation}),
+                snapshot => $snapshot, snapshot_generation => int($generation),
+                snapshot_uuid => $snapshot_uuid,
+            };
+            if ($pinned) {
+                die "snapshot-delete admission transaction changed while waiting\n"
+                    if $receipt->{anchor} ne $pinned->{anchor}
+                    || $receipt->{anchor_uuid} ne $pinned->{anchor_uuid}
+                    || $receipt->{tx} ne $pinned->{tx}
+                    || $receipt->{head} ne $pinned->{new}
+                    || $receipt->{generation} != $pinned->{generation};
+            }
+            return $receipt;
+        }
+
+        return $class->_lazy_integration_pending('snapshot delete')
+            if int($state->{v} // 0) == 6;
+        die "snapshot delete requires a materialized Thick HEAD; state is not an exact snapshot transition\n"
+            if ($state->{phase} // '') !~ /^(?:COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/
+            || ($state->{op} // '') ne 'SNAPSHOT'
+            || ($state->{snapshot} // '') ne $snap
+            || ($state->{tx} // '') !~ /^[0-9a-f]{32}$/
+            || ($state->{new} // '') eq ''
+            || ($state->{head} // '') ne $state->{new};
+        my $current = {
+            anchor => $anchor, anchor_uuid => $anchor_uuid,
+            tx => $state->{tx}, old => $state->{old}, new => $state->{new},
+            generation => int($state->{generation}), snapshot => $state->{snapshot},
+        };
+        if ($pinned) {
+            for my $field (qw(anchor anchor_uuid tx old new generation snapshot)) {
+                die "snapshot-delete admission identity changed while waiting\n"
+                    if $current->{$field} ne $pinned->{$field};
+            }
+        } else {
+            $pinned = $current;
+            warn "waiting for exact Thick snapshot transition '$pinned->{tx}' before deleting '$storeid:$volname\@$snap'; no delete effect started\n";
+        }
+
+        die "snapshot-delete admission timed out while the exact snapshot transition remained incomplete; no delete effect started\n"
+            if $class->_thick_progress_clock() >= $deadline;
+        my $remaining_ms = int(($deadline - $class->_thick_progress_clock()) * 1000);
+        my $wait_ms = $delay_ms < $remaining_ms ? $delay_ms : $remaining_ms;
+        die "snapshot-delete admission timed out; no delete effect started\n"
+            if $wait_ms < 1;
+        # Observation only.  Do not hold the VG or transition-executor lock:
+        # the already-running materializer needs both in executor->VG order.
+        $class->_thick_observation_pause($wait_ms);
+        $delay_ms *= 2 if $delay_ms < 1000;
+    }
+}
+
 sub _thick_volume_snapshot_delete {
     my ($class, $scfg, $storeid, $volname, $snap, $require_orphan) = @_;
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $admission = $class->_thick_wait_snapshot_delete_admission(
+        $scfg, $storeid, $volname, $snap,
+    );
+    return $class->_with_vg_lock($storeid, $scfg, sub {
+        return $class->_thick_volume_snapshot_delete_locked(
+            $scfg, $storeid, $volname, $snap, $require_orphan, undef, $admission,
+        );
+    }, $device);
+}
+
+sub _thick_volume_snapshot_delete_locked {
+    my ($class, $scfg, $storeid, $volname, $snap, $require_orphan,
+        $tree_admission, $snapshot_admission) = @_;
     $snap = _thick_snapshot_name($snap);
     $class->_require_thick_identity_config($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     my $command_timeout = $class->_thick_command_deadline($scfg);
 
-    return $class->_with_vg_lock($storeid, $scfg, sub {
+    {
         $class->_require_no_vg_intent($scfg, $vg, $device);
         my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
         my ($state, undef, $anchor) =
             $class->_thick_anchor($storeid, $scfg, $volname, $lvs);
+        my $anchor_info = $lvs->{$vg}->{$anchor}
+            // die "snapshot-delete anchor disappeared after admission\n";
         if ($require_orphan) {
-            my $references = $class->_thick_pve_reference_files($storeid, $volname);
-            die "orphan-tree recovery refused: PVE still references '$storeid:$volname' in "
-                . join(', ', @$references) . "\n" if @$references;
+            $class->_thick_assert_tree_references($storeid, $volname, $tree_admission);
         }
-        my ($snapshot, $generation) = $class->_thick_find_snapshot(
+        my ($snapshot, $generation, $snapshot_info) = $class->_thick_find_snapshot(
             $storeid, $scfg, $volname, $snap, $lvs,
         );
+        $snapshot_admission //= {
+            anchor => $anchor, anchor_uuid => ($anchor_info->{lv_uuid} // ''),
+            tx => $state->{tx}, head => $state->{head},
+            generation => int($state->{generation}),
+            snapshot => $snapshot, snapshot_generation => int($generation),
+            snapshot_uuid => ($snapshot_info->{lv_uuid} // ''),
+        } if $require_orphan;
+        die "snapshot-delete admission changed before the VG-locked delete\n"
+            if !$snapshot_admission
+            || $anchor ne $snapshot_admission->{anchor}
+            || ($anchor_info->{lv_uuid} // '') ne $snapshot_admission->{anchor_uuid}
+            || $state->{tx} ne $snapshot_admission->{tx}
+            || $state->{head} ne $snapshot_admission->{head}
+            || int($state->{generation}) != $snapshot_admission->{generation};
+        die "snapshot-delete snapshot identity changed after admission\n"
+            if $snapshot ne $snapshot_admission->{snapshot}
+            || int($generation) != $snapshot_admission->{snapshot_generation}
+            || ($snapshot_info->{lv_uuid} // '') ne $snapshot_admission->{snapshot_uuid};
         die "refusing to delete authoritative HEAD as a snapshot\n"
             if $snapshot eq $state->{head};
         $class->_thick_verify_snapshot_readonly($scfg, $vg, $snapshot, $device);
@@ -8918,7 +10285,7 @@ sub _thick_volume_snapshot_delete {
         $class->_clear_vg_intent($scfg, $vg, %intent, _device => $device);
         $class->_thick_fault_point('D4', 'REMOVE_SNAPSHOT', $storeid, $volname);
         return;
-    }, $device);
+    }
 }
 
 sub _thick_recover_orphan_tree {
@@ -9277,11 +10644,107 @@ sub _volume_snapshot_rollback_locked {
     return;
 }
 
+sub _thick_wait_rollback_admission {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    $snap = _thick_snapshot_name($snap);
+    $class->_require_thick_identity_config($storeid, $scfg);
+    my $vg = $scfg->{'slt-vgname'};
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $budget = $scfg->{'slt-mutation-admission-timeout'} // 600;
+    die "invalid rollback admission timeout\n"
+        if $budget !~ /^\d+$/ || $budget < 10 || $budget > 86400;
+    my $deadline = $class->_thick_progress_clock() + $budget;
+    my $delay_ms = 250;
+    my $pinned;
+
+    while (1) {
+        $class->_verify_mutation_quorum($storeid, $scfg);
+        $class->_verify_storage_identity($storeid, $scfg, $device);
+        my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+        my ($state, undef, $anchor) =
+            $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
+        my $anchor_info = $lvs->{$vg}->{$anchor}
+            // die "rollback admission anchor disappeared\n";
+        my $anchor_uuid = $anchor_info->{lv_uuid} // '';
+        die "rollback admission anchor UUID is unavailable\n"
+            if $anchor_uuid eq '';
+        my (undef, $target_generation, $target_info) =
+            $class->_thick_find_snapshot(
+                $storeid, $scfg, $volname, $snap, $lvs,
+            );
+        my $target_uuid = $target_info->{lv_uuid} // '';
+        die "rollback admission target snapshot UUID is unavailable\n"
+            if $target_uuid eq '';
+
+        if (($state->{phase} // '') eq 'MATERIALIZED') {
+            if ($pinned) {
+                die "rollback admission transaction changed while waiting\n"
+                    if $anchor ne $pinned->{anchor}
+                    || $anchor_uuid ne $pinned->{anchor_uuid}
+                    || ($state->{tx} // '') ne $pinned->{tx}
+                    || ($state->{head} // '') ne $pinned->{new}
+                    || int($state->{generation} // -1) != $pinned->{generation}
+                    || int($target_generation) != $pinned->{target_generation}
+                    || $target_uuid ne $pinned->{target_uuid};
+            }
+            return 1;
+        }
+
+        return $class->_lazy_integration_pending('snapshot rollback')
+            if int($state->{v} // 0) == 6;
+        die "snapshot rollback requires a materialized Thick HEAD; state is not an exact snapshot transition. The guest was not stopped\n"
+            if ($state->{phase} // '') !~ /^(?:COMMITTED|HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/
+            || ($state->{op} // '') ne 'SNAPSHOT'
+            || ($state->{tx} // '') !~ /^[0-9a-f]{32}$/
+            || ($state->{old} // '') eq ''
+            || ($state->{new} // '') eq ''
+            || ($state->{head} // '') ne $state->{new};
+        my $current = {
+            anchor => $anchor, anchor_uuid => $anchor_uuid,
+            tx => $state->{tx}, old => $state->{old}, new => $state->{new},
+            generation => int($state->{generation}),
+            transition_snapshot => ($state->{snapshot} // ''),
+            target_generation => int($target_generation),
+            target_uuid => $target_uuid,
+        };
+        if ($pinned) {
+            for my $field (qw(anchor anchor_uuid tx old new generation transition_snapshot target_generation target_uuid)) {
+                die "rollback admission identity changed while waiting\n"
+                    if $current->{$field} ne $pinned->{$field};
+            }
+        } else {
+            $pinned = $current;
+            warn "waiting for exact Thick snapshot transition '$pinned->{tx}' before rollback of '$storeid:$volname' to '$snap'; no guest stop or rollback effect started\n";
+        }
+
+        die "rollback admission timed out while the exact snapshot transition remained incomplete; the guest was not stopped\n"
+            if $class->_thick_progress_clock() >= $deadline;
+        my $remaining_ms = int(($deadline - $class->_thick_progress_clock()) * 1000);
+        my $wait_ms = $delay_ms < $remaining_ms ? $delay_ms : $remaining_ms;
+        die "rollback admission timed out; the guest was not stopped\n"
+            if $wait_ms < 1;
+        # Read-only observation outside VG and transition-executor locks.  The
+        # already-running materializer needs both in executor->VG order.
+        $class->_thick_observation_pause($wait_ms);
+        $delay_ms *= 2 if $delay_ms < 1000;
+    }
+}
+
 sub volume_rollback_is_possible {
-    my ($class, $scfg) = @_;
-    # PVE does not pass a volume identity to this advisory callback.  A Lazy
-    # alias may contain both v6 clone-backed and converged v5 volumes, so the
-    # mutating rollback hook performs the authoritative per-volume check.
+    my ($class, $scfg, $storeid, $volname, $snap, $blockers) = @_;
+
+    # AbstractConfig invokes this public storage hook before it stops a running
+    # guest.  Refuse a Thick rollback here when the exact HEAD/snapshot pair is
+    # not ready, avoiding a needless availability loss.  The mutating callback
+    # repeats all authoritative checks while holding its normal locks; this
+    # read-only preflight is deliberately not treated as a TOCTOU-proof grant.
+    if ($class->_is_thick_mode($scfg)) {
+        $class->_assert_package_operations_released('snapshot rollback preflight');
+        $class->_thick_wait_rollback_admission(
+            $scfg, $storeid, $volname, $snap,
+        );
+    }
+
     return 1;
 }
 
@@ -9324,6 +10787,39 @@ sub volume_has_feature {
             current => 1,
         },
     };
+
+    # Upstream clone_disk() asks volume_size_info() without the selected
+    # snapshot name, then copies from filesystem_path(..., $snapname).  This
+    # is safe only when the immutable snapshot and current materialized HEAD
+    # have identical geometry.  Prove that invariant from one device-scoped
+    # LVM inventory.  Any missing/ambiguous/transitional state is simply an
+    # unsupported feature result, so QemuServer refuses before allocating a
+    # destination volume.
+    if ($feature eq 'copy' && defined($snapname) && $class->_is_thick_mode($scfg)) {
+        my $supported = eval {
+            $class->_require_thick_identity_config($storeid, $scfg);
+            my $vg = $scfg->{'slt-vgname'};
+            my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+            $class->_verify_storage_identity($storeid, $scfg, $device);
+            my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
+            my ($state, $head) = $class->_thick_read_anchor(
+                $storeid, $scfg, $volname, $lvs,
+            );
+            die "snapshot copy requires a materialized Thick HEAD\n"
+                if ($state->{phase} // '') ne 'MATERIALIZED';
+            my (undef, undef, $snapshot) = $class->_thick_find_snapshot(
+                $storeid, $scfg, $volname, $snapname, $lvs,
+            );
+            my $head_size = int($head->{lv_size} // 0);
+            my $snapshot_size = int($snapshot->{lv_size} // 0);
+            die "snapshot copy geometry is missing\n"
+                if $head_size <= 0 || $snapshot_size <= 0;
+            die "snapshot copy geometry differs from the current HEAD\n"
+                if $head_size != $snapshot_size;
+            1;
+        };
+        return undef if !$supported;
+    }
 
     my ($vtype, $name, $vmid, $basename, $basevmid, $isBase)
         = $class->parse_volname($volname);

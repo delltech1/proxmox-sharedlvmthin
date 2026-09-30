@@ -50,8 +50,11 @@ my ($storeid, $volname, $snapshot, $operation, $transaction) =
         : @ARGV;
 die "invalid storage identifier\n"
     if !defined($storeid) || $storeid !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+my $guest_volume = defined($volname) && $volname =~ /^(?:vm|base)-\d+-disk-\d+$/;
+my $auxiliary_volume = defined($volname)
+    && $volname =~ /^vm-\d+-(?:state-[A-Za-z0-9][A-Za-z0-9_.-]*|fleece-\d+|cloudinit)$/;
 die "invalid Thick Generations volume name\n"
-    if !defined($volname) || $volname !~ /^(?:vm|base)-\d+-disk-\d+$/;
+    if !$guest_volume && !(($recover_orphan_alloc || $recover_volume_delete) && $auxiliary_volume);
 
 my $cfg = PVE::Storage::config();
 my $scfg = PVE::Storage::storage_config($cfg, $storeid);
@@ -136,8 +139,8 @@ if ($recover_partial_alloc) {
 
 if ($recover_orphan_alloc) {
     print "ORPHAN_ALLOCATION_RECOVERY_START storage=$storeid volume=$volname\n";
-    $class->_thick_free_image($storeid, $scfg, $volname, 0, 1);
-    print "ORPHAN_ALLOCATION_RECOVERED storage=$storeid volume=$volname\n";
+    my $result = $class->_thick_recover_orphan_allocation($scfg, $storeid, $volname);
+    print "$result storage=$storeid volume=$volname\n";
     exit 0;
 }
 
@@ -249,34 +252,40 @@ print "MATERIALIZATION_START transaction=$transaction storage=$storeid volume=$v
 my $wait_limit = $scfg->{'slt-tg-hydration-timeout'} // 3600;
 $wait_limit = 3600 if $wait_limit !~ /^\d+$/ || $wait_limit < 60 || $wait_limit > 86400;
 my $wait_deadline = time() + $wait_limit;
-while (1) {
-    my $complete = eval {
-        $class->_thick_volume_snapshot(
-            $scfg, $storeid, $volname, $snapshot, $operation, 1, $transaction,
-        );
-        1;
-    };
-    last if $complete;
-    my $error = $@ || "unknown materialization worker failure\n";
-    # A normal multi-disk PVE snapshot can queue several transaction workers
-    # for one VG while the next disk is still being zeroed.  The admission
-    # failure below is proven to occur before this worker's next effect.  Wait
-    # and re-enter the idempotent transaction by exact signed identity instead
-    # of failing permanently or starting a concurrent second worker.
-    die $error
-        if $error !~ /active storage mutation worker still targets VG/;
-    my ($waiting) = $class->_thick_read_anchor($storeid, $scfg, $volname);
-    die "queued materialization identity changed while waiting for VG admission\n"
-        if ($waiting->{tx} // '') ne $transaction
-        || ($waiting->{op} // '') ne $operation
-        || ($waiting->{snapshot} // '') ne $snapshot
-        || ($waiting->{phase} // '')
-            !~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
-    die "queued materialization exceeded its bounded VG-admission wait; exact transition remains recoverable: $error"
-        if time() >= $wait_deadline;
-    print "MATERIALIZATION_WAIT transaction=$transaction reason=VG_BUSY retry_sec=5\n";
-    sleep 5;
-}
+$class->_with_thick_transition_executor_lock(
+    $storeid, $scfg, $volname,
+    sub {
+        while (1) {
+            my $complete = eval {
+                $class->_thick_volume_snapshot(
+                    $scfg, $storeid, $volname, $snapshot, $operation, 1, $transaction,
+                );
+                1;
+            };
+            last if $complete;
+            my $error = $@ || "unknown materialization worker failure\n";
+            # A normal multi-disk PVE snapshot can queue several transaction workers
+            # for one VG while the next disk is still being zeroed.  The admission
+            # failure below is proven to occur before this worker's next effect.  Wait
+            # and re-enter the idempotent transaction by exact signed identity instead
+            # of failing permanently or starting a concurrent second worker.
+            die $error
+                if $error !~ /active storage mutation worker still targets VG/;
+            my ($waiting) = $class->_thick_read_anchor($storeid, $scfg, $volname);
+            die "queued materialization identity changed while waiting for VG admission\n"
+                if ($waiting->{tx} // '') ne $transaction
+                || ($waiting->{op} // '') ne $operation
+                || ($waiting->{snapshot} // '') ne $snapshot
+                || ($waiting->{phase} // '')
+                    !~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/;
+            die "queued materialization exceeded its bounded VG-admission wait; exact transition remains recoverable: $error"
+                if time() >= $wait_deadline;
+            print "MATERIALIZATION_WAIT transaction=$transaction reason=VG_BUSY retry_sec=5\n";
+            sleep 5;
+        }
+        return 1;
+    },
+);
 print "MATERIALIZATION_COMPLETE transaction=$transaction storage=$storeid volume=$volname\n";
 
 exit 0;

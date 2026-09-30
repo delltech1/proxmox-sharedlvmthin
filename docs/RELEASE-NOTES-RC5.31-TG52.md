@@ -52,6 +52,15 @@ This evidence is not universal certification. It does not establish safety
 for untested arrays, firmware, kernels, LVM/device-mapper versions, multipath
 policies, topologies, scale, workloads or failure orderings.
 
+The exact component versions and qualification scope are maintained in the
+[compatibility matrix](compatibility.md). The original TG52 SAN lifecycle
+qualification used `libpve-storage-perl 9.1.10`, `qemu-server 9.2.7`,
+`pve-qemu-kvm 11.0.3-3`, kernel `7.0.14-16-pve` and the recorded API 15
+PVE/common package tuple. Newer versions are not made compatible merely by
+installing successfully. In particular, storage 9.1.11 and qemu-server 9.2.10
+must be treated as one upstream-coupled pair and require the targeted gate
+listed in the compatibility document.
+
 Read [installation](installation.md), [known issues](known-issues.md),
 [compatibility](compatibility.md), and the
 [risk and support boundary](RISK-AND-SUPPORT-BOUNDARY.md) before use.

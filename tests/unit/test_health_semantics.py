@@ -1034,6 +1034,12 @@ class ThickAnchorReferenceTests(unittest.TestCase):
         )
         namespace = {
             "re": re,
+            "exact_efi_backing_size": lambda declared, authoritative, extent: (
+                all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                    for value in (declared, authoritative, extent))
+                and declared == 528 * 1024
+                and authoritative == ((declared + extent - 1) // extent) * extent
+            ),
             "pve_volume_reference_files": lambda volid: [
                 f"config-{index}" for index in range(counts.get(volid, 0))
             ],
@@ -1071,6 +1077,26 @@ class ThickAnchorReferenceTests(unittest.TestCase):
             result[0]["materialization_state"], "RECOVERY_REQUIRED"
         )
         self.assertIn("differs from authoritative HEAD", result[0]["reason"])
+
+    def test_exact_efi_geometry_accepts_only_extent_rounded_backing(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-2": 1})
+        base = {
+            "name": "sltg-a-key", "volume": "vm-100-disk-2",
+            "phase": "MATERIALIZED", "head_size_bytes": 4 * 2**20,
+        }
+        indexes = {
+            "reference_index": {"thick:vm-100-disk-2": ["config"]},
+            "current_size_index": {
+                "thick:vm-100-disk-2": [("config", 528 * 1024, "efi")]
+            },
+        }
+        result = evaluate("thick", [base], vg_extent_size=4 * 2**20, **indexes)
+        self.assertEqual(result[0]["status"], "PASS")
+        self.assertIn("logical EFI geometry", result[0]["reason"])
+        for extent, size in ((None, 4 * 2**20), (4 * 2**20, 8 * 2**20)):
+            candidate = dict(base, head_size_bytes=size)
+            failed = evaluate("thick", [candidate], vg_extent_size=extent, **indexes)
+            self.assertEqual(failed[0]["status"], "FAIL")
 
     def test_detached_unused_reference_does_not_require_declared_size(self):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})

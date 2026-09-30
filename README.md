@@ -87,6 +87,25 @@ implementation uses standard Proxmox orchestration and Linux LVM,
 device-mapper and multipath components—without proprietary SAN integration,
 third-party kernel modules or an external locking service.
 
+Lazy Thick has an additional migration boundary. An unmaterialized running
+Lazy disk has persistent dm-clone metadata owned by one node/boot epoch and
+cannot overlap activation on a second kernel. Before online migration, run the
+read-only check and follow every reported materialization command:
+
+```text
+sharedlvmthin migration-preflight <vmid> <target-node> --online
+sharedlvmthin thick-lazy-materialize <storage-id> <volume>
+sharedlvmthin migration-preflight <vmid> <target-node> --online
+qm migrate <vmid> <target-node> --online 1
+```
+
+Materialization runs on the active source while the VM remains running. A
+materialized Lazy disk then uses the ordinary Thick linear/live-migration
+contract. A stopped `LAZY_DORMANT` disk has a separately guarded offline
+handoff. The plugin cannot safely inject automatic source materialization into
+the current PVE shared-volume migration lifecycle, so target activation remains
+the authoritative fail-closed backstop if the preflight is skipped.
+
 The SAN LUN remains shared and visible to every participating node. The plugin
 does not use array snapshots, move LUNs between hosts, configure the SAN,
 replace fencing or quorum, or make simultaneous writable activation safe.
@@ -96,8 +115,8 @@ probably do not need this project.
 
 ## Release status
 
-`RC5.31 TG52` (`0.9.0~rc5.31~tg52`) is the current experimental release
-candidate. It is intended exclusively for disposable Proxmox VE 9 labs with
+`RC5.77 TG53` (`0.9.0~rc5.77~tg53`) is the current experimental candidate.
+It is intended exclusively for disposable Proxmox VE 9 labs with
 disposable storage and guest data. Both Thin and Thick Generations remain
 experimental, unsupported and without warranty.
 
@@ -110,17 +129,30 @@ package-replacement gates, and expanded upgrade/reboot compatibility checks.
 Eager and Lazy aliases may share one dedicated Thick VG. Thin must use a
 different dedicated VG.
 
-The final source candidate passed 1,962 Python tests (one intentional skip),
-the 12 root-only package-replacement tests, and 1,224 Perl tests. Both package
+The final source candidate passed 2,162 Python tests (one declared skip) and
+1,278 Perl tests across 30 files. Both package
 profiles were built reproducibly, inspected for forbidden/private content,
 and compared for shared-payload parity. The same executable lineage previously
 passed a rolling DUAL-package upgrade and controlled reboot with Eager, Lazy
-and Thin guest lifecycle checks; the TG52 public-byte candidate has an offline
-package gate only. These results apply only to the recorded disposable lab
+and Thin guest lifecycle checks. The exact TG53 DUAL candidate was installed
+through the supported profile gate on three SAN nodes; named-RAM-snapshot
+clone and two-format/two-disk import checks then passed. These results apply
+only to the recorded disposable lab
 envelope; they are not production certification or proof for every SAN,
 kernel, firmware, topology, workload or failure sequence.
 
-See the [RC5.31 TG52 release notes](docs/RELEASE-NOTES-RC5.31-TG52.md),
+The exact PVE package tuples and the scope tested on each are recorded in the
+[compatibility matrix](docs/compatibility.md). Do not infer compatibility from
+`PVE 9.2.x`, APIVER alone, successful package installation or a version range.
+Minor Proxmox updates can change storage, QEMU, restore or kernel semantics.
+Unlisted relevant tuples require a reviewed contract check and, when the
+changed path can mutate or carry guest data, targeted disposable-lab
+regression before cluster rollout.
+
+See the [RC5.77 TG53 release notes](docs/RELEASE-NOTES-RC5.77-TG53.md),
+the previous [RC5.75 TG53 release notes](docs/RELEASE-NOTES-RC5.75-TG53.md),
+the previous [RC5.74 TG53 release notes](docs/RELEASE-NOTES-RC5.74-TG53.md),
+the previous [RC5.31 TG52 release notes](docs/RELEASE-NOTES-RC5.31-TG52.md),
 the historical [TG31+fix2 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX2.md),
 [TG31+fix1 hotfix notes](docs/RELEASE-NOTES-RC5.10-TG31-FIX1.md),
 [installation guide](docs/installation.md), [TG31 development notes](docs/RELEASE-NOTES-RC5.10-TG31.md), the
@@ -222,10 +254,10 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 ```bash
 sha256sum --check SHA256SUMS
 # DUAL profile: experimental Thin + Thick Generations
-apt install './pve-sharedlvmthin_0.9.0.rc5.31.tg52_all.deb'
+apt install './pve-sharedlvmthin_0.9.0~rc5.77~tg53_all.deb'
 
 # OR Thick-only profile: experimental Thick Generations only
-apt install './pve-sharedlvmthin-thick_0.9.0.rc5.31.tg52_all.deb'
+apt install './pve-sharedlvmthin-thick_0.9.0~rc5.77~tg53_all.deb'
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -242,7 +274,7 @@ Run the read-only gate first, then replace one node at a time:
 
 ```bash
 sharedlvmthin upgrade-check
-apt install './pve-sharedlvmthin_0.9.0.rc5.31.tg52_all.deb'
+apt install './pve-sharedlvmthin_0.9.0~rc5.77~tg53_all.deb'
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```
@@ -291,7 +323,7 @@ the [Thick-only package boundary](docs/thick-only-package.md). A CI artifact is
 only a build candidate, not a published or qualified release.
 
 Use separate VGs for Thin and Thick storage. Eager and Lazy Thick aliases may
-share the Thick VG because both reserve their full capacity. TG52 rejects a
+share the Thick VG because both reserve their full capacity. TG53 rejects a
 same-VG Thin+Thick topology in both package profiles. The parser retains the
 retired `mixed` token only so a rolling cluster can read old remote config;
 preinstall and every runtime operation reject it. The Thick-only package

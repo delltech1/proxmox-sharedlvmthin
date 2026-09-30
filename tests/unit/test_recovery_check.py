@@ -87,6 +87,50 @@ sharedlvmthin: two
         finally:
             Path(path).unlink()
 
+    def test_pve_config_lock_gate_matches_only_managed_guests(self):
+        contents = {
+            "/100.conf": "lock: rollback\nscsi0: test:vm-100-disk-0,size=1G\n",
+            "/101.conf": "lock: backup\nscsi0: other:vm-101-disk-0,size=1G\n",
+            "/102.conf": (
+                "scsi0: test:vm-102-disk-0,size=1G\n"
+                "[snap]\nlock: rollback\n"
+            ),
+        }
+
+        def fake_open(path, **kwargs):
+            return StringIO(contents[path])
+
+        with mock.patch.object(
+            self.checker.glob, "glob", side_effect=lambda pattern: list(contents)
+        ), mock.patch("builtins.open", side_effect=fake_open):
+            status, failures = self.checker.pve_config_lock_health({"test"})
+        self.assertEqual(status, "FAIL")
+        self.assertEqual(len(failures), 1)
+        self.assertIn("/100.conf", failures[0])
+        self.assertIn("rollback", failures[0])
+
+    def test_pve_config_lock_gate_rejects_malformed_or_unreadable_evidence(self):
+        contents = {
+            "/empty.conf": "lock:\nscsi0: test:vm-100-disk-0\n",
+            "/duplicate.conf": (
+                "lock: backup\nlock: migrate\nscsi0: test:vm-101-disk-0\n"
+            ),
+        }
+
+        def fake_open(path, **kwargs):
+            if path == "/unreadable.conf":
+                raise OSError("synthetic read failure")
+            return StringIO(contents[path])
+
+        paths = [*contents, "/unreadable.conf"]
+        with mock.patch.object(
+            self.checker.glob, "glob", side_effect=lambda pattern: paths
+        ), mock.patch("builtins.open", side_effect=fake_open):
+            status, failures = self.checker.pve_config_lock_health({"test"})
+        self.assertEqual(status, "FAIL")
+        self.assertEqual(len(failures), 3)
+        self.assertTrue(any("unreadable" in item for item in failures))
+
     @staticmethod
     def thick_cfg(sid, mode, **updates):
         cfg = {
@@ -148,6 +192,26 @@ sharedlvmthin: two
             {"eager", "lazy"},
         )
         self.assertTrue(ok, failures)
+
+    def test_materialized_vmstate_anchor_accepts_one_snapshot_reference(self):
+        vol = "vm-100-state-ram-snapshot"
+        name, tags = self.anchor(vol=vol)
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line(vol=vol)}"
+        ok, _, failures = self.checker.thick_anchor_health(
+            output, "test", "vg-uuid", lambda owner, name: ["ref"],
+            lambda owner, name: [("ref", None, "auxiliary")], {"test"},
+        )
+        self.assertTrue(ok, failures)
+
+    def test_disk_anchor_never_accepts_auxiliary_reference_role(self):
+        name, tags = self.anchor()
+        output = f"{name}|-wi------k|||{tags}\n{self.head_line()}"
+        ok, _, failures = self.checker.thick_anchor_health(
+            output, "test", "vg-uuid", lambda owner, vol: ["ref"],
+            lambda owner, vol: [("ref", None, "auxiliary")], {"test"},
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("size is unavailable" in item for item in failures))
 
     def test_closed_lazy_dormant_anchor_and_owned_objects_are_healthy(self):
         sid = "lazy"
@@ -339,7 +403,7 @@ sharedlvmthin: two
 
     def test_transient_dstate_requires_and_passes_bounded_recheck(self):
         samples = [
-            ("FAIL", ["pid=42 evidence=lvs testvg"], []),
+            ("FAIL", ["pid=42 evidence=ppid=7 starttime=100 lvs testvg"], []),
             ("PASS", [], []),
         ]
         with mock.patch.object(
@@ -351,12 +415,31 @@ sharedlvmthin: two
         sleep.assert_called_once_with(self.checker.DSTATE_CONFIRM_SECONDS)
 
     def test_persistent_dstate_remains_fail_closed(self):
-        sample = ("FAIL", ["pid=42 evidence=lvs testvg"], [])
+        sample = ("FAIL", ["pid=42 evidence=ppid=7 starttime=100 lvs testvg"], [])
         with mock.patch.object(
             self.checker, "dstate_evidence", side_effect=[sample, sample]
         ), mock.patch.object(self.checker.time, "sleep"):
             result = self.checker.settled_dstate_evidence(["testvg"])
         self.assertEqual(result, ("FAIL", sample[1], [], 0))
+
+    def test_rotating_transient_dstate_is_not_false_persistence(self):
+        samples = [
+            ("UNKNOWN", [], ["pid=42 evidence=ppid=7 starttime=100 pvs vg-a"]),
+            ("UNKNOWN", [], ["pid=43 evidence=ppid=7 starttime=200 pvs vg-b"]),
+        ]
+        with mock.patch.object(
+            self.checker, "dstate_evidence", side_effect=samples
+        ), mock.patch.object(self.checker.time, "sleep"):
+            result = self.checker.settled_dstate_evidence(["testvg"])
+        self.assertEqual(result, ("PASS", [], [], 2))
+
+    def test_dstate_without_stable_identity_remains_unknown(self):
+        sample = ("UNKNOWN", [], ["pid=42 evidence=identity unavailable"])
+        with mock.patch.object(
+            self.checker, "dstate_evidence", side_effect=[sample, sample]
+        ), mock.patch.object(self.checker.time, "sleep"):
+            result = self.checker.settled_dstate_evidence(["testvg"])
+        self.assertEqual(result, ("UNKNOWN", [], sample[2], 0))
 
     def test_exact_zeroout_worker_is_rejected_regardless_of_state(self):
         with tempfile.TemporaryDirectory() as root:
@@ -450,6 +533,98 @@ sharedlvmthin: two
         self.assertEqual(
             result,
             [("/etc/pve/nodes/n/qemu-server/100.conf", 4 * 2**30, "attached")],
+        )
+
+    def test_vmstate_snapshot_section_is_authoritative_auxiliary_reference(self):
+        contents = (
+            "scsi0: test:vm-100-disk-0,size=4G\n"
+            "[ram-snapshot]\n"
+            "vmstate: test:vm-100-state-ram-snapshot\n"
+        )
+        fake = mock.mock_open(read_data=contents)
+        with mock.patch.object(
+            self.checker.glob, "glob",
+            side_effect=lambda pattern: ["/etc/pve/nodes/n/qemu-server/100.conf"],
+        ), mock.patch("builtins.open", fake):
+            _references, current = self.checker.pve_reference_inventory("test")
+        self.assertEqual(
+            current["vm-100-state-ram-snapshot"],
+            [("/etc/pve/nodes/n/qemu-server/100.conf", None, "auxiliary")],
+        )
+
+    def test_vmstate_inventory_covers_multiple_snapshots_and_suspend(self):
+        contents = (
+            "vmstate: test:vm-100-state-suspend\n"
+            "[ram-one]\n"
+            "vmstate: test:vm-100-state-ram-one\n"
+            "[ram-two]\n"
+            "vmstate: test:vm-100-state-ram-two\n"
+        )
+        fake = mock.mock_open(read_data=contents)
+        path = "/etc/pve/nodes/n/qemu-server/100.conf"
+        with mock.patch.object(
+            self.checker.glob, "glob", side_effect=lambda pattern: [path]
+        ), mock.patch("builtins.open", fake):
+            _references, current = self.checker.pve_reference_inventory("test")
+        self.assertEqual(
+            set(current),
+            {
+                "vm-100-state-suspend",
+                "vm-100-state-ram-one",
+                "vm-100-state-ram-two",
+            },
+        )
+        self.assertTrue(all(
+            entries == [(path, None, "auxiliary")]
+            for entries in current.values()
+        ))
+
+    def test_vmstate_inventory_rejects_wrong_vmid_and_non_scalar_schema(self):
+        contents = (
+            "vmstate: test:vm-200-state-wrong-owner\n"
+            "[bad-alias]\n"
+            "vmstate: file=test:vm-100-state-file-alias\n"
+            "[bad-properties]\n"
+            "vmstate: test:vm-100-state-extra,size=1G\n"
+            "description: vmstate: test:vm-100-state-description-only\n"
+        )
+        fake = mock.mock_open(read_data=contents)
+        with mock.patch.object(
+            self.checker.glob, "glob",
+            side_effect=lambda pattern: [
+                "/etc/pve/nodes/n/qemu-server/100.conf"
+            ],
+        ), mock.patch("builtins.open", fake):
+            _references, current = self.checker.pve_reference_inventory("test")
+        self.assertEqual(
+            {name: entries[0][2] for name, entries in current.items()},
+            {
+                "vm-200-state-wrong-owner": "invalid",
+                "vm-100-state-file-alias": "invalid",
+                "vm-100-state-extra": "invalid",
+            },
+        )
+        self.assertNotIn("vm-100-state-description-only", current)
+
+    def test_duplicate_vmstate_reference_is_not_silently_deduplicated(self):
+        contents = (
+            "[ram-one]\n"
+            "vmstate: test:vm-100-state-shared\n"
+            "[ram-two]\n"
+            "vmstate: test:vm-100-state-shared\n"
+        )
+        fake = mock.mock_open(read_data=contents)
+        with mock.patch.object(
+            self.checker.glob, "glob",
+            side_effect=lambda pattern: [
+                "/etc/pve/nodes/n/qemu-server/100.conf"
+            ],
+        ), mock.patch("builtins.open", fake):
+            _references, current = self.checker.pve_reference_inventory("test")
+        self.assertEqual(len(current["vm-100-state-shared"]), 2)
+        self.assertEqual(
+            [entry[2] for entry in current["vm-100-state-shared"]],
+            ["auxiliary", "auxiliary"],
         )
 
     def test_current_reference_rejects_description_and_duplicate_size(self):
@@ -588,7 +763,8 @@ sharedlvmthin: two
                  allocation_mode="thin", lvs_output=None, referenced=True,
                  vg_tags="", observed_commands=None,
                  expected_wwid="3600abcd", disabled=False,
-                 declared_size=2**30, argv=None):
+                 declared_size=2**30, reference_role="attached", argv=None,
+                 config_lock_status="PASS"):
         cfg = {
             "slt-vgname": "testvg",
             "shared": "1",
@@ -608,7 +784,7 @@ sharedlvmthin: two
             joined = " ".join(command)
             out = ""
             if command[0].endswith("vgs"):
-                out = f"testvg|{vg_tags}" if "vg_name,vg_tags" in command else "vg-uuid"
+                out = f"testvg|{vg_tags}" if "vg_name,vg_tags" in command else "vg-uuid|4194304"
             elif command[0].endswith("pvs"):
                 out = f"pv-uuid|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
@@ -634,17 +810,23 @@ sharedlvmthin: two
              mock.patch.object(self.checker, "pve_reference_files", return_value=["ref"] if referenced else []), \
              mock.patch.object(
                  self.checker, "pve_current_reference_sizes",
-                 return_value=[("ref", declared_size, "attached")] if referenced else [],
+                 return_value=[("ref", declared_size, reference_role)] if referenced else [],
              ), \
              mock.patch.object(
                  self.checker, "pve_reference_inventory",
                  return_value=(
                      {"vm-100-disk-0": ["ref"]} if referenced else {},
-                     {"vm-100-disk-0": [("ref", declared_size, "attached")]}
+                     {"vm-100-disk-0": [("ref", declared_size, reference_role)]}
                      if referenced else {},
                  ),
              ), \
              mock.patch.object(self.checker, "pve_snapshot_references", return_value=set()), \
+             mock.patch.object(
+                 self.checker, "pve_config_lock_health",
+                 return_value=(config_lock_status,
+                               ["managed guest is locked"]
+                               if config_lock_status != "PASS" else []),
+             ), \
              mock.patch.object(
                  self.checker.os.path, "exists",
                  side_effect=lambda path: not str(path).startswith("/dev/mapper/"),
@@ -658,6 +840,13 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("STATE=HEALTHY", output)
         self.assertIn("SAFE_FOR_MUTATION=YES", output)
+
+    def test_managed_pve_config_lock_blocks_safe_for_mutation(self):
+        rc, output = self.run_main(config_lock_status="FAIL")
+        self.assertEqual(rc, 2)
+        self.assertIn("PVE_CONFIG_LOCKS_CLEAR=FAIL", output)
+        self.assertIn("SAFE_FOR_MUTATION=NO", output)
+        self.assertIn("managed guest is locked", output)
 
     def test_all_lvm_inventory_is_scoped_to_pinned_wwid(self):
         commands = []
@@ -713,7 +902,7 @@ sharedlvmthin: two
         def probe(command):
             commands.append(command)
             if command[0].endswith("vgs"):
-                out = "testvg|" if "vg_name,vg_tags" in command else "vg-uuid"
+                out = "testvg|" if "vg_name,vg_tags" in command else "vg-uuid|4194304"
             elif command[0].endswith("pvs"):
                 out = "pv-uuid|/dev/mapper/3600abcd"
             elif command[0].endswith("lvs"):
@@ -740,6 +929,50 @@ sharedlvmthin: two
         self.assertFalse(any(command[0].endswith("pvesm") for command in commands))
         self.assertIn("PVE_STORAGE_HEALTH=PASS", output.getvalue())
         self.assertIn("package offline audit", output.getvalue())
+
+    def test_runtime_qualification_proves_storage_without_pve_activation(self):
+        commands = []
+        cfg = {
+            "slt-vgname": "testvg", "slt-expected-vg-uuid": "vg-uuid",
+            "slt-expected-pv-uuid": "pv-uuid", "slt-expected-wwid": "3600abcd",
+            "slt-expected-min-paths": "2", "slt-allocation-mode": "thin",
+        }
+
+        def probe(command):
+            commands.append(command)
+            if command[0].endswith("vgs"):
+                out = "testvg|" if "vg_name,vg_tags" in command else "vg-uuid|4194304"
+            elif command[0].endswith("pvs"):
+                out = "pv-uuid|/dev/mapper/3600abcd"
+            elif command[0].endswith("lvs"):
+                out = ""
+            elif command[0].endswith("multipath"):
+                out = "|- active ready running\n`- active ready running"
+            elif command[0].endswith("pvecm"):
+                out = "Quorate: Yes"
+            else:
+                out = ""
+            return {"status": "PASS", "rc": 0, "out": out, "err": "",
+                    "pid": 1, "state": None}
+
+        with mock.patch.object(
+                 self.checker, "storage_configs",
+                 return_value=[{"id": "test", "type": "sharedlvmthin", **cfg}],
+             ), \
+             mock.patch.object(self.checker, "bounded_probe", side_effect=probe), \
+             mock.patch.object(self.checker, "settled_dstate_evidence",
+                               return_value=("PASS", [], [], 0)), \
+             mock.patch.object(self.checker, "active_storage_worker_evidence",
+                               return_value=("PASS", [], [])), \
+             mock.patch.object(self.checker, "pve_snapshot_references", return_value=set()), \
+             redirect_stdout(StringIO()) as output:
+            rc = self.checker.main(["--runtime-qualification", "test"])
+        text = output.getvalue()
+        self.assertEqual(rc, 0, text)
+        self.assertFalse(any(command[0].endswith("pvesm") for command in commands))
+        self.assertIn("PVE_STORAGE_HEALTH=NOT_PROBED", text)
+        self.assertIn("SAFE_FOR_MUTATION=NO", text)
+        self.assertIn("RUNTIME_QUALIFICATION_READY=YES", text)
 
     def test_invalid_disable_value_fails_without_probes(self):
         commands = []
@@ -873,6 +1106,30 @@ sharedlvmthin: two
         self.assertIn("current PVE size", text)
         self.assertIn("authoritative HEAD size", text)
         self.assertIn("SAFE_FOR_MUTATION=NO", text)
+
+    def test_materialized_efi_accepts_exact_extent_rounded_528k_geometry(self):
+        name, tags = self.anchor()
+        head = self.head_line().rsplit("|", 1)[0] + "|4194304"
+        rc, text = self.run_main(
+            allocation_mode="thick-generations",
+            lvs_output=f"{name}|-wi------k|||{tags}\n{head}",
+            declared_size=528 * 1024,
+            reference_role="efi",
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("THICK_ANCHORS_HEALTHY=PASS", text)
+
+    def test_ordinary_disk_never_gets_efi_rounding_exception(self):
+        name, tags = self.anchor()
+        head = self.head_line().rsplit("|", 1)[0] + "|4194304"
+        rc, text = self.run_main(
+            allocation_mode="thick-generations",
+            lvs_output=f"{name}|-wi------k|||{tags}\n{head}",
+            declared_size=528 * 1024,
+            reference_role="attached",
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("current PVE size", text)
 
     def test_open_extend_intent_is_visible_and_blocks_recovery_check(self):
         name, tags = self.anchor()

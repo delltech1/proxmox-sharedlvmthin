@@ -19,7 +19,7 @@ CONTRACT_CATALOGUE = "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.j
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 PACKAGES = (
     "libpve-storage-perl", "pve-manager", "qemu-server", "pve-qemu-kvm",
-    "pve-cluster", "libpve-cluster-api-perl", "libpve-common-perl",
+    "pve-cluster", "libpve-cluster-api-perl", "libpve-common-perl", "libpve-guest-common-perl",
     "pve-container", "corosync", "pve-ha-manager", "lvm2",
     "thin-provisioning-tools", "multipath-tools", "open-iscsi", "systemd",
     "udev", "util-linux", "coreutils", "openssh-client", "sqlite3",
@@ -41,20 +41,27 @@ COMMANDS = (
 )
 CRITICAL_FILES = (
     "/usr/share/perl5/PVE/Storage/Plugin.pm",
+    "/usr/share/perl5/PVE/Storage/Common.pm",
     "/usr/share/perl5/PVE/Storage.pm",
+    "/usr/share/perl5/PVE/JSONSchema.pm",
     "/usr/share/perl5/PVE/Tools.pm",
     "/usr/share/perl5/PVE/Cluster.pm",
     "/usr/share/perl5/PVE/HA/Config.pm",
     "/usr/share/perl5/PVE/INotify.pm",
     "/usr/share/perl5/PVE/QemuConfig.pm",
+    "/usr/share/perl5/PVE/AbstractConfig.pm",
+    "/usr/share/perl5/PVE/API2/Qemu.pm",
     "/usr/share/perl5/PVE/QemuServer.pm",
+    "/usr/share/perl5/PVE/QemuServer/QemuImage.pm",
     "/usr/share/perl5/PVE/QemuServer/Drive.pm",
     "/usr/share/perl5/PVE/SSHInfo.pm",
     "/usr/share/perl5/PVE/Storage/LVMPlugin.pm",
     "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm",
     "/usr/share/perl5/PVE/SharedLvmThinThick.pm",
     "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check",
+    "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-plan",
     "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json",
+    "/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json",
     "/usr/share/pve-sharedlvmthin/pve-lab-scenarios.json",
 )
 REQUIRED_HOOKS = (
@@ -67,17 +74,25 @@ REQUIRED_HOOKS = (
     "filesystem_path", "clone_image", "volume_rollback_is_possible",
 )
 REQUIRED_PVE_SYMBOLS = (
+    "PVE::AbstractConfig::lock_config", "PVE::AbstractConfig::lock_config_full",
     "PVE::Cluster::cfs_update", "PVE::Cluster::cfs_lock_storage",
     "PVE::Cluster::check_cfs_quorum", "PVE::Cluster::get_members",
+    "PVE::Cluster::get_nodelist",
     "PVE::HA::Config::read_manager_status", "PVE::HA::Config::read_resources_config",
     "PVE::INotify::nodename", "PVE::QemuConfig::load_config",
-    "PVE::QemuServer::check_running", "PVE::QemuServer::foreach_volid",
+    "PVE::QemuServer::check_running", "PVE::QemuServer::foreach_volid", "PVE::QemuServer::destroy_vm",
+    "PVE::QemuServer::Helpers::vm_running_locally", "PVE::Storage::parse_volume_id",
+    "PVE::QemuServer::clone_disk",
+    "PVE::QemuServer::OVMF::create_efidisk",
     "PVE::SSHInfo::ssh_info_to_command", "PVE::Storage::APIAGE",
-    "PVE::Storage::APIVER", "PVE::Storage::LVMPlugin::lvm_list_volumes",
+    "PVE::Storage::APIVER", "PVE::Storage::volume_has_feature",
+    "PVE::Storage::LVMPlugin::lvm_list_volumes",
     "PVE::Storage::LVMPlugin::lvm_vgs", "PVE::Storage::Plugin::cluster_lock_storage",
     "PVE::Storage::Plugin::find_free_diskname",
     "PVE::Storage::Plugin::parse_lvm_name", "PVE::Storage::config",
-    "PVE::Storage::storage_config", "PVE::Tools::run_command", "PVE::Tools::trim",
+    "PVE::Storage::storage_config", "PVE::Storage::vdisk_free", "PVE::Storage::vdisk_alloc",
+    "PVE::Storage::activate_volumes", "PVE::Storage::deactivate_volumes",
+    "PVE::Tools::run_command", "PVE::Tools::trim",
 )
 
 
@@ -332,8 +347,10 @@ def _installed_profile_payload(flavor):
         "/usr/sbin/sharedlvmthin",
         "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upstream-inventory",
         "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-contract-check",
+        "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-plan",
         "/usr/share/pve-sharedlvmthin/package-flavor",
         "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json",
+        "/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json",
         "/usr/share/pve-sharedlvmthin/pve-lab-scenarios.json",
     }
     missing = sorted(required - owned)
@@ -521,11 +538,14 @@ def collect():
         errors.append("compatibility contract catalogue unavailable")
 
     package_data = {name: _package_version(name) for name in PACKAGES}
+    update_errors = []
     for name, evidence in package_data.items():
-        if not evidence["installed_probe_ok"] or not evidence["candidate_probe_ok"]:
-            errors.append(f"package evidence incomplete: {name}")
+        if not evidence["installed_probe_ok"]:
+            errors.append(f"installed package evidence incomplete: {name}")
         elif not evidence["installed"].endswith("|installed|ok"):
             errors.append(f"required package is not cleanly installed: {name}")
+        if not evidence["candidate_probe_ok"]:
+            update_errors.append(f"APT candidate evidence unavailable: {name}")
 
     kernel = _run(["uname", "-r"])
     boot = _sha256("/proc/sys/kernel/random/boot_id")
@@ -547,11 +567,36 @@ def collect():
         if not profile_payload.get("ok"):
             errors.append("installed package profile payload is incomplete or ambiguous")
 
+    # A repository refresh, a newer APT candidate, or an installed but inactive
+    # kernel must not change the contract of the code that is executing now.
+    # Keep those observations visible, but outside the runtime fingerprint.
+    runtime_packages = {
+        name: {
+            "installed": evidence["installed"],
+            "installed_probe_ok": evidence["installed_probe_ok"],
+        }
+        for name, evidence in package_data.items()
+    }
+    installed_kernel_packages = _kernel_packages()
+    if not installed_kernel_packages["ok"]:
+        update_errors.append("installed inactive-kernel inventory unavailable")
+    update_observation = {
+        "packages": {
+            name: {
+                "candidate": evidence["candidate"],
+                "candidate_probe_ok": evidence["candidate_probe_ok"],
+            }
+            for name, evidence in package_data.items()
+        },
+        "installed_kernel_packages": installed_kernel_packages,
+        "complete": not update_errors,
+        "errors": sorted(update_errors),
+    }
+
     contract = {
         "package_flavor": flavor,
         "installed_profile_payload": profile_payload,
-        "packages": package_data,
-        "kernel_packages": _kernel_packages(),
+        "packages": runtime_packages,
         "running_kernel": kernel["stdout"] if kernel["ok"] else None,
         "dm_targets": sorted(dm_targets["stdout"].splitlines()) if dm_targets["ok"] else None,
         "commands": commands,
@@ -560,8 +605,6 @@ def collect():
         "storage_contract": storage,
         "compatibility_contract_catalogue": contract_catalogue,
     }
-    if not contract["kernel_packages"]["ok"]:
-        errors.append("kernel package inventory unavailable")
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
     return {
         "kind": "inventory",
@@ -571,6 +614,7 @@ def collect():
         "host": os.uname().nodename,
         "boot_id_file_sha256": boot.get("sha256"),
         "contract": contract,
+        "update_observation": update_observation,
         "contract_fingerprint": hashlib.sha256(encoded).hexdigest(),
         "collection_complete": not errors,
         "errors": sorted(errors),

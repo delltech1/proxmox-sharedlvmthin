@@ -1,0 +1,103 @@
+#!/usr/bin/python3
+"""Fail-closed classifier for the v1 materialized bridge VM topology."""
+
+import re
+import sys
+
+
+VOLID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*:[A-Za-z0-9][A-Za-z0-9_.+-]*\Z")
+BUS = re.compile(r"(?:ide|sata|scsi|virtio)[0-9]+\Z")
+UNUSED = re.compile(r"unused[0-9]+\Z")
+SPECIAL = {"efidisk0", "tpmstate0"}
+MAX_CONFIG = 4 * 1024 * 1024
+
+
+def die(message):
+    print(f"BRIDGE_TOPOLOGY=REFUSE\nREASON={message}", file=sys.stderr)
+    raise SystemExit(65)
+
+
+def identity(properties):
+    identities = []
+    if properties and "=" not in properties[0] and VOLID.fullmatch(properties[0]):
+        identities.append(properties[0])
+    for prop in properties:
+        if prop.startswith("file=") and VOLID.fullmatch(prop[5:]):
+            identities.append(prop[5:])
+    if len(set(identities)) != 1 or len(identities) != 1:
+        return None
+    return identities[0]
+
+
+def classify(text, allowed):
+    if not text or len(text.encode("utf-8")) > MAX_CONFIG:
+        die("CONFIG_EMPTY_OR_OVERSIZE")
+    records = []
+    seen = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            break
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if key in seen:
+            die(f"DUPLICATE_SLOT:{key}")
+        if BUS.fullmatch(key) or key in SPECIAL or UNUSED.fullmatch(key):
+            seen.add(key)
+        properties = [item.strip() for item in value.split(",")]
+        if any(not item for item in properties):
+            if BUS.fullmatch(key) or key in SPECIAL or UNUSED.fullmatch(key):
+                die(f"MALFORMED_SLOT:{key}")
+            continue
+        volid = identity(properties)
+        storage = volid.split(":", 1)[0] if volid else None
+        media = [item[6:] for item in properties if item.startswith("media=")]
+        if len(media) > 1:
+            die(f"MALFORMED_MEDIA:{key}")
+        if key in SPECIAL:
+            die(f"UNSUPPORTED_SPECIAL_SLOT:{key}")
+        if UNUSED.fullmatch(key):
+            if storage in allowed:
+                die(f"UNSUPPORTED_MANAGED_UNUSED:{key}")
+            continue
+        if BUS.fullmatch(key):
+            if media and media[0] == "cdrom":
+                # v1 proves only writable block paths. A backed CD/cloud-init
+                # object can retain a source Thin-pool dependency that is not
+                # present in the bridge manifest, so only an empty CD is safe.
+                first = properties[0] if properties else ""
+                if volid or first not in {"none", "cdrom"}:
+                    die(f"UNSUPPORTED_BACKED_CD:{key}")
+                continue
+            if media:
+                die(f"UNSUPPORTED_MEDIA:{key}")
+            if not volid:
+                die(f"MALFORMED_WRITABLE_SLOT:{key}")
+            if storage not in allowed:
+                die(f"UNSUPPORTED_STORAGE:{key}:{storage}")
+            records.append(f"{key}|{volid}")
+            continue
+        if any(token.startswith(tuple(sid + ":" for sid in allowed)) for token in properties):
+            die(f"UNKNOWN_MANAGED_STORAGE_KEY:{key}")
+    if not records:
+        die("NO_SUPPORTED_WRITABLE_DISKS")
+    return records
+
+
+def main(argv):
+    if len(argv) < 2 or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", x) for x in argv[1:]):
+        print(f"usage: {argv[0]} <allowed-storage> [allowed-storage ...]", file=sys.stderr)
+        return 64
+    try:
+        text = sys.stdin.read(MAX_CONFIG + 1)
+    except (OSError, UnicodeError) as exc:
+        die(f"CONFIG_READ_FAILED:{type(exc).__name__}")
+    for record in classify(text, set(argv[1:])):
+        print(record)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

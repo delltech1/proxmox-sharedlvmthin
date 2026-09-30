@@ -1,0 +1,544 @@
+#!/usr/bin/python3
+"""Read-only current/candidate PVE compatibility advisory."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+MANIFEST = "/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json"
+FLAVOR = "/usr/share/pve-sharedlvmthin/package-flavor"
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+PVE_CONFIG_ROOT = "/etc/pve"
+QEMU_RUN_ROOT = "/run/qemu-server"
+PROC_ROOT = "/proc"
+MAX_CONFIG_FILES = 10000
+MAX_CONFIG_BYTES = 1024 * 1024
+OPERATION_GROUPS = (
+    "read-only-inventory", "package-lifecycle", "activation-deactivation",
+    "allocation-removal", "snapshot-vmstate", "resize",
+    "move-import-restore", "migration", "thin-ownership-autogrow",
+    "thick-lazy-transition",
+)
+
+
+def strict_load(handle):
+    def pairs(values):
+        result = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    return json.load(handle, object_pairs_hook=pairs)
+
+
+def run(argv):
+    environment = {"PATH": SAFE_PATH, "LC_ALL": "C", "LANG": "C"}
+    try:
+        result = subprocess.run(
+            argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=10, check=False, env=environment,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, "", str(exc)
+    return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+
+
+def installed(package):
+    ok, output, _ = run(["dpkg-query", "-W", "-f=${Version}|${db:Status-Status}|${db:Status-Eflag}", package])
+    fields = output.split("|")
+    return fields[0] if ok and len(fields) == 3 and fields[1:] == ["installed", "ok"] else None
+
+
+def candidate(package):
+    ok, output, _ = run(["apt-cache", "policy", package])
+    match = re.search(r"^\s*Candidate:\s*(\S+)\s*$", output, re.M) if ok else None
+    return match.group(1) if match and match.group(1) != "(none)" else None
+
+
+def api_version():
+    ok, output, _ = run(["perl", "-I/usr/share/perl5", "-MPVE::Storage", "-e", "print PVE::Storage::APIVER()"])
+    return int(output) if ok and output.isdigit() else None
+
+
+def compare(left, operator, right):
+    ok, _, _ = run(["dpkg", "--compare-versions", left, operator, right])
+    return ok
+
+
+def match_tuple(document, versions, kernel, flavor, api, plugin_version=None):
+    matches = []
+    for item in document.get("tuples", []):
+        if flavor not in item.get("profiles", []) or item.get("api") != api:
+            continue
+        if item.get("running_kernel") != kernel:
+            continue
+        if plugin_version is not None and plugin_version not in item.get("plugin_versions", []):
+            continue
+        expected = item.get("packages", {})
+        if all(versions.get(name) == value for name, value in expected.items()):
+            matches.append(item)
+    if len(matches) > 1:
+        raise ValueError("runtime matches multiple compatibility tuples")
+    return matches[0] if matches else None
+
+
+def incompatible(document, versions):
+    storage = versions.get("libpve-storage-perl")
+    qemu = versions.get("qemu-server")
+    if not storage or not qemu:
+        return None
+    for rule in document.get("known_incompatible", []):
+        if compare(storage, "ge", rule["storage_min"]) and compare(qemu, "lt", rule["qemu_max_exclusive"]):
+            return rule
+    return None
+
+
+def _machine_version(value):
+    match = re.search(r"(?:^|[-_])(\d+)\.(\d+)(?:$|[-_])", value)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _running_qemu_cmdline(vmid, run_root, proc_root):
+    pid_path = os.path.join(run_root, f"{vmid}.pid")
+    if not os.path.lexists(pid_path):
+        return None, None
+    try:
+        if os.path.islink(pid_path) or not os.path.isfile(pid_path):
+            raise ValueError("pid file is not a regular file")
+        with open(pid_path, encoding="ascii") as handle:
+            raw_pid = handle.read(32).strip()
+        if not raw_pid.isdigit() or int(raw_pid) < 2:
+            raise ValueError("invalid pid")
+        cmdline_path = os.path.join(proc_root, raw_pid, "cmdline")
+        with open(cmdline_path, "rb") as handle:
+            raw_cmdline = handle.read(MAX_CONFIG_BYTES + 1)
+        if len(raw_cmdline) > MAX_CONFIG_BYTES:
+            raise ValueError("QEMU command line exceeds scan limit")
+        argv = [part.decode("utf-8", "strict") for part in raw_cmdline.split(b"\0") if part]
+        try:
+            index = argv.index("-id")
+        except ValueError as exc:
+            raise ValueError("process command line has no VM id") from exc
+        if index + 1 >= len(argv) or argv[index + 1] != str(vmid):
+            raise ValueError("process VM id does not match pid file")
+        if not argv or os.path.basename(argv[0]) not in {
+            "kvm", "qemu-system-x86_64", "qemu-system-aarch64",
+        }:
+            raise ValueError("pid does not identify a supported QEMU executable")
+        return argv, None
+    except (OSError, UnicodeError, ValueError) as exc:
+        return None, str(exc)
+
+
+def scan_configuration_risks(
+    root=PVE_CONFIG_ROOT, run_root=QEMU_RUN_ROOT, proc_root=PROC_ROOT, node_name=None,
+):
+    """Bounded, read-only scan for configs affected by known upstream deltas."""
+    findings = []
+    vm_dir = os.path.join(root, "qemu-server")
+    try:
+        entries = sorted(os.scandir(vm_dir), key=lambda item: item.name)
+    except OSError as exc:
+        return [{"code": "VM_CONFIG_SCAN_UNKNOWN", "detail": str(exc)}]
+    if len(entries) > MAX_CONFIG_FILES:
+        return [{"code": "VM_CONFIG_SCAN_LIMIT", "detail": f"more than {MAX_CONFIG_FILES} entries"}]
+    for entry in entries:
+        if not entry.name.endswith(".conf"):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                findings.append({"code": "VM_CONFIG_IDENTITY_UNKNOWN", "vm": entry.name})
+                continue
+            if entry.stat(follow_symlinks=False).st_size > MAX_CONFIG_BYTES:
+                findings.append({"code": "VM_CONFIG_TOO_LARGE", "vm": entry.name})
+                continue
+            with open(entry.path, "rb") as handle:
+                raw_config = handle.read(MAX_CONFIG_BYTES + 1)
+            if len(raw_config) > MAX_CONFIG_BYTES:
+                findings.append({"code": "VM_CONFIG_TOO_LARGE", "vm": entry.name})
+                continue
+            text = raw_config.decode("utf-8", "strict")
+            lines = text.splitlines()
+        except (OSError, UnicodeError) as exc:
+            findings.append({"code": "VM_CONFIG_READ_UNKNOWN", "vm": entry.name, "detail": str(exc)})
+            continue
+        vmid = entry.name[:-5]
+        config_digest = hashlib.sha256(raw_config).hexdigest()
+        scan_node = node_name if node_name is not None else os.uname().nodename
+        scsihw = ""
+        section = "current"
+        empty_mtu = []
+        current_networks = []
+        current_virtio_networks = []
+        section_metadata = {"current": {"net": [], "mtu": [], "vmstate": []}}
+        for line_number, line in enumerate(lines, 1):
+            section_match = re.match(r"^\[([^]\r\n]+)\]$", line)
+            if section_match:
+                section = section_match.group(1)
+                section_metadata.setdefault(section, {"net": [], "mtu": [], "vmstate": []})
+                continue
+            if line.startswith("scsihw:"):
+                scsihw = line.split(":", 1)[1].strip()
+            network_match = re.match(r"^(net\d+):\s*([^,\s=]+)=", line)
+            if network_match:
+                section_metadata[section]["net"].append({
+                    "id": network_match.group(1), "model": network_match.group(2),
+                    "line": line_number,
+                })
+                if section == "current":
+                    current_networks.append(network_match.group(1))
+                    if network_match.group(2) == "virtio":
+                        current_virtio_networks.append(network_match.group(1))
+            vmstate_match = re.match(r"^vmstate:\s*(\S.*?)\s*$", line)
+            if vmstate_match:
+                section_metadata[section]["vmstate"].append({
+                    "value": vmstate_match.group(1), "line": line_number,
+                })
+            mtu_match = re.match(r"^running-nets-host-mtu:\s*(.*?)\s*$", line)
+            if mtu_match:
+                section_metadata[section]["mtu"].append({
+                    "value": mtu_match.group(1), "line": line_number,
+                })
+            if line.startswith("machine:"):
+                value = line.split(":", 1)[1].strip()
+                version = _machine_version(value)
+                if version and version < (5, 0):
+                    findings.append({
+                        "code": "LEGACY_MACHINE_LT_5", "vm": vmid, "value": value,
+                        "impact": "qemu-server 9.2.8 and newer refuse VM start",
+                    })
+            elif re.match(r"^\s*running-nets-host-mtu\s*:\s*$", line):
+                empty_mtu.append({
+                    "line": line_number,
+                    "section": section,
+                    "section_kind": "current" if section == "current" else (
+                        "pending" if section.upper() == "PENDING" else "snapshot"
+                    ),
+                    "canonical_empty_line": line == "running-nets-host-mtu:",
+                })
+            match = re.match(r"^scsi(1[4-9]|[2-9][0-9]):", line)
+            if match:
+                findings.append({
+                    "code": "HIGH_SCSI_SLOT", "vm": vmid, "slot": f"scsi{match.group(1)}",
+                    "impact": "PCI bridge and live-hotplug behavior changed in qemu-server 9.2.8",
+                })
+        if empty_mtu:
+            canonical_snapshot = all(
+                row["canonical_empty_line"] and row["section_kind"] == "snapshot"
+                for row in empty_mtu
+            )
+            unique_sections = len({row["section"] for row in empty_mtu}) == len(empty_mtu)
+            findings.append({
+                "code": "EMPTY_RUNNING_NETS_HOST_MTU",
+                "vm": vmid,
+                "node": scan_node,
+                "count": len(empty_mtu),
+                "occurrences": empty_mtu,
+                "raw_config_sha256": config_digest,
+                "repair_class": (
+                    "REPAIR_ELIGIBILITY_UNKNOWN"
+                    if canonical_snapshot and unique_sections
+                    else "REPAIR_BLOCKED_AMBIGUOUS_CONFIG"
+                ),
+                "impact": "snapshot config cannot be parsed strictly",
+            })
+        for snapshot, metadata in section_metadata.items():
+            if snapshot in {"current", "PENDING"} or not metadata["vmstate"]:
+                continue
+            # Empty values already have a more specific strict-parser finding.
+            nonempty = [row for row in metadata["mtu"] if row["value"]]
+            if not nonempty:
+                continue
+            net_ids = [row["id"] for row in metadata["net"]]
+            expected = sorted(
+                row["id"] for row in metadata["net"] if row["model"] == "virtio"
+            )
+            actual = []
+            malformed = len(nonempty) != 1 or len(net_ids) != len(set(net_ids))
+            if not malformed:
+                tokens = nonempty[0]["value"].split(",")
+                for token in tokens:
+                    match = re.fullmatch(r"(net\d+)=(0|[1-9]\d*)", token)
+                    if not match or match.group(1) in actual:
+                        malformed = True
+                        break
+                    actual.append(match.group(1))
+            if malformed:
+                findings.append({
+                    "code": "RAM_SNAPSHOT_MTU_SET_UNKNOWN", "vm": vmid,
+                    "node": scan_node, "snapshot": snapshot,
+                    "raw_config_sha256": config_digest,
+                    "impact": "RAM snapshot MTU metadata is duplicate or malformed",
+                })
+                continue
+            actual = sorted(actual)
+            if actual != expected:
+                findings.append({
+                    "code": "RAM_SNAPSHOT_MTU_SET_MISMATCH", "vm": vmid,
+                    "node": scan_node, "snapshot": snapshot,
+                    "expected_virtio_nics": expected, "recorded_nics": actual,
+                    "missing_nics": sorted(set(expected) - set(actual)),
+                    "unexpected_nics": sorted(set(actual) - set(expected)),
+                    "raw_config_sha256": config_digest,
+                    "impact": "RAM snapshot MTU metadata does not cover its own VirtIO NIC set",
+                })
+        argv, process_error = _running_qemu_cmdline(vmid, run_root, proc_root)
+        if process_error:
+            findings.append({
+                "code": "RUNNING_VM_SCAN_UNKNOWN", "vm": vmid, "detail": process_error,
+            })
+        elif argv is not None:
+            if not current_virtio_networks:
+                findings.append({
+                    "code": "RUNNING_RAM_SNAPSHOT_EMPTY_MTU_RISK",
+                    "vm": vmid,
+                    "network_topology": (
+                        "NO_NETWORK" if not current_networks else "NON_VIRTIO_ONLY"
+                    ),
+                    "configured_networks": current_networks,
+                    "impact": (
+                        "a RAM snapshot records an empty running-nets-host-mtu value "
+                        "that strict qemu-server config parsing rejects"
+                    ),
+                })
+            if (not scsihw or scsihw.startswith("lsi")) and not any(
+                "id=pci.4" in argument for argument in argv
+            ):
+                findings.append({
+                    "code": "RUNNING_LSI_VM_WITHOUT_PCI4", "vm": vmid,
+                    "impact": "after qemu-server 9.2.8+ update, high-slot live hotplug can allocate but remain pending",
+                })
+    return findings
+
+
+def scan_qemu_snapshot_contract(path="/usr/share/perl5/PVE/QemuConfig.pm"):
+    """Describe safety-relevant upstream snapshot ordering without mutating it."""
+    findings = []
+    try:
+        raw = Path(path).read_bytes()
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError("QemuConfig source exceeds bounded scanner limit")
+        source = raw.decode("utf-8", "strict")
+    except (OSError, UnicodeError, ValueError) as exc:
+        return [{"code": "QEMU_SNAPSHOT_CONTRACT_UNKNOWN", "detail": str(exc)}]
+
+    digest = hashlib.sha256(raw).hexdigest()
+
+    def body(name):
+        match = re.search(
+            rf"^sub\s+{re.escape(name)}\s*\{{(.*?)(?=^sub\s+\w+\s*\{{|\Z)",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
+        return match.group(1) if match else None
+
+    save = body("__snapshot_save_vmstate")
+    hook = body("__snapshot_create_vol_snapshots_hook")
+    if save is None or hook is None:
+        return [{
+            "code": "QEMU_SNAPSHOT_CONTRACT_UNKNOWN",
+            "detail": "required QemuConfig snapshot hooks are absent",
+            "source_sha256": digest,
+        }]
+
+    alloc = save.find("PVE::Storage::vdisk_alloc")
+    queries = [
+        save.find("get_current_qemu_machine"),
+        save.find("get_cpu_from_running_vm"),
+        save.find("get_nets_host_mtu"),
+    ]
+    if alloc < 0 or any(position < 0 for position in queries):
+        findings.append({
+            "code": "VMSTATE_QUERY_ORDER_UNKNOWN",
+            "source_sha256": digest,
+        })
+    elif alloc < max(queries):
+        findings.append({
+            "code": "VMSTATE_ALLOCATION_BEFORE_RUNTIME_QUERIES",
+            "source_sha256": digest,
+            "impact": "a failed machine, CPU or MTU query can leave an unreferenced vmstate volume",
+        })
+
+    if re.search(
+        r"eval\s*\{\s*mon_cmd\([^;]+['\"]savevm-end['\"][^;]*;"
+        r".*?PVE::Storage::deactivate_volumes.*?\};",
+        hook,
+        re.DOTALL,
+    ):
+        findings.append({
+            "code": "SAVEVM_END_DEACTIVATION_COUPLED",
+            "source_sha256": digest,
+            "impact": "a savevm-end exception skips vmstate deactivation in the same eval block",
+        })
+
+    wait_branch = re.search(
+        r"elsif\s*\(\$hook\s+eq\s+['\"]after-(?:un)?freeze['\"]\)\s*\{(.*)\Z",
+        hook,
+        re.DOTALL,
+    )
+    if wait_branch and re.search(r"for\s*\(;;\)", wait_branch.group(1)):
+        branch = wait_branch.group(1)
+        if not re.search(r"deadline|timeout|alarm", branch, re.IGNORECASE):
+            findings.append({
+                "code": "SAVEVM_FINALIZE_POLL_UNBOUNDED",
+                "source_sha256": digest,
+                "impact": "snapshot finalization can wait on query-savevm without an explicit wall deadline",
+            })
+
+    if re.search(r"\$conf->\{'running-nets-host-mtu'\}\s*=\s*\$nets_host_mtu", save):
+        findings.append({
+            "code": "EMPTY_RUNNING_NETS_HOST_MTU_WRITABLE",
+            "source_sha256": digest,
+            "impact": "an empty MTU result is written into RAM snapshot configuration",
+        })
+    return findings
+
+
+def operation_qualifications(document, item):
+    """Return a strictly validated per-operation qualification matrix.
+
+    Older schema-1 tuples may omit the matrix and retain their historical
+    tuple-wide result. Once a tuple provides a matrix it must cover every
+    declared operation group exactly; an omitted mutation class must never
+    look implicitly safe.
+    """
+    if not item or "operation_qualifications" not in item:
+        return {}
+    groups = document.get("operation_groups", [])
+    if groups != list(OPERATION_GROUPS):
+        raise ValueError("operation group catalogue is malformed")
+    if document.get("operation_qualification_mode") != "ADVISORY_ONLY" \
+            or document.get("operation_authorization") != "NONE":
+        raise ValueError("operation qualification authorization boundary is malformed")
+    evidence_ids = document.get("operation_evidence_ids")
+    if not isinstance(evidence_ids, list) or not evidence_ids \
+            or any(not isinstance(value, str) or not value for value in evidence_ids) \
+            or len(evidence_ids) != len(set(evidence_ids)):
+        raise ValueError("operation evidence registry is malformed")
+    evidence_registry = set(evidence_ids)
+    matrix = item["operation_qualifications"]
+    if not isinstance(matrix, dict) or set(matrix) != set(groups):
+        raise ValueError("operation qualification matrix is incomplete")
+    allowed = {"QUALIFIED", "RETEST_REQUIRED", "BLOCKED", "NOT_IN_SCOPE"}
+    result = {}
+    for group in groups:
+        entry = matrix[group]
+        if not isinstance(entry, dict) or entry.get("status") not in allowed \
+                or set(entry) - {"status", "evidence", "required_tests", "reason"}:
+            raise ValueError(f"operation qualification is malformed: {group}")
+        evidence = entry.get("evidence", [])
+        required = entry.get("required_tests", [])
+        if not isinstance(evidence, list) or not isinstance(required, list) \
+                or any(not isinstance(value, str) or not value
+                       for value in evidence + required) \
+                or len(evidence) != len(set(evidence)) \
+                or len(required) != len(set(required)):
+            raise ValueError(f"operation qualification evidence is malformed: {group}")
+        if entry["status"] == "QUALIFIED" and not evidence:
+            raise ValueError(f"qualified operation has no evidence: {group}")
+        if entry["status"] == "QUALIFIED" and required:
+            raise ValueError(f"qualified operation has outstanding tests: {group}")
+        if set(evidence) - evidence_registry:
+            raise ValueError(f"operation qualification references unknown evidence: {group}")
+        if entry["status"] in {"RETEST_REQUIRED", "BLOCKED"} and not required:
+            raise ValueError(f"unqualified operation has no required tests: {group}")
+        if entry["status"] in {"BLOCKED", "NOT_IN_SCOPE"} \
+                and (not isinstance(entry.get("reason"), str) or not entry["reason"]):
+            raise ValueError(f"operation refusal has no reason: {group}")
+        result[group] = entry
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--manifest", default=MANIFEST)
+    args = parser.parse_args()
+    try:
+        with open(args.manifest, encoding="utf-8") as handle:
+            document = strict_load(handle)
+        if document.get("schema") != 1 or document.get("catalogue") != "pve-qualified-tuples-v1":
+            raise ValueError("unsupported qualified tuple manifest")
+        with open(FLAVOR, encoding="ascii") as handle:
+            flavor = handle.read().strip()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"UPDATE_PLAN=UNKNOWN\nREASON={exc}")
+        return 2
+    packages = document["packages"]
+    current = {name: installed(name) for name in packages}
+    planned = {name: candidate(name) for name in packages}
+    kernel_ok, kernel, _ = run(["uname", "-r"])
+    api = api_version()
+    current_rule = incompatible(document, current)
+    planned_rule = incompatible(document, planned)
+    plugin_package = "pve-sharedlvmthin" if flavor == "dual" else "pve-sharedlvmthin-thick"
+    plugin_version = installed(plugin_package)
+    exact = match_tuple(
+        document, current, kernel if kernel_ok else None, flavor, api,
+        plugin_version=plugin_version,
+    )
+    configuration_findings = scan_configuration_risks()
+    upstream_contract_findings = scan_qemu_snapshot_contract()
+    current_status = "KNOWN_INCOMPATIBLE" if current_rule else (
+        exact["status"] if exact else "RETEST_REQUIRED")
+    planned_status = "KNOWN_INCOMPATIBLE" if planned_rule else "RETEST_REQUIRED"
+    try:
+        operation_matrix = operation_qualifications(document, exact)
+    except ValueError as exc:
+        print(f"UPDATE_PLAN=UNKNOWN\nREASON={exc}")
+        return 2
+    result = {
+        "schema": 1,
+        "profile": flavor,
+        "plugin_version": plugin_version,
+        "api": api,
+        "running_kernel": kernel if kernel_ok else None,
+        "current": current,
+        "current_tuple": exact.get("id") if exact else None,
+        "current_status": current_status,
+        "current_scopes": exact.get("scopes", []) if exact else [],
+        "operation_qualifications": operation_matrix,
+        "operation_qualification_mode": "ADVISORY_ONLY",
+        "operation_authorization": "NONE",
+        "candidate": planned,
+        "candidate_status": planned_status,
+        "candidate_notice": "APT candidates are observations only; they do not change current runtime status.",
+        "apt_blocked": False,
+        "known_incompatibility": (current_rule or planned_rule or {}).get("reason"),
+        "configuration_findings": configuration_findings,
+        "upstream_contract_findings": upstream_contract_findings,
+    }
+    if exact and exact.get("required_tests"):
+        result["required_tests"] = exact["required_tests"]
+    if args.json:
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    else:
+        print(f"CURRENT_RUNTIME={current_status}")
+        print(f"CURRENT_TUPLE={result['current_tuple'] or 'UNLISTED'}")
+        print(f"RUNNING_KERNEL={result['running_kernel'] or 'UNKNOWN'}")
+        print(f"PLANNED_UPDATE={planned_status}")
+        print("APT_BLOCKED=NO")
+        for group, entry in operation_matrix.items():
+            print(f"OPERATION_GROUP={group} STATUS={entry['status']}")
+        for name in packages:
+            print(f"PACKAGE={name} INSTALLED={current.get(name) or 'UNKNOWN'} CANDIDATE={planned.get(name) or 'UNKNOWN'}")
+        if result["known_incompatibility"]:
+            print(f"REASON={result['known_incompatibility']}")
+        for finding in configuration_findings:
+            fields = " ".join(f"{key.upper()}={value}" for key, value in finding.items())
+            print(f"CONFIGURATION_FINDING {fields}")
+        for finding in upstream_contract_findings:
+            fields = " ".join(f"{key.upper()}={value}" for key, value in finding.items())
+            print(f"UPSTREAM_CONTRACT_FINDING {fields}")
+        print("ACTION=Run the documented disposable-node and SAN regression gate before rolling this tuple across the cluster.")
+    return 1 if current_rule else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

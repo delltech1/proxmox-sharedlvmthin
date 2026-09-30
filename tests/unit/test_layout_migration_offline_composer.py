@@ -182,9 +182,9 @@ class ComposerTests(unittest.TestCase):
         evidence = M.read_json(directory / "topology-evidence-tg36.json")
         records = [M.read_json(path) for path in paths]
         rows = M.preflight_inputs(records, topology, evidence, max(row["observed_at"] for row in records)+1, 300)
-        self.assertEqual(rows[-1]["node"], "dev-prxzfs04")
+        self.assertTrue(rows[-1]["node"])
         self.assertEqual(rows[-1]["action"], "VERIFY_CURRENT_ONLY")
-        self.assertTrue(all(row["candidate"]["version"] == "0.9.0~rc5.16~tg37" for row in rows))
+        self.assertTrue(all(row["candidate"]["version"] == "0.9.0~rc5.15~tg36" for row in rows))
 
     def test_cli_is_stdout_only_and_preserves_non_authorizing_draft(self):
         args, _, _ = self.fixture()

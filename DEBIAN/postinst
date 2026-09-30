@@ -117,11 +117,15 @@ chmod 0755 "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-profile-replacement \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-plan \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-snapshot-observe \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
 
 if [ "$PACKAGE_FLAVOR" = "dual" ]; then
     chmod 0755 "$MONITOR" "$THIN_GUARDD" \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-metadata-check \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check
 fi
@@ -199,6 +203,7 @@ if [ "$PACKAGE_FLAVOR" = "thick-only" ]; then
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-maintenance-check \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
         /usr/share/perl5/PVE/SharedLvmThinGuard.pm \
         /usr/share/perl5/PVE/SharedLvmThinGuardClient.pm \
@@ -418,6 +423,13 @@ fi
 echo
 echo "CLI:"
 echo "  sharedlvmthin doctor"
+echo
+echo "Update protection requires an explicit administrator choice before the"
+echo "next watched PVE/storage-stack change. Unrelated package updates are not blocked."
+echo "Recommended for shared SAN clusters:"
+echo "  sharedlvmthin update-policy select freeze"
+echo "Other explicit modes: qualified-auto or warn. Inspect with:"
+echo "  sharedlvmthin update-policy status"
 echo
 echo "Web configuration:"
 echo "  sharedlvmthin-web-configure"

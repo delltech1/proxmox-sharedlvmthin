@@ -38,6 +38,13 @@ class CompatibilityCommandSurfaceTests(unittest.TestCase):
         self.assertIn('echo "FAIL=command:$command"', source)
         self.assertIn('for command in $SLT_REQUIRED_RUNTIME_COMMANDS; do', source)
 
+    def test_global_dstate_requires_bounded_persistence_confirmation(self):
+        source = COMPAT.read_text(encoding="utf-8")
+        self.assertIn("sleep 2", source)
+        self.assertGreaterEqual(source.count("ps -eo stat="), 2)
+        self.assertIn("transient-global-dstate-cleared-after-bounded-recheck", source)
+        self.assertIn('if [ "$global_dstate" -eq 1 ]', source)
+
 
 if __name__ == "__main__":
     unittest.main()

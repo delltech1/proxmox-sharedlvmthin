@@ -228,7 +228,20 @@ while IFS='|' read -r sid disabled nodes; do
     check "recovery:$sid" /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$sid"
 done < "${storage_inventory:-/dev/null}"
 
+# A package configure refresh can make the dashboard run `pvesm status` while
+# this final aggregate is starting.  Do not relabel a sampled D-state SAFE,
+# but distinguish a short completed probe from persistent blocked I/O by
+# requiring it to survive one bounded confirmation interval.
+global_dstate=0
 if ps -eo stat= | grep -q '^D'; then
+    sleep 2
+    if ps -eo stat= | grep -q '^D'; then
+        global_dstate=1
+    else
+        echo "INFO=transient-global-dstate-cleared-after-bounded-recheck"
+    fi
+fi
+if [ "$global_dstate" -eq 1 ]; then
     echo "FAIL=global-dstate-present"
     fail=$((fail + 1))
 else

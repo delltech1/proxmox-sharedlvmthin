@@ -173,12 +173,77 @@ class UpstreamInventoryEvaluationTests(unittest.TestCase):
 
     def test_loaded_upstream_modules_are_critical_files(self):
         for path in (
+                "/usr/share/perl5/PVE/JSONSchema.pm",
                 "/usr/share/perl5/PVE/QemuConfig.pm",
                 "/usr/share/perl5/PVE/QemuServer.pm",
+                "/usr/share/perl5/PVE/QemuServer/QemuImage.pm",
                 "/usr/share/perl5/PVE/QemuServer/Drive.pm",
                 "/usr/share/perl5/PVE/SSHInfo.pm",
+                "/usr/share/perl5/PVE/Storage/Common.pm",
                 "/usr/share/perl5/PVE/Storage/LVMPlugin.pm"):
             self.assertIn(path, self.module.CRITICAL_FILES)
+
+    def test_apt_candidate_drift_does_not_change_runtime_contract(self):
+        package_data = {
+            "libpve-storage-perl": {
+                "installed": "libpve-storage-perl|9.1.10|all|installed|ok",
+                "installed_probe_ok": True,
+                "candidate": "9.1.11",
+                "candidate_probe_ok": True,
+            }
+        }
+        runtime = {
+            name: {
+                "installed": evidence["installed"],
+                "installed_probe_ok": evidence["installed_probe_ok"],
+            }
+            for name, evidence in package_data.items()
+        }
+        before = hashlib.sha256(json.dumps(runtime, sort_keys=True).encode()).hexdigest()
+        package_data["libpve-storage-perl"]["candidate"] = "9.1.12"
+        runtime_after = {
+            name: {
+                "installed": evidence["installed"],
+                "installed_probe_ok": evidence["installed_probe_ok"],
+            }
+            for name, evidence in package_data.items()
+        }
+        after = hashlib.sha256(json.dumps(runtime_after, sort_keys=True).encode()).hexdigest()
+        self.assertEqual(before, after)
+
+    def test_candidate_observation_failure_is_not_runtime_failure(self):
+        evidence = {
+            "installed": "libpve-storage-perl|9.1.10|all|installed|ok",
+            "installed_probe_ok": True,
+            "candidate": None,
+            "candidate_probe_ok": False,
+        }
+        runtime_errors = []
+        update_errors = []
+        if not evidence["installed_probe_ok"]:
+            runtime_errors.append("installed package evidence incomplete")
+        if not evidence["candidate_probe_ok"]:
+            update_errors.append("APT candidate evidence unavailable")
+        self.assertEqual(runtime_errors, [])
+        self.assertEqual(update_errors, ["APT candidate evidence unavailable"])
+
+    def test_fixture_matches_upstream_lvm_name_boundaries(self):
+        fixture = ROOT / "tests/unit/lib/PVE/Storage/Plugin.pm"
+        probe = (
+            "use PVE::Storage::Plugin; "
+            "for my $n (qw(a a+ b- -b ab a.b a_b a-b)) { "
+            "my $v=PVE::Storage::Plugin::parse_lvm_name($n,1); "
+            "print $n, '=', (defined($v)?'ok':'bad'), qq(\\n); }"
+        )
+        result = subprocess.run(
+            ["perl", f"-I{fixture.parent.parent}", "-e", probe],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            "a=bad", "a+=bad", "b-=bad", "-b=bad",
+            "ab=ok", "a.b=ok", "a_b=ok", "a-b=ok",
+        ])
 
     def test_scenario_registry_is_a_critical_owned_file(self):
         self.assertIn(

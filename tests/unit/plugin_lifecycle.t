@@ -5,6 +5,7 @@ use warnings;
 use FindBin;
 use File::Path qw(make_path);
 use File::Temp qw(tempdir);
+use JSON::PP ();
 use lib "$FindBin::Bin/lib";
 use lib "$FindBin::Bin/../../usr/share/perl5";
 use Test::More;
@@ -66,6 +67,7 @@ my $bridge_admission_compatible = \&PVE::Storage::Custom::SharedLvmThinPlugin::_
 my $with_vg_lock = \&PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock;
 my $thin_adopt_owner_model = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_adopt_owner_model;
 my $thin_import_state_from_tags = \&PVE::Storage::Custom::SharedLvmThinPlugin::_thin_import_state_from_tags;
+my $scoped_vg_status = \&PVE::Storage::Custom::SharedLvmThinPlugin::_scoped_vg_status;
 my $record_disable_autoactivation = sub {
     my ($class, $vg, $lv) = @_;
     PVE::Storage::Custom::SharedLvmThinPlugin::run_command([
@@ -75,6 +77,56 @@ my $record_disable_autoactivation = sub {
 };
 
 no warnings 'redefine';
+# Generic lifecycle fixtures model the DUAL package and must not inherit the
+# package flavor installed on the native test host.  Thick-only and missing-
+# marker cases below override this path/function explicitly.
+my $fixture_flavor_dir = tempdir(CLEANUP => 1);
+my $fixture_flavor = "$fixture_flavor_dir/package-flavor";
+open(my $fixture_flavor_fh, '>', $fixture_flavor)
+    or die "create package flavor fixture failed: $!";
+print {$fixture_flavor_fh} "dual\n";
+close($fixture_flavor_fh)
+    or die "close package flavor fixture failed: $!";
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_package_flavor_path = sub {
+    return $fixture_flavor;
+};
+my $fixture_runtime_id = "$fixture_flavor_dir/runtime-build-id";
+open(my $fixture_runtime_fh, '>', $fixture_runtime_id)
+    or die "create runtime build identity fixture failed: $!";
+print {$fixture_runtime_fh} "", ('a' x 64), "\n";
+close($fixture_runtime_fh)
+    or die "close runtime build identity fixture failed: $!";
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_build_id_path = sub {
+    return $fixture_runtime_id;
+};
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_loaded_runtime_build_id = sub {
+    return 'a' x 64;
+};
+my $fixture_runtime_release = "$fixture_flavor_dir/runtime-release.json";
+open(my $fixture_release_fh, '>', $fixture_runtime_release)
+    or die "create runtime release fixture failed: $!";
+print {$fixture_release_fh}
+    '{"schema":1,"qualified":"QUALIFIED","runtime_build_id":"',
+    ('a' x 64), '","plan_digest":"', ('b' x 64),
+    '","boot_id":"11111111-2222-3333-4444-555555555555",',
+    '"kernel_release":"7.0.0-test"}', "\n";
+close($fixture_release_fh)
+    or die "close runtime release fixture failed: $!";
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_release_path = sub {
+    return $fixture_runtime_release;
+};
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_maintenance_state_dir = sub {
+    return "$fixture_flavor_dir/maintenance";
+};
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_update_guard_state_dir = sub {
+    return "$fixture_flavor_dir/update-guard";
+};
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_current_boot_id = sub {
+    return '11111111-2222-3333-4444-555555555555';
+};
+local *PVE::Storage::Custom::SharedLvmThinPlugin::_current_kernel_release = sub {
+    return '7.0.0-test';
+};
 # Existing rollback metadata fixtures do not model kernel activation. Record
 # the new runtime boundary separately; activation/teardown implementations
 # retain their independent lifecycle tests below and are not globally stubbed.
@@ -152,6 +204,10 @@ local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { retur
 my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
 my $scfg = {
     'slt-vgname' => 'testvg',
+    # Keep the generic lifecycle fixture independent of whichever package
+    # profile happens to be installed on the native test host. Dedicated
+    # subtests below exercise Thick-only defaults explicitly.
+    'slt-allocation-mode' => 'thin',
     'slt-initial-pool-size' => 4,
 };
 
@@ -1512,6 +1568,9 @@ subtest 'explicit PVE Storage API 14..15 compatibility policy' => sub {
 subtest 'volume_resize accepts API14 and API15 call signatures' => sub {
     my @received;
     no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_package_flavor = sub {
+        return 'dual';
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_volume_resize_locked = sub {
         @received = @_;
         return;
@@ -1529,9 +1588,9 @@ subtest 'delayed SAN discovery recovers without initialization or repair' => sub
     reset_mocks();
     my $visible = 0;
     no warnings 'redefine';
-    local *PVE::Storage::LVMPlugin::lvm_vgs = sub {
-        return {} if !$visible;
-        return { testvg => { size => 1000, free => 600 } };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_scoped_vg_status = sub {
+        return { state => 'ABSENT' } if !$visible;
+        return { state => 'FOUND', size => 1000, free => 600, uuid => 'vg-test' };
     };
 
     my $ok = eval {
@@ -1550,6 +1609,86 @@ subtest 'delayed SAN discovery recovers without initialization or repair' => sub
     my @recovered = $class->status('sharedthin-test', $scfg, undef);
     is_deeply(\@recovered, [1000, 600, 400, 1], 'existing VG is rediscovered without recreation');
     is(scalar(@commands), 0, 'recovery performed no initialization or repair');
+};
+
+subtest 'scoped VG status rejects ambiguous or malformed upstream inventory' => sub {
+    my $identity = {
+        %$scfg,
+        'slt-expected-vg-uuid' => 'vg-uuid-expected',
+        'slt-expected-wwid' => '3600deadbeef00000000000000000001',
+    };
+    my @cases = (
+        {
+            name => 'found',
+            rows => [{ vg_name => 'testvg', vg_uuid => 'vg-uuid-expected',
+                vg_size => '1000', vg_free => '600' }],
+            expected => { state => 'FOUND', size => 1000, free => 600,
+                uuid => 'vg-uuid-expected' },
+        },
+        { name => 'absent', rows => [], expected => { state => 'ABSENT' } },
+        {
+            name => 'wrong UUID',
+            rows => [{ vg_name => 'testvg', vg_uuid => 'wrong',
+                vg_size => '1000', vg_free => '600' }],
+            error => qr/UUID mismatch/,
+        },
+        {
+            name => 'free exceeds total',
+            rows => [{ vg_name => 'testvg', vg_uuid => 'vg-uuid-expected',
+                vg_size => '1000', vg_free => '1001' }],
+            error => qr/impossible capacity/,
+        },
+        {
+            name => 'non numeric',
+            rows => [{ vg_name => 'testvg', vg_uuid => 'vg-uuid-expected',
+                vg_size => 'NaN', vg_free => '600' }],
+            error => qr/invalid vg_size/,
+        },
+        {
+            name => 'overflow',
+            rows => [{ vg_name => 'testvg', vg_uuid => 'vg-uuid-expected',
+                vg_size => '9223372036854775808', vg_free => '600' }],
+            error => qr/overflowing vg_size/,
+        },
+        {
+            name => 'duplicate',
+            rows => [
+                { vg_name => 'testvg', vg_uuid => 'vg-uuid-expected',
+                    vg_size => '1000', vg_free => '600' },
+                { vg_name => 'testvg', vg_uuid => 'vg-uuid-expected',
+                    vg_size => '1000', vg_free => '600' },
+            ],
+            error => qr/ambiguous/,
+        },
+    );
+
+    for my $case (@cases) {
+        my $seen;
+        no warnings 'redefine';
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+            my ($command, %options) = @_;
+            $seen = $command;
+            my $json = JSON::PP::encode_json({ report => [{ vg => $case->{rows} }] });
+            $options{outfunc}->($json);
+        };
+        my $result;
+        my $ok = eval {
+            $result = $scoped_vg_status->($class, $identity);
+            1;
+        };
+        if ($case->{error}) {
+            ok(!$ok, "$case->{name}: rejected");
+            like($@, $case->{error}, "$case->{name}: exact failure");
+        } else {
+            ok($ok, "$case->{name}: accepted");
+            is_deeply($result, $case->{expected}, "$case->{name}: exact result");
+        }
+        ok(grep({ $_ eq '--readonly' } @$seen), "$case->{name}: read only");
+        ok(grep({ $_ eq '--reportformat' } @$seen), "$case->{name}: JSON report");
+        ok(grep({ $_ eq '/dev/mapper/3600deadbeef00000000000000000001' } @$seen),
+            "$case->{name}: exact device scope");
+        ok(grep({ $_ eq 'vg_name=testvg' } @$seen), "$case->{name}: exact VG selector");
+    }
 };
 
 subtest 'storage identity gate accepts an exact single-PV multipath identity' => sub {
@@ -1696,7 +1835,9 @@ subtest 'identity failure matrix performs no mutating LVM command' => sub {
 subtest 'unavailable VG blocks activation without mutation' => sub {
     reset_mocks();
     no warnings 'redefine';
-    local *PVE::Storage::LVMPlugin::lvm_vgs = sub { return {}; };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_scoped_vg_status = sub {
+        return { state => 'ABSENT' };
+    };
     my $ok = eval {
         $class->activate_storage('sharedthin-test', $scfg, undef);
         1;
@@ -3623,6 +3764,51 @@ subtest 'Thick-only flavor parses cluster schema but rejects every local Thin en
         'Thick-only options accept the VG-wide materialization ceiling');
 };
 
+subtest 'Lazy storage routes only the exact OVMF EFI creation callsite through Eager' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations-lazy',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 1,
+    };
+    my @eager;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_destroy_call_frames = sub {
+        return [{
+            sub => 'PVE::QemuServer::OVMF::create_efidisk',
+            package => 'PVE::API2::Qemu',
+            file => '/usr/share/perl5/PVE/API2/Qemu.pm',
+            args => [],
+        }];
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_alloc_image = sub {
+        push @eager, [@_];
+        return $_[5];
+    };
+    is($class->alloc_image('lazy-a', $cfg, 901, 'raw', 'vm-901-disk-7', 528),
+        'vm-901-disk-7', 'exact OVMF EFI allocation uses the Eager lifecycle');
+    is(scalar(@eager), 1, 'Eager allocation is dispatched exactly once');
+    is_deeply([@{$eager[0]}[1 .. 6]],
+        ['lazy-a', $cfg, 901, 'raw', 'vm-901-disk-7', 528],
+        'the public allocation arguments are preserved exactly');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_destroy_call_frames = sub {
+        return [{
+            sub => 'PVE::QemuServer::OVMF::create_efidisk',
+            package => 'Unexpected::Package',
+            file => '/tmp/not-upstream.pm',
+            args => [],
+        }];
+    };
+    eval { $class->alloc_image('lazy-a', $cfg, 901, 'raw', 'vm-901-disk-8', 528) };
+    like($@, qr/Lazy EFI allocation callsite is unqualified/,
+        'caller drift is rejected before allocation');
+    is(scalar(@eager), 1, 'caller drift performs no allocation');
+};
+
 subtest 'Lazy allocation reserves data without zeroing and publishes only initialized metadata' => sub {
     reset_mocks();
     my $cfg = {
@@ -3639,6 +3825,7 @@ subtest 'Lazy allocation reserves data without zeroing and publishes only initia
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub {
         return '0123456789abcdef0123456789abcdef';
     };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_destroy_call_frames = sub { [] };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         return $_[3]->();
     };
@@ -3647,7 +3834,9 @@ subtest 'Lazy allocation reserves data without zeroing and publishes only initia
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { '0' x 32 };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub {
+        return { extent_bytes => 4 * 1024 * 1024 };
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_create_lv_exact = sub {
         push @created, [@{$_[3]}];
         return 1;
@@ -3661,7 +3850,7 @@ subtest 'Lazy allocation reserves data without zeroing and publishes only initia
             $name
         } @created[0, 1];
         return { testvg => {
-            $data => { lv_uuid => 'data-uuid', lv_size => 1024 * 1024,
+            $data => { lv_uuid => 'data-uuid', lv_size => 4 * 1024 * 1024,
                 lv_attr => '-wi-------', tags => '' },
             $meta => { lv_uuid => 'meta-uuid', lv_size => 20 * 1024 * 1024,
                 lv_attr => '-wi-------', tags => '' },
@@ -3694,6 +3883,12 @@ subtest 'Lazy allocation reserves data without zeroing and publishes only initia
     is(scalar(@created), 3, 'data, metadata and anchor are created exactly once');
     like(join(' ', @{$created[0]}), qr/--wipesignatures n/,
         'fully allocated data LV is created without eager signature wiping');
+    like(join(' ', @{$created[0]}), qr/-L 4096K/,
+        'sub-extent Lazy request is rounded to the exact VG extent before creation');
+    like(join(' ', @{$created[0]}), qr/slt_tgl_bytes=4194304/,
+        'rounded physical size is signed on the Lazy data object');
+    like(join(' ', @{$created[2]}), qr/slt_tg_bytes=4194304/,
+        'the Lazy anchor signs the same rounded physical size');
     is(scalar(@zeroed), 1, 'only one object is explicitly initialized');
     like($zeroed[0]->[0], qr{/dev/testvg/sltg-m-},
         'only the clone metadata LV is zero initialized');
@@ -4287,7 +4482,7 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['-wi-------'] };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub { {} };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub { [] };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
@@ -4336,7 +4531,7 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     @inventories = ({ testvg => {} });
     @cleared = ();
     eval { $class->_thick_recover_partial_allocation($cfg, $storeid, $volname) };
-    like($@, qr/requires one or both exact signed allocation objects/,
+    like($@, qr/requires at least one exact signed allocation object/,
         'empty inventory is not silently adopted by partial-object recovery');
     is(scalar(@commands), 0, 'empty-inventory refusal performs no mutation');
     is_deeply(\@cleared, [], 'empty-inventory refusal preserves OPEN intent');
@@ -4351,6 +4546,125 @@ subtest 'partial thick allocation recovery removes only an exact unreferenced PR
     like($@, qr/PVE still references/, 'any exact PVE reference blocks partial cleanup');
     is(scalar(@commands), 0, 'reference refusal performs no mutation');
     is_deeply(\@cleared, [], 'reference refusal preserves the OPEN intent');
+};
+
+subtest 'partial Lazy allocation recovery validates and removes metadata data anchor exactly' => sub {
+    reset_mocks();
+    my $class = 'PVE::Storage::Custom::SharedLvmThinPlugin';
+    my $storeid = 'lazy-test';
+    my $volname = 'vm-900002-disk-0';
+    my $namespace = 'vg-uuid';
+    my $anchor = PVE::SharedLvmThinThick::anchor_name($namespace, $volname);
+    my $head = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 0);
+    my $key = PVE::SharedLvmThinThick::object_key($namespace, $volname);
+    my $metadata = sprintf('sltg-m-%s-%08d', $key, 0);
+    my $tx = 'a' x 32;
+    my $bytes = 1024 * 1024 * 1024;
+    my $metadata_bytes = 20 * 1024 * 1024;
+    my $region = 2048;
+    my $intent = {
+        tx => $tx, state => 'OPEN', op => 'ALLOC', object => $anchor,
+        before => ('b' x 32),
+    };
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations-lazy',
+        'slt-expected-vg-uuid' => $namespace,
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $data_uuid = 'data-uuid';
+    my $metadata_uuid = 'metadata-uuid';
+    my $anchor_tags = join(',', @{PVE::SharedLvmThinThick::anchor_tags(
+        v => 6, sid => $storeid, vol => $volname, phase => 'LAZY_PREPARED',
+        tx => $tx, op => 'ALLOC', snapshot => 'none', source => $head,
+        old => $head, new => $head, head => $head, generation => 0,
+        region => $region, policy => 'lazy-zero', bytes => $bytes,
+        metadata => $metadata, data_uuid => $data_uuid,
+        metadata_uuid => $metadata_uuid, zero_source => 'dm-zero',
+        publication => 0, owner_node => 'none', owner_boot => 'none',
+        owner_epoch => 'none',
+    )});
+    my $data_tags = join(',', @{PVE::SharedLvmThinThick::lazy_object_tags(
+        sid => $storeid, vol => $volname, tx => $tx, kind => 'data',
+        bytes => $bytes, region => $region,
+    )});
+    my $metadata_tags = join(',', @{PVE::SharedLvmThinThick::lazy_object_tags(
+        sid => $storeid, vol => $volname, tx => $tx, kind => 'metadata',
+        bytes => $metadata_bytes, region => $region,
+    )});
+    my $before = { testvg => {
+        $anchor => { tags => $anchor_tags, lv_state => '-', lv_uuid => 'anchor-uuid' },
+        $head => { tags => $data_tags, lv_state => '-', lv_uuid => $data_uuid },
+        $metadata => { tags => $metadata_tags, lv_state => '-', lv_uuid => $metadata_uuid },
+    } };
+    my @inventories = ($before, { testvg => {} });
+    my @cleared;
+
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my (undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { $intent };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+        return shift(@inventories);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
+    my @kernel_inventory = ({
+        PVE::Storage::Custom::SharedLvmThinPlugin::_thick_lv_mapper_name('testvg', $metadata) => 'LVM-metadata',
+        PVE::Storage::Custom::SharedLvmThinPlugin::_thick_lv_mapper_name('testvg', $head) => 'LVM-data',
+        PVE::Storage::Custom::SharedLvmThinPlugin::_thick_lv_mapper_name('testvg', $anchor) => 'LVM-anchor',
+    }, {
+        PVE::Storage::Custom::SharedLvmThinPlugin::_thick_lv_mapper_name('testvg', $head) => 'LVM-data',
+        PVE::Storage::Custom::SharedLvmThinPlugin::_thick_lv_mapper_name('testvg', $anchor) => 'LVM-anchor',
+    }, {
+        PVE::Storage::Custom::SharedLvmThinPlugin::_thick_lv_mapper_name('testvg', $anchor) => 'LVM-anchor',
+    }, {});
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_dm_kernel_inventory = sub {
+        return shift(@kernel_inventory) // {};
+    };
+    my @deactivated;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_exact_lvs = sub {
+        my (undef, undef, undef, undef, undef, $object) = @_;
+        push @deactivated, $object;
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_pve_reference_files = sub { [] };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        my (undef, undef, $vg, %seen) = @_;
+        push @cleared, [$vg, \%seen];
+        return 1;
+    };
+
+    is($class->_thick_recover_partial_allocation($cfg, $storeid, $volname),
+        'PARTIAL_ALLOCATION_RECOVERED', 'exact three-object Lazy allocation is recovered');
+    is_deeply([command_lines()], [
+        "/usr/bin/timeout --foreground --kill-after=5s 30s /sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$metadata",
+        "/usr/bin/timeout --foreground --kill-after=5s 30s /sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$head",
+        "/usr/bin/timeout --foreground --kill-after=5s 30s /sbin/lvremove --devices /dev/mapper/3600abcd -f testvg/$anchor",
+    ], 'Lazy cleanup removes only metadata, data and anchor in bounded order');
+    is_deeply(\@deactivated, [$metadata, $head, $anchor],
+        'kernel DM inventory drives exact deactivation without parsing unknown readonly lv_attr state');
+    is(scalar(@cleared), 1, 'Lazy OPEN intent clears only after exact absence proof');
+
+    reset_mocks();
+    my $foreign_tags = join(',', @{PVE::SharedLvmThinThick::lazy_object_tags(
+        sid => $storeid, vol => $volname, tx => ('c' x 32), kind => 'metadata',
+        bytes => $metadata_bytes, region => $region,
+    )});
+    @inventories = ({ testvg => {
+        $metadata => { tags => $foreign_tags, lv_state => '-', lv_uuid => $metadata_uuid },
+    } });
+    @cleared = ();
+    eval { $class->_thick_recover_partial_allocation($cfg, $storeid, $volname) };
+    like($@, qr/metadata object does not match the exact OPEN ALLOC transaction/,
+        'foreign Lazy metadata transaction is refused');
+    is(scalar(@commands), 0, 'foreign Lazy transaction refusal performs no mutation');
+    is_deeply(\@cleared, [], 'foreign Lazy transaction refusal preserves OPEN intent');
 };
 
 subtest 'thick volume-delete recovery is exact and repeatable at every delete boundary' => sub {
@@ -4689,7 +5003,11 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
 
     reset_mocks();
     my $snapshot = PVE::SharedLvmThinThick::generation_name($namespace, $volname, 1);
-    my $with_snapshot = { testvg => { %{$inventory->{testvg}}, $snapshot => { tags => '' } } };
+    my $with_snapshot = { testvg => {
+        $anchor => { %{$inventory->{testvg}->{$anchor}}, lv_uuid => 'anchor-uuid' },
+        $head => { %{$inventory->{testvg}->{$head}}, lv_uuid => 'head-uuid' },
+        $snapshot => { tags => '', lv_size => 4096, lv_uuid => 'snapshot-uuid' },
+    } };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { return 0; };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
         my (undef, undef, undef, $code) = @_; return $code->();
@@ -4697,7 +5015,7 @@ subtest 'thick delete is exact, transaction-scoped, and never broadens cleanup' 
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1; };
     local *PVE::Storage::LVMPlugin::lvm_list_volumes = sub { return $with_snapshot; };
     eval { $class->free_image($storeid, $cfg, $volname, 0) };
-    like($@, qr/snapshots or ambiguous generations remain/, 'dependent generation blocks delete');
+    like($@, qr/incomplete generation ownership proof/, 'unsigned dependent generation blocks delete');
     is(scalar(@commands), 0, 'dependency rejection performs zero mutation');
 };
 
@@ -6719,6 +7037,90 @@ subtest 'volume_size_info always exposes active block devices as raw' => sub {
     }
 };
 
+subtest 'Thick size and snapshot-copy geometry are mapper independent' => sub {
+    my $cfg = {
+        'slt-vgname' => 'thickvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-wwid' => 'a' x 32,
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+    };
+    my $phase = 'MATERIALIZED';
+    my $head_size = 1073741824;
+    my $snapshot_size = 1073741824;
+    my $size_commands = 0;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ({ phase => $phase, head => 'head-lv' },
+            { lv_size => $head_size }, 'anchor-lv');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        $size_commands++;
+        die "unexpected block-device size command\n";
+    };
+
+    is($class->volume_size_info(
+        $cfg, 'thick-test', 'vm-900021-disk-0', 7,
+    ), 1073741824, 'inactive Thick size comes from authenticated HEAD inventory');
+    my @size_info = $class->volume_size_info(
+        $cfg, 'thick-test', 'vm-900021-disk-0', 7,
+    );
+    is_deeply(\@size_info, [1073741824, 'raw', 0, undef],
+        'Thick size preserves list-context API contract');
+    is($size_commands, 0, 'Thick size does not probe or create a stable mapper');
+
+    $phase = 'HYDRATING';
+    eval { $class->volume_size_info(
+        $cfg, 'thick-test', 'vm-900021-disk-0', 7,
+    ) };
+    like($@, qr/size is unavailable.*HYDRATING/,
+        'transitional Thick size fails closed');
+    like($@, qr/do not retry while the transition result is unresolved/,
+        'ambiguous transition error does not suggest a blind retry');
+    $phase = 'LAZY_ACTIVE';
+    eval { $class->volume_size_info(
+        $cfg, 'thick-test', 'vm-900021-disk-0', 7,
+    ) };
+    like($@,
+        qr{sharedlvmthin thick-lazy-materialize thick-test vm-900021-disk-0},
+        'settled Lazy size refusal gives the exact materialization command');
+    like($@, qr/recovery-check both pass/,
+        'settled Lazy guidance requires command and recovery proof before retry');
+    $phase = 'MATERIALIZED';
+    $head_size = 0;
+    eval { $class->volume_size_info(
+        $cfg, 'thick-test', 'vm-900021-disk-0', 7,
+    ) };
+    like($@, qr/HEAD size is missing/, 'invalid Thick HEAD size fails closed');
+    $head_size = 1073741824;
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+        return { thickvg => {} };
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_find_snapshot = sub {
+        return ('snapshot-lv', 0, { lv_size => $snapshot_size });
+    };
+
+    is($class->volume_has_feature(
+        $cfg, 'copy', 'thick-test', 'vm-900021-disk-0', 'base', 0,
+    ), 1, 'equal snapshot and HEAD geometry advertises copy');
+    $snapshot_size = 536870912;
+    ok(!defined($class->volume_has_feature(
+        $cfg, 'copy', 'thick-test', 'vm-900021-disk-0', 'base', 0,
+    )), 'smaller snapshot geometry refuses copy before target allocation');
+    $snapshot_size = 2147483648;
+    ok(!defined($class->volume_has_feature(
+        $cfg, 'copy', 'thick-test', 'vm-900021-disk-0', 'base', 0,
+    )), 'larger snapshot geometry refuses copy before target allocation');
+    $snapshot_size = 1073741824;
+    $phase = 'SNAPSHOT';
+    ok(!defined($class->volume_has_feature(
+        $cfg, 'copy', 'thick-test', 'vm-900021-disk-0', 'base', 0,
+    )), 'transitional HEAD refuses snapshot copy');
+};
+
 subtest 'same-VG thin and thick aliases expose only their owned inventory' => sub {
     my $thin_store = 'thin-alias';
     my $thick_store = 'thick-alias';
@@ -6834,8 +7236,9 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
         $state, ('7' x 32),
     );
     my @inventory = (
-        { testvg => { $snapshot => {}, $head => {}, anchor => {} } },
-        { testvg => { $head => {}, anchor => {} } },
+        { testvg => { $snapshot => { lv_uuid => 'snapshot-uuid' }, $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
+        { testvg => { $snapshot => { lv_uuid => 'snapshot-uuid' }, $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
+        { testvg => { $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
     );
     my @events;
     no warnings 'redefine';
@@ -6846,12 +7249,18 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_mutation_quorum = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, {}, 'anchor');
+    };
     my $anchor_reads = 0;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
         $anchor_reads++;
         return ($anchor_reads == 1 ? $state : $rebased, {}, 'anchor');
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_find_snapshot = sub { return ($snapshot, 0, {}) };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_find_snapshot = sub {
+        return ($snapshot, 0, { lv_uuid => 'snapshot-uuid' });
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_autoactivation_disabled = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { '7' x 32 };
@@ -6884,7 +7293,10 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
         'intent brackets canonical rebase and the verified delete');
 
     reset_mocks();
-    @inventory = ({ testvg => { $snapshot => {}, $head => {}, anchor => {} } });
+    @inventory = (
+        { testvg => { $snapshot => { lv_uuid => 'snapshot-uuid' }, $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
+        { testvg => { $snapshot => { lv_uuid => 'snapshot-uuid' }, $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
+    );
     @events = ();
     $anchor_reads = 0;
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['1'] };
@@ -6895,8 +7307,9 @@ subtest 'thick snapshot delete is exact, open-count guarded, and preserves HEAD'
 
     reset_mocks();
     @inventory = (
-        { testvg => { $snapshot => {}, $head => {}, anchor => {} } },
-        { testvg => { $snapshot => {}, $head => {}, anchor => {} } },
+        { testvg => { $snapshot => { lv_uuid => 'snapshot-uuid' }, $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
+        { testvg => { $snapshot => { lv_uuid => 'snapshot-uuid' }, $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
+        { testvg => { $snapshot => { lv_uuid => 'snapshot-uuid' }, $head => {}, anchor => { lv_uuid => 'anchor-uuid' } } },
     );
     @events = ();
     $anchor_reads = 0;
@@ -7080,6 +7493,62 @@ subtest 'thick rollback dispatches to the generation materializer' => sub {
     is_deeply(\@received,
         [$cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK'],
         'rollback passes exact storage, volume, snapshot, and operation identity');
+};
+
+subtest 'thick rollback preflight uses exact identity before guest stop' => sub {
+    reset_mocks();
+    my $cfg = {
+        'slt-allocation-mode' => 'thick-generations-lazy',
+    };
+    my @admission;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_assert_package_operations_released = sub {
+        is($_[1], 'snapshot rollback preflight', 'maintenance gate is checked');
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_rollback_admission = sub {
+        @admission = @_[1 .. 4];
+        return 1;
+    };
+    ok($class->volume_rollback_is_possible(
+        $cfg, 'lazy-a', 'vm-900001-disk-0', 'snap1', [],
+    ), 'materialized exact Thick rollback is accepted by the pre-stop hook');
+    is_deeply(\@admission,
+        [$cfg, 'lazy-a', 'vm-900001-disk-0', 'snap1'],
+        'preflight performs bounded exact-transition admission for the requested snapshot');
+};
+
+subtest 'thick rollback preflight refuses transition without mutation' => sub {
+    reset_mocks();
+    my $cfg = { 'slt-allocation-mode' => 'thick-generations-lazy' };
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_assert_package_operations_released = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_wait_rollback_admission = sub {
+        die "rollback admission timed out while the exact snapshot transition remained incomplete; the guest was not stopped\n";
+    };
+    eval {
+        $class->volume_rollback_is_possible(
+            $cfg, 'lazy-a', 'vm-900001-disk-0', 'snap1', [],
+        );
+    };
+    like($@, qr/rollback admission timed out.*guest was not stopped/s,
+        'transitioning Lazy rollback is refused with the availability postcondition');
+    is_deeply([command_lines()], [], 'pre-stop refusal dispatches no storage mutation');
+};
+
+subtest 'thin rollback preflight remains side-effect free' => sub {
+    reset_mocks();
+    my $cfg = { 'slt-allocation-mode' => 'thin' };
+    my $anchor_reads = 0;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        $anchor_reads++;
+        return;
+    };
+    ok($class->volume_rollback_is_possible(
+        $cfg, 'thin-a', 'vm-900001-disk-0', 'snap1', [],
+    ), 'Thin rollback retains its existing preflight behavior');
+    is($anchor_reads, 0, 'Thin rollback does not enter the Thick inventory path');
 };
 
 subtest 'C3 resume requires exact persisted request and transaction identity' => sub {
@@ -7721,10 +8190,29 @@ subtest 'missing package flavor marker fails closed' => sub {
 
 subtest 'package maintenance hold blocks forward operations fail closed' => sub {
     my $dir = tempdir(CLEANUP => 1);
+    my $update_dir = tempdir(CLEANUP => 1);
+    my $runtime_id = "$dir/runtime-build-id";
+    my $runtime_release = "$dir/runtime-release.json";
     chmod(0700, $dir) or die "chmod maintenance fixture failed: $!";
+    chmod(0700, $update_dir) or die "chmod update fixture failed: $!";
+    open(my $runtime, '>', $runtime_id) or die "create runtime identity fixture failed: $!";
+    print {$runtime} "", ('a' x 64), "\n";
+    close($runtime) or die "close runtime identity fixture failed: $!";
+    open(my $release, '>', $runtime_release)
+        or die "create runtime release fixture failed: $!";
+    print {$release}
+        '{"schema":1,"qualified":"QUALIFIED","runtime_build_id":"',
+        ('a' x 64), '","plan_digest":"', ('b' x 64),
+        '","boot_id":"11111111-2222-3333-4444-555555555555",',
+        '"kernel_release":"7.0.0-test"}', "\n";
+    close($release) or die "close runtime release fixture failed: $!";
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_loaded_runtime_build_id = sub {
+        return 'a' x 64;
+    };
     ok(PVE::Storage::Custom::SharedLvmThinPlugin
-        ->_assert_package_operations_released('volume activation', $dir),
-        'safe empty maintenance directory permits operation');
+        ->_assert_package_operations_released(
+            'volume activation', $dir, $update_dir, $runtime_id, $runtime_release),
+        'safe empty maintenance and update directories permit operation');
 
     open(my $active, '>', "$dir/active.json")
         or die "create maintenance fixture failed: $!";
@@ -7732,7 +8220,8 @@ subtest 'package maintenance hold blocks forward operations fail closed' => sub 
     close($active) or die "close maintenance fixture failed: $!";
     my $ok = eval {
         PVE::Storage::Custom::SharedLvmThinPlugin
-            ->_assert_package_operations_released('volume activation', $dir);
+            ->_assert_package_operations_released(
+                'volume activation', $dir, $update_dir, $runtime_id, $runtime_release);
         1;
     };
     ok(!$ok, 'any active transaction object blocks operation');
@@ -7743,12 +8232,98 @@ subtest 'package maintenance hold blocks forward operations fail closed' => sub 
     chmod(0755, $dir) or die "chmod unsafe maintenance fixture failed: $!";
     $ok = eval {
         PVE::Storage::Custom::SharedLvmThinPlugin
-            ->_assert_package_operations_released('volume allocation', $dir);
+            ->_assert_package_operations_released(
+                'volume allocation', $dir, $update_dir, $runtime_id, $runtime_release);
         1;
     };
     ok(!$ok, 'unsafe maintenance directory is not interpreted as release');
-    like($@, qr/hold directory is unsafe.*volume allocation/,
+    like($@, qr/maintenance directory is unsafe.*volume allocation/,
         'unsafe directory fails with explicit diagnostic');
+
+    chmod(0700, $dir) or die "restore maintenance fixture mode failed: $!";
+    open(my $pending, '>', "$update_dir/post-gate-required.json")
+        or die "create update-gate fixture failed: $!";
+    print {$pending} "{}\n";
+    close($pending) or die "close update-gate fixture failed: $!";
+    $ok = eval {
+        PVE::Storage::Custom::SharedLvmThinPlugin
+            ->_assert_package_operations_released(
+                'snapshot creation', $dir, $update_dir, $runtime_id, $runtime_release);
+        1;
+    };
+    ok(!$ok, 'a pending post-update gate blocks storage mutation');
+    like($@, qr/PACKAGE_UPDATE_UNSETTLED.*snapshot creation.*loaded and boot runtime/,
+        'post-update diagnostic identifies the missing runtime settlement');
+
+    unlink("$update_dir/post-gate-required.json")
+        or die "remove update-gate fixture failed: $!";
+    symlink('/does/not/matter', "$update_dir/post-gate-required.json")
+        or die "create update-gate symlink fixture failed: $!";
+    $ok = eval {
+        PVE::Storage::Custom::SharedLvmThinPlugin
+            ->_assert_package_operations_released(
+                'volume resize', $dir, $update_dir, $runtime_id, $runtime_release);
+        1;
+    };
+    ok(!$ok, 'an unsafe pending-gate object cannot be interpreted as release');
+    like($@, qr/PACKAGE_UPDATE_UNSETTLED.*volume resize/,
+        'presence-only admission remains fail closed for an unsafe gate object');
+
+    unlink("$update_dir/post-gate-required.json")
+        or die "remove update-gate symlink fixture failed: $!";
+    for my $hold (
+        ['package-transition.json', 'PACKAGE_BASELINE_TRANSITION'],
+        ['runtime-qualification-pending.json', 'RUNTIME_QUALIFICATION_PENDING'],
+    ) {
+        open(my $fh, '>', "$update_dir/$hold->[0]")
+            or die "create $hold->[0] fixture failed: $!";
+        print {$fh} "{}\n";
+        close($fh) or die "close $hold->[0] fixture failed: $!";
+        $ok = eval {
+            PVE::Storage::Custom::SharedLvmThinPlugin
+                ->_assert_package_operations_released(
+                    'volume mutation', $dir, $update_dir, $runtime_id, $runtime_release);
+            1;
+        };
+        ok(!$ok, "$hold->[0] blocks mutation by presence");
+        like($@, qr/\Q$hold->[1]\E.*volume mutation/,
+            "$hold->[0] has an explicit fail-closed diagnostic");
+        unlink("$update_dir/$hold->[0]")
+            or die "remove $hold->[0] fixture failed: $!";
+    }
+    open($runtime, '>', $runtime_id) or die "replace runtime identity fixture failed: $!";
+    print {$runtime} "", ('b' x 64), "\n";
+    close($runtime) or die "close replacement runtime identity fixture failed: $!";
+    $ok = eval {
+        PVE::Storage::Custom::SharedLvmThinPlugin
+            ->_assert_package_operations_released(
+                'volume activation', $dir, $update_dir, $runtime_id, $runtime_release);
+        1;
+    };
+    ok(!$ok, 'old loaded code is refused after the installed payload identity changes');
+    like($@, qr/LOADED_RUNTIME_UNVERIFIED.*differs from installed.*volume activation/,
+        'runtime mismatch diagnostic requires a verified PVE service refresh');
+
+    open($runtime, '>', $runtime_id) or die "restore runtime identity fixture failed: $!";
+    print {$runtime} "", ('a' x 64), "\n";
+    close($runtime) or die "close restored runtime identity fixture failed: $!";
+    open($release, '>', $runtime_release)
+        or die "replace runtime release fixture failed: $!";
+    print {$release}
+        '{"schema":1,"qualified":"QUALIFIED","runtime_build_id":"',
+        ('a' x 64), '","plan_digest":"', ('b' x 64),
+        '","boot_id":"99999999-2222-3333-4444-555555555555",',
+        '"kernel_release":"7.0.0-test"}', "\n";
+    close($release) or die "close replacement runtime release fixture failed: $!";
+    $ok = eval {
+        PVE::Storage::Custom::SharedLvmThinPlugin
+            ->_assert_package_operations_released(
+                'snapshot creation', $dir, $update_dir, $runtime_id, $runtime_release);
+        1;
+    };
+    ok(!$ok, 'a release receipt from another boot is refused');
+    like($@, qr/RUNTIME_NOT_QUALIFIED.*another boot/,
+        'boot-bound receipt mismatch is explicit');
 };
 
 subtest 'materialized Lazy volumes converge to the ordinary Thick lifecycle' => sub {
@@ -7775,6 +8350,9 @@ subtest 'materialized Lazy volumes converge to the ordinary Thick lifecycle' => 
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub { $_[3]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_lazy_volume_executor_lock = sub {
+        return $_[3]->();
+    };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
         return ({ phase => 'MATERIALIZED', head => 'sltg-g-head' }, {}, 'sltg-a-anchor');
     };
@@ -7829,6 +8407,258 @@ subtest 'materialized Lazy volumes converge to the ordinary Thick lifecycle' => 
         'all converged mutation hooks dispatch exactly once');
 };
 
+subtest 'Lazy alias dispatches transitional v5 deactivation to Thick lifecycle' => sub {
+    reset_mocks();
+    my $cfg = {
+        'slt-allocation-mode' => 'thick-generations-lazy',
+        'slt-vgname' => 'testvg',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $delegated = 0;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ({ v => 5, phase => 'HYDRATING', tx => ('a' x 32),
+            op => 'SNAPSHOT', head => 'new-head' }, {}, 'anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_volume = sub {
+        $delegated++;
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_assert_no_active_storage_worker = sub {
+        die "v5 transition was misrouted into v6 Lazy deactivation\n";
+    };
+    ok($class->_lazy_deactivate_volume_locked(
+        'lazy-a', $cfg, 'vm-901-disk-0', undef, undef,
+    ), 'transitional v5 object delegates to the Thick transition-aware deactivator');
+    is($delegated, 1, 'v5 deactivation is delegated exactly once');
+    is_deeply([command_lines()], [], 'dispatch itself performs no teardown effect');
+};
+
+subtest 'Lazy foreign owner and stale boot refusals are actionable and inert' => sub {
+    my $remote = eval {
+        $class->_lazy_require_local_owner(
+            'lazy-a', 'vm-907-disk-0',
+            { owner_node => 'node-a', owner_boot => 'boot-a' },
+            'node-b', 'boot-b',
+        );
+        1;
+    };
+    ok(!$remote, 'foreign owner is refused');
+    like($@, qr/cannot be activated concurrently on 'node-b'/,
+        'foreign-owner refusal names the unsafe concurrent activation');
+    like($@, qr/sharedlvmthin thick-lazy-materialize lazy-a vm-907-disk-0/,
+        'foreign-owner refusal gives the exact source-side materialization command');
+    like($@, qr/No target activation effect was issued/,
+        'foreign-owner refusal states the no-effect postcondition');
+
+    my $stale = eval {
+        $class->_lazy_require_local_owner(
+            'lazy-a', 'vm-907-disk-0',
+            { owner_node => 'node-a', owner_boot => 'old-boot' },
+            'node-a', 'new-boot',
+        );
+        1;
+    };
+    ok(!$stale, 'same-node stale boot is refused');
+    like($@, qr/stale boot epoch on local node 'node-a'/,
+        'stale boot is diagnosed separately from remote ownership');
+    like($@, qr/Do not materialize or reclaim it blindly/,
+        'stale-boot refusal requires recovery rather than unsafe materialization');
+
+    ok($class->_lazy_require_local_owner(
+        'lazy-a', 'vm-907-disk-0',
+        { owner_node => 'node-a', owner_boot => 'boot-a' },
+        'node-a', 'boot-a',
+    ), 'exact local owner and boot epoch are accepted');
+};
+
+subtest 'Lazy-default auxiliary volumes use the materialized Thick lifecycle' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations-lazy',
+    };
+    my @calls;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_assert_package_operations_released = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_lazy_volume_executor_lock = sub {
+        die "auxiliary volume entered guest-disk-only Lazy executor\n";
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_activate_volume = sub {
+        push @calls, ['activate', $_[3], $_[4]]; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_volume = sub {
+        push @calls, ['deactivate', $_[3], $_[4]]; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_free_image = sub {
+        push @calls, ['free', $_[3], undef]; return undef;
+    };
+
+    for my $name ('vm-901-state-live', 'vm-901-fleece-0', 'vm-901-cloudinit') {
+        ok($class->activate_volume('lazy-a', $cfg, $name, undef, undef),
+            "$name activates as materialized Thick");
+        ok($class->deactivate_volume('lazy-a', $cfg, $name, undef, undef),
+            "$name deactivates as materialized Thick");
+        is($class->free_image('lazy-a', $cfg, $name, 0), undef,
+            "$name is removed as materialized Thick");
+    }
+    is(scalar(@calls), 9, 'each auxiliary lifecycle hook dispatches exactly once');
+    is_deeply([map { $_->[0] } @calls],
+        [qw(activate deactivate free activate deactivate free activate deactivate free)],
+        'activation, deactivation and cleanup retain one representation');
+};
+
+subtest 'Lazy delete serializes local active close before exact removal' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations-lazy',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my %identity = (
+        v => 6, tx => ('a' x 32), head => 'sltg-g-data',
+        metadata => 'sltg-m-meta', data_uuid => 'data-uuid',
+        metadata_uuid => 'meta-uuid', bytes => 4 * 1024 * 1024,
+        region => 2048,
+    );
+    my $phase = 'LAZY_ACTIVE';
+    my ($executor_depth, $vg_depth, $close_count, $intent_count, $clear_count) =
+        (0, 0, 0, 0, 0);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_lazy_volume_executor_lock = sub {
+        die "nested executor lock\n" if $executor_depth;
+        $executor_depth++;
+        my $result = $_[3]->();
+        $executor_depth--;
+        return $result;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        die "VG lock escaped Lazy executor\n" if $executor_depth != 1;
+        die "nested VG lock\n" if $vg_depth;
+        $vg_depth++;
+        my $result = $_[3]->();
+        $vg_depth--;
+        return $result;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_runtime_names = sub {
+        return qw(sltg-z-test sltg-c-test sltg-test);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        my %owner = $phase eq 'LAZY_ACTIVE'
+            ? (owner_node => 'testnode', owner_boot => 'boot-a', owner_epoch => 3)
+            : (owner_node => 'none', owner_boot => 'none', owner_epoch => 'none');
+        return ({ %identity, %owner, phase => $phase }, {}, 'sltg-a-anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_deactivate_volume_locked = sub {
+        die "close did not retain executor ownership\n" if $executor_depth != 1 || $vg_depth;
+        $close_count++;
+        $phase = 'LAZY_DORMANT';
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_mapper_absent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_autoactivation_disabled = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_exact_lvs = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { 'digest-a' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub {
+        $intent_count++; return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub {
+        return { testvg => {} };
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_clear_vg_intent = sub {
+        $clear_count++; return 1;
+    };
+
+    is($class->_lazy_free_image('lazy-a', $cfg, 'vm-903-disk-0', 0), undef,
+        'locally active zero-open lifecycle closes and deletes');
+    is_deeply([$close_count, $intent_count, $clear_count], [1, 1, 1],
+        'close, durable REMOVE intent and completion each execute once');
+    is(scalar(grep { $_->[4] eq '/sbin/lvremove' } @commands), 3,
+        'only the exact metadata, data and anchor LV removals are issued');
+    is($executor_depth, 0, 'executor lock is released after completion');
+    is($vg_depth, 0, 'VG lock is released after completion');
+};
+
+subtest 'Lazy delete refuses transitional phase before every removal effect' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations-lazy',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $closed = 0;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_lazy_volume_executor_lock = sub { $_[3]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub { $_[3]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_runtime_names = sub {
+        return qw(sltg-z-test sltg-c-test sltg-test);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ({ phase => 'LAZY_CLAIMED' }, {}, 'sltg-a-anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_deactivate_volume_locked = sub {
+        $closed++; return 1;
+    };
+    my $ok = eval { $class->_lazy_free_image('lazy-a', $cfg, 'vm-904-disk-0', 0); 1 };
+    ok(!$ok, 'transitional Lazy phase is refused');
+    like($@, qr/requires local LAZY_ACTIVE or closed LAZY_DORMANT/,
+        'refusal identifies the allowed delete admission states');
+    is($closed, 0, 'transitional phase is never auto-closed');
+    is(scalar(@commands), 0, 'transitional phase emits no storage command');
+};
+
+subtest 'Lazy delete refuses identity drift after automatic close' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations-lazy',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+    };
+    my $phase = 'LAZY_ACTIVE';
+    my $tx = 'a' x 32;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_lazy_volume_executor_lock = sub { $_[3]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub { $_[3]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_runtime_names = sub {
+        return qw(sltg-z-test sltg-c-test sltg-test);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        my %owner = $phase eq 'LAZY_ACTIVE'
+            ? (owner_node => 'testnode', owner_boot => 'boot-a', owner_epoch => 3)
+            : (owner_node => 'none', owner_boot => 'none', owner_epoch => 'none');
+        return ({
+            v => 6, phase => $phase, tx => $tx, head => 'sltg-g-data',
+            metadata => 'sltg-m-meta', data_uuid => 'data-uuid',
+            metadata_uuid => 'meta-uuid', bytes => 4194304, region => 2048,
+            %owner,
+        }, {}, 'sltg-a-anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_deactivate_volume_locked = sub {
+        $phase = 'LAZY_DORMANT';
+        $tx = 'b' x 32;
+        return 1;
+    };
+    my $ok = eval { $class->_lazy_free_image('lazy-a', $cfg, 'vm-905-disk-0', 0); 1 };
+    ok(!$ok, 'post-close object drift is refused');
+    like($@, qr/object identity changed at 'tx'/,
+        'refusal names the immutable field that changed');
+    is(scalar(@commands), 0, 'identity drift emits no removal command');
+};
+
 subtest 'unmaterialized Lazy volumes keep mutation capabilities fail closed' => sub {
     my $cfg = {
         shared => 1, 'slt-vgname' => 'testvg',
@@ -7839,7 +8669,7 @@ subtest 'unmaterialized Lazy volumes keep mutation capabilities fail closed' => 
     };
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
-        return ({ phase => 'LAZY_DORMANT' }, {}, 'sltg-a-anchor');
+        return ({ v => 6, phase => 'LAZY_DORMANT' }, {}, 'sltg-a-anchor');
     };
     ok(!$class->volume_has_feature($cfg, 'snapshot', 'lazy-a', 'vm-902-disk-0'),
         'clone-backed Lazy volume does not advertise snapshot');

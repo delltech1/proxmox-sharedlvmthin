@@ -1,0 +1,140 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use Digest::SHA qw(sha256_hex);
+use PVE::Cluster;
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::QemuServer::Helpers;
+use PVE::Storage;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+
+sub usage {
+    die "Usage: sharedlvmthin snapshot-preflight <vmid> [--ram]\n";
+}
+
+my ($vmid, @options) = @ARGV;
+usage() if !defined($vmid) || @options > 1;
+die "VMID must be a positive decimal integer\n"
+    if $vmid !~ /^(\d+)$/ || $1 < 1;
+$vmid = int($1);
+my $ram = @options ? 1 : 0;
+usage() if @options && $options[0] ne '--ram';
+
+PVE::Cluster::cfs_update();
+my ($local_node, $local_boot) =
+    PVE::Storage::Custom::SharedLvmThinPlugin->_lazy_local_identity();
+my $config_path = "/etc/pve/local/qemu-server/$vmid.conf";
+die "VM $vmid is not owned by local node '$local_node'\n"
+    if !-f $config_path;
+
+open(my $config_fh, '<', $config_path)
+    or die "cannot read VM $vmid configuration: $!\n";
+local $/;
+my $config_bytes = <$config_fh>;
+close($config_fh) or die "cannot close VM $vmid configuration: $!\n";
+my $config_sha256 = sha256_hex($config_bytes // '');
+
+my $running = PVE::QemuServer::Helpers::vm_running_locally($vmid) ? 1 : 0;
+my $conf = PVE::QemuConfig->load_config($vmid);
+my $storecfg = PVE::Storage::config();
+my (@volumes, @passed, @blocked);
+
+if (defined($conf->{lock}) && $conf->{lock} ne '') {
+    push @blocked, "VM_CONFIG: VM has lock '$conf->{lock}'";
+}
+
+PVE::QemuServer::foreach_volid($conf, sub {
+    my ($volid, $info) = @_;
+    return if !$info->{is_attached} || $info->{cdrom} || $info->{is_cloudinit};
+    push @volumes, $volid;
+});
+push @blocked, "VM_CONFIG: no attached writable volume"
+    if !@volumes;
+
+for my $volid (sort @volumes) {
+    my ($storeid, $volname) = PVE::Storage::parse_volume_id($volid);
+    my $scfg = PVE::Storage::storage_config($storecfg, $storeid);
+    if (($scfg->{type} // '') ne 'sharedlvmthin') {
+        if (PVE::Storage::volume_has_feature(
+            $storecfg, 'snapshot', $volid, undef, $running,
+        )) {
+            push @passed, "$volid: external storage advertises snapshot";
+        } else {
+            push @blocked, "$volid: external storage does not advertise snapshot";
+        }
+        next;
+    }
+
+    if (!$scfg->{shared}) {
+        push @blocked, "$volid: sharedlvmthin storage is not configured shared";
+        next;
+    }
+    my $mode = PVE::Storage::Custom::SharedLvmThinPlugin->_allocation_mode($scfg);
+    if ($mode eq 'thin') {
+        push @passed, "$volid: Thin snapshot capability";
+        next;
+    }
+
+    my $read_ok = eval {
+        my ($state) =
+            PVE::Storage::Custom::SharedLvmThinPlugin->_thick_read_anchor(
+                $storeid, $scfg, $volname,
+            );
+        my $phase = $state->{phase} // 'UNKNOWN';
+        if ($phase eq 'MATERIALIZED') {
+            push @passed, "$volid: materialized Thick snapshot capability";
+        } elsif ($mode ne 'thick-generations-lazy') {
+            push @blocked, "$volid: Eager Thick anchor is '$phase', not MATERIALIZED";
+        } elsif ($phase eq 'LAZY_ACTIVE') {
+            my $owner_node = $state->{owner_node} // '';
+            my $owner_boot = $state->{owner_boot} // '';
+            if ($owner_node eq $local_node && $owner_boot eq $local_boot) {
+                push @blocked,
+                    "$volid: active unmaterialized Lazy volume; prepare with "
+                    . "'sharedlvmthin thick-lazy-materialize $storeid $volname' "
+                    . "on this exact owner, verify completion, then repeat preflight";
+            } else {
+                push @blocked,
+                    "$volid: unmaterialized Lazy owner is not this exact node/boot epoch";
+            }
+        } elsif ($phase eq 'LAZY_DORMANT') {
+            push @blocked,
+                "$volid: closed unmaterialized Lazy volume; native snapshot requires "
+                . "a supported stopped-volume preparation workflow which this release "
+                . "does not perform implicitly";
+        } else {
+            push @blocked,
+                "$volid: Lazy transition phase '$phase' requires recovery or completion";
+        }
+        1;
+    };
+    push @blocked, "$volid: anchor inspection failed: $@" if !$read_ok;
+}
+
+my $vmstate_storage = $conf->{vmstatestorage} // 'AUTO';
+if ($ram && $vmstate_storage ne 'AUTO') {
+    my $vmstate_ok = eval {
+        PVE::Storage::storage_config($storecfg, $vmstate_storage);
+        1;
+    };
+    push @blocked, "VMSTATE: configured storage '$vmstate_storage' is unavailable: $@"
+        if !$vmstate_ok;
+}
+
+print "SNAPSHOT_PREFLIGHT_VERSION=1\n";
+print "VMID=$vmid\nNODE=$local_node\nBOOT_ID=$local_boot\n";
+print "VM_STATE=" . ($running ? 'RUNNING' : 'STOPPED') . "\n";
+print "SNAPSHOT_MODE=" . ($ram ? 'RAM' : 'DISK_ONLY') . "\n";
+print "CONFIG_SHA256=$config_sha256\n";
+print "VMSTATE_STORAGE=$vmstate_storage\n" if $ram;
+print "PASS=$_\n" for @passed;
+print "BLOCKED=$_\n" for @blocked;
+print "VOLUMES_CHECKED=" . scalar(@volumes) . "\n";
+if (@blocked) {
+    print "SNAPSHOT_READY=NO\nRESULT=BLOCKED\n";
+    exit 2;
+}
+print "SNAPSHOT_READY=YES\nRESULT=PASS\n";
+exit 0;

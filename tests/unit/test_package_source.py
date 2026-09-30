@@ -123,6 +123,55 @@ class PostRebootHealthOracleTests(unittest.TestCase):
 
 
 class PackageSourceTests(unittest.TestCase):
+    def test_migration_preflight_is_read_only_mode_and_volume_aware(self):
+        source = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight"
+        ).read_text(encoding="utf-8")
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        excluded = (ROOT / "packaging/thick-only/excluded-paths.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("PVE::Cluster::cfs_update()", source)
+        self.assertIn("PVE::QemuConfig->load_config($vmid)", source)
+        self.assertIn("PVE::QemuServer::foreach_volid", source)
+        self.assertIn("$info->{is_attached}", source)
+        self.assertIn("direct Thin live migration is unsupported", source)
+        self.assertIn("thick-lazy-materialize $storeid $volname", source)
+        self.assertIn("offline handoff requires LAZY_DORMANT", source)
+        self.assertIn("MIGRATION_SAFE=NO", source)
+        self.assertIn("MIGRATION_SAFE=YES", source)
+        for forbidden in ("run_command(", "system(", "qx/", "`qm ", "lvchange", "dmsetup"):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("migration-preflight)", cli)
+        self.assertIn("sharedlvmthin-migration-preflight", build)
+        self.assertIn("sharedlvmthin-migration-preflight", postinst)
+        self.assertNotIn("sharedlvmthin-migration-preflight", excluded)
+
+    def _isolated_preinst_source(self):
+        """Return preinst without inheriting the qualification host's policy."""
+        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        return source.replace(
+            "UPDATE_POLICY_FILE=/var/lib/pve-sharedlvmthin/update-guard/policy.json",
+            "UPDATE_POLICY_FILE=/__sharedlvmthin_unit_test_no_active_policy__",
+        )
+
+    def test_doctor_pvesm_status_cannot_leak_its_command_substitution_pipe(self):
+        source = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        self.assertNotIn('PVE_STATUS="$(timeout --foreground 20 pvesm status', source)
+        self.assertIn('PVE_STATUS_FILE="$(mktemp)"', source)
+        self.assertIn(
+            'timeout --foreground 20 pvesm status >"$PVE_STATUS_FILE" 2>/dev/null',
+            source,
+        )
+        self.assertLess(
+            source.index('pvesm status >"$PVE_STATUS_FILE"'),
+            source.index('PVE_STATUS="$(cat "$PVE_STATUS_FILE")"'),
+        )
+        self.assertIn('rm -f -- "$PVE_STATUS_FILE"', source)
+
     def _write_absent_maintenance_probe(self, directory):
         probe = directory / "sharedlvmthin-package-maintenance-check"
         probe.write_text(
@@ -182,7 +231,10 @@ class PackageSourceTests(unittest.TestCase):
             )
             checker.chmod(0o755)
             for name in ("sharedlvmthin-compat-check", "sharedlvmthin-recovery-check",
-                         "sharedlvmthin-upgrade-check", "sharedlvmthin-thin-metadata-check",
+                         "sharedlvmthin-upgrade-check", "sharedlvmthin-update-plan",
+                         "sharedlvmthin-snapshot-observe",
+                         "sharedlvmthin-migration-preflight",
+                         "sharedlvmthin-bridge-topology", "sharedlvmthin-thin-metadata-check",
                          "sharedlvmthin-qmp-path-check",
                          "sharedlvmthin-profile-replacement"):
                 path = paths["libexec"] / name
@@ -324,6 +376,7 @@ class PackageSourceTests(unittest.TestCase):
             "sharedlvmthin-candidate-package": package,
             "sharedlvmthin-candidate-version": version,
             "sharedlvmthin-candidate-flavor": flavor,
+            "sharedlvmthin-candidate-architecture": "all",
             "sharedlvmthin-candidate-artifact-sha256": digest,
         }
         for name, value in values.items():
@@ -331,6 +384,101 @@ class PackageSourceTests(unittest.TestCase):
         installed = root / "installed-package-artifact-sha256"
         installed.write_text(digest + "\n", encoding="utf-8")
         return installed
+
+    def _run_preinst_freeze_admission(
+        self, *, policy=True, architecture=True, payload=True,
+        verifier_rc=0, preflight=False,
+    ):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        storage = root / "storage.cfg"
+        storage.write_text("dir: local\n        path /tmp\n", encoding="utf-8")
+        self._write_preinst_identity(root)
+        if not architecture:
+            (root / "sharedlvmthin-candidate-architecture").unlink()
+        policy_path = root / "active-policy.json"
+        if policy:
+            policy_path.write_text("{}\n", encoding="utf-8")
+        call_log = root / "verifier-call"
+        if payload:
+            verifier = root / "sharedlvmthin-candidate-update-policy"
+            verifier.write_text(
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['FREEZE_CALL_LOG']).write_text('\\n'.join(sys.argv[1:]) + '\\n')\n"
+                "raise SystemExit(int(os.environ['FREEZE_VERIFIER_RC']))\n",
+                encoding="utf-8",
+            )
+            (root / "sharedlvmthin-candidate-qualified-tuples.json").write_text(
+                "{}\n", encoding="utf-8",
+            )
+            (root / "sharedlvmthin_update_policy.py").write_text(
+                "# isolated candidate policy fixture\n", encoding="utf-8",
+            )
+        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = source.replace(
+            "/usr/share/pve-sharedlvmthin/package-flavor", str(root / "absent-flavor")
+        ).replace(
+            "INSTALLED_ARTIFACT_FILE=/usr/share/pve-sharedlvmthin/package-artifact-sha256",
+            f"INSTALLED_ARTIFACT_FILE={root / 'installed-package-artifact-sha256'}",
+        ).replace(
+            "STORAGECFG=/etc/pve/storage.cfg", f"STORAGECFG={storage}",
+        ).replace(
+            "UPDATE_POLICY_FILE=/var/lib/pve-sharedlvmthin/update-guard/policy.json",
+            f"UPDATE_POLICY_FILE={policy_path}",
+        ).replace(
+            "# dpkg has not unpacked the candidate payload yet.",
+            "exit 0\n\n# dpkg has not unpacked the candidate payload yet.",
+            1,
+        )
+        candidate = root / "preinst"
+        candidate.write_text(source, encoding="utf-8")
+        candidate.chmod(0o755)
+        env = os.environ.copy()
+        env["DPKG_MAINTSCRIPT_PACKAGE"] = "pve-sharedlvmthin"
+        env["FREEZE_CALL_LOG"] = str(call_log)
+        env["FREEZE_VERIFIER_RC"] = str(verifier_rc)
+        action = ["preflight", "install"] if preflight else ["install"]
+        result = subprocess.run(
+            ["/bin/sh", str(candidate), *action], env=env, text=True,
+            capture_output=True, check=False,
+        )
+        return result, call_log
+
+    @unittest.skipUnless(os.name == "posix", "preinst admission requires POSIX shell")
+    def test_preinst_freeze_admission_is_explicit_and_fail_closed(self):
+        result, call_log = self._run_preinst_freeze_admission(policy=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(call_log.exists())
+
+        result, _ = self._run_preinst_freeze_admission(architecture=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("architecture identity is missing or unsafe", result.stderr)
+
+        result, _ = self._run_preinst_freeze_admission(payload=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("admission payload is missing or unsafe", result.stderr)
+
+        for verifier_rc in (0, 3):
+            with self.subTest(verifier_rc=verifier_rc):
+                result, call_log = self._run_preinst_freeze_admission(
+                    verifier_rc=verifier_rc,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                call = call_log.read_text(encoding="utf-8")
+                self.assertIn("verify-prepared-freeze-package", call)
+                self.assertIn("--target-architecture\nall", call)
+
+        result, _ = self._run_preinst_freeze_admission(verifier_rc=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("active FREEZE refused package unpack", result.stderr)
+
+        result, call_log = self._run_preinst_freeze_admission(
+            architecture=False, payload=False, preflight=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(call_log.exists())
 
     def test_postinst_python_validation_leaves_no_unowned_bytecode(self):
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
@@ -456,14 +604,19 @@ class PackageSourceTests(unittest.TestCase):
 
     def test_readme_states_current_thick_geometry_without_legacy_ambiguity(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        version = next(
+            line.split(":", 1)[1].strip()
+            for line in (ROOT / "DEBIAN/control").read_text(encoding="utf-8").splitlines()
+            if line.startswith("Version:")
+        )
         self.assertIn("1 MiB\ndm-clone region candidate", readme)
         self.assertIn("including legacy 4/8 KiB objects", readme)
         self.assertIn("not the new dm-clone region default", readme)
         self.assertIn(
-            "pve-sharedlvmthin_0.9.0.rc5.31.tg52_all.deb", readme
+            f"pve-sharedlvmthin_{version}_all.deb", readme
         )
         self.assertIn(
-            "pve-sharedlvmthin-thick_0.9.0.rc5.31.tg52_all.deb", readme
+            f"pve-sharedlvmthin-thick_{version}_all.deb", readme
         )
         self.assertNotIn("0.9.0.rc5.4.1.tg25", readme)
 
@@ -504,7 +657,7 @@ class PackageSourceTests(unittest.TestCase):
             command = root / name
             command.write_text(text, encoding="utf-8")
             command.chmod(0o755)
-        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = self._isolated_preinst_source()
         installed_artifact = self._write_preinst_identity(
             root, package="pve-sharedlvmthin-thick", flavor="thick-only"
         )
@@ -548,7 +701,7 @@ class PackageSourceTests(unittest.TestCase):
         storage = root / "storage.cfg"
         storage.write_text(storage_text, encoding="utf-8")
         installed_artifact = self._write_preinst_identity(root)
-        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = self._isolated_preinst_source()
         source = source.replace(
             "/usr/share/pve-sharedlvmthin/package-flavor", str(root / "absent-flavor")
         ).replace(
@@ -637,7 +790,7 @@ class PackageSourceTests(unittest.TestCase):
         )
         systemctl.chmod(0o755)
 
-        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = self._isolated_preinst_source()
         installed_artifact = self._write_preinst_identity(root)
         source = source.replace(
             "/usr/share/pve-sharedlvmthin/package-flavor", str(marker)
@@ -656,8 +809,11 @@ class PackageSourceTests(unittest.TestCase):
         env = os.environ.copy()
         env["PATH"] = f"{root}{os.pathsep}{env['PATH']}"
         env["DPKG_MAINTSCRIPT_PACKAGE"] = "pve-sharedlvmthin"
-        arguments = ["/bin/sh", str(candidate), action]
-        if action == "upgrade":
+        if action == "preflight-upgrade":
+            arguments = ["/bin/sh", str(candidate), "preflight", "upgrade"]
+        else:
+            arguments = ["/bin/sh", str(candidate), action]
+        if action in ("upgrade", "preflight-upgrade"):
             arguments += ["0.9.0~rc5.10~tg31", "0.9.0~rc5.11~tg32"]
         result = subprocess.run(
             arguments, env=env, text=True,
@@ -686,7 +842,7 @@ class PackageSourceTests(unittest.TestCase):
             command = root / name
             command.write_text(text, encoding="utf-8")
             command.chmod(0o755)
-        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = self._isolated_preinst_source()
         installed_artifact = self._write_preinst_identity(root)
         source = source.replace(
             "/usr/share/pve-sharedlvmthin/package-flavor", str(marker)
@@ -752,7 +908,7 @@ class PackageSourceTests(unittest.TestCase):
         elif installed_digest is not None:
             installed.write_text(installed_digest + "\n", encoding="utf-8")
 
-        source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        source = self._isolated_preinst_source()
         late_marker = root / "late-stage-reached"
         source = source.replace(
             "INSTALLED_ARTIFACT_FILE=/usr/share/pve-sharedlvmthin/package-artifact-sha256",
@@ -782,6 +938,7 @@ class PackageSourceTests(unittest.TestCase):
         self, *, active_units="", expected_current="none", preinst_source=None,
         execute=False, terminate_during_preinst=False, installed_name="",
         installed_version="0.9.0~rc5.10~tg31",
+        installed_status="ii", select_policy="",
     ):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -794,6 +951,9 @@ class PackageSourceTests(unittest.TestCase):
         for name in (
             "sharedlvmthin-candidate-recovery-check",
             "sharedlvmthin-package-maintenance-check",
+            "sharedlvmthin-candidate-update-policy",
+            "sharedlvmthin_update_policy.py",
+            "sharedlvmthin-candidate-qualified-tuples.json",
             "sharedlvmthin_pve_inventory.py",
             "sharedlvmthin-candidate-package",
             "sharedlvmthin-candidate-version",
@@ -801,7 +961,15 @@ class PackageSourceTests(unittest.TestCase):
             "sharedlvmthin-candidate-artifact-sha256",
         ):
             path = control_source / name
-            path.write_text("fixture\n", encoding="utf-8")
+            value = "a" * 64 if name == "sharedlvmthin-candidate-artifact-sha256" \
+                else "fixture"
+            path.write_text(value + "\n", encoding="utf-8")
+        for name in (
+            "sharedlvmthin-candidate-recovery-check",
+            "sharedlvmthin-package-maintenance-check",
+            "sharedlvmthin-candidate-update-policy",
+        ):
+            (control_source / name).chmod(0o755)
         candidate_preinst = control_source / "preinst"
         ready_marker = temp_path / "preinst-ready"
         execute_env_log = temp_path / "execute-env.log"
@@ -831,6 +999,13 @@ if [ "$1" = --control ]; then
     cp -a "$CANDIDATE_CONTROL_SOURCE/." "$3/"
     exit 0
 fi
+if [ "$1" = --extract ]; then
+    mkdir -p "$3/usr/libexec/pve-sharedlvmthin" "$3/usr/share/pve-sharedlvmthin"
+    : >"$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy"
+    printf '{}\n' >"$3/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json"
+    printf '%064d\n' 0 >"$3/usr/share/pve-sharedlvmthin/package-artifact-sha256"
+    exit 0
+fi
 case "$3" in
     Package) printf '%s\\n' pve-sharedlvmthin-thick ;;
     Version) printf '%s\\n' 0.9.0~rc5.11~tg32 ;;
@@ -843,7 +1018,7 @@ package=
 for argument in "$@"; do package=$argument; done
 [ -n "$INSTALLED_NAME" ] && [ "$package" = "$INSTALLED_NAME" ] || exit 1
 case "$2" in
-    *Status-Abbrev*) printf '%s\\n' ii ;;
+    *Status-Abbrev*) printf '%s\\n' "$INSTALLED_STATUS" ;;
     *Version*) printf '%s\\n' "$INSTALLED_VERSION" ;;
     *) exit 2 ;;
 esac
@@ -865,6 +1040,14 @@ else
 fi
 exit 0
 """,
+            "python3": """#!/bin/sh
+if [ "$2" = prepare-direct-package ]; then
+    echo DIRECT_PACKAGE_TXID=dddddddddddddddddddddddddddddddd
+    echo DIRECT_PACKAGE_PREPARED=PASS
+    exit 0
+fi
+exec /usr/bin/python3 "$@"
+""",
         }
         for name, source in commands.items():
             command = temp_path / name
@@ -878,6 +1061,7 @@ exit 0
         env["CANDIDATE_CONTROL_SOURCE"] = str(control_source)
         env["INSTALLED_NAME"] = installed_name
         env["INSTALLED_VERSION"] = installed_version
+        env["INSTALLED_STATUS"] = installed_status
         digest = hashlib.sha256(package.read_bytes()).hexdigest()
         hostname = subprocess.run(
             ["hostname"], text=True, capture_output=True, check=True
@@ -896,6 +1080,8 @@ exit 0
             ]
         if execute:
             arguments.append("--execute")
+        if select_policy:
+            arguments.extend(("--select-update-policy", select_policy))
         if terminate_during_preinst:
             process = subprocess.Popen(
                 arguments, env=env, text=True, stdout=subprocess.PIPE,
@@ -969,6 +1155,17 @@ exit 0
         )
 
     @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    def test_package_profile_gate_accepts_apt_held_installed_profile(self):
+        result, _ = self._run_package_profile_gate(
+            expected_current="thick-only",
+            installed_name="pve-sharedlvmthin-thick",
+            installed_status="hi",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("CURRENT_PACKAGE=pve-sharedlvmthin-thick", result.stdout)
+        self.assertIn("RESULT=DRY_RUN_PASS", result.stdout)
+
+    @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
     def test_package_profile_gate_uses_pinned_copy_after_original_replacement(self):
         original_digest = hashlib.sha256(b"qualification-candidate\n").hexdigest()
         result, log = self._run_package_profile_gate(
@@ -1034,7 +1231,9 @@ exit 0
         try:
             for name in old_values:
                 os.environ[name] = "/attacker-controlled"
-            result, _ = self._run_package_profile_gate(execute=True)
+            result, _ = self._run_package_profile_gate(
+                execute=True, select_policy="freeze"
+            )
         finally:
             for name, value in old_values.items():
                 if value is None:
@@ -1577,17 +1776,42 @@ exit 0
         self.assertEqual(invoked, ["disabled-thick"])
         self.assertIn("STATE=HEALTHY", result.stdout)
 
+    @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
+    def test_private_upgrade_preflight_uses_bootstrap_recovery_probe(self):
+        result, invoked = self._run_preinst_candidate_audit(
+            recovery_safe=True, action="preflight-upgrade",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(invoked, ["--preinstall disabled-thick"])
+
     def test_preinst_uses_maintenance_mode_only_after_verified_prepare(self):
         preinst = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
         self.assertIn(
-            'if [ "$MAINTENANCE_PREPARE" -eq 1 ] || [ "$CANDIDATE_PREINSTALL" -eq 1 ]; then\n'
+            'if [ "$PREFLIGHT_ONLY" -eq 1 ] || \\\n'
+            '           [ "$FREEZE_PACKAGE_PREPARED" -eq 1 ] || \\\n'
+            '           [ "$MAINTENANCE_PREPARE" -eq 1 ] || \\\n'
+            '           [ "$CANDIDATE_PREINSTALL" -eq 1 ]; then\n'
             '            candidate_args="--preinstall"',
             preinst,
         )
+        self.assertIn('0) FREEZE_PACKAGE_PREPARED=1 ;;', preinst)
         self.assertLess(
             preinst.index("MAINTENANCE_PREPARE=1"),
             preinst.index("if ! audit_candidate_storages"),
         )
+
+    def test_candidate_freeze_verifier_ships_its_adjacent_policy_module(self):
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        preinst = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
+        gate = (
+            ROOT / "experiments/thick-generations/package-profile-gate.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"$STAGE/DEBIAN/sharedlvmthin_update_policy.py"', build,
+        )
+        self.assertIn("CANDIDATE_UPDATE_POLICY_LIB=", preinst)
+        self.assertIn('[ ! -L "$CANDIDATE_UPDATE_POLICY_LIB" ]', preinst)
+        self.assertIn("sharedlvmthin_update_policy.py", gate)
 
     @unittest.skipUnless(os.name == "posix", "maintainer scripts require POSIX sh")
     def test_preinst_allows_exact_same_version_artifact(self):
@@ -2429,6 +2653,7 @@ exit 0
         daemon_reload = postinst.index("systemctl daemon-reload")
         self.assertGreater(stale_gate, daemon_reload)
         common_chmod = postinst.index('chmod 0755 "$MATERIALIZER"')
+        self.assertIn("sharedlvmthin-migration-preflight", postinst)
         dual_chmod = postinst.index('chmod 0755 "$MONITOR"')
         qmp_chmod = postinst.index("sharedlvmthin-qmp-path-check")
         self.assertGreater(qmp_chmod, dual_chmod)
@@ -2564,7 +2789,8 @@ exit 0
         ).read_text(encoding="utf-8")
         self.assertIn("RESULT=DRY_RUN_PASS", profile_gate)
         self.assertIn("RESULT=EXECUTE_PASS", profile_gate)
-        self.assertIn("dpkg --no-act -i", profile_gate)
+        self.assertIn('dpkg --force-hold --no-act -i "$candidate_deb"', profile_gate)
+        self.assertIn('dpkg --no-act -i "$candidate_deb"', profile_gate)
         self.assertIn('"$replacement_helper" execute', profile_gate)
         self.assertIn('dpkg -i "$candidate_deb"', profile_gate)
         self.assertIn("--settle-recovery", profile_gate)
@@ -2580,7 +2806,18 @@ exit 0
         self.assertIn("trap 'exit 130' HUP INT TERM", profile_gate)
         self.assertNotIn('dpkg -i "$package"', profile_gate)
         self.assertGreaterEqual(profile_gate.count("sharedlvmthin upgrade-check"), 1)
+        self.assertIn("sharedlvmthin update-policy qualify-runtime", profile_gate)
+        self.assertIn("sharedlvmthin update-policy finalize-runtime", profile_gate)
+        self.assertNotIn("sleep 5", profile_gate)
         self.assertIn("--expect-current", profile_gate)
+        self.assertIn("--select-update-policy", profile_gate)
+        self.assertIn("An already active FREEZE policy is part of the package transaction", profile_gate)
+        self.assertIn("select_update_policy=freeze", profile_gate)
+        self.assertIn("active FREEZE must be changed in a separate settled policy operation", profile_gate)
+        self.assertIn(
+            'sharedlvmthin update-policy select "$select_update_policy"',
+            profile_gate,
+        )
         self.assertIn("current package profile mismatch", profile_gate)
         self.assertLess(
             profile_gate.index("installed_name="),
@@ -2618,6 +2855,18 @@ exit 0
         self.assertNotIn("apt-get", profile_gate)
         self.assertNotIn("reboot -", profile_gate)
 
+        plugin_source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        activate_storage = plugin_source.split("sub activate_storage {", 1)[1].split(
+            "\nsub deactivate_storage {", 1
+        )[0]
+        self.assertIn("_assert_loaded_runtime_identity", activate_storage)
+        self.assertNotIn("_assert_package_operations_released", activate_storage)
+        for effect_token in ("run_command(", "_with_vg_lock", "lvchange", "vgchange",
+                             "dmsetup", "systemd-run"):
+            self.assertNotIn(effect_token, activate_storage)
+
         post_reboot_gate = (
             ROOT / "experiments/thick-generations/package-post-reboot-gate.sh"
         ).read_text(encoding="utf-8")
@@ -2634,6 +2883,7 @@ exit 0
         self.assertIn("/proc/sys/kernel/random/boot_id", post_reboot_gate)
         self.assertIn("reboot is unproven", post_reboot_gate)
         self.assertIn("installed_count", post_reboot_gate)
+        self.assertIn("ii*|hi*)", post_reboot_gate)
         self.assertIn("dpkg --audit", post_reboot_gate)
         self.assertIn("dpkg --verify-format=rpm --verify", post_reboot_gate)
         self.assertIn("package files differ from their dpkg manifest", post_reboot_gate)
@@ -3245,7 +3495,7 @@ exit 0
         self.assertIn("invalid thick-generations open-count command deadline", source)
         self.assertEqual(
             source.count("$class->_thick_frontend_open_count(\n"),
-            9,
+            10,
         )
         helper_end = source.index("sub _thick_schedule_materialization")
         thick_after_helper = source[helper_end:source.index("sub volume_snapshot_needs_fsfreeze")]
@@ -3280,7 +3530,7 @@ exit 0
             source.count("'/sbin/lvchange', '--devices', $device, '-an'"),
             1,
         )
-        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 18)
+        self.assertEqual(source.count("_thick_deactivate_exact_lvs("), 19)
 
         deactivate_start = source.index("sub _thick_deactivate_exact_lvs")
         deactivate_end = source.index("sub _thick_fault_point", deactivate_start)
@@ -3296,7 +3546,7 @@ exit 0
             r"\$class->_thick_deactivate_exact_lvs\(\s*([^,]+),",
             source,
         )
-        self.assertEqual(len(calls), 18)
+        self.assertEqual(len(calls), 19)
         self.assertTrue(all(call.strip() == "$scfg" for call in calls))
 
         activate_calls = re.findall(
@@ -3438,6 +3688,20 @@ exit 0
         self.assertIn("OPEN VG intent", alloc[alloc_zero:alloc_publish])
 
         lazy_alloc = sections["_lazy_alloc_image"]
+        self.assertIn("return $class->_thick_alloc_image(", lazy_alloc)
+        self.assertLess(
+            lazy_alloc.index("return $class->_thick_alloc_image("),
+            lazy_alloc.index("_lazy_prepare_move_allocation"),
+        )
+        self.assertIn("state-[A-Za-z0-9]", lazy_alloc)
+        free_start = source.index("sub free_image")
+        free_end = source.index("sub _thin_recover_orphan", free_start)
+        free_image = source[free_start:free_end]
+        self.assertIn("Auxiliary objects on a Lazy-default storage", free_image)
+        self.assertLess(
+            free_image.index("return $class->_thick_free_image"),
+            free_image.index("return $class->_lazy_free_image"),
+        )
         self.assertEqual(lazy_alloc.count("_zero_new_thick_generation("), 1)
         self.assertIn('"/dev/$vg/$metadata", $geometry->{metadata_bytes}', lazy_alloc)
         self.assertIn("'/sbin/blockdev', '--flushbufs', \"/dev/$vg/$metadata\"", lazy_alloc)
@@ -3654,7 +3918,10 @@ exit 0
         activate_end = source.index("sub _thick_deactivate_volume", activate_start)
         activate = source[activate_start:activate_end]
         self.assertIn("$state->{phase} eq 'LAZY_CLAIMED'", activate)
-        self.assertIn("claimed volume belongs to another node or boot epoch", activate)
+        self.assertIn("_lazy_require_local_owner(", activate)
+        self.assertIn("thick-lazy-materialize", source)
+        self.assertIn("No target activation effect was issued", source)
+        self.assertIn("epoch on local node", source)
 
         materialize_start = source.index("sub _lazy_materialize_volume")
         materialize_end = source.index("sub _lazy_recover_v5_pivot", materialize_start)
@@ -3790,16 +4057,45 @@ exit 0
             ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
         ).read_text(encoding="utf-8")
         start = source.index("sub _thick_recover_partial_allocation")
-        end = source.index("sub _thick_recover_volume_delete", start)
+        end = source.index("sub _thick_recover_lazy_orphan_allocation", start)
         recovery = source[start:end]
         self.assertIn("$class->_thick_command_deadline($scfg)", recovery)
         self.assertEqual(
             recovery.count("'/usr/bin/timeout', '--foreground', '--kill-after=5s'"),
-            4,
+            1,
         )
-        self.assertEqual(recovery.count("'/sbin/lvs', '--readonly'"), 2)
-        self.assertEqual(recovery.count("'/sbin/lvremove', '--devices', $device"), 2)
-        self.assertNotIn("['/sbin/lvs'", recovery)
+        self.assertNotIn("'/sbin/lvs', '--readonly'", recovery)
+        self.assertIn("_dm_kernel_inventory($command_timeout)", recovery)
+        self.assertIn("_thick_lv_mapper_name($vg, $object)", recovery)
+        self.assertIn("_thick_deactivate_exact_lvs(", recovery)
+        self.assertEqual(recovery.count("'/sbin/lvremove', '--devices', $device"), 1)
+        self.assertIn(
+            "my @remove = $lazy ? ($metadata, $head, $anchor) : ($head, $anchor)",
+            recovery,
+        )
+        self.assertIn(
+            "for my $object (grep { exists($objects->{$_}) } @remove)",
+            recovery,
+        )
+        self.assertNotIn("['/sbin/lvremove'", recovery)
+
+    def test_lazy_orphan_allocation_recovery_is_exact_and_deadline_scoped(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        start = source.index("sub _thick_recover_lazy_orphan_allocation")
+        end = source.index("sub _thick_recover_orphan_allocation", start)
+        recovery = source[start:end]
+        self.assertIn("$class->_require_no_vg_intent($scfg, $vg, $device)", recovery)
+        self.assertIn("phase} ne 'LAZY_DORMANT'", recovery)
+        self.assertIn("publication} != 1", recovery)
+        self.assertIn("@related != 3", recovery)
+        self.assertIn("_dm_kernel_inventory($command_timeout)", recovery)
+        self.assertIn("_thick_deactivate_exact_lvs(", recovery)
+        self.assertEqual(
+            recovery.count("'/usr/bin/timeout', '--foreground', '--kill-after=5s'"), 1
+        )
+        self.assertEqual(recovery.count("'/sbin/lvremove', '--devices', $device"), 1)
         self.assertNotIn("['/sbin/lvremove'", recovery)
 
     def test_remaining_explicit_recovery_removals_are_deadline_scoped(self):
@@ -3861,7 +4157,7 @@ exit 0
             r"\$class->_thick_list_volumes_scoped\(\s*([^,]+),",
             source,
         )
-        self.assertEqual(len(calls), 45)
+        self.assertEqual(len(calls), 53)
         self.assertTrue(all(call.strip() == "$scfg" for call in calls))
 
     def test_thick_autoactivation_boundary_is_bounded_and_mode_isolated(self):
@@ -3887,7 +4183,7 @@ exit 0
             r"\$class->_thick_disable_and_verify_autoactivation\(\s*([^,]+),",
             source,
         )
-        self.assertEqual(len(verify_calls), 20)
+        self.assertEqual(len(verify_calls), 22)
         self.assertEqual(len(disable_calls), 2)
         self.assertTrue(all(call.strip() == "$scfg" for call in verify_calls))
         self.assertTrue(all(call.strip() == "$scfg" for call in disable_calls))
@@ -3952,8 +4248,8 @@ exit 0
         expected = {
             "_vg_state_digest": 10,
             "_vg_tags": 1,
-            "_read_vg_intent": 16,
-            "_require_no_vg_intent": 14,
+            "_read_vg_intent": 17,
+            "_require_no_vg_intent": 17,
             "_require_exact_vg_intent": 11,
             "_set_vg_intent": 9,
             "_clear_vg_intent": 17,
@@ -3974,6 +4270,150 @@ exit 0
         self.assertIn("clearing mutation intent on VG", family)
         self.assertIn("outcome is UNKNOWN", family)
         self.assertIn("continuing without retry", family)
+
+    def test_foreign_admission_uses_persistent_only_transition_proof(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        admission_start = source.index("sub _thick_foreign_intent_admission")
+        admission_end = source.index("sub _with_vg_lock", admission_start)
+        admission = source[admission_start:admission_end]
+        self.assertIn("$operation, $intent, $lvs, 1", admission)
+
+        resume_start = source.index("sub _thick_resume_transition")
+        resume_end = source.index(
+            "sub _thick_reconstruct_missing_transition_runtime", resume_start
+        )
+        resume = source[resume_start:resume_end]
+        persistent_return = resume.index("return $persistent if $persistent_only")
+        runtime_probe = resume.index("$class->_thick_managed_mapper_present")
+        anchor_mutation = resume.index("$class->_thick_transition_anchor", runtime_probe)
+        self.assertLess(persistent_return, runtime_probe)
+        self.assertLess(persistent_return, anchor_mutation)
+        self.assertIn("before mapper inspection", resume)
+
+    def test_thick_tree_delete_preflights_every_object_under_one_vg_lock(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        bodies = {
+            match.group("name"): match.group("body")
+            for match in re.finditer(
+                r"^sub (?P<name>\S+) \{(?P<body>.*?)(?=^sub |\Z)",
+                source, re.MULTILINE | re.DOTALL,
+            )
+        }
+        wrapper = bodies["_thick_free_image"]
+        self.assertEqual(wrapper.count("$class->_with_vg_lock("), 1)
+        self.assertLess(wrapper.index("$class->_with_vg_lock("),
+                        wrapper.index("$class->_require_no_vg_intent($scfg, $vg, $device)"))
+        self.assertIn("$class->_thick_list_volumes_scoped($scfg, $vg, $device)", wrapper)
+        self.assertLess(wrapper.index("$class->_thick_remove_unreferenced_tree_locked("),
+                        wrapper.index("$class->_thick_free_image_single_locked("))
+        tree = bodies["_thick_remove_unreferenced_tree_locked"]
+        check = tree[tree.index("my $check = sub {"):tree.index("my $current = $check->();")]
+        for guard in (
+            "_verify_mutation_quorum($storeid, $scfg)",
+            "_verify_storage_identity($storeid, $scfg, $device)",
+            "_require_no_vg_intent($scfg, $vg, $device)",
+            "_assert_no_active_storage_worker($vg)",
+            "_thick_assert_tree_references($storeid, $volname, $admission)",
+            "_thick_list_volumes_scoped($scfg, $vg, $device)",
+            "_thick_verify_autoactivation_disabled($scfg, $vg, $name, $device)",
+            "_thick_verify_snapshot_readonly($scfg, $vg, $name, $device)",
+            "_thick_tree_check_kernel_rows($scfg, $volname, $current,",
+        ):
+            self.assertIn(guard, check)
+        self.assertIn("for my $name (keys %remaining)", check)
+        self.assertIn("for my $name (values %{$current->{snapshots}})", check)
+        self.assertLess(tree.index("$class->_thick_tree_peer_absence("),
+                        tree.index("$class->_thick_volume_snapshot_delete_locked("))
+        for name in ("_thick_remove_unreferenced_tree_locked",
+                     "_thick_volume_snapshot_delete_locked", "_thick_free_image_single_locked"):
+            self.assertNotIn("$class->_with_vg_lock(", bodies[name])
+        peers = bodies["_thick_tree_peer_absence"]
+        self.assertIn("PVE::Cluster::get_nodelist()", peers)
+        self.assertIn("ref($nodes) ne 'ARRAY'", peers)
+        self.assertIn("@$nodes > 16", peers)
+        self.assertIn("offline or unknown", peers)
+        self.assertIn("+ 60", peers)
+        self.assertIn("timeout => 5", bodies["_thick_tree_kernel_rows"])
+        admission = bodies["_thick_tree_delete_admission"]
+        self.assertIn("_thick_pve_reference_files($storeid, $volname)", admission)
+        self.assertIn("_thick_validate_destroy_frames(", admission)
+        self.assertIn("_thick_destroy_reference_digest(", admission)
+        self.assertIn("_thick_destroy_reference_digest(", bodies["_thick_assert_tree_references"])
+        self.assertIn("ne $admission->{digest}", bodies["_thick_assert_tree_references"])
+        self.assertIn(
+            "_thick_assert_tree_references($storeid, $volname, $tree_admission)",
+            bodies["_thick_volume_snapshot_delete_locked"],
+        )
+        self.assertIn(
+            "_thick_assert_tree_references($storeid, $volname, $admission)",
+            bodies["_thick_free_image_single_locked"],
+        )
+        frames = bodies["_thick_validate_destroy_frames"]
+        for symbol in ("PVE::Storage::vdisk_free", "PVE::QemuServer::destroy_vm",
+                       "PVE::AbstractConfig::lock_config", "PVE::AbstractConfig::lock_config_full"):
+            self.assertIn(symbol, frames)
+        self.assertIn("::free_image", frames)
+        self.assertIn("@DB::args", bodies["_thick_destroy_call_frames"])
+        self.assertNotIn("/proc/", frames)
+
+    def test_snapshot_delete_waits_for_one_exact_transition_outside_all_locks(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        start = source.index("sub _thick_wait_snapshot_delete_admission")
+        end = source.index("sub _thick_volume_snapshot_delete", start)
+        wait = source[start:end]
+        for identity in (
+            "anchor_uuid", "tx", "old", "new", "generation", "snapshot",
+            "snapshot_uuid",
+        ):
+            self.assertIn(identity, wait)
+        self.assertIn("_thick_progress_clock() + $budget", wait)
+        self.assertIn("_thick_observation_pause($wait_ms)", wait)
+        self.assertIn("no delete effect started", wait)
+        self.assertNotIn("_with_vg_lock", wait)
+        self.assertNotIn("_with_thick_transition_executor_lock", wait)
+        self.assertNotIn("_thick_schedule_materialization", wait)
+        self.assertNotIn("lvremove", wait)
+
+        locked_start = source.index("sub _thick_volume_snapshot_delete_locked")
+        locked_end = source.index("sub _thick_recover_orphan_tree", locked_start)
+        locked = source[locked_start:locked_end]
+        recheck = locked.index("snapshot-delete admission changed before")
+        intent = locked.index("my %intent = (")
+        remove = locked.index("'/sbin/lvremove'")
+        self.assertLess(recheck, intent)
+        self.assertLess(intent, remove)
+        self.assertIn("snapshot identity changed after admission", locked)
+
+    def test_lazy_move_capability_is_one_shot_and_rechecked_before_claim(self):
+        source = (ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm").read_text(encoding="utf-8")
+        bodies = {match.group("name"): match.group("body") for match in re.finditer(
+            r"^sub (?P<name>\S+) \{(?P<body>.*?)(?=^sub |\Z)", source, re.MULTILINE | re.DOTALL)}
+        allocation = bodies["_lazy_alloc_image"]
+        self.assertLess(allocation.index("_lazy_prepare_move_allocation("), allocation.index("_with_vg_lock("))
+        self.assertGreater(allocation.index("_lazy_record_move_allocation("), allocation.index("publication postcondition failed"))
+        consume = bodies["_lazy_consume_move_allocation"]
+        self.assertLess(consume.index("delete $lazy_move_allocation"), consume.index("_lazy_recheck_move_capability("))
+        recheck = bodies["_lazy_recheck_move_capability"]
+        for marker in ("$cap->{pid} != $$", "$cap->{expires}", "$cap->{anchor_digest}",
+                       "_thick_pve_reference_files", "_lazy_move_context", "_lazy_move_source_policy"):
+            self.assertIn(marker, recheck)
+        activation = bodies["_lazy_activate_volume_locked"]
+        claim = activation.index("phase => 'LAZY_CLAIMED'")
+        self.assertLess(activation.index("_with_vg_lock("), activation.index("_lazy_recheck_move_capability("))
+        self.assertLess(activation.index("_lazy_recheck_move_capability("), claim)
+        policy = bodies["_lazy_verify_guest_discard_config"]
+        self.assertIn("if !$matched && $scfg && $state", policy)
+        self.assertIn("if $matched != 1", policy)
+        context = bodies["_lazy_move_context"]
+        self.assertIn("$source->{running}", context)
+        self.assertIn("defined($source->{snapname})", context)
+        self.assertIn("/usr/share/perl5/PVE/API2/Qemu.pm", context)
 
     def test_every_thick_publication_resume_is_deadline_scoped(self):
         source = (
@@ -4129,6 +4569,49 @@ exit 0
         for helper in (create_helper, remove_helper):
             self.assertIn("$class->_thick_command_deadline($scfg)", helper)
             self.assertIn("'/usr/bin/timeout', '--foreground', '--kill-after=5s'", helper)
+
+    def test_async_materializer_and_activation_share_bounded_transition_latch(self):
+        source = (
+            ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
+        ).read_text(encoding="utf-8")
+        worker = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize"
+        ).read_text(encoding="utf-8")
+
+        lazy_start = source.index("sub _with_lazy_volume_executor_lock")
+        thick_start = source.index("sub _with_thick_transition_executor_lock")
+        lazy = source[lazy_start:thick_start]
+        thick = source[thick_start:source.index("sub _lazy_deactivate_volume", thick_start)]
+        self.assertIn("pve-sharedlvmthin-lazy-$storeid-$volname.lock", lazy)
+        self.assertIn(
+            "pve-sharedlvmthin-thick-transition-$storeid-$volname.lock", thick
+        )
+        self.assertNotIn("pve-sharedlvmthin-lazy-$storeid-$volname.lock", thick)
+        self.assertIn("'slt-mutation-admission-timeout'", thick)
+        self.assertIn("no activation effect was issued", thick)
+        self.assertIn("F_SETFD, 0", thick)
+
+        activation_start = source.index("sub _thick_activate_volume")
+        activation_end = source.index("sub _lazy_activate_volume", activation_start)
+        activation = source[activation_start:activation_end]
+        self.assertLess(
+            activation.index("_with_thick_transition_executor_lock"),
+            activation.index("_thick_verify_published_transition_frontend"),
+        )
+        self.assertGreaterEqual(activation.count("_thick_read_anchor("), 2)
+        self.assertIn("if $locked_state->{phase} eq 'MATERIALIZED'", activation)
+
+        lazy_activation = source[
+            source.index("sub _lazy_activate_volume_locked"):
+            source.index("sub _thick_deactivate_volume")
+        ]
+        self.assertIn("($initial_state->{op} // '') =~ /^(?:SNAPSHOT|ROLLBACK)$/", lazy_activation)
+
+        lock_call = worker.index("_with_thick_transition_executor_lock")
+        snapshot_call = worker.index("_thick_volume_snapshot", lock_call)
+        complete = worker.index("MATERIALIZATION_COMPLETE", snapshot_call)
+        self.assertLess(lock_call, snapshot_call)
+        self.assertLess(snapshot_call, complete)
 
     def test_thick_mapper_identity_postconditions_are_deadline_scoped(self):
         source = (
@@ -4326,7 +4809,7 @@ exit 0
         self.assertIn('--recover-orphan-tree "$2" "$3"', cli)
         self.assertIn("ORPHAN_ALLOCATION_RECOVERY_START", worker)
         self.assertIn("ORPHAN_TREE_RECOVERY_START", worker)
-        self.assertIn("_thick_free_image($storeid, $scfg, $volname, 0, 1)", worker)
+        self.assertIn("_thick_recover_orphan_allocation($scfg, $storeid, $volname)", worker)
         self.assertIn("_thick_recover_orphan_tree($scfg, $storeid, $volname)", worker)
         self.assertIn("_thin_recover_orphan($scfg, $storeid, $volname)", worker)
 
@@ -4637,6 +5120,36 @@ exit 0
             (ROOT / "usr/share/pve-sharedlvmthin/pve-lab-scenarios.json").is_file()
         )
         self.assertIn("--scenario-registry", release)
+
+    def test_snapshot_orchestration_contract_is_detected_without_pve_mutation(self):
+        update_plan = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-plan"
+        ).read_text(encoding="utf-8")
+        fixture = (
+            ROOT / "experiments/thick-generations/qemu-snapshot-orchestration-fixture.pl"
+        ).read_text(encoding="utf-8")
+        manifest = json.loads(
+            (ROOT / "usr/share/pve-sharedlvmthin/pve-qualified-tuples.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertIn("scan_qemu_snapshot_contract", update_plan)
+        self.assertIn("VMSTATE_ALLOCATION_BEFORE_RUNTIME_QUERIES", update_plan)
+        self.assertIn("SAVEVM_END_DEACTIVATION_COUPLED", update_plan)
+        self.assertIn("SAVEVM_FINALIZE_POLL_UNBOUNDED", update_plan)
+        self.assertIn("EMPTY_RUNNING_NETS_HOST_MTU_WRITABLE", update_plan)
+        self.assertNotIn("write_text", fixture)
+        self.assertIn("VMSTATE_QUERY_ORDER=", fixture)
+        self.assertIn("savevm-end-injected", fixture)
+        self.assertIn("timeout", fixture)
+        for tuple_id in (
+            "tg53-api15-upstream-9.2.20-k17",
+            "tg53-api15-upstream-9.2.20-k19",
+        ):
+            row = next(item for item in manifest["tuples"] if item["id"] == tuple_id)
+            self.assertIn("snapshot-qmp-failure-prefix", row["required_tests"])
+            self.assertIn("snapshot-finalize-bounded-wait", row["required_tests"])
 
 
 if __name__ == "__main__":

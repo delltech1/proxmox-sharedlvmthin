@@ -36,6 +36,30 @@ pvesm_alloc_volid() {
     printf '%s\n' "$volid"
 }
 
+pve_qemu_resize_confirmed() {
+    local vmid=$1 disk=$2 size=$3 node before after receipt
+    node="$(hostname -s)"
+    [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || {
+        echo "ERROR: unsafe local PVE node identity" >&2
+        return 1
+    }
+    before="$(mktemp "$run_dir/resize-before.XXXXXX.json")"
+    after="$(mktemp "$run_dir/resize-after.XXXXXX.json")"
+    pvenode task list --vmid "$vmid" --source all --output-format json >"$before"
+    # Both qm and pvesh can return zero even when this worker fails. Bind the
+    # result to the only newly-created resize UPID for this disposable VMID.
+    pvesh set "/nodes/$node/qemu/$vmid/resize" --disk "$disk" --size "$size" || true
+    pvenode task list --vmid "$vmid" --source all --output-format json >"$after"
+    receipt="$(perl "$script_dir/pve-task-receipt-verify.pl" \
+        "$before" "$after" "$node" "$vmid" resize)"
+    [[ $receipt == UPID:"$node":* ]] || {
+        echo "ERROR: invalid resize task receipt" >&2
+        return 1
+    }
+    echo "RESIZE_TASK_CONFIRMED=$receipt"
+}
+
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 run_dir="/var/tmp/slt-same-vg-coexistence-$(date -u +%Y%m%dT%H%M%SZ)-$vmid"
 umask 077
 mkdir "$run_dir"
@@ -190,8 +214,16 @@ echo "INVENTORY_ISOLATION=PASS"
 qm create "$vmid" --name slt-coexistence-disposable --memory 256 \
     --scsihw virtio-scsi-single --scsi0 "$thin_vol" --scsi1 "$thick_vol"
 qm snapshot "$vmid" coexistence-s1
-qm disk resize "$vmid" scsi0 +64M
-qm disk resize "$vmid" scsi1 +64M
+pve_qemu_resize_confirmed "$vmid" scsi0 +64M
+pve_qemu_resize_confirmed "$vmid" scsi1 +64M
+[[ $(pvesm path "$thin_vol" | blockdev --getsize64) == 134217728 ]] || {
+    echo "ERROR: Thin resize task reported success without the exact 128 MiB postcondition"
+    exit 1
+}
+[[ $(pvesm path "$thick_vol" | blockdev --getsize64) == 134217728 ]] || {
+    echo "ERROR: Thick resize task reported success without the exact 128 MiB postcondition"
+    exit 1
+}
 qm rollback "$vmid" coexistence-s1 --start 0
 qm delsnapshot "$vmid" coexistence-s1
 echo "PVE_SNAPSHOT_RESIZE_ROLLBACK_DELETE=PASS"

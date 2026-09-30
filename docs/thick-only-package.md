@@ -42,7 +42,7 @@ The Dual package enforces the same boundary: Thin and Thick VGs must be
 physically separate and only `slt-vg-layout isolated` is operational. The
 retired `mixed` token remains parser-compatible for remote rolling-upgrade
 configuration but is refused before every relevant operation. There is no
-mixed compatibility opt-in in TG52. Eager and Lazy aliases may share one
+mixed compatibility opt-in in TG53. Eager and Lazy aliases may share one
 dedicated Thick VG; Thin storage must resolve to another pinned VG.
 
 After a clean install or profile replacement, `postinst` independently checks
