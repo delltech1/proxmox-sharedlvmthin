@@ -115,7 +115,7 @@ probably do not need this project.
 
 ## Release status
 
-`RC5.78 TG53` (`0.9.0~rc5.78~tg53`) is the current experimental candidate.
+`RC5.79 TG53` (`0.9.0~rc5.79~tg53`) is the current experimental candidate.
 It is intended exclusively for disposable Proxmox VE 9 labs with
 disposable storage and guest data. Both Thin and Thick Generations remain
 experimental, unsupported and without warranty.
@@ -149,7 +149,7 @@ Unlisted relevant tuples require a reviewed contract check and, when the
 changed path can mutate or carry guest data, targeted disposable-lab
 regression before cluster rollout.
 
-See the [RC5.78 TG53 release notes](docs/RELEASE-NOTES-RC5.78-TG53.md),
+See the [RC5.79 TG53 release notes](docs/RELEASE-NOTES-RC5.79-TG53.md),
 the previous [RC5.75 TG53 release notes](docs/RELEASE-NOTES-RC5.75-TG53.md),
 the previous [RC5.74 TG53 release notes](docs/RELEASE-NOTES-RC5.74-TG53.md),
 the previous [RC5.31 TG52 release notes](docs/RELEASE-NOTES-RC5.31-TG52.md),
@@ -185,7 +185,7 @@ logical size. See [clone/restore burst capacity](docs/clone-restore-burst-capaci
 
 ## Requirements
 
-- Proxmox VE 9. RC5.78 retains the API 14/15 source contract but is an exact
+- Proxmox VE 9. RC5.79 retains the API 14/15 source contract but is an exact
   `RETEST_REQUIRED` candidate until its package and live replay gates finish.
   API 14 additionally requires its documented package/profile/reboot replay.
   Proxmox VE 8 and earlier are unsupported.
@@ -256,10 +256,10 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 ```bash
 sha256sum --check SHA256SUMS
 # DUAL profile: experimental Thin + Thick Generations
-apt install './pve-sharedlvmthin_0.9.0~rc5.78~tg53_all.deb'
+apt install './pve-sharedlvmthin_0.9.0~rc5.79~tg53_all.deb'
 
 # OR Thick-only profile: experimental Thick Generations only
-apt install './pve-sharedlvmthin-thick_0.9.0~rc5.78~tg53_all.deb'
+apt install './pve-sharedlvmthin-thick_0.9.0~rc5.79~tg53_all.deb'
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -276,7 +276,7 @@ Run the read-only gate first, then replace one node at a time:
 
 ```bash
 sharedlvmthin upgrade-check
-apt install './pve-sharedlvmthin_0.9.0~rc5.78~tg53_all.deb'
+apt install './pve-sharedlvmthin_0.9.0~rc5.79~tg53_all.deb'
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```

@@ -1,6 +1,6 @@
-# SharedLvmThin RC5.78 TG53 candidate
+# SharedLvmThin RC5.79 TG53 candidate
 
-RC5.78 is an unpublished experimental hardening candidate for disposable
+RC5.79 is an unpublished experimental hardening candidate for disposable
 Proxmox VE laboratory clusters and disposable guest data only.  It is not a
 production release, certification, support commitment or warranty.
 
@@ -58,16 +58,17 @@ claim.
 
 ## Candidate artifacts
 
-- DUAL `pve-sharedlvmthin_0.9.0~rc5.78~tg53_all.deb`:
+- DUAL `pve-sharedlvmthin_0.9.0~rc5.79~tg53_all.deb`:
   `PENDING_REPRODUCIBLE_BUILD`
-- Thick-only `pve-sharedlvmthin-thick_0.9.0~rc5.78~tg53_all.deb`:
+- Thick-only `pve-sharedlvmthin-thick_0.9.0~rc5.79~tg53_all.deb`:
   `PENDING_REPRODUCIBLE_BUILD`
 
-These artifacts must not be described as qualified until their hashes are
-reproduced and their package/live gates pass. Exact API 15
+Both hashes reproduced in two independent clean output directories. These
+artifacts must not be described as qualified until their package/live gates
+pass. Exact API 15
 host-package tuples and their narrower qualified scopes are recorded in
 [compatibility.md](compatibility.md). API 14 retains historical and source
-contract evidence, but this exact RC5.78 artifact is `RETEST_REQUIRED` there
+contract evidence, but this exact RC5.79 artifact is `RETEST_REQUIRED` there
 and must be refused by runtime qualification until its clean-install, upgrade,
 profile-cycle and reboot evidence is repeated. A different package hash or an
 unlisted host tuple is not covered by this evidence.

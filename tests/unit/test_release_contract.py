@@ -25,12 +25,12 @@ class ReleaseContractTests(unittest.TestCase):
                  and item.get("status") == "EXACT_LAB_TESTED"]
         compatibility = (ROOT / "docs/compatibility.md").read_text(encoding="utf-8")
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        notes = (ROOT / "docs/RELEASE-NOTES-RC5.78-TG53.md").read_text(encoding="utf-8")
+        notes = (ROOT / "docs/RELEASE-NOTES-RC5.79-TG53.md").read_text(encoding="utf-8")
         if exact:
             self.assertIn("API 14", compatibility)
         else:
             for document in (compatibility, readme, notes):
-                self.assertIn("RC5.78", document)
+                self.assertIn("RC5.79", document)
                 self.assertIn("API 14", document)
                 self.assertIn("RETEST_REQUIRED", document)
 
