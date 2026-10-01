@@ -1,10 +1,19 @@
-# SharedLvmThin RC5.77 TG53 candidate
+# SharedLvmThin RC5.78 TG53 candidate
 
-RC5.77 is an unpublished experimental hardening candidate for disposable
+RC5.78 is an unpublished experimental hardening candidate for disposable
 Proxmox VE laboratory clusters and disposable guest data only.  It is not a
 production release, certification, support commitment or warranty.
 
 ## Delta from RC5.75/RC5.76
+
+- Adds bounded, pre-effect-only Thick allocation admission behind an exact
+  foreign `DM_CUTOVER`/`DM_PIVOT`. The canonical VG lock is released while
+  waiting, every observation is revalidated, one monotonic deadline applies,
+  and the mutating callback is invoked at most once. Unknown, malformed, own
+  and unsupported intents still refuse without an allocation effect.
+- Treats a closed `LAZY_DORMANT` object as a stable, reference-checked state
+  rather than a missing materialization worker, and replays the complete
+  read-only package gate after boot-bound runtime settlement.
 
 - Serializes Thick deactivation with the exact per-volume snapshot
   materialization executor.  After the bounded wait, all pre-lock anchor and
@@ -47,17 +56,18 @@ experimental release in this precisely recorded scope.  Passing this
 disposable-lab scope is not a production-readiness or universal compatibility
 claim.
 
-## Qualified artifacts
+## Candidate artifacts
 
-- DUAL `pve-sharedlvmthin_0.9.0~rc5.77~tg53_all.deb`:
-  `7f07cb23fdfa859ea156f293096f3b223904f1d9bf85f227a8e7635813c4b8be`
-- Thick-only `pve-sharedlvmthin-thick_0.9.0~rc5.77~tg53_all.deb`:
-  `07aaf02be273e6faf688ebb46f2164570013b94c2e121899389aadcc7d33acb5`
+- DUAL `pve-sharedlvmthin_0.9.0~rc5.78~tg53_all.deb`:
+  `PENDING_REPRODUCIBLE_BUILD`
+- Thick-only `pve-sharedlvmthin-thick_0.9.0~rc5.78~tg53_all.deb`:
+  `PENDING_REPRODUCIBLE_BUILD`
 
-Both hashes were reproduced by an independent fresh Linux build. Exact API 15
+These artifacts must not be described as qualified until their hashes are
+reproduced and their package/live gates pass. Exact API 15
 host-package tuples and their narrower qualified scopes are recorded in
 [compatibility.md](compatibility.md). API 14 retains historical and source
-contract evidence, but this exact RC5.77 artifact is `RETEST_REQUIRED` there
+contract evidence, but this exact RC5.78 artifact is `RETEST_REQUIRED` there
 and must be refused by runtime qualification until its clean-install, upgrade,
 profile-cycle and reboot evidence is repeated. A different package hash or an
 unlisted host tuple is not covered by this evidence.
