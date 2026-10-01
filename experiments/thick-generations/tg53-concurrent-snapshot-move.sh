@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tg53-async-dispatch.sh
+source "$SCRIPT_DIR/tg53-async-dispatch.sh"
+
 SNAP_NODE="${SNAP_NODE:?set SNAP_NODE}"
 SNAP_VMID="${SNAP_VMID:?set SNAP_VMID}"
 MOVE_NODE="${MOVE_NODE:?set MOVE_NODE}"
@@ -48,19 +52,18 @@ snap_out="$(mktemp)"
 move_out="$(mktemp)"
 trap 'rm -f -- "$snap_out" "$move_out"' EXIT HUP INT TERM
 started="$(date +%s)"
-timeout --foreground --kill-after=10s "${DEADLINE_SEC}s" \
-  pvesh create "/nodes/$SNAP_NODE/qemu/$SNAP_VMID/snapshot" \
+tg53_dispatch_detached "concurrent-snap-${SNAP_VMID}-$$" create \
+  "/nodes/$SNAP_NODE/qemu/$SNAP_VMID/snapshot" \
     --snapname "$SNAP_NAME" --vmstate 0 --description 'TG53 concurrent VG test' \
-    --output-format json >"$snap_out" &
-snap_dispatch_pid=$!
-timeout --foreground --kill-after=10s "${DEADLINE_SEC}s" \
-  pvesh create "/nodes/$MOVE_NODE/qemu/$MOVE_VMID/move_disk" \
+    --output-format json >"$snap_out"
+tg53_dispatch_detached "concurrent-move-${MOVE_VMID}-$$" create \
+  "/nodes/$MOVE_NODE/qemu/$MOVE_VMID/move_disk" \
     --disk scsi0 --storage "$TARGET_STORAGE" --delete 1 --digest "$move_digest" \
-    --output-format json >"$move_out" &
-move_dispatch_pid=$!
+    --output-format json >"$move_out"
 
-wait "$snap_dispatch_pid" || true
-wait "$move_dispatch_pid" || true
+deadline="$((started + DEADLINE_SEC))"
+tg53_wait_exact_task "$SNAP_NODE" "$SNAP_VMID" qmsnapshot "$started" "$deadline"
+tg53_wait_exact_task "$MOVE_NODE" "$MOVE_VMID" qmmove "$started" "$deadline"
 
 # pvesh's CLI layer waits for a worker and may emit no UPID even though the
 # REST operation has one.  Bind the result to the only exact node/VM/type task

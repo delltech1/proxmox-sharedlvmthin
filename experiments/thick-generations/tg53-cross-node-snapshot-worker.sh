@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tg53-async-dispatch.sh
+source "$SCRIPT_DIR/tg53-async-dispatch.sh"
+
 VMID="${1:?usage: $0 VMID SNAP EVIDENCE}"
 SNAP="${2:?usage: $0 VMID SNAP EVIDENCE}"
 EVIDENCE="${3:?usage: $0 VMID SNAP EVIDENCE}"
@@ -33,9 +37,12 @@ test "${#volumes[@]}" -gt 0
 printf 'VOLUME_BEFORE=%s\n' "${volumes[@]}"
 
 started=$(date +%s)
-timeout --foreground --kill-after=10s 900s \
-    qm snapshot "$VMID" "$SNAP" \
+request_id="snap-${VMID}-$(date +%s)-$$"
+tg53_dispatch_detached "$request_id" create \
+    "/nodes/$(hostname)/qemu/$VMID/snapshot" \
+    --snapname "$SNAP" --vmstate 0 \
     --description 'TG53 cross-node foreign-owner qualification'
+tg53_wait_exact_task "$(hostname)" "$VMID" qmsnapshot "$started" "$((started + 900))"
 finished=$(date +%s)
 echo "SNAPSHOT_SECONDS=$((finished-started))"
 

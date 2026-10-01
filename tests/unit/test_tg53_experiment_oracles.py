@@ -91,6 +91,22 @@ class Tg53ExperimentOracleTests(unittest.TestCase):
         self.assertIn('/tasks/$upid/status', source)
         self.assertNotIn("expected refusal but task succeeded", source)
 
+    def test_snapshot_runners_detach_dispatch_from_observer(self):
+        helper = (EXP / "tg53-async-dispatch.sh").read_text(encoding="utf-8")
+        self.assertIn("systemd-run --quiet --collect", helper)
+        self.assertIn("RESULT=OBSERVATION_DEADLINE_UNKNOWN", helper)
+        self.assertIn('status.casefold() != "running"', helper)
+        self.assertIn("RESULT=AMBIGUOUS_TASK_UNKNOWN", helper)
+        self.assertNotIn("--property=RuntimeMaxSec", helper)
+        for name in ("tg53-cross-node-snapshot-worker.sh",
+                     "tg53-mixed-three-disk-cycle.sh",
+                     "tg53-concurrent-snapshot-move.sh",
+                     "tg53-fiveway-mixed-wave.sh"):
+            source = (EXP / name).read_text(encoding="utf-8")
+            self.assertIn("tg53_dispatch_detached", source)
+            self.assertIn("tg53_wait_exact_task", source)
+            self.assertNotIn("timeout --foreground", source)
+
 
 if __name__ == "__main__":
     unittest.main()

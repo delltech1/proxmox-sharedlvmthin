@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tg53-async-dispatch.sh
+source "$SCRIPT_DIR/tg53-async-dispatch.sh"
+
 VMID="${VMID:-111}"
 SNAP="${SNAP:-mixed3a}"
 EVIDENCE="${EVIDENCE:-/tmp/tg53-mixed-three-disk-${VMID}.evidence}"
@@ -32,7 +36,13 @@ for key in scsi0 scsi1 scsi2; do
 done
 
 qm start "$VMID"
-qm snapshot "$VMID" "$SNAP" --vmstate 1 --description 'TG53 mixed Thin Eager Lazy RAM snapshot'
+started="$(date +%s)"
+request_id="snap-${VMID}-$(date +%s)-$$"
+tg53_dispatch_detached "$request_id" create \
+    "/nodes/$(hostname)/qemu/$VMID/snapshot" \
+    --snapname "$SNAP" --vmstate 1 \
+    --description 'TG53 mixed Thin Eager Lazy RAM snapshot'
+tg53_wait_exact_task "$(hostname)" "$VMID" qmsnapshot "$started" "$((started + 900))"
 qm config "$VMID" --snapshot "$SNAP" >/tmp/tg53-mixed-snapshot-config.txt
 grep -q '^vmstate:' /tmp/tg53-mixed-snapshot-config.txt
 for key in scsi0 scsi1 scsi2; do

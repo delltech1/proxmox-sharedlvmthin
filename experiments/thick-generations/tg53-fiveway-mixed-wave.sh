@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tg53-async-dispatch.sh
+source "$SCRIPT_DIR/tg53-async-dispatch.sh"
+
 EVIDENCE="${EVIDENCE:-/tmp/tg53-fiveway-mixed-wave.evidence}"
 SNAP_NAME="${SNAP_NAME:-tg53wavea}"
 DEADLINE_SEC="${DEADLINE_SEC:-900}"
@@ -69,31 +73,36 @@ started="$(date +%s)"
 tmpdir="$(mktemp -d)"
 echo "DISPATCH_LOG_DIR=$tmpdir"
 
-timeout --foreground --kill-after=10s "${DEADLINE_SEC}s" \
-  pvesh create "/nodes/$EAGER_SNAP_NODE/qemu/$EAGER_SNAP_VMID/snapshot" \
+tg53_dispatch_detached "eager-snap-${EAGER_SNAP_VMID}-$$" create \
+  "/nodes/$EAGER_SNAP_NODE/qemu/$EAGER_SNAP_VMID/snapshot" \
     --snapname "$SNAP_NAME" --vmstate 0 --description 'TG53 five-way Eager snapshot' \
-    >"$tmpdir/eager-snapshot" 2>&1 & pids=("$!")
-timeout --foreground --kill-after=10s "${DEADLINE_SEC}s" \
-  pvesh create "/nodes/$LAZY_SNAP_NODE/qemu/$LAZY_SNAP_VMID/snapshot" \
+    >"$tmpdir/eager-snapshot" 2>&1
+tg53_dispatch_detached "lazy-snap-${LAZY_SNAP_VMID}-$$" create \
+  "/nodes/$LAZY_SNAP_NODE/qemu/$LAZY_SNAP_VMID/snapshot" \
     --snapname "$SNAP_NAME" --vmstate 0 --description 'TG53 five-way Lazy snapshot' \
-    >"$tmpdir/lazy-snapshot" 2>&1 & pids+=("$!")
-timeout --foreground --kill-after=10s "${DEADLINE_SEC}s" \
-  pvesh create "/nodes/$THIN_MOVE_NODE/qemu/$THIN_MOVE_VMID/move_disk" \
+    >"$tmpdir/lazy-snapshot" 2>&1
+tg53_dispatch_detached "thin-move-${THIN_MOVE_VMID}-$$" create \
+  "/nodes/$THIN_MOVE_NODE/qemu/$THIN_MOVE_VMID/move_disk" \
     --disk scsi0 --storage "$EAGER_STORAGE" --delete 1 \
     --digest "$(digest_from_config "$thin_move_cfg")" \
-    >"$tmpdir/thin-move" 2>&1 & pids+=("$!")
-timeout --foreground --kill-after=10s "${DEADLINE_SEC}s" \
-  pvesh create "/nodes/$EAGER_MOVE_NODE/qemu/$EAGER_MOVE_VMID/move_disk" \
+    >"$tmpdir/thin-move" 2>&1
+tg53_dispatch_detached "eager-move-${EAGER_MOVE_VMID}-$$" create \
+  "/nodes/$EAGER_MOVE_NODE/qemu/$EAGER_MOVE_VMID/move_disk" \
     --disk scsi0 --storage "$LAZY_STORAGE" --delete 1 \
     --digest "$(digest_from_config "$eager_move_cfg")" \
-    >"$tmpdir/eager-move" 2>&1 & pids+=("$!")
-timeout --foreground --kill-after=10s "${DEADLINE_SEC}s" \
-  pvesh create "/nodes/$LAZY_MOVE_NODE/qemu/$LAZY_MOVE_VMID/move_disk" \
+    >"$tmpdir/eager-move" 2>&1
+tg53_dispatch_detached "lazy-move-${LAZY_MOVE_VMID}-$$" create \
+  "/nodes/$LAZY_MOVE_NODE/qemu/$LAZY_MOVE_VMID/move_disk" \
     --disk scsi0 --storage "$THIN_STORAGE" --delete 1 \
     --digest "$(digest_from_config "$lazy_move_cfg")" \
-    >"$tmpdir/lazy-move" 2>&1 & pids+=("$!")
+    >"$tmpdir/lazy-move" 2>&1
 
-for pid in "${pids[@]}"; do wait "$pid" || true; done
+deadline="$((started + DEADLINE_SEC))"
+tg53_wait_exact_task "$EAGER_SNAP_NODE" "$EAGER_SNAP_VMID" qmsnapshot "$started" "$deadline"
+tg53_wait_exact_task "$LAZY_SNAP_NODE" "$LAZY_SNAP_VMID" qmsnapshot "$started" "$deadline"
+tg53_wait_exact_task "$THIN_MOVE_NODE" "$THIN_MOVE_VMID" qmmove "$started" "$deadline"
+tg53_wait_exact_task "$EAGER_MOVE_NODE" "$EAGER_MOVE_VMID" qmmove "$started" "$deadline"
+tg53_wait_exact_task "$LAZY_MOVE_NODE" "$LAZY_MOVE_VMID" qmmove "$started" "$deadline"
 
 receipt() {
     local label="$1" node="$2" vmid="$3" kind="$4"

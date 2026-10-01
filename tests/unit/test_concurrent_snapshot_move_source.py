@@ -36,11 +36,11 @@ class ConcurrentSnapshotMoveSourceTests(unittest.TestCase):
         self.assertIn('RESULT=TARGET_INVENTORY_UNKNOWN', tail)
         self.assertIn('CONCURRENT_SNAPSHOT_MOVE=SAFE_REFUSAL', tail)
 
-    def test_dispatch_wait_is_bounded_without_restarting_workers(self):
-        self.assertGreaterEqual(
-            self.source.count('timeout --foreground --kill-after=10s "${DEADLINE_SEC}s"'),
-            2,
-        )
+    def test_observation_is_bounded_without_killing_mutation_owner(self):
+        self.assertGreaterEqual(self.source.count("tg53_dispatch_detached"), 2)
+        self.assertGreaterEqual(self.source.count("tg53_wait_exact_task"), 2)
+        self.assertIn('deadline="$((started + DEADLINE_SEC))"', self.source)
+        self.assertNotIn("timeout --foreground", self.source)
 
 
 if __name__ == "__main__":
