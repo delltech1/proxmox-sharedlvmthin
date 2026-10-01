@@ -45,6 +45,9 @@ move_volume="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["scsi0
 move_digest="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["digest"])' "$move_cfg")"
 [[ "$snap_volume" == "$TARGET_STORAGE:"* ]]
 [[ "$move_volume" == "$SOURCE_STORAGE:"* ]]
+ssh -o BatchMode=yes -- "root@$MOVE_NODE" \
+    /usr/sbin/sharedlvmthin storage-move-preflight \
+    "$MOVE_VMID" scsi0 "$TARGET_STORAGE"
 pvesh get "/nodes/$SNAP_NODE/qemu/$SNAP_VMID/snapshot" --output-format json \
     | python3 -c 'import json,sys; n=sys.argv[1]; raise SystemExit(0 if all(x.get("name") != n for x in json.load(sys.stdin)) else 1)' "$SNAP_NAME"
 

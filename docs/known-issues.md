@@ -135,7 +135,19 @@
     mapper opens and worker inventory are reconciled. Never infer cleanup from
     a successful client exit code or delete an unreferenced vmstate LV merely
     from its name.
-19. Guest-agent filesystem freeze is not a RAM-snapshot consistency oracle.
+19. Native PVE Storage Move activates its source before `clone_disk()`. On the
+    tested qemu-server 9.2.10 path, an early clone failure frees only volumes
+    recorded in the new-target list; it does not deactivate the source. A move
+    attempted directly from an unmaterialized Lazy source therefore fails
+    closed before target allocation, but may leave the exact source graph in
+    `LAZY_ACTIVE`. This is not a corrupt generation and must not be retried
+    blindly. Run `sharedlvmthin storage-move-preflight VMID DISK TARGET` on the
+    source node before native Storage Move. It refuses unmaterialized Lazy
+    sources without activation or target effects and requires explicit
+    materialization. Existing active state requires exact owner, mapper,
+    worker, intent and open-count reconciliation before normal close or
+    materialization; never deactivate it merely because a copy command failed.
+20. Guest-agent filesystem freeze is not a RAM-snapshot consistency oracle.
     In both tested qemu-server tuples, RAM snapshots skip the agent freeze
     path; running disk-only snapshots use it only when the agent reports the
     operation applicable. Freeze and thaw exceptions are emitted as warnings
@@ -143,7 +155,7 @@
     application-consistency evidence where that property matters, and never
     reinterpret an otherwise successful PVE task as proof of a completed
     freeze/thaw cycle.
-20. A Proxmox snapshot rollback stops a running guest only after asking every
+21. A Proxmox snapshot rollback stops a running guest only after asking every
     storage plugin whether the exact target is ready. Older SharedLVM
     candidates treated this preflight as a no-op, so a Lazy/Thick transition
     could be rejected later, after the VM had already stopped. TG53 candidates
@@ -151,7 +163,7 @@
     pre-stop hook and repeat all checks in the mutating hook. This reduces an
     avoidable outage but cannot eliminate a state change between preflight and
     mutation; a later ambiguity still fails closed.
-21. Snapshot rollback of a mixed-storage VM can have a replication-side
+22. Snapshot rollback of a mixed-storage VM can have a replication-side
     prefix before SharedLVM's pre-stop hook. PVE correctly excludes shared SAN
     volumes from `get_replicatable_volumes()`, but a local replicatable disk in
     the same VM may enter legacy replication cleanup first. If that local

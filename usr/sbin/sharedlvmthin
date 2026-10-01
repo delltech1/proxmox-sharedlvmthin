@@ -1504,6 +1504,10 @@ case "${1:-doctor}" in
         shift
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight "$@"
         ;;
+    storage-move-preflight)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight "$@"
+        ;;
     snapshot-preflight)
         shift
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-snapshot-preflight "$@"
@@ -1653,6 +1657,7 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin lab-evidence-check --catalogue FILE --cluster-aggregate FILE --manifest FILE --evidence-dir DIR --output FILE"
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
         echo "  sharedlvmthin migration-preflight <vmid> <target-node> [--online]"
+        echo "  sharedlvmthin storage-move-preflight <vmid> <disk> <target-storage>"
         echo "  sharedlvmthin snapshot-preflight <vmid> [--ram]"
         echo "  sharedlvmthin thick-lazy-materialize <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-lazy-pivot <storage-id> <volume>"

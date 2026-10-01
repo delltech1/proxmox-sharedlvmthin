@@ -123,6 +123,50 @@ class PostRebootHealthOracleTests(unittest.TestCase):
 
 
 class PackageSourceTests(unittest.TestCase):
+    def test_storage_move_preflight_blocks_lazy_before_native_dispatch(self):
+        source = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight"
+        ).read_text(encoding="utf-8")
+        cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
+        build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
+        postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
+        excluded = (ROOT / "packaging/thick-only/excluded-paths.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("PVE::Cluster::cfs_update()", source)
+        self.assertIn("PVE::QemuConfig->load_config($vmid)", source)
+        self.assertIn("PVE::QemuServer::parse_drive($disk", source)
+        self.assertIn("PVE::Storage::storage_check_enabled($storecfg", source)
+        self.assertIn("sha256_hex($config_bytes", source)
+        self.assertIn("LAZY_DORMANT", source)
+        self.assertIn("LAZY_ACTIVE", source)
+        self.assertIn("active Lazy owner is not this exact node/boot epoch", source)
+        self.assertIn("STORAGE_MOVE_READY=NO", source)
+        self.assertIn("STORAGE_MOVE_READY=YES", source)
+        self.assertIn("storage-move-preflight)", cli)
+        self.assertIn("sharedlvmthin-storage-move-preflight", build)
+        self.assertIn("sharedlvmthin-storage-move-preflight", postinst)
+        self.assertNotIn("sharedlvmthin-storage-move-preflight", excluded)
+        for forbidden in (
+            "run_command(", "system(", "qx/", "`qm ", "lvchange", "dmsetup",
+            "activate_volume", "deactivate_volume", "_thick_transition_anchor",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_destructive_move_runners_preflight_before_detached_dispatch(self):
+        for name in (
+            "tg53-fiveway-mixed-wave.sh",
+            "tg53-concurrent-snapshot-move.sh",
+        ):
+            source = (ROOT / "experiments/thick-generations" / name).read_text(
+                encoding="utf-8"
+            )
+            preflight = source.index("storage-move-preflight")
+            dispatch = source.index("tg53_dispatch_detached")
+            self.assertLess(preflight, dispatch, name)
+            self.assertIn("-o BatchMode=yes", source)
+
     def test_migration_preflight_is_read_only_mode_and_volume_aware(self):
         source = (
             ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight"
@@ -234,6 +278,7 @@ class PackageSourceTests(unittest.TestCase):
                          "sharedlvmthin-upgrade-check", "sharedlvmthin-update-plan",
                          "sharedlvmthin-snapshot-observe",
                          "sharedlvmthin-migration-preflight",
+                         "sharedlvmthin-storage-move-preflight",
                          "sharedlvmthin-bridge-topology", "sharedlvmthin-thin-metadata-check",
                          "sharedlvmthin-qmp-path-check",
                          "sharedlvmthin-profile-replacement"):

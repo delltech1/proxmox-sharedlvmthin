@@ -137,6 +137,15 @@ per-volume report for this matrix. It does not patch or replace PVE migration
 or HA orchestration; the storage activation ownership gate remains
 authoritative if the preflight is omitted.
 
+`sharedlvmthin storage-move-preflight VMID DISK TARGET-STORAGE` separately
+qualifies native Storage Move on the source node. It records the current raw
+configuration SHA-256 and refuses an unmaterialized Lazy source before PVE can
+activate it. This avoids the tested upstream error path which cleans newly
+allocated target volumes but can retain source activation after an early copy
+failure. The preflight is read-only and is not a TOCTOU grant: callers must
+also pass the PVE configuration digest to the move request, and normal plugin
+identity, ownership and mutation gates remain authoritative.
+
 The empty `running-nets-host-mtu:` RAM-snapshot defect was reproduced with
 both qemu-server 9.2.7 and 9.2.10 for no-NIC and e1000-only guests. It is a
 latent upstream snapshot/config inconsistency, not evidence of a new 9.2.10

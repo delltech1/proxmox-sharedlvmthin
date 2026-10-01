@@ -120,6 +120,7 @@ chmod 0755 "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-plan \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-snapshot-observe \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
 

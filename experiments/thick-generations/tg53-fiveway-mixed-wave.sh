@@ -47,6 +47,11 @@ volume_from_config() {
 digest_from_config() {
     python3 -c 'import json,sys; print(json.loads(sys.argv[1])["digest"])' "$1"
 }
+storage_move_preflight() {
+    local node="$1" vmid="$2" target="$3"
+    ssh -o BatchMode=yes -- "root@$node" \
+        /usr/sbin/sharedlvmthin storage-move-preflight "$vmid" scsi0 "$target"
+}
 
 eager_snap_cfg="$(config_json "$EAGER_SNAP_NODE" "$EAGER_SNAP_VMID")"
 lazy_snap_cfg="$(config_json "$LAZY_SNAP_NODE" "$LAZY_SNAP_VMID")"
@@ -59,6 +64,14 @@ lazy_move_cfg="$(config_json "$LAZY_MOVE_NODE" "$LAZY_MOVE_VMID")"
 [[ "$(volume_from_config "$thin_move_cfg")" == "$THIN_STORAGE:"* ]]
 [[ "$(volume_from_config "$eager_move_cfg")" == "$EAGER_STORAGE:"* ]]
 [[ "$(volume_from_config "$lazy_move_cfg")" == "$LAZY_STORAGE:"* ]]
+
+# Native PVE activates a source before clone_disk() and does not deactivate it
+# on every early clone failure.  Refuse an unmaterialized Lazy source before
+# dispatch, while it is still DORMANT.  The API digest below closes the config
+# race; the storage plugin repeats authoritative mutation checks internally.
+storage_move_preflight "$THIN_MOVE_NODE" "$THIN_MOVE_VMID" "$EAGER_STORAGE"
+storage_move_preflight "$EAGER_MOVE_NODE" "$EAGER_MOVE_VMID" "$LAZY_STORAGE"
+storage_move_preflight "$LAZY_MOVE_NODE" "$LAZY_MOVE_VMID" "$THIN_STORAGE"
 
 for pair in \
     "$EAGER_SNAP_NODE:$EAGER_SNAP_VMID" "$LAZY_SNAP_NODE:$LAZY_SNAP_VMID" \

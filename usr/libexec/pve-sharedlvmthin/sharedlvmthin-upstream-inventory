@@ -81,6 +81,7 @@ REQUIRED_PVE_SYMBOLS = (
     "PVE::HA::Config::read_manager_status", "PVE::HA::Config::read_resources_config",
     "PVE::INotify::nodename", "PVE::QemuConfig::load_config",
     "PVE::QemuServer::check_running", "PVE::QemuServer::foreach_volid", "PVE::QemuServer::destroy_vm",
+    "PVE::QemuServer::parse_drive",
     "PVE::QemuServer::Helpers::vm_running_locally", "PVE::Storage::parse_volume_id",
     "PVE::QemuServer::clone_disk",
     "PVE::QemuServer::OVMF::create_efidisk",
@@ -90,7 +91,8 @@ REQUIRED_PVE_SYMBOLS = (
     "PVE::Storage::LVMPlugin::lvm_vgs", "PVE::Storage::Plugin::cluster_lock_storage",
     "PVE::Storage::Plugin::find_free_diskname",
     "PVE::Storage::Plugin::parse_lvm_name", "PVE::Storage::config",
-    "PVE::Storage::storage_config", "PVE::Storage::vdisk_free", "PVE::Storage::vdisk_alloc",
+    "PVE::Storage::storage_config", "PVE::Storage::storage_check_enabled",
+    "PVE::Storage::vdisk_free", "PVE::Storage::vdisk_alloc",
     "PVE::Storage::activate_volumes", "PVE::Storage::deactivate_volumes",
     "PVE::Tools::run_command", "PVE::Tools::trim",
 )
