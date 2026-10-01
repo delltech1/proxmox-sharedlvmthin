@@ -12,12 +12,13 @@ import stat
 import sys
 
 REQUIRED_STEPS = {
-    "contract-catalogue", "upstream-inventory", "compat-check", "upgrade-check",
+    "contract-catalogue", "qmdestroy-contract", "upstream-inventory", "compat-check", "upgrade-check",
     "upstream-inventory-final",
 }
 OPTIONAL_STEPS = {"candidate-inspect"}
 STEP_TOOLS = {
     "contract-catalogue": "sharedlvmthin-contract-check",
+    "qmdestroy-contract": "sharedlvmthin-qmdestroy-contract-check",
     "upstream-inventory": "sharedlvmthin-upstream-inventory",
     "upstream-inventory-final": "sharedlvmthin-upstream-inventory",
     "compat-check": "sharedlvmthin-compat-check",
@@ -290,6 +291,13 @@ def inspect_bundle(result_path, plan, plan_sha256, now, max_age_sec):
             if terminal.get("blocked_scenarios") != []:
                 raise ValueError(f"{host}: contract catalogue reports blocked scenarios")
             contract_terminal = terminal
+        elif name == "qmdestroy-contract":
+            lines = stdout_data.decode("utf-8").splitlines()
+            if lines.count("QMDestroy_CONTRACT=QUALIFIED") != 1 \
+                    or lines.count("NATIVE_CONFIG_CAS=ABSENT") != 1 \
+                    or lines.count("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE") != 1 \
+                    or any(line.startswith("QMDestroy_CONTRACT=RETEST_REQUIRED") for line in lines):
+                raise ValueError(f"{host}: qmdestroy contract terminal markers are incomplete or unsafe")
         elif name == "compat-check":
             lines = stdout_data.decode("utf-8").splitlines()
             if lines.count("COMPATIBILITY=PASS") != 1 or "COMPATIBILITY=FAIL" in lines:

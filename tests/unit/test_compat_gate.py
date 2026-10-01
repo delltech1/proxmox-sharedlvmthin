@@ -39,6 +39,13 @@ class CompatibilityGateTests(unittest.TestCase):
         self.assertEqual(verdict, "BLOCKED")
         self.assertEqual(blocking, ["inventory"])
 
+    def test_qmdestroy_semantics_are_a_required_pre_inventory_gate(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        qmdestroy = source.index('"qmdestroy-contract"')
+        inventory = source.index('"upstream-inventory"', qmdestroy)
+        self.assertLess(qmdestroy, inventory)
+        self.assertIn("sharedlvmthin-qmdestroy-contract-check", source[qmdestroy:inventory])
+
     @unittest.skipUnless(os.name == "posix", "process-group gate test requires POSIX")
     def test_step_records_bounded_success_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
