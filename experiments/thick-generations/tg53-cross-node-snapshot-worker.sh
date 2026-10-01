@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=tg53-async-dispatch.sh
+# shellcheck source=experiments/thick-generations/tg53-async-dispatch.sh
 source "$SCRIPT_DIR/tg53-async-dispatch.sh"
 
 VMID="${1:?usage: $0 VMID SNAP EVIDENCE}"

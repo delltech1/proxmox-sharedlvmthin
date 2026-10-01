@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=tg53-async-dispatch.sh
+# shellcheck source=experiments/thick-generations/tg53-async-dispatch.sh
 source "$SCRIPT_DIR/tg53-async-dispatch.sh"
 
 SNAP_NODE="${SNAP_NODE:?set SNAP_NODE}"
