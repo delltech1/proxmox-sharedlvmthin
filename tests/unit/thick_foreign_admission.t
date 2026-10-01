@@ -203,4 +203,59 @@ sub foreign_state {
     is($callback_calls, 0, 'deadline performs no allocation effect');
 }
 
+{
+    no warnings 'redefine';
+    my $callback_calls = 0;
+    my @clock = (300, 300);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_admission_now = sub {
+        return shift(@clock) // 300;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my ($class, $sid, $candidate, $code, $device, $budget, $bypass, $classifier) = @_;
+        my $decision = $classifier->();
+        return $decision if ($decision->{action} // '') ne 'GRANT';
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_foreign_intent_admission = sub {{
+        action => 'GRANT',
+    }};
+    my $ok = eval {
+        $class->_with_thick_allocation_admission(
+            'request', { %$scfg, 'slt-mutation-admission-timeout' => 30 },
+            'sltg-a-' . ('3' x 24),
+            sub { $callback_calls++; die "injected first-effect failure\n" },
+        );
+        1;
+    };
+    ok(!$ok, 'allocation callback failure is propagated');
+    like($@, qr/injected first-effect failure/, 'original callback failure is preserved');
+    is($callback_calls, 1, 'failing mutating callback is never replayed');
+}
+
+{
+    no warnings 'redefine';
+    my $callback_calls = 0;
+    my @clock = (400, 400);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_admission_now = sub {
+        return shift(@clock) // 400;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my ($class, $sid, $candidate, $code, $device, $budget, $bypass, $classifier) = @_;
+        return $classifier->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_foreign_intent_admission = sub {
+        die "unsupported foreign mutation intent\n";
+    };
+    my $ok = eval {
+        $class->_with_thick_allocation_admission(
+            'request', { %$scfg, 'slt-mutation-admission-timeout' => 30 },
+            'sltg-a-' . ('4' x 24), sub { $callback_calls++ },
+        );
+        1;
+    };
+    ok(!$ok, 'unsupported foreign intent is refused by the wrapper');
+    like($@, qr/unsupported foreign mutation intent/, 'classifier refusal is preserved');
+    is($callback_calls, 0, 'classifier refusal performs no allocation effect');
+}
+
 done_testing();
