@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=experiments/thick-generations/tg53-async-dispatch.sh
+source "$SCRIPT_DIR/tg53-async-dispatch.sh"
+
 SNAP="${SNAP:-tg53batch}"
 EVIDENCE="${EVIDENCE:-/tmp/tg53-tenway-snapshot-batch.evidence}"
 VMIDS=(990105 990110 990111 990113 990115 991190 991191 991192 991193 991194)
@@ -9,6 +13,7 @@ exec > >(tee -a "$EVIDENCE") 2>&1
 echo "TEST=tg53-tenway-snapshot-batch"
 echo "START_UTC=$(date -u +%FT%TZ)"
 echo "NODE=$(hostname)"
+NODE="$(hostname)"
 
 for id in "${VMIDS[@]}"; do
     test "$(qm status "$id" | awk '{print $2}')" = stopped
@@ -17,37 +22,32 @@ for id in "${VMIDS[@]}"; do
         exit 2
     fi
     qm config "$id" | grep -Eq '^(scsi|virtio|sata|ide)[0-9]+:'
+    /usr/sbin/sharedlvmthin snapshot-preflight "$id"
 done
 
 run_batch() {
     local op="$1"
-    local -a pids=()
-    local started finished
+    local started finished task_type
     started=$(date +%s)
     for id in "${VMIDS[@]}"; do
-        (
-            echo "${op}_VM_${id}_START=$(date -u +%FT%TZ)"
-            if [ "$op" = CREATE ]; then
-                timeout --foreground --kill-after=10s 900s \
-                    qm snapshot "$id" "$SNAP" --description 'TG53 ten-way bounded batch'
-            else
-                timeout --foreground --kill-after=10s 900s \
-                    qm delsnapshot "$id" "$SNAP"
-            fi
-            echo "${op}_VM_${id}=PASS"
-        ) >"/tmp/tg53-${op,,}-${id}.log" 2>&1 &
-        pids+=("$!")
-    done
-    local failed=0
-    for index in "${!pids[@]}"; do
-        if ! wait "${pids[$index]}"; then
-            failed=1
+        echo "${op}_VM_${id}_START=$(date -u +%FT%TZ)"
+        if [ "$op" = CREATE ]; then
+            tg53_dispatch_detached "tenway-create-${id}-$$" create \
+                "/nodes/$NODE/qemu/$id/snapshot" \
+                --snapname "$SNAP" \
+                --description 'TG53 ten-way detached batch'
+        else
+            tg53_dispatch_detached "tenway-delete-${id}-$$" delete \
+                "/nodes/$NODE/qemu/$id/snapshot/$SNAP"
         fi
     done
+    task_type=qmsnapshot
+    [ "$op" = CREATE ] || task_type=qmdelsnapshot
     for id in "${VMIDS[@]}"; do
-        cat "/tmp/tg53-${op,,}-${id}.log"
+        tg53_wait_exact_task "$NODE" "$id" "$task_type" \
+            "$started" "$((started + 900))"
+        echo "${op}_VM_${id}=PASS"
     done
-    test "$failed" -eq 0
     finished=$(date +%s)
     echo "${op}_BATCH_SECONDS=$((finished-started))"
 }

@@ -20,7 +20,9 @@ tg53_dispatch_detached() {
 
 tg53_wait_exact_task() {
     local node="$1" vmid="$2" kind="$3" since="$4" deadline="$5"
+    local terminal_policy="${6:-require-ok}"
     local now rows observation rc
+    [[ "$terminal_policy" =~ ^(require-ok|any-terminal)$ ]] || return 64
     while :; do
         now="$(date +%s)"
         if (( now >= deadline )); then
@@ -30,9 +32,9 @@ tg53_wait_exact_task() {
         rows="$(pvesh get "/nodes/$node/tasks" --vmid "$vmid" --source all \
             --since "$since" --output-format json)" || return 75
         set +e
-        observation="$(python3 - "$kind" "$rows" <<'PY'
+        observation="$(python3 - "$kind" "$terminal_policy" "$rows" <<'PY'
 import json, re, sys
-kind, raw = sys.argv[1:]
+kind, policy, raw = sys.argv[1:]
 items = [x for x in json.loads(raw) if x.get("type") == kind]
 if not items:
     raise SystemExit(3)
@@ -45,9 +47,14 @@ if not re.fullmatch(r"UPID:[A-Za-z0-9][A-Za-z0-9.-]*:[^\r\n]+:", upid):
     raise SystemExit(2)
 print(f"TASK_UPID={upid}")
 status = str(x.get("status", ""))
+exitstatus = str(x.get("exitstatus", status))
 print(f"TASK_STATE={status}")
-print(f"TASK_EXITSTATUS={x.get('exitstatus', status)}")
-raise SystemExit(0 if status.casefold() != "running" else 3)
+print(f"TASK_EXITSTATUS={exitstatus}")
+if status.casefold() == "running":
+    raise SystemExit(3)
+if policy == "require-ok" and exitstatus != "OK":
+    raise SystemExit(5)
+raise SystemExit(0)
 PY
         )"
         rc=$?
@@ -59,6 +66,10 @@ PY
         if (( rc == 4 )); then
             printf '%s\n' "$observation"
             return 75
+        fi
+        if (( rc == 5 )); then
+            printf '%s\n' "$observation"
+            return 76
         fi
         (( rc == 3 )) || return 75
         sleep 2

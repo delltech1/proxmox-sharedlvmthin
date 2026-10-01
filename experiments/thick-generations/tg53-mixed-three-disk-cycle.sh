@@ -36,6 +36,7 @@ for key in scsi0 scsi1 scsi2; do
 done
 
 qm start "$VMID"
+/usr/sbin/sharedlvmthin snapshot-preflight "$VMID" --ram
 started="$(date +%s)"
 request_id="snap-${VMID}-$(date +%s)-$$"
 tg53_dispatch_detached "$request_id" create \
@@ -51,14 +52,22 @@ done
 echo "SNAPSHOT_STRICT_PARSE=PASS"
 
 qm stop "$VMID" --timeout 60
-qm rollback "$VMID" "$SNAP"
+started="$(date +%s)"
+tg53_dispatch_detached "rollback-${VMID}-$(date +%s)-$$" create \
+    "/nodes/$(hostname)/qemu/$VMID/snapshot/$SNAP/rollback" --start 0
+tg53_wait_exact_task "$(hostname)" "$VMID" qmrollback \
+    "$started" "$((started + 900))"
 cfg="$(qm config "$VMID")"
 for key in scsi0 scsi1 scsi2; do
     grep -q "^${key}: ${VOL[$key]}" <<<"$cfg"
 done
 echo "ROLLBACK_ALL_DISK_IDENTITIES=PASS"
 
-qm delsnapshot "$VMID" "$SNAP"
+started="$(date +%s)"
+tg53_dispatch_detached "delete-${VMID}-$(date +%s)-$$" delete \
+    "/nodes/$(hostname)/qemu/$VMID/snapshot/$SNAP"
+tg53_wait_exact_task "$(hostname)" "$VMID" qmdelsnapshot \
+    "$started" "$((started + 900))"
 if qm listsnapshot "$VMID" | grep -q "$SNAP"; then
     echo "snapshot remains after delete" >&2
     exit 2

@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=experiments/thick-generations/tg53-async-dispatch.sh
+source "$SCRIPT_DIR/tg53-async-dispatch.sh"
+
 vmid=994340
 slot=scsi0
 thin=slt-tg-thin
@@ -70,7 +74,15 @@ assert_state "$thin" ""
 for target in "$eager" "$lazy" "$thin" "$lazy" "$eager" "$thin"; do
     old=$(volid)
     echo "MOVE_BEGIN source=$old target=$target"
-    qm move_disk "$vmid" "$slot" "$target" --delete 1
+    /usr/sbin/sharedlvmthin storage-move-preflight "$vmid" "$slot" "$target"
+    move_cfg=$(pvesh get "/nodes/$(hostname)/qemu/$vmid/config" --output-format json)
+    move_digest=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["digest"])' "$move_cfg")
+    started=$(date +%s)
+    tg53_dispatch_detached "six-move-${vmid}-${target}-$(date +%s)-$$" create \
+        "/nodes/$(hostname)/qemu/$vmid/move_disk" \
+        --disk "$slot" --storage "$target" --delete 1 --digest "$move_digest"
+    tg53_wait_exact_task "$(hostname)" "$vmid" qmmove \
+        "$started" "$((started + 900))"
     assert_state "$target" "$old"
 done
 

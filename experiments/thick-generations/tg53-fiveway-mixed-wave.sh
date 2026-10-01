@@ -113,9 +113,9 @@ tg53_dispatch_detached "lazy-move-${LAZY_MOVE_VMID}-$$" create \
 deadline="$((started + DEADLINE_SEC))"
 tg53_wait_exact_task "$EAGER_SNAP_NODE" "$EAGER_SNAP_VMID" qmsnapshot "$started" "$deadline"
 tg53_wait_exact_task "$LAZY_SNAP_NODE" "$LAZY_SNAP_VMID" qmsnapshot "$started" "$deadline"
-tg53_wait_exact_task "$THIN_MOVE_NODE" "$THIN_MOVE_VMID" qmmove "$started" "$deadline"
-tg53_wait_exact_task "$EAGER_MOVE_NODE" "$EAGER_MOVE_VMID" qmmove "$started" "$deadline"
-tg53_wait_exact_task "$LAZY_MOVE_NODE" "$LAZY_MOVE_VMID" qmmove "$started" "$deadline"
+tg53_wait_exact_task "$THIN_MOVE_NODE" "$THIN_MOVE_VMID" qmmove "$started" "$deadline" any-terminal
+tg53_wait_exact_task "$EAGER_MOVE_NODE" "$EAGER_MOVE_VMID" qmmove "$started" "$deadline" any-terminal
+tg53_wait_exact_task "$LAZY_MOVE_NODE" "$LAZY_MOVE_VMID" qmmove "$started" "$deadline" any-terminal
 
 receipt() {
     local label="$1" node="$2" vmid="$3" kind="$4"

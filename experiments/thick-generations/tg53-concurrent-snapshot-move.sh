@@ -66,7 +66,7 @@ tg53_dispatch_detached "concurrent-move-${MOVE_VMID}-$$" create \
 
 deadline="$((started + DEADLINE_SEC))"
 tg53_wait_exact_task "$SNAP_NODE" "$SNAP_VMID" qmsnapshot "$started" "$deadline"
-tg53_wait_exact_task "$MOVE_NODE" "$MOVE_VMID" qmmove "$started" "$deadline"
+tg53_wait_exact_task "$MOVE_NODE" "$MOVE_VMID" qmmove "$started" "$deadline" any-terminal
 
 # pvesh's CLI layer waits for a worker and may emit no UPID even though the
 # REST operation has one.  Bind the result to the only exact node/VM/type task

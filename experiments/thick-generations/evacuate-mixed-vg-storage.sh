@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=experiments/thick-generations/tg53-async-dispatch.sh
+source "$SCRIPT_DIR/tg53-async-dispatch.sh"
+
 usage() {
     echo "usage: $0 [--execute] [--skip-snapshots] [--only=all|thin|thick] [--thin-destination=sharedthin-test|sharedthin-fcoe]" >&2
 }
@@ -105,7 +109,17 @@ for entry in "${entries[@]}"; do
         exit 70
     }
 
-    qm move_disk "$vmid" "$slot" "$destination" --delete 1
+    /usr/sbin/sharedlvmthin storage-move-preflight \
+        "$vmid" "$slot" "$destination"
+    move_cfg=$(pvesh get "/nodes/$(hostname)/qemu/$vmid/config" --output-format json)
+    move_digest=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["digest"])' "$move_cfg")
+    started=$(date +%s)
+    tg53_dispatch_detached "evacuate-${vmid}-${slot}-$(date +%s)-$$" create \
+        "/nodes/$(hostname)/qemu/$vmid/move_disk" \
+        --disk "$slot" --storage "$destination" --delete 1 \
+        --digest "$move_digest"
+    tg53_wait_exact_task "$(hostname)" "$vmid" qmmove \
+        "$started" "$((started + 1800))"
     new_value=$(awk -F': ' -v slot="$slot" '$1 == slot { print $2 }' "$config")
     [[ "$new_value" == "$destination:"* ]] || {
         echo "FAILED_POSTCONDITION: VM $vmid $slot is not on $destination" >&2
