@@ -236,7 +236,7 @@ class UpstreamInventoryEvaluationTests(unittest.TestCase):
             "print $n, '=', (defined($v)?'ok':'bad'), qq(\\n); }"
         )
         result = subprocess.run(
-            ["perl", f"-I{fixture.parent.parent}", "-e", probe],
+            ["perl", f"-I{fixture.parents[2]}", "-e", probe],
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

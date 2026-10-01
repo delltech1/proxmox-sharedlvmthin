@@ -246,7 +246,11 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         args = mock.Mock(package="pve-sharedlvmthin", version="1",
                          artifact_sha256="a" * 64, plan_digest="b" * 64,
                          transaction_id="d" * 32)
-        with mock.patch.object(self.module, "require_root"):
+        with mock.patch.object(self.module, "require_root"), \
+                mock.patch.object(
+                    self.module, "manifest_and_lib",
+                    return_value=({}, self.core),
+                ):
             with self.assertRaisesRegex(RuntimeError, "prepared package transition"):
                 self.module.command_qualify_runtime(args)
         self.assertFalse(self.module.RUNTIME_RELEASE.exists())
@@ -614,7 +618,11 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         with mock.patch.object(self.module, "installed_packages", return_value=installed), \
                 mock.patch.object(self.module, "held_packages", side_effect=lambda: set(holds)), \
                 mock.patch.object(self.module, "package_state_records", return_value=self.records()), \
-                mock.patch.object(self.module, "apt_mark", side_effect=mark):
+                mock.patch.object(self.module, "apt_mark", side_effect=mark), \
+                mock.patch.object(
+                    self.module, "release_holds",
+                    side_effect=lambda packages: mark("unhold", packages),
+                ):
             record = self.module.enter_freeze(self.manifest(), self.core)
             self.assertEqual(record["preexisting"], ["qemu-server"])
             self.assertEqual(record["owned"], ["libpve-storage-perl"])
