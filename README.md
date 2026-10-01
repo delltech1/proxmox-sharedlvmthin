@@ -96,6 +96,7 @@ read-only check and follow every reported materialization command:
 sharedlvmthin migration-preflight <vmid> <target-node> --online
 sharedlvmthin storage-move-preflight <vmid> <disk> <target-storage>
 sharedlvmthin volume-operation-preflight <resize|attach> <vmid> <disk-key|volume-id>
+sharedlvmthin qmdestroy-contract-check
 sharedlvmthin thick-lazy-materialize <storage-id> <volume>
 sharedlvmthin migration-preflight <vmid> <target-node> --online
 qm migrate <vmid> <target-node> --online 1

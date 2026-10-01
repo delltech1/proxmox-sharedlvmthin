@@ -154,6 +154,14 @@ explicitly recovered when its owner is stale) before native PVE activates it
 for either operation. The command records the exact configuration digest and
 performs no activation, device-mapper or LVM mutation.
 
+`sharedlvmthin qmdestroy-contract-check` qualifies the installed qemu-server
+destroy implementation itself. It verifies that owned-volume failures are
+still warning-and-continue inside `PVE::QemuServer::destroy_vm`, that the
+native DELETE API still has no configuration-digest CAS, and that final VM
+configuration removal remains after the storage loop. Any missing or reordered
+boundary returns `RETEST_REQUIRED`; package installation success is not a
+substitute for this lifecycle contract.
+
 The empty `running-nets-host-mtu:` RAM-snapshot defect was reproduced with
 both qemu-server 9.2.7 and 9.2.10 for no-NIC and e1000-only guests. It is a
 latent upstream snapshot/config inconsistency, not evidence of a new 9.2.10

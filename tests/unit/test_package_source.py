@@ -130,6 +130,9 @@ class PackageSourceTests(unittest.TestCase):
         volume_operation = (
             ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-volume-operation-preflight"
         ).read_text(encoding="utf-8")
+        qmdestroy_contract = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmdestroy-contract-check"
+        ).read_text(encoding="utf-8")
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
@@ -164,6 +167,13 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("CONFIG_SHA256", volume_operation)
         for forbidden in ("run_command", "system(", "qx/", "`", "lvchange", "dmsetup"):
             self.assertNotIn(forbidden, volume_operation)
+        self.assertIn("qmdestroy-contract-check)", cli)
+        self.assertIn("sharedlvmthin-qmdestroy-contract-check", build)
+        self.assertIn("sharedlvmthin-qmdestroy-contract-check", postinst)
+        self.assertNotIn("sharedlvmthin-qmdestroy-contract-check", excluded)
+        self.assertIn("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE", qmdestroy_contract)
+        self.assertIn("NATIVE_CONFIG_CAS=ABSENT", qmdestroy_contract)
+        self.assertNotIn("subprocess", qmdestroy_contract)
         for forbidden in (
             "run_command(", "system(", "qx/", "`qm ", "lvchange", "dmsetup",
             "activate_volume", "deactivate_volume", "_thick_transition_anchor",
@@ -296,6 +306,7 @@ class PackageSourceTests(unittest.TestCase):
                          "sharedlvmthin-migration-preflight",
                          "sharedlvmthin-storage-move-preflight",
                          "sharedlvmthin-volume-operation-preflight",
+                         "sharedlvmthin-qmdestroy-contract-check",
                          "sharedlvmthin-bridge-topology", "sharedlvmthin-thin-metadata-check",
                          "sharedlvmthin-qmp-path-check",
                          "sharedlvmthin-profile-replacement"):

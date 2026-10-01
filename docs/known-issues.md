@@ -180,3 +180,13 @@
     `sharedlvmthin volume-operation-preflight attach VMID VOLUME-ID` first.
     A refusal has no activation side effect; materialize or explicitly recover
     the Lazy volume before dispatching the native operation.
+24. Native PVE VM destruction is not VM-wide atomic across multiple storage
+    volumes. The qualified qemu-server implementation logs an individual
+    `vdisk_free` error, continues with later volumes, publishes a zombie
+    configuration and the API worker subsequently removes that configuration.
+    A storage plugin hook cannot reverse earlier successful deletes or force
+    the native API to preserve the config. Run
+    `sharedlvmthin qmdestroy-contract-check` after every qemu-server update.
+    Until the supported guarded dispatcher is qualified, treat multi-volume
+    native destroy as an upstream recovery boundary and retain an independent
+    VM configuration/volume inventory before testing it.

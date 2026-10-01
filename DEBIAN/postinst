@@ -122,6 +122,7 @@ chmod 0755 "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-volume-operation-preflight \
+    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmdestroy-contract-check \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
 

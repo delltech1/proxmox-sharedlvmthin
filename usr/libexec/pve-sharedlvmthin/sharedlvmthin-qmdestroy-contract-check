@@ -1,0 +1,108 @@
+#!/usr/bin/python3
+"""Read-only qualification of the PVE VM-destroy effect ordering."""
+
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import stat
+import sys
+
+DEFAULT_QEMU = "/usr/share/perl5/PVE/QemuServer.pm"
+DEFAULT_API = "/usr/share/perl5/PVE/API2/Qemu.pm"
+MAX_SOURCE = 8 * 1024 * 1024
+
+
+def read_source(name):
+    path = Path(name)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or path.is_symlink():
+        raise RuntimeError(f"unsafe upstream source: {path}")
+    if info.st_size < 1 or info.st_size > MAX_SOURCE:
+        raise RuntimeError(f"upstream source size is outside the qualified bound: {path}")
+    data = path.read_bytes()
+    if len(data) != info.st_size or b"\0" in data:
+        raise RuntimeError(f"ambiguous upstream source read: {path}")
+    return data.decode("utf-8", errors="strict")
+
+
+def section(text, start, end):
+    first = text.find(start)
+    if first < 0:
+        raise RuntimeError(f"missing upstream boundary: {start}")
+    last = text.find(end, first + len(start))
+    if last < 0 or last <= first:
+        raise RuntimeError(f"missing upstream boundary: {end}")
+    return text[first:last]
+
+
+def ordered(fragment, tokens, label):
+    position = -1
+    for token in tokens:
+        found = fragment.find(token, position + 1)
+        if found < 0:
+            raise RuntimeError(f"{label} contract token is absent or reordered: {token}")
+        position = found
+
+
+def qualify(qemu_text, api_text):
+    destroy = section(qemu_text, "sub destroy_vm {", "my $fleecing_section_schema")
+    ordered(destroy, [
+        "my ($storecfg, $vmid, $skiplock, $replacement_conf, $purge_unreferenced) = @_",
+        "my $remove_owned_drive = sub",
+        "my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) }",
+        "return if !$path || !$owner || ($owner != $vmid)",
+        "eval { PVE::Storage::vdisk_free($storecfg, $volid) }",
+        "log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@",
+        "PVE::QemuConfig->foreach_volume_full($conf, $include_opts, $remove_owned_drive)",
+        "for my $snap (values %{ $conf->{snapshots} })",
+        "$remove_owned_drive->('vmstate', $drive)",
+        "PVE::QemuConfig->foreach_volume_full($conf->{pending}, $include_opts, $remove_owned_drive)",
+        "if (defined $replacement_conf)",
+        "PVE::QemuConfig->write_config($vmid, $replacement_conf)",
+        "PVE::QemuConfig->destroy_config($vmid)",
+    ], "QemuServer::destroy_vm")
+    if destroy.count("eval { PVE::Storage::vdisk_free($storecfg, $volid) }") != 2:
+        raise RuntimeError("QemuServer::destroy_vm vdisk_free warning boundaries changed")
+
+    api = section(api_text, "name => 'destroy_vm'", "name => 'unlink'")
+    if "digest" in section(api, "parameters =>", "returns =>"):
+        raise RuntimeError("native destroy unexpectedly exposes a digest parameter; requalification required")
+    ordered(api, [
+        "PVE::QemuConfig->lock_config(",
+        "my $ha_managed = $early_checks->()",
+        "PVE::QemuServer::destroy_vm(",
+        "{ lock => 'destroyed' }",
+        "PVE::AccessControl::remove_vm_access($vmid)",
+        "PVE::Firewall::remove_vmfw_conf($vmid)",
+        "PVE::QemuConfig->destroy_config($vmid)",
+    ], "API2::Qemu destroy worker")
+    if api.count("PVE::QemuConfig->destroy_config($vmid)") != 1:
+        raise RuntimeError("API2::Qemu final config-removal cardinality changed")
+    return destroy, api
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--qemuserver", default=DEFAULT_QEMU)
+    parser.add_argument("--api2-qemu", default=DEFAULT_API)
+    args = parser.parse_args()
+    try:
+        qemu_text = read_source(args.qemuserver)
+        api_text = read_source(args.api2_qemu)
+        destroy, api = qualify(qemu_text, api_text)
+    except (OSError, UnicodeError, RuntimeError) as error:
+        print(f"QMDestroy_CONTRACT=RETEST_REQUIRED\nREASON={error}")
+        return 2
+    digest = hashlib.sha256((destroy + "\0" + api).encode()).hexdigest()
+    print("QMDestroy_CONTRACT_VERSION=1")
+    print("NATIVE_CONFIG_CAS=ABSENT")
+    print("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE")
+    print("FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM")
+    print(f"CONTRACT_SHA256={digest}")
+    print("QMDestroy_CONTRACT=QUALIFIED")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
