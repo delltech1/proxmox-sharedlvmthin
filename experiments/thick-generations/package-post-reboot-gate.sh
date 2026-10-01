@@ -271,6 +271,17 @@ health_file=
 
 if ((settle_runtime == 1)); then
     sharedlvmthin update-policy requalify-boot
+    # The checks above describe the predecessor receipt.  Never turn that
+    # evidence into a post-settlement PASS: rerun this complete gate in its
+    # read-only mode against the successor receipt and current live state.
+    # A failed replay leaves the runtime command non-zero and this outer gate
+    # must not print RESULT=POST_REBOOT_PASS.
+    "$0" \
+        --expect-host "$expected_host" \
+        --expect-profile "$expected_profile" \
+        --expect-version "$expected_version" \
+        --previous-boot-id "$previous_boot_id"
+    echo "POST_SETTLEMENT_RECHECK=PASS"
 fi
 
 echo "HOST=$expected_host"

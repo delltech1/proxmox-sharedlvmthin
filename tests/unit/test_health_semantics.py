@@ -360,6 +360,7 @@ class ThickMaterializationAdmissionHealthTests(unittest.TestCase):
     def test_slots_are_counted_from_non_materialized_anchors(self):
         status, result = self.evaluate([
             {"phase": "MATERIALIZED"},
+            {"phase": "LAZY_DORMANT"},
             {"phase": "HYDRATING"},
             {"phase": "HYDRATION_COMPLETE"},
         ], 3)
@@ -368,6 +369,15 @@ class ThickMaterializationAdmissionHealthTests(unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertEqual(result["available_slots"], 1)
         self.assertEqual(result["state"], "AVAILABLE")
+
+    def test_closed_lazy_dormant_anchor_does_not_consume_worker_slot(self):
+        status, result = self.evaluate([
+            {"phase": "LAZY_DORMANT"},
+        ], 1)
+        self.assertEqual(status, "PASS")
+        self.assertEqual(result["active"], 0)
+        self.assertEqual(result["available_slots"], 1)
+        self.assertTrue(result["available"])
 
     def test_saturated_limit_is_visible_but_not_false_failure(self):
         status, result = self.evaluate([
@@ -1058,6 +1068,25 @@ class ThickAnchorReferenceTests(unittest.TestCase):
         }])
         self.assertEqual(result[0]["status"], "PASS")
         self.assertEqual(result[0]["reference_count"], 1)
+
+    def test_closed_lazy_dormant_reference_is_healthy_without_worker(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate(
+            "thick",
+            [{
+                "name": "sltg-a-key", "volume": "vm-100-disk-0",
+                "phase": "LAZY_DORMANT", "transaction": "a" * 32,
+                "head_size_bytes": 4 * 2**30,
+            }],
+            worker_state=lambda *_args: "ABSENT",
+            reference_index={"thick:vm-100-disk-0": ["config"]},
+            current_size_index={
+                "thick:vm-100-disk-0": [("config", 4 * 2**30, "attached")]
+            },
+        )
+        self.assertEqual(result[0]["status"], "PASS")
+        self.assertEqual(result[0]["materialization_state"], "LAZY_DORMANT")
+        self.assertNotIn("worker_state", result[0])
 
     def test_stale_current_pve_size_is_recovery_required(self):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})

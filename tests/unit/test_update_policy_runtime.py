@@ -519,8 +519,14 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         source = (ROOT / "experiments/thick-generations/package-post-reboot-gate.sh").read_text(
             encoding="utf-8")
         self.assertIn("--settle-runtime", source)
-        self.assertLess(source.rindex("health_file=\n"),
-                        source.rindex("sharedlvmthin update-policy requalify-boot"))
+        requalify = source.rindex("sharedlvmthin update-policy requalify-boot")
+        self.assertLess(source.rindex("health_file=\n"), requalify)
+        post_replay = source.index('"$0" \\\n', requalify)
+        self.assertGreater(post_replay, requalify)
+        self.assertGreater(source.index("POST_SETTLEMENT_RECHECK=PASS", post_replay),
+                           post_replay)
+        self.assertGreater(source.index("RESULT=POST_REBOOT_PASS", post_replay),
+                           post_replay)
 
     def test_internal_runtime_modes_bypass_public_cli_argument_surface(self):
         source = (

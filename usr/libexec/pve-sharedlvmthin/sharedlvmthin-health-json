@@ -933,7 +933,9 @@ def evaluate_thick_anchor_references(
         }
         phase = anchor.get("phase")
         transaction = anchor.get("transaction")
-        if phase != "MATERIALIZED":
+        stable_phase = phase in {"MATERIALIZED", "LAZY_DORMANT"}
+        stable_state = "MATERIALIZED" if phase == "MATERIALIZED" else "LAZY_DORMANT"
+        if not stable_phase:
             observed_worker = (
                 worker_state(transaction, sid, volume)
                 if worker_state is not None else "UNKNOWN"
@@ -1001,11 +1003,11 @@ def evaluate_thick_anchor_references(
             item["reference_evidence_errors"] = list(reference_evidence_errors)
         elif not volume:
             item["status"] = "WARN"
-            item["materialization_state"] = "MATERIALIZED"
+            item["materialization_state"] = stable_state
             item["reason"] = "anchor volume identity is unavailable; no cleanup attempted"
         elif not references:
             item["status"] = "WARN"
-            item["materialization_state"] = "MATERIALIZED"
+            item["materialization_state"] = stable_state
             item["reason"] = (
                 "unreferenced Thick Generations volume; it may be an incomplete "
                 "destination after an interrupted import, clone, or move; prove its "
@@ -1031,7 +1033,7 @@ def evaluate_thick_anchor_references(
                 )
             elif role == "detached":
                 item["status"] = "PASS"
-                item["materialization_state"] = "MATERIALIZED"
+                item["materialization_state"] = stable_state
                 item["reason"] = (
                     "volume has one detached PVE unused reference; attached-size "
                     "reconciliation is not applicable"
@@ -1040,7 +1042,7 @@ def evaluate_thick_anchor_references(
                 r"vm-\d+-state-[A-Za-z0-9][A-Za-z0-9_.-]*", volume
             ):
                 item["status"] = "PASS"
-                item["materialization_state"] = "MATERIALIZED"
+                item["materialization_state"] = stable_state
                 item["reason"] = (
                     "volume has one authoritative PVE vmstate reference; disk-size "
                     "reconciliation is not applicable"
@@ -1057,7 +1059,7 @@ def evaluate_thick_anchor_references(
             elif role == "efi" and exact_efi_backing_size(
                     declared, authoritative, vg_extent_size):
                 item["status"] = "PASS"
-                item["materialization_state"] = "MATERIALIZED"
+                item["materialization_state"] = stable_state
                 item["reason"] = (
                     "volume has one exact current efidisk0 reference whose qualified "
                     "logical EFI geometry rounds exactly to the physical VG extent"
@@ -1072,13 +1074,13 @@ def evaluate_thick_anchor_references(
                 )
             else:
                 item["status"] = "PASS"
-                item["materialization_state"] = "MATERIALIZED"
+                item["materialization_state"] = stable_state
                 item["reason"] = (
                     "volume has one current PVE reference with exact HEAD size"
                 )
         else:
             item["status"] = "PASS"
-            item["materialization_state"] = "MATERIALIZED"
+            item["materialization_state"] = stable_state
             item["reason"] = "volume has exactly one PVE configuration reference"
         results.append(item)
     return results
@@ -1096,7 +1098,7 @@ def evaluate_thick_materialization_admission(anchors, limit):
         }
     active = sum(
         1 for anchor in anchors or []
-        if anchor.get("phase") != "MATERIALIZED"
+        if anchor.get("phase") not in {"MATERIALIZED", "LAZY_DORMANT"}
     )
     available = active < limit
     available_slots = max(0, limit - active)
