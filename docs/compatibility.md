@@ -146,6 +146,14 @@ failure. The preflight is read-only and is not a TOCTOU grant: callers must
 also pass the PVE configuration digest to the move request, and normal plugin
 identity, ownership and mutation gates remain authoritative.
 
+`sharedlvmthin volume-operation-preflight resize VMID DISK` and
+`sharedlvmthin volume-operation-preflight attach VMID VOLUME-ID` provide the
+same read-only fail-closed check before native resize or reattachment of an
+existing unused disk. An unmaterialized Lazy volume must be materialized (or
+explicitly recovered when its owner is stale) before native PVE activates it
+for either operation. The command records the exact configuration digest and
+performs no activation, device-mapper or LVM mutation.
+
 The empty `running-nets-host-mtu:` RAM-snapshot defect was reproduced with
 both qemu-server 9.2.7 and 9.2.10 for no-NIC and e1000-only guests. It is a
 latent upstream snapshot/config inconsistency, not evidence of a new 9.2.10

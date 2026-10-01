@@ -127,6 +127,9 @@ class PackageSourceTests(unittest.TestCase):
         source = (
             ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight"
         ).read_text(encoding="utf-8")
+        volume_operation = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-volume-operation-preflight"
+        ).read_text(encoding="utf-8")
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
@@ -148,6 +151,19 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("sharedlvmthin-storage-move-preflight", build)
         self.assertIn("sharedlvmthin-storage-move-preflight", postinst)
         self.assertNotIn("sharedlvmthin-storage-move-preflight", excluded)
+        self.assertIn("volume-operation-preflight)", cli)
+        self.assertIn("sharedlvmthin-volume-operation-preflight", build)
+        self.assertIn("sharedlvmthin-volume-operation-preflight", postinst)
+        self.assertNotIn("sharedlvmthin-volume-operation-preflight", excluded)
+        self.assertIn("operation must be 'resize' or 'attach'", volume_operation)
+        self.assertIn("PVE::QemuServer::parse_drive", volume_operation)
+        self.assertIn("PVE::Storage::storage_check_enabled", volume_operation)
+        self.assertIn("_thick_read_anchor", volume_operation)
+        self.assertIn("LAZY_DORMANT", volume_operation)
+        self.assertIn("is not an unused disk", volume_operation)
+        self.assertIn("CONFIG_SHA256", volume_operation)
+        for forbidden in ("run_command", "system(", "qx/", "`", "lvchange", "dmsetup"):
+            self.assertNotIn(forbidden, volume_operation)
         for forbidden in (
             "run_command(", "system(", "qx/", "`qm ", "lvchange", "dmsetup",
             "activate_volume", "deactivate_volume", "_thick_transition_anchor",
@@ -279,6 +295,7 @@ class PackageSourceTests(unittest.TestCase):
                          "sharedlvmthin-snapshot-observe",
                          "sharedlvmthin-migration-preflight",
                          "sharedlvmthin-storage-move-preflight",
+                         "sharedlvmthin-volume-operation-preflight",
                          "sharedlvmthin-bridge-topology", "sharedlvmthin-thin-metadata-check",
                          "sharedlvmthin-qmp-path-check",
                          "sharedlvmthin-profile-replacement"):

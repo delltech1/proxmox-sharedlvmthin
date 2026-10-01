@@ -142,6 +142,7 @@ for PROGRAM in \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-snapshot-observe" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-volume-operation-preflight" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-apt-guard" \

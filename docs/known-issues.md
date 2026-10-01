@@ -174,3 +174,9 @@
     earlier effect owned by PVE replication orchestration. Inspect replication
     state before retrying; do not describe a failed mixed-storage rollback as
     globally side-effect-free.
+23. Native resize and reattachment of an existing unused Lazy disk have the
+    same upstream activate-before-size ordering. Run
+    `sharedlvmthin volume-operation-preflight resize VMID DISK` or
+    `sharedlvmthin volume-operation-preflight attach VMID VOLUME-ID` first.
+    A refusal has no activation side effect; materialize or explicitly recover
+    the Lazy volume before dispatching the native operation.
