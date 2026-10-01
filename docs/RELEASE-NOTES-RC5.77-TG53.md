@@ -54,7 +54,10 @@ claim.
 - Thick-only `pve-sharedlvmthin-thick_0.9.0~rc5.77~tg53_all.deb`:
   `07aaf02be273e6faf688ebb46f2164570013b94c2e121899389aadcc7d33acb5`
 
-Both hashes were reproduced by an independent fresh Linux build.  Exact API
-14/API 15 host-package tuples and the narrower scope qualified on each tuple
-are recorded in [compatibility.md](compatibility.md).  A different package
-hash or an unlisted host tuple is not covered by this evidence.
+Both hashes were reproduced by an independent fresh Linux build. Exact API 15
+host-package tuples and their narrower qualified scopes are recorded in
+[compatibility.md](compatibility.md). API 14 retains historical and source
+contract evidence, but this exact RC5.77 artifact is `RETEST_REQUIRED` there
+and must be refused by runtime qualification until its clean-install, upgrade,
+profile-cycle and reboot evidence is repeated. A different package hash or an
+unlisted host tuple is not covered by this evidence.

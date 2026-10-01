@@ -5982,6 +5982,138 @@ subtest 'thick deactivate removes kernel mapper even when its udev node vanished
     ], 'cleanup order removes the DM dependency before lvchange');
 };
 
+subtest 'transition deactivation discards every pre-executor observation' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $volname = 'vm-900001-disk-0';
+    my @states = (
+        [{ phase => 'HYDRATING', tx => ('a' x 32), head => 'old-head' }, {}, 'old-anchor'],
+        [{ phase => 'MATERIALIZED', tx => ('b' x 32), head => 'new-head' }, {}, 'new-anchor'],
+        [{ phase => 'MATERIALIZED', tx => ('b' x 32), head => 'new-head' }, {}, 'new-anchor'],
+    );
+    my (@deactivated, $locks, $removed);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { {} };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        die "unexpected extra anchor read\n" if !@states;
+        return @{shift @states};
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub {
+        my (undef, undef, undef, undef, $code) = @_;
+        $locks++;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_remove_mapper_exact = sub { $removed++ };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_exact_lvs = sub {
+        @deactivated = @_[5 .. $#_];
+        return 1;
+    };
+
+    ok($class->_thick_deactivate_volume('thick-test', $cfg, $volname, undef, undef),
+        'post-lock MATERIALIZED state converges through the stable path');
+    is($locks, 1, 'one transition executor lock is acquired');
+    is_deeply(\@deactivated, ['new-anchor', 'new-head'],
+        'only the post-lock anchor and HEAD are deactivated');
+    ok(!$removed, 'an absent frontend is not removed');
+    is(scalar(@states), 0, 'the recursive stable path rereads the anchor');
+};
+
+subtest 'unfinished transition deactivation retains the verified frontend' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $state = { phase => 'HYDRATING', tx => ('c' x 32), head => 'new-head' };
+    my ($verified, $effects);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { {} };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, {}, 'anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub {
+        my (undef, undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_published_transition_frontend = sub {
+        $verified++;
+        return 1;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_remove_mapper_exact = sub { $effects++ };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_exact_lvs = sub { $effects++ };
+
+    ok($class->_thick_deactivate_volume(
+        'thick-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ), 'zero-open transition is retained for its original worker/recovery path');
+    is($verified, 2, 'the exact transition frontend is verified before and after close');
+    ok(!$effects, 'unfinished transition deactivation performs no mapper or LV effect');
+};
+
+subtest 'transition deactivation identity ambiguity and lock timeout have zero effect' => sub {
+    reset_mocks();
+    my $cfg = {
+        shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-gib' => 5,
+    };
+    my $state = { phase => 'HYDRATING', tx => ('d' x 32), head => 'new-head' };
+    my $effects;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { {} };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
+        return ($state, {}, 'anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_published_transition_frontend = sub {
+        die "transition identity changed after lock\n";
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_remove_mapper_exact = sub { $effects++ };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_exact_lvs = sub { $effects++ };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub {
+        my (undef, undef, undef, undef, $code) = @_;
+        return $code->();
+    };
+    eval { $class->_thick_deactivate_volume(
+        'thick-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ) };
+    like($@, qr/transition identity changed after lock/,
+        'post-lock identity ambiguity is refused');
+    ok(!$effects, 'identity ambiguity performs no storage effect');
+
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub {
+        die "timed out waiting for the exact Thick transition executor; no activation effect was issued\n";
+    };
+    eval { $class->_thick_deactivate_volume(
+        'thick-test', $cfg, 'vm-900001-disk-0', undef, undef,
+    ) };
+    like($@, qr/timed out waiting for the exact Thick transition executor/,
+        'executor-lock timeout is a refusal');
+    ok(!$effects, 'executor-lock timeout performs no storage effect');
+};
+
 subtest 'thin owner tag parser rejects ambiguity and malformed ownership' => sub {
     is($thin_owner_from_tags->('pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef'),
         'node1', 'one exact owner is decoded');

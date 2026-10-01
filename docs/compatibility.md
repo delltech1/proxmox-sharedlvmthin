@@ -1,13 +1,17 @@
 # Compatibility
 
-RC5.77 TG53 is intended exclusively for **Proxmox VE 9**. The
-qualified release line is PVE 9.2.x with Storage API 14 or 15. PVE 8 and
-earlier are unsupported. A package being installable is not evidence that a
+RC5.77 TG53 is intended exclusively for **Proxmox VE 9**. Its plugin hooks
+retain the Storage API 14 and 15 source contract, but the **current RC5.77
+artifact is qualified only on the exact API 15 tuples listed below**. API 14
+has historical control-plane/package evidence through RC5.69 and an RC5.74
+retest candidate; RC5.77 on API 14 is currently `RETEST_REQUIRED` and its
+runtime qualification gate must fail closed. PVE 8 and earlier are
+unsupported. A package being installable or compiling is not evidence that a
 new PVE package tuple is compatible with storage mutations.
 
 | PVE | Storage API | Plugin API | Status |
 |---|---:|---:|---|
-| 9.2.x | 14 | 14 | Lifecycle, install/reinstall and mixed-API qualification |
+| 9.2.x | 14 | 14 | Hook-compatible; RC5.77 exact artifact is `RETEST_REQUIRED` |
 | 9.2.x | 15 | 15 | Lifecycle, package-update, reboot and endurance qualification |
 
 ## Exact TG53 qualification tuples
@@ -21,7 +25,7 @@ regressions pass.
 
 | Scope | pve-manager | libpve-storage-perl | qemu-server | pve-qemu-kvm | Kernel | libpve-common-perl | Status |
 |---|---|---|---|---|---|---|---|
-| API 14 clean install and in-place plugin upgrade | 9.2.2 | 9.1.5 | 9.1.15 | 11.0.0-3 | 7.0.2-6-pve | 9.1.12 | Exact lab-tested for control-plane/package lifecycle; the node had no SAN dataplane |
+| Historical API 14 clean install and in-place plugin upgrade (through RC5.69; not RC5.77) | 9.2.2 | 9.1.5 | 9.1.15 | 11.0.0-3 | 7.0.2-6-pve | 9.1.12 | Historical exact control-plane/package evidence only; RC5.77 remains `RETEST_REQUIRED` and the node had no SAN dataplane |
 | API 15 DUAL SAN lifecycle, rolling plugin upgrade and reboot | 9.2.18 | 9.1.10 | 9.2.7 | 11.0.3-3 | 7.0.14-16-pve | 9.2.1 | Exact lab-tested on the recorded disposable SAN scope |
 | API 15 updated SAN node | 9.2.20 | 9.1.10 | 9.2.7 | 11.0.3-3 | 7.0.14-17-pve | 9.2.2 | Exact TG53 package gate, Thick RAM-snapshot clone/rollback, RAW-to-Thin and QCOW2-to-Thick two-disk import, hashes and cleanup passed; broader tuple remains targeted-retest scope |
 | Current SAN candidate | 9.2.20 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-17-pve | 9.2.2 | RC5.77 package/runtime gate; Thin/Eager/materialized-Lazy lifecycle, supported migration, multi-mode resize, supported RAM snapshot/rollback/delete, exact canaries and cleanup passed; explicitly blocked configurations remain documented below |

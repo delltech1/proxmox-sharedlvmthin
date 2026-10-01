@@ -185,8 +185,11 @@ logical size. See [clone/restore burst capacity](docs/clone-restore-burst-capaci
 
 ## Requirements
 
-- Proxmox VE 9 with Storage API 14 or 15. Proxmox VE 8 and earlier are not
-  supported by this release candidate.
+- Proxmox VE 9. RC5.77 is exactly qualified only on the API 15 tuples in
+  [compatibility.md](docs/compatibility.md). Its hooks retain the API 14 source
+  contract, but this exact RC5.77 artifact on API 14 remains `RETEST_REQUIRED`
+  and must fail closed until the documented API 14 package/profile/reboot gate
+  is repeated. Proxmox VE 8 and earlier are unsupported.
 - The same existing shared LUN, multipath identity, PV and VG visible on every
   participating node.
 - Working cluster quorum, fencing and storage locking.
