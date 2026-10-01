@@ -75,6 +75,7 @@ def qualify(qemu_text, api_text):
     owner_lookup, removal_warning = tokens
     ordered(destroy, [
         "my ($storecfg, $vmid, $skiplock, $replacement_conf, $purge_unreferenced) = @_",
+        "eval { PVE::QemuConfig::cleanup_fleecing_images($vmid, $storecfg) }",
         "my $remove_owned_drive = sub",
         owner_lookup,
         "return if !$path || !$owner || ($owner != $vmid)",
@@ -90,6 +91,8 @@ def qualify(qemu_text, api_text):
     ], "QemuServer::destroy_vm")
     if destroy.count("eval { PVE::Storage::vdisk_free($storecfg, $volid) }") != 2:
         raise RuntimeError("QemuServer::destroy_vm vdisk_free warning boundaries changed")
+    if destroy.count("eval { PVE::QemuConfig::cleanup_fleecing_images($vmid, $storecfg) }") != 1:
+        raise RuntimeError("QemuServer::destroy_vm fleecing cleanup boundary changed")
     if destroy.count("PVE::QemuConfig->write_config($vmid, $replacement_conf)") != 1 \
             or destroy.count("PVE::QemuConfig->destroy_config($vmid)") != 1:
         raise RuntimeError("QemuServer::destroy_vm replacement publication cardinality changed")
@@ -134,6 +137,7 @@ def main():
     print("NATIVE_CONFIG_CAS=ABSENT")
     print("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE")
     print("FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM")
+    print("FLEECING_CLEANUP_CALL=PINNED")
     print(f"CONTRACT_SHA256={digest}")
     print(f"CONTRACT_VARIANT={variant}")
     print("MUTATION_ADAPTER=QUALIFIED")

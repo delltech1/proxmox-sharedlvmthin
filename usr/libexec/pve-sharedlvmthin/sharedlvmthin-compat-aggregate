@@ -296,6 +296,14 @@ def inspect_bundle(result_path, plan, plan_sha256, now, max_age_sec):
             if lines.count("QMDestroy_CONTRACT=QUALIFIED") != 1 \
                     or lines.count("NATIVE_CONFIG_CAS=ABSENT") != 1 \
                     or lines.count("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE") != 1 \
+                    or lines.count("FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM") != 1 \
+                    or lines.count("FLEECING_CLEANUP_CALL=PINNED") != 1 \
+                    or lines.count("MUTATION_ADAPTER=QUALIFIED") != 1 \
+                    or len([line for line in lines if line in {
+                        "CONTRACT_VARIANT=API14", "CONTRACT_VARIANT=API15"}]) != 1 \
+                    or len([line for line in lines
+                            if line.startswith("CONTRACT_SHA256=")
+                            and HEX_RE.fullmatch(line.split("=", 1)[1])]) != 1 \
                     or any(line.startswith("QMDestroy_CONTRACT=RETEST_REQUIRED") for line in lines):
                 raise ValueError(f"{host}: qmdestroy contract terminal markers are incomplete or unsafe")
         elif name == "compat-check":

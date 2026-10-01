@@ -14,6 +14,7 @@ loader.exec_module(module)
 QEMU = r'''
 sub destroy_vm {
 my ($storecfg, $vmid, $skiplock, $replacement_conf, $purge_unreferenced) = @_;
+eval { PVE::QemuConfig::cleanup_fleecing_images($vmid, $storecfg) };
 my $remove_owned_drive = sub {
 my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) };
 return if !$path || !$owner || ($owner != $vmid);
@@ -106,6 +107,14 @@ class QMDestroyContractTests(unittest.TestCase):
             "PVE::QemuConfig->destroy_config($vmid);\nPVE::QemuConfig->destroy_config($vmid);",
         )
         with self.assertRaisesRegex(RuntimeError, "publication cardinality"):
+            module.qualify(changed, API)
+
+    def test_missing_fleecing_cleanup_boundary_is_retested(self):
+        changed = QEMU.replace(
+            "eval { PVE::QemuConfig::cleanup_fleecing_images($vmid, $storecfg) };\n",
+            "",
+        )
+        with self.assertRaisesRegex(RuntimeError, "absent or reordered"):
             module.qualify(changed, API)
 
     def test_native_digest_contract_change_requires_requalification(self):

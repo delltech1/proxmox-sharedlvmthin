@@ -135,7 +135,10 @@ class CompatibilityAggregateTests(unittest.TestCase):
                 "NATIVE_CONFIG_CAS=ABSENT\n"
                 "VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE\n"
                 "FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM\n"
+                "FLEECING_CLEANUP_CALL=PINNED\n"
                 f"CONTRACT_SHA256={'e' * 64}\n"
+                "CONTRACT_VARIANT=API15\n"
+                "MUTATION_ADAPTER=QUALIFIED\n"
                 "QMDestroy_CONTRACT=QUALIFIED\n"
             ),
             "upstream-inventory": json.dumps(inventory) + "\n",
