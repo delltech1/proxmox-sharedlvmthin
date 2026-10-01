@@ -11,6 +11,10 @@ import sys
 DEFAULT_QEMU = "/usr/share/perl5/PVE/QemuServer.pm"
 DEFAULT_API = "/usr/share/perl5/PVE/API2/Qemu.pm"
 MAX_SOURCE = 8 * 1024 * 1024
+QUALIFIED_CONTRACTS = {
+    "06e848db8abaf5e765845577b90d38f97d8d3e0d29e24212504d77ee60c0c1ab": "API14",
+    "d52049347b091b6091671887b8c5087e9001445c793c1a719823fbbb047a220e": "API15",
+}
 
 
 def read_source(name):
@@ -45,23 +49,30 @@ def ordered(fragment, tokens, label):
         position = found
 
 
-def exactly_one(fragment, alternatives, label):
-    matches = [token for token in alternatives if fragment.count(token) == 1]
-    if len(matches) != 1:
-        raise RuntimeError(f"{label} has no single qualified upstream variant")
-    return matches[0]
+def exact_variant(fragment, variants, label):
+    matched = []
+    for name, tokens in variants.items():
+        if all(fragment.count(token) == 1 for token in tokens):
+            matched.append((name, tokens))
+    all_tokens = {token for tokens in variants.values() for token in tokens}
+    if len(matched) != 1 or sum(fragment.count(token) for token in all_tokens) != len(matched[0][1]):
+        raise RuntimeError(f"{label} has no single exact qualified upstream variant")
+    return matched[0]
 
 
 def qualify(qemu_text, api_text):
     destroy = section(qemu_text, "sub destroy_vm {", "my $fleecing_section_schema")
-    owner_lookup = exactly_one(destroy, [
-        "my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) }",
-        "my ($path, $owner) = PVE::Storage::path($storecfg, $volid)",
-    ], "QemuServer::destroy_vm owner lookup")
-    removal_warning = exactly_one(destroy, [
-        "log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@",
-        "warn \"Could not remove disk '$volid', check manually: $@\" if $@",
-    ], "QemuServer::destroy_vm removal warning")
+    variant, tokens = exact_variant(destroy, {
+        "API14": (
+            "my ($path, $owner) = PVE::Storage::path($storecfg, $volid)",
+            "warn \"Could not remove disk '$volid', check manually: $@\" if $@",
+        ),
+        "API15": (
+            "my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) }",
+            "log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@",
+        ),
+    }, "QemuServer::destroy_vm")
+    owner_lookup, removal_warning = tokens
     ordered(destroy, [
         "my ($storecfg, $vmid, $skiplock, $replacement_conf, $purge_unreferenced) = @_",
         "my $remove_owned_drive = sub",
@@ -79,6 +90,9 @@ def qualify(qemu_text, api_text):
     ], "QemuServer::destroy_vm")
     if destroy.count("eval { PVE::Storage::vdisk_free($storecfg, $volid) }") != 2:
         raise RuntimeError("QemuServer::destroy_vm vdisk_free warning boundaries changed")
+    if destroy.count("PVE::QemuConfig->write_config($vmid, $replacement_conf)") != 1 \
+            or destroy.count("PVE::QemuConfig->destroy_config($vmid)") != 1:
+        raise RuntimeError("QemuServer::destroy_vm replacement publication cardinality changed")
 
     api = section(api_text, "name => 'destroy_vm'", "name => 'unlink'")
     if "digest" in section(api, "parameters =>", "returns =>"):
@@ -94,7 +108,7 @@ def qualify(qemu_text, api_text):
     ], "API2::Qemu destroy worker")
     if api.count("PVE::QemuConfig->destroy_config($vmid)") != 1:
         raise RuntimeError("API2::Qemu final config-removal cardinality changed")
-    return destroy, api
+    return destroy, api, variant
 
 
 def main():
@@ -105,16 +119,24 @@ def main():
     try:
         qemu_text = read_source(args.qemuserver)
         api_text = read_source(args.api2_qemu)
-        destroy, api = qualify(qemu_text, api_text)
+        destroy, api, variant = qualify(qemu_text, api_text)
     except (OSError, UnicodeError, RuntimeError) as error:
         print(f"QMDestroy_CONTRACT=RETEST_REQUIRED\nREASON={error}")
         return 2
     digest = hashlib.sha256((destroy + "\0" + api).encode()).hexdigest()
+    if QUALIFIED_CONTRACTS.get(digest) != variant:
+        print("QMDestroy_CONTRACT=RETEST_REQUIRED")
+        print(f"CONTRACT_VARIANT={variant}")
+        print(f"CONTRACT_SHA256={digest}")
+        print("REASON=semantic source digest is not in the qualified mutation-adapter allowlist")
+        return 2
     print("QMDestroy_CONTRACT_VERSION=1")
     print("NATIVE_CONFIG_CAS=ABSENT")
     print("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE")
     print("FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM")
     print(f"CONTRACT_SHA256={digest}")
+    print(f"CONTRACT_VARIANT={variant}")
+    print("MUTATION_ADAPTER=QUALIFIED")
     print("QMDestroy_CONTRACT=QUALIFIED")
     return 0
 
