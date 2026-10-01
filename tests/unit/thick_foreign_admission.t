@@ -139,4 +139,68 @@ sub foreign_state {
     like($@, qr/not a proven anchor handoff/, 'replacement requires durable handoff evidence');
 }
 
+{
+    no warnings 'redefine';
+    my @decisions = (
+        { action => 'WAIT_EXACT_FOREIGN', receipt => {
+            tx => $tx, sid => 'foreign', vol => 'vm-200-disk-0',
+            anchor => $foreign_anchor, phase => 'HYDRATING',
+        } },
+        { action => 'GRANT' },
+    );
+    my ($callback_calls, $lock_calls, $pause_calls) = (0, 0, 0);
+    my @clock = (100, 100, 100, 101);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_admission_now = sub {
+        return shift(@clock) // 101;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_observation_pause = sub {
+        $pause_calls++;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        my ($class, $sid, $candidate, $code, $device, $budget, $bypass, $classifier) = @_;
+        $lock_calls++;
+        my $decision = shift @decisions;
+        return $decision if $decision->{action} eq 'WAIT_EXACT_FOREIGN';
+        $classifier->();
+        return $code->();
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_foreign_intent_admission = sub {
+        return { action => 'GRANT' };
+    };
+    my $result = $class->_with_thick_allocation_admission(
+        'request', { %$scfg, 'slt-mutation-admission-timeout' => 30 },
+        'sltg-a-' . ('1' x 24), sub { $callback_calls++; return 'ALLOCATED'; },
+    );
+    is($result, 'ALLOCATED', 'allocation runs after exact foreign settlement');
+    is($callback_calls, 1, 'mutating allocation callback runs exactly once');
+    is($lock_calls, 2, 'foreign wait reacquires the canonical lock');
+    is($pause_calls, 1, 'foreign wait yields outside the canonical lock');
+}
+
+{
+    no warnings 'redefine';
+    my @clock = (200, 200, 211);
+    my $callback_calls = 0;
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_admission_now = sub {
+        return shift(@clock) // 211;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_observation_pause = sub { };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {{
+        action => 'WAIT_EXACT_FOREIGN', receipt => {
+            tx => $tx, sid => 'foreign', vol => 'vm-200-disk-0',
+            anchor => $foreign_anchor, phase => 'HYDRATING',
+        },
+    }};
+    my $ok = eval {
+        $class->_with_thick_allocation_admission(
+            'request', { %$scfg, 'slt-mutation-admission-timeout' => 10 },
+            'sltg-a-' . ('2' x 24), sub { $callback_calls++ },
+        );
+        1;
+    };
+    ok(!$ok, 'allocation admission stops at its one monotonic deadline');
+    like($@, qr/no allocation mutation was issued/, 'deadline refusal is explicit');
+    is($callback_calls, 0, 'deadline performs no allocation effect');
+}
+
 done_testing();

@@ -4041,6 +4041,55 @@ sub _thick_foreign_intent_admission {
     };
 }
 
+sub _with_thick_allocation_admission {
+    my ($class, $storeid, $scfg, $requested_anchor, $code) = @_;
+    die "invalid Thick allocation admission callback\n" if ref($code) ne 'CODE';
+    die "invalid requested Thick allocation anchor\n"
+        if !defined($requested_anchor)
+        || $requested_anchor !~ /^sltg-a-[0-9a-f]{24}$/;
+
+    my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
+    my $budget = $scfg->{'slt-mutation-admission-timeout'} // 600;
+    die "invalid mutation admission timeout\n"
+        if $budget !~ /^\d+$/ || $budget < 10 || $budget > 86400;
+    my $deadline = $class->_admission_now() + $budget;
+    my ($previous, $round) = (undef, 0);
+
+    while (1) {
+        my $remaining = $deadline - $class->_admission_now();
+        die "timed out waiting for an exact foreign Thick transition; "
+            . "no allocation mutation was issued\n"
+            if $remaining <= 0;
+        my $decision = $class->_with_vg_lock(
+            $storeid, $scfg, $code, $device, int($remaining + 1), undef,
+            sub {
+                return $class->_thick_foreign_intent_admission(
+                    $storeid, $scfg, $requested_anchor, $previous,
+                );
+            },
+        );
+        return $decision if ref($decision) ne 'HASH'
+            || ($decision->{action} // '') ne 'WAIT_EXACT_FOREIGN';
+        my $receipt = $decision->{receipt};
+        die "foreign Thick allocation admission returned no exact blocker receipt\n"
+            if ref($receipt) ne 'HASH';
+        if (!defined($previous)
+            || ($previous->{tx} // '') ne ($receipt->{tx} // '')) {
+            warn "waiting to allocate behind exact foreign Thick transition "
+                . "tx=$receipt->{tx} storage=$receipt->{sid} "
+                . "volume=$receipt->{vol} phase=$receipt->{phase}; "
+                . "no allocation mutation has been issued\n";
+        }
+        $previous = { %$receipt };
+        $round++;
+        my $pause = 50 + ($round * 25);
+        $pause = 500 if $pause > 500;
+        $pause += int(rand(51));
+        $pause = 1000 if $pause > 1000;
+        $class->_thick_observation_pause($pause);
+    }
+}
+
 sub _with_vg_lock {
     my ($class, $storeid, $scfg, $code, $device, $acquire_budget,
         $bridge_admission_bypass, $admission_classifier) = @_;
@@ -5317,7 +5366,8 @@ sub _thick_alloc_image {
     my $tx = $class->_new_transaction_id();
     my %intent;
 
-    $class->_with_vg_lock($storeid, $scfg, sub {
+    my $requested_anchor = anchor_name($namespace, $name);
+    $class->_with_thick_allocation_admission($storeid, $scfg, $requested_anchor, sub {
         $class->_require_no_vg_intent($scfg, $vg, $device);
         $class->_thick_capacity_gate($storeid, $scfg, $size);
         my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
@@ -5401,7 +5451,7 @@ sub _thick_alloc_image {
             $storeid, $scfg, $name, $tx, 'PREPARED', $generation, $device,
         );
         return;
-    }, $device);
+    });
 
     eval {
         $class->_thick_activate_exact_lvs(
