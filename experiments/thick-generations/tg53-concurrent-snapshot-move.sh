@@ -117,7 +117,10 @@ if [[ "$move_exit" != OK ]]; then
         exit 2
     }
     grep -Fq "$move_volume" <<<"$source_inventory"
-    ! grep -Fq "vm-$MOVE_VMID-" <<<"$target_inventory"
+    if grep -Fq "vm-$MOVE_VMID-" <<<"$target_inventory"; then
+        echo "unexpected target volume exists after refused move" >&2
+        exit 2
+    fi
     echo "SNAP_VOLUME=$snap_volume"
     echo "MOVE_SOURCE_VOLUME=$move_volume"
     echo "MOVE_TARGET_VOLUME=ABSENT"
@@ -132,7 +135,10 @@ source_inventory="$(pvesm list "$SOURCE_STORAGE" --vmid "$MOVE_VMID")" || {
     echo "RESULT=SOURCE_INVENTORY_UNKNOWN"
     exit 2
 }
-! grep -Fq "$move_volume" <<<"$source_inventory"
+if grep -Fq "$move_volume" <<<"$source_inventory"; then
+    echo "source volume remains after successful move" >&2
+    exit 2
+fi
 
 echo "SNAP_VOLUME=$snap_volume"
 echo "MOVE_SOURCE_VOLUME=$move_volume"

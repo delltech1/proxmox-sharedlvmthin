@@ -32,12 +32,18 @@ timeout --foreground --kill-after=10s 900s qm delsnapshot "$VMID" "$SNAP"
 finished=$(date +%s)
 echo "DELETE_SECONDS=$((finished-started))"
 
-! qm listsnapshot "$VMID" | grep -Fq -- "$SNAP"
+if qm listsnapshot "$VMID" | grep -Fq -- "$SNAP"; then
+    echo "snapshot remains after delete" >&2
+    exit 2
+fi
 config_after="$(qm config "$VMID")"
 for volume in "${volumes[@]}"; do
     grep -Fq -- "$volume" <<<"$config_after"
 done
-! grep -Eq '^(lock|snapstate):' <<<"$config_after"
+if grep -Eq '^(lock|snapstate):' <<<"$config_after"; then
+    echo "VM lock or snapshot state remains after delete" >&2
+    exit 2
+fi
 
 echo "SNAPSHOT_DELETE=PASS"
 echo "END_UTC=$(date -u +%FT%TZ)"

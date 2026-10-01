@@ -140,14 +140,14 @@ if [ "$PREFLIGHT_ONLY" -eq 0 ] && [ -e "$UPDATE_POLICY_FILE" ]; then
         echo "ERROR: candidate FREEZE artifact identity is missing or unsafe." >&2
         exit 1
     fi
-    [ -f "$CANDIDATE_UPDATE_POLICY" ] && [ ! -L "$CANDIDATE_UPDATE_POLICY" ] \
+    if ! { [ -f "$CANDIDATE_UPDATE_POLICY" ] && [ ! -L "$CANDIDATE_UPDATE_POLICY" ] \
         && [ -f "$CANDIDATE_UPDATE_POLICY_LIB" ] \
         && [ ! -L "$CANDIDATE_UPDATE_POLICY_LIB" ] \
         && [ -f "$CANDIDATE_QUALIFIED_TUPLES" ] \
-        && [ ! -L "$CANDIDATE_QUALIFIED_TUPLES" ] || {
+        && [ ! -L "$CANDIDATE_QUALIFIED_TUPLES" ]; }; then
         echo "ERROR: candidate FREEZE admission payload is missing or unsafe." >&2
         exit 1
-    }
+    fi
     case "$INSTALLED_FLAVOR" in
         dual) source_package=pve-sharedlvmthin ;;
         thick-only) source_package=pve-sharedlvmthin-thick ;;

@@ -60,12 +60,12 @@ while (($#)); do
 done
 
 if ((settle_recovery == 1)); then
-    [[ -n "$transaction_id" || -n "$freeze_package_txid" ]] && \
-        [[ -z "$transaction_id" || "$transaction_id" =~ ^[0-9a-f]{32}$ ]] && \
-        [[ -z "$freeze_package_txid" || "$freeze_package_txid" =~ ^[0-9a-f]{32}$ ]] || {
+    if ! { [[ -n "$transaction_id" || -n "$freeze_package_txid" ]] &&
+        [[ -z "$transaction_id" || "$transaction_id" =~ ^[0-9a-f]{32}$ ]] &&
+        [[ -z "$freeze_package_txid" || "$freeze_package_txid" =~ ^[0-9a-f]{32}$ ]]; }; then
         echo "recovery requires exact replacement and/or FREEZE transaction IDs" >&2
         exit 64
-    }
+    fi
 elif [[ -n "$transaction_id" || -n "$freeze_package_txid" ]]; then
     echo "transaction IDs are valid only with --settle-recovery" >&2
     exit 64

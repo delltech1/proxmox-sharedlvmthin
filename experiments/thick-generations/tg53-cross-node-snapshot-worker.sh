@@ -18,7 +18,10 @@ echo "EXPECTED_STATE=$EXPECTED_STATE"
 dpkg-query -W pve-sharedlvmthin
 
 test "$(qm status "$VMID" | awk '{print $2}')" = "$EXPECTED_STATE"
-! qm listsnapshot "$VMID" | grep -Fq -- "$SNAP"
+if qm listsnapshot "$VMID" | grep -Fq -- "$SNAP"; then
+    echo "snapshot already exists before create" >&2
+    exit 2
+fi
 
 config_before="$(qm config "$VMID")"
 printf '%s\n' "$config_before"
@@ -42,7 +45,10 @@ config_after="$(qm config "$VMID")"
 for volume in "${volumes[@]}"; do
     grep -Fq -- "$volume" <<<"$config_after"
 done
-! grep -Eq '^(lock|snapstate):' <<<"$config_after"
+if grep -Eq '^(lock|snapstate):' <<<"$config_after"; then
+    echo "VM lock or transient snapshot state remains after create" >&2
+    exit 2
+fi
 
 echo "SNAPSHOT_CREATE=PASS"
 echo "END_UTC=$(date -u +%FT%TZ)"

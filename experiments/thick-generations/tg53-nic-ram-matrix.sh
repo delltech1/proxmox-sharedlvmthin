@@ -33,7 +33,10 @@ run_case() {
 
     test "$observed" = "$expected"
     qm delsnapshot "$VMID" "$name"
-    ! qm listsnapshot "$VMID" | grep -q "$name"
+    if qm listsnapshot "$VMID" | grep -q "$name"; then
+        echo "snapshot $name remains after delete" >&2
+        exit 2
+    fi
     qm stop "$VMID" --timeout 20
 }
 

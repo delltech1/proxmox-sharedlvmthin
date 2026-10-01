@@ -12,7 +12,10 @@ echo "NODE=$(hostname)"
 
 for id in "${VMIDS[@]}"; do
     test "$(qm status "$id" | awk '{print $2}')" = stopped
-    ! qm listsnapshot "$id" | grep -q "$SNAP"
+    if qm listsnapshot "$id" | grep -q "$SNAP"; then
+        echo "snapshot $SNAP already exists on VM $id" >&2
+        exit 2
+    fi
     qm config "$id" | grep -Eq '^(scsi|virtio|sata|ide)[0-9]+:'
 done
 
@@ -58,8 +61,14 @@ echo "CREATE_BATCH_VALIDATED=PASS"
 
 run_batch DELETE
 for id in "${VMIDS[@]}"; do
-    ! qm listsnapshot "$id" | grep -q "$SNAP"
-    ! qm config "$id" | grep -Eq '^(lock|snapstate):'
+    if qm listsnapshot "$id" | grep -q "$SNAP"; then
+        echo "snapshot $SNAP remains on VM $id after delete" >&2
+        exit 2
+    fi
+    if qm config "$id" | grep -Eq '^(lock|snapstate):'; then
+        echo "VM $id retains a lock or snapshot state after delete" >&2
+        exit 2
+    fi
 done
 echo "DELETE_BATCH_VALIDATED=PASS"
 echo "END_UTC=$(date -u +%FT%TZ)"

@@ -49,8 +49,14 @@ done
 echo "ROLLBACK_ALL_DISK_IDENTITIES=PASS"
 
 qm delsnapshot "$VMID" "$SNAP"
-! qm listsnapshot "$VMID" | grep -q "$SNAP"
-! qm config "$VMID" | grep -Eq '^(lock|snapstate):'
+if qm listsnapshot "$VMID" | grep -q "$SNAP"; then
+    echo "snapshot remains after delete" >&2
+    exit 2
+fi
+if qm config "$VMID" | grep -Eq '^(lock|snapstate):'; then
+    echo "VM lock or snapshot state remains after delete" >&2
+    exit 2
+fi
 echo "DELETE_CLEAN=PASS"
 echo "END_UTC=$(date -u +%FT%TZ)"
 echo "TG53_MIXED_THREE_DISK=PASS"
