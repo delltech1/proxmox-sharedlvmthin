@@ -29,7 +29,7 @@ echo "START_UTC=$(date -u +%FT%TZ)"
 started="$(date +%s)"
 tmp="$(mktemp -d /tmp/tg53-move.XXXXXX)"
 trap 'rm -rf -- "$tmp"' EXIT
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
 pvesh get "/nodes/$NODE/qemu/$VMID/config" --output-format json >"$tmp/config-before.json"
 python3 - "$tmp/config-before.json" "$DISK" >"$tmp/identity" <<'PY'
