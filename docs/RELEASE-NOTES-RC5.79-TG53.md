@@ -59,9 +59,9 @@ claim.
 ## Candidate artifacts
 
 - DUAL `pve-sharedlvmthin_0.9.0~rc5.79~tg53_all.deb`:
-  `PENDING_REPRODUCIBLE_BUILD`
+  `eb96c7932c6e04f1dce088c58b077850fa8bfbdebcc32cee2e2228a6e38a05c6`
 - Thick-only `pve-sharedlvmthin-thick_0.9.0~rc5.79~tg53_all.deb`:
-  `PENDING_REPRODUCIBLE_BUILD`
+  `636f3752b3db3b3c38a0b07e09b420edada2c886adb7fe44f9d9aba5f2825da0`
 
 Both hashes reproduced in two independent clean output directories. These
 artifacts must not be described as qualified until their package/live gates
