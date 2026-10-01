@@ -45,15 +45,30 @@ def ordered(fragment, tokens, label):
         position = found
 
 
+def exactly_one(fragment, alternatives, label):
+    matches = [token for token in alternatives if fragment.count(token) == 1]
+    if len(matches) != 1:
+        raise RuntimeError(f"{label} has no single qualified upstream variant")
+    return matches[0]
+
+
 def qualify(qemu_text, api_text):
     destroy = section(qemu_text, "sub destroy_vm {", "my $fleecing_section_schema")
+    owner_lookup = exactly_one(destroy, [
+        "my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) }",
+        "my ($path, $owner) = PVE::Storage::path($storecfg, $volid)",
+    ], "QemuServer::destroy_vm owner lookup")
+    removal_warning = exactly_one(destroy, [
+        "log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@",
+        "warn \"Could not remove disk '$volid', check manually: $@\" if $@",
+    ], "QemuServer::destroy_vm removal warning")
     ordered(destroy, [
         "my ($storecfg, $vmid, $skiplock, $replacement_conf, $purge_unreferenced) = @_",
         "my $remove_owned_drive = sub",
-        "my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) }",
+        owner_lookup,
         "return if !$path || !$owner || ($owner != $vmid)",
         "eval { PVE::Storage::vdisk_free($storecfg, $volid) }",
-        "log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@",
+        removal_warning,
         "PVE::QemuConfig->foreach_volume_full($conf, $include_opts, $remove_owned_drive)",
         "for my $snap (values %{ $conf->{snapshots} })",
         "$remove_owned_drive->('vmstate', $drive)",

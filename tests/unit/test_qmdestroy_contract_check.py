@@ -56,8 +56,28 @@ class QMDestroyContractTests(unittest.TestCase):
         self.assertIn("vdisk_free", destroy)
         self.assertIn("destroy_config", api)
 
+    def test_api14_direct_owner_lookup_and_warn_are_qualified(self):
+        api14 = QEMU.replace(
+            "my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) };",
+            "my ($path, $owner) = PVE::Storage::path($storecfg, $volid);",
+        ).replace(
+            "log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@;",
+            "warn \"Could not remove disk '$volid', check manually: $@\" if $@;",
+        )
+        destroy, _ = module.qualify(api14, API)
+        self.assertIn("PVE::Storage::path", destroy)
+
+    def test_ambiguous_owner_lookup_variants_are_retested(self):
+        changed = QEMU.replace(
+            "return if !$path || !$owner || ($owner != $vmid);",
+            "my ($path, $owner) = PVE::Storage::path($storecfg, $volid);\n"
+            "return if !$path || !$owner || ($owner != $vmid);",
+        )
+        with self.assertRaisesRegex(RuntimeError, "no single qualified upstream variant"):
+            module.qualify(changed, API)
+
     def test_missing_warning_boundary_is_retested(self):
-        with self.assertRaisesRegex(RuntimeError, "absent or reordered"):
+        with self.assertRaisesRegex(RuntimeError, "no single qualified upstream variant"):
             module.qualify(QEMU.replace("log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@;", ""), API)
 
     def test_native_digest_contract_change_requires_requalification(self):
