@@ -133,6 +133,9 @@ class PackageSourceTests(unittest.TestCase):
         qmdestroy_contract = (
             ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmdestroy-contract-check"
         ).read_text(encoding="utf-8")
+        vm_destroy_journal = (
+            ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy"
+        ).read_text(encoding="utf-8")
         cli = (ROOT / "usr/sbin/sharedlvmthin").read_text(encoding="utf-8")
         build = (ROOT / "scripts/build.sh").read_text(encoding="utf-8")
         postinst = (ROOT / "DEBIAN/postinst").read_text(encoding="utf-8")
@@ -174,6 +177,12 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE", qmdestroy_contract)
         self.assertIn("NATIVE_CONFIG_CAS=ABSENT", qmdestroy_contract)
         self.assertNotIn("subprocess", qmdestroy_contract)
+        self.assertIn("vm-destroy-observe)", cli)
+        self.assertIn("sharedlvmthin-vm-destroy", build)
+        self.assertIn("sharedlvmthin-vm-destroy", postinst)
+        self.assertNotIn("sharedlvmthin-vm-destroy", excluded)
+        self.assertIn('choices=["observe"]', vm_destroy_journal)
+        self.assertIn('"authority": "NONE"', vm_destroy_journal)
         for forbidden in (
             "run_command(", "system(", "qx/", "`qm ", "lvchange", "dmsetup",
             "activate_volume", "deactivate_volume", "_thick_transition_anchor",
@@ -307,6 +316,7 @@ class PackageSourceTests(unittest.TestCase):
                          "sharedlvmthin-storage-move-preflight",
                          "sharedlvmthin-volume-operation-preflight",
                          "sharedlvmthin-qmdestroy-contract-check",
+                         "sharedlvmthin-vm-destroy",
                          "sharedlvmthin-bridge-topology", "sharedlvmthin-thin-metadata-check",
                          "sharedlvmthin-qmp-path-check",
                          "sharedlvmthin-profile-replacement"):
