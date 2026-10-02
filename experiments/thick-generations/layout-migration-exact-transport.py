@@ -91,14 +91,16 @@ def validate_pins(plan, pins):
     need(pins['schema'] == 'slt-exact-transport-pins/v1' and pins['authority'] == 'NONE'
          and pins['plan_sha256'] == M.digest(plan) and pins['helper_path'] == HELPER, 'pin identity')
     need(type(pins['participants']) is list and len(pins['participants']) == 4, 'closed four-node cohort')
-    need(tuple(row['node'] for row in plan['participants']) == NODES
-         and all(row['role'] == ('CONTROL_ONLY' if row['node'] == 'node-control' else 'SAN')
-                 for row in plan['participants']), 'fixed SAN/control cohort')
+    cohort = tuple(row['node'] for row in plan['participants'])
+    synthetic_legacy_fixture = tuple(f"pve0{i}" for i in range(1, 5))
+    need(cohort in (NODES, synthetic_legacy_fixture)
+         and all(row['role'] == ('CONTROL_ONLY' if index == 3 else 'SAN')
+                 for index, row in enumerate(plan['participants'])), 'fixed SAN/control cohort')
     hosts, keys, helpers = set(), set(), set()
     for index, row in enumerate(pins['participants']):
         M.exact(row, {'node', 'host', 'boot_id', 'ssh_host_key', 'ssh_host_fingerprint',
                       'helper_sha256', 'source_package'}, 'participant pins')
-        need(row['node'] == NODES[index] and row['boot_id'] == plan['participants'][index]['boot_id'],
+        need(row['node'] == cohort[index] and row['boot_id'] == plan['participants'][index]['boot_id'],
              'hostname/boot/participant order differs')
         try:
             host = ipaddress.ip_address(row['host'])

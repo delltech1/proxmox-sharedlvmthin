@@ -218,7 +218,8 @@ class IntegrationModel:
         need(not self.poisoned and self.owner_pid == os.getpid(), "poisoned/forked model; inspect only")
         need(digest(self.plan) == self.plan_hash and digest(self.evidence) == self.evidence_hash
              and digest(dict(self.code.hashes)) == self.code_hash, "immutable plan/evidence/source drift")
-        need(self.records["node-control"]["package_sha256"] == self.plan["participants"][3]["before_package_sha256"],
+        control_node = self.plan["participants"][3]["node"]
+        need(self.records[control_node]["package_sha256"] == self.plan["participants"][3]["before_package_sha256"],
              "control-only package changed")
         self.M.validate_plan(self.plan, self.time)
         need(self.time >= self.last_time, "model clock regressed")
@@ -503,8 +504,9 @@ class PrefixInspector:
         event, value = item["event"], item["payload"]
         prefix, _, label = event.partition(":")
         if prefix.startswith("journal-"):
+            participant_nodes = tuple(row["node"] for row in self.plan["participants"])
             need(type(value) is dict and set(value) == {"journal", "tx", "key", "value"}
-                 and value["tx"] == self.plan["tx"] and value["journal"] in ("coordinator", "node-a", "node-b", "node-c", "node-control")
+                 and value["tx"] == self.plan["tx"] and value["journal"] in ("coordinator", *participant_nodes)
                  and label == value["journal"] + ":" + value["key"], "trace journal identity")
             key = (value["journal"], value["key"])
             if prefix == "journal-before":
