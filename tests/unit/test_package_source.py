@@ -702,14 +702,15 @@ class PackageSourceTests(unittest.TestCase):
             for line in (ROOT / "DEBIAN/control").read_text(encoding="utf-8").splitlines()
             if line.startswith("Version:")
         )
+        release_asset_version = version.replace("~", ".")
         self.assertIn("1 MiB\ndm-clone region candidate", readme)
         self.assertIn("including legacy 4/8 KiB objects", readme)
         self.assertIn("not the new dm-clone region default", readme)
         self.assertIn(
-            f"pve-sharedlvmthin_{version}_all.deb", readme
+            f"pve-sharedlvmthin_{release_asset_version}_all.deb", readme
         )
         self.assertIn(
-            f"pve-sharedlvmthin-thick_{version}_all.deb", readme
+            f"pve-sharedlvmthin-thick_{release_asset_version}_all.deb", readme
         )
         self.assertNotIn("0.9.0.rc5.4.1.tg25", readme)
 
