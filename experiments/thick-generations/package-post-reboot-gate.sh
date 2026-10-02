@@ -8,6 +8,7 @@ expected_version=
 previous_boot_id=
 health_file=
 doctor_file=
+settle_runtime=0
 
 cleanup() {
     [[ -z "$health_file" ]] || rm -f -- "$health_file"
@@ -20,10 +21,10 @@ usage() {
     cat <<'EOF'
 usage: package-post-reboot-gate.sh --expect-host EXACT-HOSTNAME \
        --expect-profile dual|thick-only --expect-version DEBIAN-VERSION \
-       --previous-boot-id UUID
+       --previous-boot-id UUID [--settle-runtime]
 
-Read-only: proves a changed boot ID, the installed package/profile boundary,
-and bounded compatibility, Doctor and upgrade checks. It never installs,
+By default this is read-only. --settle-runtime publishes only the new
+boot-bound runtime receipt after every check passes. It never installs,
 removes, restarts or reboots anything.
 EOF
 }
@@ -34,6 +35,7 @@ while (($#)); do
         --expect-profile) expected_profile=${2:-}; shift 2 ;;
         --expect-version) expected_version=${2:-}; shift 2 ;;
         --previous-boot-id) previous_boot_id=${2:-}; shift 2 ;;
+        --settle-runtime) settle_runtime=1; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 64 ;;
     esac
@@ -75,7 +77,7 @@ installed_version=
 for candidate in pve-sharedlvmthin pve-sharedlvmthin-thick; do
     status=$(dpkg-query -W -f='${db:Status-Abbrev}' "$candidate" 2>/dev/null || true)
     case "$status" in
-        ii*)
+        ii*|hi*)
             installed_count=$((installed_count + 1))
             installed_package=$candidate
             installed_version=$(dpkg-query -W -f='${Version}' "$candidate")
@@ -159,6 +161,7 @@ else
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-maintenance-check \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
         /usr/share/perl5/PVE/SharedLvmThinGuard.pm \
         /usr/share/perl5/PVE/SharedLvmThinGuardClient.pm \
@@ -266,6 +269,21 @@ PY
 rm -f -- "$health_file"
 health_file=
 
+if ((settle_runtime == 1)); then
+    sharedlvmthin update-policy requalify-boot
+    # The checks above describe the predecessor receipt.  Never turn that
+    # evidence into a post-settlement PASS: rerun this complete gate in its
+    # read-only mode against the successor receipt and current live state.
+    # A failed replay leaves the runtime command non-zero and this outer gate
+    # must not print RESULT=POST_REBOOT_PASS.
+    /bin/bash "$0" \
+        --expect-host "$expected_host" \
+        --expect-profile "$expected_profile" \
+        --expect-version "$expected_version" \
+        --previous-boot-id "$previous_boot_id"
+    echo "POST_SETTLEMENT_RECHECK=PASS"
+fi
+
 echo "HOST=$expected_host"
 echo "PREVIOUS_BOOT_ID=${previous_boot_id,,}"
 echo "CURRENT_BOOT_ID=${current_boot_id,,}"
@@ -273,5 +291,6 @@ echo "PACKAGE=$installed_package"
 echo "VERSION=$installed_version"
 echo "PROFILE=$observed_profile"
 echo "HEALTH_JSON=PASS"
+echo "RUNTIME_SETTLED=$([[ $settle_runtime -eq 1 ]] && echo YES || echo NO)"
 echo "RESULT=POST_REBOOT_PASS"
 echo "Guest-I/O validation remains workload-specific and must be recorded separately."

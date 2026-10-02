@@ -124,11 +124,24 @@ time. The profiles conflict and cannot coexist:
 ```bash
 sha256sum --check SHA256SUMS
 # DUAL: Thin and Thick Generations
-apt install ./pve-sharedlvmthin_<version>_all.deb
+DEB="$PWD/pve-sharedlvmthin_<dotted-version>_all.deb"
 
 # OR Thick-only: Thick Generations only
-apt install ./pve-sharedlvmthin-thick_<version>_all.deb
+DEB="$PWD/pve-sharedlvmthin-thick_<dotted-version>_all.deb"
+
+HASH="$(sha256sum "$DEB" | awk '{print $1}')"
+sudo experiments/thick-generations/package-profile-gate.sh \
+  --package "$DEB" --sha256 "$HASH" \
+  --expect-host "$(hostname)" --expect-current none \
+  --select-update-policy freeze --execute
 ```
+
+The release workflow converts Debian `~` separators to dots in GitHub asset
+filenames; use the exact downloaded name. Run the gate from the matching tagged
+source tree. It is intentionally dry-run without `--execute`. For an upgrade,
+set `--expect-current` to the installed profile (`dual` or `thick-only`) and
+run `sharedlvmthin upgrade-check` first. Do not replace this workflow with raw
+`apt install` while `FREEZE` is active.
 
 Existing `/etc/pve-sharedlvmthin/web.conf` and TLS files are preserved during
 upgrade. Non-interactive installation never waits for the optional web
@@ -183,13 +196,13 @@ failure-domain layout: Thin pool growth, metadata exhaustion and ownership do
 not then compete with fully reserved Thick capacity or its transition objects.
 Eager and Lazy Thick aliases may share the dedicated Thick VG.
 
-TG52 does not support same-VG Thin+Thick operation, including as an advanced
+TG53 does not support same-VG Thin+Thick operation, including as an advanced
 opt-in. Every Thin storage definition must resolve to a different physical VG
 from every Eager/Lazy Thick definition. `isolated` is the only operational
 layout. The schema can parse the retired `mixed` token during a rolling
 migration, but preinstall and runtime refuse it. Existing mixed layouts must
 move their volumes and settle `storage.cfg` before installing or upgrading to
-TG52 on a participating node.
+TG53 on a participating node.
 
 Example separated topology:
 
@@ -279,6 +292,31 @@ Python cache/state. PVE Storage APIs 14 and 15 are explicitly supported; other
 runtime API versions refuse mutation until separately qualified.
 
 ## Rolling package upgrade
+
+Select one update policy explicitly on every participating node:
+
+- `freeze` holds the watched storage stack and refuses ordinary changes; use
+  the exact package-profile settlement workflow for an intentional plugin
+  replacement.
+- `qualified-auto` permits only an exact manifest-qualified APT transition.
+  It does not start APT, restart services or reboot the node.
+- `warn` permits one exact administrator-authorized unqualified package plan,
+  but the resulting runtime remains `UNQUALIFIED` and storage mutations stay
+  blocked until a later qualification succeeds.
+
+Older candidates named the last two modes `qualified-only` and
+`manual-override`. They remain readable during an upgrade but are renamed only
+by `sharedlvmthin update-policy migrate-policy-schema`; there is no silent
+policy conversion.
+
+Every watched update has two distinct settlements. `PACKAGE_SETTLED` proves
+the exact dpkg/artifact result. Runtime permission additionally requires a
+root-owned receipt matching the code identity actually loaded by the calling
+PVE process, the current boot ID, running kernel and qualified plan. A stale
+worker, manual payload replacement, reboot or different kernel therefore
+blocks mutation even when all services merely report `active`. After a
+qualified reboot use `package-post-reboot-gate.sh --settle-runtime`; the
+default invocation remains read-only.
 
 A package upgrade replaces the plugin and diagnostic files and refreshes only
 active PVE management consumers. It does not restart QEMU, deactivate an LVM

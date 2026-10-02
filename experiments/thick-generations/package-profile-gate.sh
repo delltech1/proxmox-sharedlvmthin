@@ -2,6 +2,8 @@
 # Disposable-lab package install/replacement gate. Dry-run is the default.
 
 set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
 
 temp=$(mktemp -d)
 cleanup() {
@@ -17,20 +19,41 @@ package=
 expected_hash=
 expected_host=
 expected_current=
-clean_env=(env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C)
+select_update_policy=
+prior_update_policy=
+freeze_package_txid=
+direct_package_txid=
+direct_recovery_txid=
+recovery_code_package=
+recovery_code_hash=
+clean_env=(/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C)
 
 usage() {
     cat <<'EOF'
 usage: package-profile-gate.sh --package /absolute/candidate.deb \
        --sha256 HEX --expect-host EXACT-HOSTNAME \
        --expect-current none|dual|thick-only [--execute] \
-       [--settle-recovery --transaction-id 32-HEX]
+       [--select-update-policy freeze|qualified-auto|warn] \
+       [--settle-recovery [--transaction-id REPLACEMENT-32-HEX]
+                          [--freeze-transaction-id FREEZE-32-HEX]
+                          [--direct-transaction-id DIRECT-32-HEX]] \
+       [--recovery-code-package /absolute/NEW-CODE.deb \
+        --recovery-code-sha256 INDEPENDENTLY-APPROVED-NEW-CODE-SHA256]
 
 Without --execute this performs read-only validation only. The execute mode
 installs exactly the supplied local .deb with dpkg; it never downloads
 dependencies, changes repositories, reboots the host or advances another node.
-Recovery settlement never invokes dpkg. It repeats all read-only checks and
+Recovery settlement never installs or reconfigures packages. It repeats all read-only checks and
 closes only an already-consumed transaction whose exact target is installed.
+Same-profile FREEZE recovery supplies only --freeze-transaction-id; a
+cross-profile recovery also supplies the distinct --transaction-id.
+An exact direct lost-ACK recovery supplies --direct-transaction-id and the
+same explicit --select-update-policy used by the completed transaction.
+For pre-fix installed helpers, the optional independently approved recovery
+code carrier supplies only recovery code. --package/--sha256 must STILL name
+the original already-installed target artifact. This mode only settles exact
+FREEZE package state with runtime CLOSED; it never installs the code carrier,
+qualifies a runtime, or returns EXECUTE_PASS.
 EOF
 }
 
@@ -41,21 +64,41 @@ while (($#)); do
         --expect-host) expected_host=${2:-}; shift 2 ;;
         --expect-current) expected_current=${2:-}; shift 2 ;;
         --execute) execute=1; shift ;;
+        --select-update-policy) select_update_policy=${2:-}; shift 2 ;;
         --settle-recovery) execute=1; settle_recovery=1; shift ;;
         --transaction-id) transaction_id=${2:-}; shift 2 ;;
+        --freeze-transaction-id) freeze_package_txid=${2:-}; shift 2 ;;
+        --direct-transaction-id) direct_recovery_txid=${2:-}; shift 2 ;;
+        --recovery-code-package) recovery_code_package=${2:-}; shift 2 ;;
+        --recovery-code-sha256) recovery_code_hash=${2:-}; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 64 ;;
     esac
 done
 
 if ((settle_recovery == 1)); then
-    [[ "$transaction_id" =~ ^[0-9a-f]{32}$ ]] || {
-        echo "recovery settlement requires the exact 32-hex transaction ID" >&2
+    if ! { [[ -n "$transaction_id" || -n "$freeze_package_txid" || -n "$direct_recovery_txid" ]] &&
+        [[ -z "$transaction_id" || "$transaction_id" =~ ^[0-9a-f]{32}$ ]] &&
+        [[ -z "$freeze_package_txid" || "$freeze_package_txid" =~ ^[0-9a-f]{32}$ ]] &&
+        [[ -z "$direct_recovery_txid" || "$direct_recovery_txid" =~ ^[0-9a-f]{32}$ ]] &&
+        [[ -z "$direct_recovery_txid" || ( -z "$transaction_id" && -z "$freeze_package_txid" ) ]]; }; then
+        echo "recovery requires exact replacement and/or FREEZE transaction IDs" >&2
         exit 64
-    }
-elif [[ -n "$transaction_id" ]]; then
-    echo "--transaction-id is valid only with --settle-recovery" >&2
+    fi
+elif [[ -n "$transaction_id" || -n "$freeze_package_txid" || -n "$direct_recovery_txid" ]]; then
+    echo "transaction IDs are valid only with --settle-recovery" >&2
     exit 64
+fi
+
+if [[ -n "$recovery_code_package" || -n "$recovery_code_hash" ]]; then
+    if ((settle_recovery != 1)) || [[ "$select_update_policy" != freeze \
+        || ! "$freeze_package_txid" =~ ^[0-9a-f]{32}$ \
+        || ! "$recovery_code_hash" =~ ^[0-9a-fA-F]{64}$ \
+        || "$recovery_code_package" != /* || ! -f "$recovery_code_package" \
+        || -L "$recovery_code_package" ]]; then
+        echo "recovery code requires exact FREEZE recovery and a separately approved regular DEB" >&2
+        exit 64
+    fi
 fi
 
 [[ -n "$package" && -n "$expected_hash" && -n "$expected_host" && -n "$expected_current" ]] || {
@@ -65,6 +108,10 @@ fi
 case "$expected_current" in
     none|dual|thick-only) ;;
     *) echo "expected current profile must be none, dual or thick-only" >&2; exit 64 ;;
+esac
+case "$select_update_policy" in
+    ''|freeze|qualified-auto|warn) ;;
+    *) echo "invalid update-policy selection" >&2; exit 64 ;;
 esac
 [[ "$package" = /* && -f "$package" && ! -L "$package" ]] || {
     echo "package must be an absolute path to a regular, non-symlink file" >&2
@@ -115,6 +162,9 @@ for control_file in \
     preinst \
     sharedlvmthin-candidate-recovery-check \
     sharedlvmthin_pve_inventory.py \
+    sharedlvmthin-candidate-update-policy \
+    sharedlvmthin_update_policy.py \
+    sharedlvmthin-candidate-qualified-tuples.json \
     sharedlvmthin-candidate-package \
     sharedlvmthin-candidate-version \
     sharedlvmthin-candidate-flavor \
@@ -124,6 +174,12 @@ for control_file in \
         exit 2
     }
 done
+candidate_artifact=$(sed -n '1p' \
+    "$candidate_control/sharedlvmthin-candidate-artifact-sha256")
+[[ "$candidate_artifact" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "candidate artifact identity is malformed" >&2
+    exit 2
+}
 case "$target_name" in
     pve-sharedlvmthin) target_flavor=dual; opposite_name=pve-sharedlvmthin-thick ;;
     pve-sharedlvmthin-thick) target_flavor=thick-only; opposite_name=pve-sharedlvmthin ;;
@@ -143,12 +199,41 @@ fi
     exit 2
 }
 
+# The carrier and the already-installed target are TWO different identities.
+# Never reuse carrier control/version/manifest as target qualification proof.
+if [[ -n "$recovery_code_package" ]]; then
+    recovery_code_deb="$temp/recovery-code.deb"
+    cp -- "$recovery_code_package" "$recovery_code_deb"
+    chmod 0400 "$recovery_code_deb"
+    recovery_actual_hash=$(sha256sum "$recovery_code_deb" | awk '{print $1}')
+    [[ "$recovery_actual_hash" == "${recovery_code_hash,,}" ]] || {
+        echo "independently approved recovery code SHA-256 mismatch" >&2
+        exit 2
+    }
+    [[ "$(dpkg-deb -f "$recovery_code_deb" Package)" == "$target_name" \
+        && "$(dpkg-deb -f "$recovery_code_deb" Architecture)" == all ]] || {
+        echo "recovery code carrier package profile/architecture differs" >&2
+        exit 2
+    }
+    recovery_code_control="$temp/recovery-code-control"
+    mkdir -m 0700 "$recovery_code_control"
+    dpkg-deb --control "$recovery_code_deb" "$recovery_code_control"
+    for code_file in sharedlvmthin-candidate-update-policy sharedlvmthin_update_policy.py; do
+        [[ -f "$recovery_code_control/$code_file" && ! -L "$recovery_code_control/$code_file" ]] || {
+            echo "recovery code carrier lacks a safe $code_file" >&2
+            exit 2
+        }
+        chmod 0400 "$recovery_code_control/$code_file"
+    done
+    echo "RECOVERY_CODE_SHA256=$recovery_actual_hash"
+fi
+
 installed_name=
 installed_version=
 for candidate in pve-sharedlvmthin pve-sharedlvmthin-thick; do
     status=$(dpkg-query -W -f='${db:Status-Abbrev}' "$candidate" 2>/dev/null || true)
     case "$status" in
-        ii*)
+        ii*|hi*)
             [[ -z "$installed_name" ]] || {
                 echo "both mutually exclusive package profiles appear installed" >&2
                 exit 2
@@ -185,6 +270,31 @@ if [[ -n "$installed_name" ]]; then
 
 fi
 
+# Candidate-carried recovery is package-only. Its independent helper proves
+# installed payload and exact transaction; old runtime/preinst APIs are not
+# used to qualify, install, or reopen anything (including on lost-ACK replay).
+if [[ -n "$recovery_code_package" ]]; then
+    [[ "$installed_name" == "$target_name" && "$installed_version" == "$target_version" ]] || {
+        echo "candidate-carried recovery requires the exact original target already installed" >&2
+        exit 2
+    }
+    carrier_settle_args=()
+    if [[ -n "$transaction_id" ]]; then
+        carrier_settle_args+=(--replacement-txid "$transaction_id")
+    fi
+    # No installed payload is overwritten. The new helper reads the OLD
+    # installed manifest/artifact/build/dpkg state and exact OLD transaction.
+    "${clean_env[@]}" /usr/bin/timeout --foreground --kill-after=10 1800 \
+        /usr/bin/python3 -I "$recovery_code_control/sharedlvmthin-candidate-update-policy" \
+        settle-unqualified-freeze-package --package "$target_name" --version "$target_version" \
+        --sha256 "$actual_hash" --txid "$freeze_package_txid" "${carrier_settle_args[@]}" \
+        --recovery-code-deb "$recovery_code_deb" --recovery-code-sha256 "$recovery_actual_hash"
+    echo "RESULT=PACKAGE_SETTLED_RUNTIME_CLOSED"
+    echo "Recovery code was not installed; the original target runtime remains closed."
+    exit 78
+fi
+
+# Ordinary package workflow starts here.
 if [[ "$installed_name" == "$target_name" ]]; then
     preinst_action=(upgrade "$installed_version" "$target_version")
 else
@@ -217,7 +327,13 @@ fi
     echo "dpkg database reports unfinished or inconsistent package state" >&2
     exit 2
 }
-"${clean_env[@]}" dpkg --no-act -i "$candidate_deb"
+if ((settle_recovery == 0)); then
+    if [[ -n "$installed_name" && "$installed_name" != "$target_name" ]]; then
+        "${clean_env[@]}" dpkg --force-hold --no-act -i "$candidate_deb"
+    else
+        "${clean_env[@]}" dpkg --no-act -i "$candidate_deb"
+    fi
+fi
 
 echo "CANDIDATE_PACKAGE=$target_name"
 echo "CANDIDATE_VERSION=$target_version"
@@ -240,13 +356,124 @@ fi
     exit 2
 }
 
+if [[ -n "$installed_name" ]] && command -v sharedlvmthin >/dev/null 2>&1; then
+    set +e
+    prior_policy_output=$("${clean_env[@]}" sharedlvmthin update-policy status 2>/dev/null)
+    set -e
+    prior_update_policy=$(sed -n 's/^UPDATE_POLICY=//p' <<<"$prior_policy_output")
+    [[ $(grep -c '^UPDATE_POLICY=' <<<"$prior_policy_output") -le 1 ]] || {
+        echo "installed update-policy identity is ambiguous" >&2
+        exit 2
+    }
+fi
+
+# An already active FREEZE policy is part of the package transaction's safety
+# contract, not an optional CLI preference that the caller must repeat.  Keep
+# it automatically when no policy switch was requested.  Switching away from
+# FREEZE must be a separate, settled administrator action before this gate;
+# otherwise dpkg could create baseline drift without a prepared successor.
+if ((settle_recovery == 0)) && [[ "$prior_update_policy" == FREEZE ]]; then
+    case "$select_update_policy" in
+        '') select_update_policy=freeze ;;
+        freeze) ;;
+        *)
+            echo "active FREEZE must be changed in a separate settled policy operation before package upgrade" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+# An existing FREEZE baseline is immutable by design.  Prepare one exact,
+# durable successor intent from the hash-pinned candidate before dpkg runs.
+# The candidate policy helper is extracted from that same private copy; it may
+# prepare only the plugin package delta and cannot qualify any PVE/LVM/kernel
+# change.  A crash leaves the old baseline plus a pending receipt fail-closed.
+if ((settle_recovery == 1)) && [[ -z "$direct_recovery_txid" \
+    && "$prior_update_policy" == FREEZE ]]; then
+    [[ "$select_update_policy" == freeze && "$freeze_package_txid" =~ ^[0-9a-f]{32}$ ]] || {
+        echo "FREEZE recovery requires --select-update-policy freeze and its original --freeze-transaction-id" >&2
+        exit 2
+    }
+fi
+if [[ -n "$freeze_package_txid" ]] && \
+    [[ "$prior_update_policy" != FREEZE || "$select_update_policy" != freeze ]]; then
+    echo "FREEZE recovery transaction cannot be ignored under another policy" >&2
+    exit 2
+fi
+if [[ -n "$direct_recovery_txid" && -z "$select_update_policy" ]]; then
+    echo "direct recovery requires the original explicit update-policy selection" >&2
+    exit 2
+fi
+if ((settle_recovery == 0)) && [[ "$prior_update_policy" == FREEZE && "$select_update_policy" == freeze ]]; then
+    candidate_root="$temp/candidate-root"
+    mkdir -p "$candidate_root"
+    dpkg-deb --extract "$candidate_deb" "$candidate_root"
+    candidate_policy="$candidate_root/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy"
+    candidate_manifest="$candidate_root/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json"
+    candidate_artifact=$(sed -n '1p' \
+        "$candidate_root/usr/share/pve-sharedlvmthin/package-artifact-sha256")
+    [[ -f "$candidate_policy" && ! -L "$candidate_policy" \
+        && -f "$candidate_manifest" && ! -L "$candidate_manifest" ]] || {
+        echo "candidate FREEZE settlement payload is missing or unsafe" >&2
+        exit 2
+    }
+    prepare_output=$("${clean_env[@]}" python3 "$candidate_policy" prepare-freeze-package \
+        --source-package "$installed_name" --source-version "$installed_version" \
+        --target-package "$target_name" --target-version "$target_version" \
+        --target-architecture "$target_arch" --sha256 "$actual_hash" \
+        --artifact-sha256 "$candidate_artifact" \
+        --candidate-manifest "$candidate_manifest")
+    printf '%s\n' "$prepare_output"
+    freeze_package_txid=$(sed -n 's/^FREEZE_PACKAGE_TXID=\([0-9a-f]\{32\}\)$/\1/p' \
+        <<<"$prepare_output")
+    [[ "$freeze_package_txid" =~ ^[0-9a-f]{32}$ ]] || {
+        echo "candidate FREEZE prepare receipt is missing or ambiguous" >&2
+        exit 2
+    }
+fi
+if ((settle_recovery == 0)) && [[ "$prior_update_policy" != FREEZE ]]; then
+    if [[ -z "$installed_name" && -z "$select_update_policy" ]]; then
+        echo "first install requires an explicit update-policy selection" >&2
+        exit 2
+    fi
+    candidate_root=${candidate_root:-"$temp/candidate-root"}
+    mkdir -p "$candidate_root"
+    dpkg-deb --extract "$candidate_deb" "$candidate_root"
+    candidate_policy="$candidate_root/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy"
+    candidate_manifest="$candidate_root/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json"
+    [[ -f "$candidate_policy" && ! -L "$candidate_policy" \
+        && -f "$candidate_manifest" && ! -L "$candidate_manifest" ]] || {
+        echo "candidate direct package transition payload is missing or unsafe" >&2
+        exit 2
+    }
+    direct_source_package=${installed_name:-NONE}
+    direct_source_version=${installed_version:-NONE}
+    direct_bootstrap_policy=${select_update_policy:-none}
+    direct_output=$("${clean_env[@]}" python3 "$candidate_policy" prepare-direct-package \
+        --source-package "$direct_source_package" --source-version "$direct_source_version" \
+        --target-package "$target_name" --target-version "$target_version" \
+        --target-architecture "$target_arch" --sha256 "$actual_hash" \
+        --artifact-sha256 "$candidate_artifact" \
+        --candidate-manifest "$candidate_manifest" \
+        --bootstrap-policy "$direct_bootstrap_policy")
+    printf '%s\n' "$direct_output"
+    direct_package_txid=$(sed -n 's/^DIRECT_PACKAGE_TXID=\([0-9a-f]\{32\}\)$/\1/p' \
+        <<<"$direct_output")
+    [[ "$direct_package_txid" =~ ^[0-9a-f]{32}$ ]] || {
+        echo "candidate direct package transaction identity is missing" >&2
+        exit 2
+    }
+fi
+
 profile_replacement=0
 if ((settle_recovery == 1)); then
     [[ "$installed_name" == "$target_name" ]] || {
         echo "recovery settlement requires the exact target profile installed" >&2
         exit 2
     }
-    profile_replacement=1
+    # Same-profile recovery has only a FREEZE transaction. Cross-profile
+    # recovery additionally supplies its distinct replacement transaction.
+    [[ -z "$transaction_id" ]] || profile_replacement=1
 elif [[ -n "$installed_name" && "$installed_name" != "$target_name" ]]; then
     profile_replacement=1
     replacement_helper=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-profile-replacement
@@ -283,7 +510,7 @@ fi
 # dpkg-query expands these literal field expressions, not the shell.
 # shellcheck disable=SC2016
 status=$("${clean_env[@]}" dpkg-query -W -f='${db:Status-Abbrev}' "$target_name" 2>/dev/null || true)
-[[ "$status" == ii* ]] || {
+[[ "$status" == ii* || "$status" == hi* ]] || {
     echo "target package is not fully installed after dpkg" >&2
     exit 2
 }
@@ -297,7 +524,7 @@ observed_version=$("${clean_env[@]}" dpkg-query -W -f='${Version}' "$target_name
 # shellcheck disable=SC2016
 # shellcheck disable=SC2016
 opposite_status=$("${clean_env[@]}" dpkg-query -W -f='${db:Status-Abbrev}' "$opposite_name" 2>/dev/null || true)
-[[ "$opposite_status" != ii* ]] || {
+[[ "$opposite_status" != ii* && "$opposite_status" != hi* ]] || {
     echo "opposite package profile remains installed after replacement" >&2
     exit 2
 }
@@ -365,6 +592,7 @@ else
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-maintenance-check \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan \
+        /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology \
         /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check \
         /usr/share/perl5/PVE/SharedLvmThinGuard.pm \
         /usr/share/perl5/PVE/SharedLvmThinGuardClient.pm \
@@ -396,6 +624,76 @@ else
         exit 2
     fi
 fi
+# A candidate runtime is qualified below while both the package transition and
+# runtime-qualification latch keep every mutating entry point closed.  Doctor
+# and the ordinary PVE-facing aggregate run only after exact finalization.
+# Publish only a boot-bound release candidate while the exact durable package
+# transition still closes mutation admission.  This path uses direct read-only
+# storage evidence and deliberately does not recurse through pvesm activation.
+package_gate_txid=${freeze_package_txid:-$direct_package_txid}
+if [[ -n "$direct_recovery_txid" ]]; then
+    direct_package_txid=$direct_recovery_txid
+    package_gate_txid=$direct_recovery_txid
+fi
+[[ "$package_gate_txid" =~ ^[0-9a-f]{32}$ ]] || {
+    echo "package qualification transaction identity is unavailable" >&2
+    exit 2
+}
+qualification_rc=0
+if [[ -z "$direct_recovery_txid" ]]; then
+    set +e
+    "${clean_env[@]}" sharedlvmthin update-policy qualify-runtime \
+        --package "$target_name" --version "$target_version" \
+        --artifact-sha256 "$candidate_artifact" --plan-digest "$actual_hash" \
+        --transaction-id "$package_gate_txid"
+    qualification_rc=$?
+    set -e
+fi
+if [[ "$qualification_rc" -eq 78 && "$select_update_policy" == freeze \
+      && "$prior_update_policy" == FREEZE ]]; then
+    # Typed UNLISTED only: configured package settlement is distinct from
+    # runtime qualification. The helper pins a durable runtime-closed latch
+    # before rebasing FREEZE and independently rechecks all package proofs.
+    closed_settle_args=()
+    if ((profile_replacement == 1)); then
+        closed_settle_args+=(--replacement-txid "$transaction_id")
+    fi
+    "${clean_env[@]}" sharedlvmthin update-policy settle-unqualified-freeze-package \
+        --package "$target_name" --version "$target_version" \
+        --sha256 "$actual_hash" --txid "$freeze_package_txid" "${closed_settle_args[@]}"
+    echo "RESULT=PACKAGE_SETTLED_RUNTIME_CLOSED"
+    echo "The exact package transition is settled; the unlisted runtime remains closed."
+    exit 78
+elif [[ "$qualification_rc" -ne 0 ]]; then
+    exit "$qualification_rc"
+fi
+
+# Rotate the immutable package baseline only after the exact candidate runtime
+# has passed the read-only gate.  The separate qualification-pending latch
+# remains present across this settlement, so no mutating operation can enter.
+if [[ -n "$direct_recovery_txid" ]]; then
+    "${clean_env[@]}" sharedlvmthin update-policy settle-direct-package \
+        --package "$target_name" --version "$target_version" \
+        --sha256 "$actual_hash" --txid "$direct_package_txid" \
+        --bootstrap-policy "$select_update_policy"
+elif [[ "$select_update_policy" == freeze && "$prior_update_policy" == FREEZE ]]; then
+    [[ "$freeze_package_txid" =~ ^[0-9a-f]{32}$ ]] || {
+        echo "prepared FREEZE package transaction is unavailable" >&2
+        exit 2
+    }
+    freeze_settle_args=()
+    if ((profile_replacement == 1)); then
+        freeze_settle_args+=(--replacement-txid "$transaction_id")
+    fi
+    "${clean_env[@]}" sharedlvmthin update-policy settle-freeze-package \
+        --package "$target_name" --version "$target_version" \
+        --sha256 "$actual_hash" --txid "$freeze_package_txid" "${freeze_settle_args[@]}"
+else
+    "${clean_env[@]}" sharedlvmthin update-policy settle-direct-package \
+        --package "$target_name" --version "$target_version" \
+        --sha256 "$actual_hash" --txid "$direct_package_txid" \
+        --bootstrap-policy "${select_update_policy:-none}"
+fi
 doctor_output="$temp/doctor.out"
 set +e
 "${clean_env[@]}" timeout --foreground --kill-after=10 300 sharedlvmthin doctor --quick \
@@ -408,6 +706,14 @@ if [[ $doctor_rc -ne 0 && $doctor_rc -ne 1 ]] \
     echo "installed Doctor did not prove a zero-failure result (rc=$doctor_rc)" >&2
     exit 2
 fi
+
+# Doctor must prove the complete PVE-facing runtime, including exact tuple
+# recognition, while the runtime-qualification latch still closes mutation
+# admission.  The finalizer independently repeats the in-process tuple proof;
+# a direct invocation therefore cannot bypass this shell-level ordering.
+"${clean_env[@]}" sharedlvmthin update-policy finalize-runtime \
+    --transaction-id "$package_gate_txid"
+
 "${clean_env[@]}" timeout --foreground --kill-after=10 1800 sharedlvmthin upgrade-check
 
 # Consume the durable replacement evidence only after every package identity,

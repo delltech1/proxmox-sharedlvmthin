@@ -1,0 +1,2 @@
+DPkg::Pre-Install-Pkgs { "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-apt-guard"; };
+DPkg::Tools::options::/usr/libexec/pve-sharedlvmthin/sharedlvmthin-apt-guard::Version "3";

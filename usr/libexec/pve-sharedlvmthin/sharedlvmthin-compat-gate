@@ -254,6 +254,11 @@ def main(argv=None):
             [f"{TOOL_DIR}/sharedlvmthin-contract-check", "--catalogue", CATALOGUE],
             staging, timeout=60,
         ))
+        steps.append(run_step(
+            "qmdestroy-contract",
+            [f"{TOOL_DIR}/sharedlvmthin-qmdestroy-contract-check"],
+            staging, timeout=60,
+        ))
         inventory_argv = [f"{TOOL_DIR}/sharedlvmthin-upstream-inventory"]
         inventory_accepted = (0,)
         if args.qualification:

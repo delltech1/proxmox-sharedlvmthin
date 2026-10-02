@@ -64,7 +64,13 @@ def main() -> int:
         for label, pattern in FIXED:
             if pattern.search(data):
                 findings.append(f"{rel}: {label}")
-        if rel.startswith("docs/") and LAB_HOST.search(data):
+        # These two unshipped formal models deliberately use the closed,
+        # synthetic PVE01..PVE04 vocabulary asserted by their unit fixtures.
+        synthetic_fixture = rel in {
+            "experiments/thick-generations/layout-migration-exact-integration-model.py",
+            "experiments/thick-generations/layout-migration-exact-transport.py",
+        }
+        if not rel.startswith("tests/") and not synthetic_fixture and LAB_HOST.search(data):
             findings.append(f"{rel}: lab hostname")
         for match in IPV4.finditer(data):
             value = match.group().decode("ascii")

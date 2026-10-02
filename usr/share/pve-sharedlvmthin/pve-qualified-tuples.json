@@ -1,0 +1,322 @@
+{
+  "schema": 1,
+  "catalogue": "pve-qualified-tuples-v1",
+  "notice": "Experimental disposable-lab evidence only; this is not certification or warranty.",
+  "watched_packages": [
+    "pve-manager",
+    "libpve-storage-perl",
+    "qemu-server",
+    "pve-qemu-kvm",
+    "libpve-common-perl",
+    "libpve-guest-common-perl",
+    "pve-cluster",
+    "proxmox-default-kernel",
+    "proxmox-kernel-helper",
+    "lvm2",
+    "dmsetup",
+    "dmeventd",
+    "libdevmapper1.02.1",
+    "libdevmapper-event1.02.1",
+    "liblvm2cmd2.03",
+    "thin-provisioning-tools",
+    "multipath-tools",
+    "multipath-tools-boot",
+    "open-iscsi",
+    "corosync",
+    "libcorosync-common4",
+    "libcfg7",
+    "libcmap4",
+    "libcpg4",
+    "libquorum5",
+    "libvotequorum8",
+    "libknet1t64",
+    "libnozzle1t64",
+    "pve-ha-manager",
+    "libpve-cluster-perl",
+    "pve-sharedlvmthin",
+    "pve-sharedlvmthin-thick"
+  ],
+  "watched_package_patterns": [
+    "(?:proxmox|pve)-kernel-.*"
+  ],
+  "watched_source_packages": [
+    "corosync",
+    "kronosnet",
+    "libpve-common-perl",
+    "lvm2",
+    "multipath-tools",
+    "open-iscsi",
+    "pve-cluster",
+    "pve-ha-manager",
+    "pve-manager",
+    "pve-qemu-kvm",
+    "pve-sharedlvmthin",
+    "pve-storage",
+    "qemu-server",
+    "thin-provisioning-tools"
+  ],
+  "watched_source_patterns": [
+    "(?:proxmox|pve)-kernel-.*"
+  ],
+  "packages": [
+    "pve-manager",
+    "libpve-storage-perl",
+    "qemu-server",
+    "pve-qemu-kvm",
+    "libpve-common-perl"
+  ],
+  "operation_groups": [
+    "read-only-inventory",
+    "package-lifecycle",
+    "activation-deactivation",
+    "allocation-removal",
+    "snapshot-vmstate",
+    "resize",
+    "move-import-restore",
+    "migration",
+    "thin-ownership-autogrow",
+    "thick-lazy-transition"
+  ],
+  "operation_qualification_mode": "ADVISORY_ONLY",
+  "operation_authorization": "NONE",
+  "operation_evidence_ids": [
+    "api15-control-plane",
+    "dual-thick-dual-profile-cycle",
+    "freeze-schema-3-settlement",
+    "live-migration-return-activation",
+    "post-upgrade-pvesm-status",
+    "rc5.69-in-place-upgrade",
+    "rc5.69-legacy-upgrade",
+    "runtime-qualification",
+    "thick-lazy-live-roundtrip",
+    "thick-only-reboot-requalification",
+    "upgrade-check-7-of-7"
+  ],
+  "tuples": [
+    {
+      "id": "tg52-api14-control-plane",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53"],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "EXACT_LAB_TESTED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "excluded_scopes": ["san-dataplane"]
+    },
+    {
+      "id": "tg52-api15-san-original",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53"],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.18",
+        "libpve-storage-perl": "9.1.10",
+        "qemu-server": "9.2.7",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.1"
+      },
+      "running_kernel": "7.0.14-16-pve",
+      "status": "EXACT_LAB_TESTED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane", "thin", "thick-eager", "thick-lazy", "migration"]
+    },
+    {
+      "id": "tg53-rc574-api14-candidate",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.74~tg53"],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "excluded_scopes": ["san-dataplane"],
+      "required_tests": ["api14-clean-install", "api14-in-place-upgrade", "dual-thick-dual-profile-cycle"]
+    },
+    {
+      "id": "tg53-rc587-api14-control-candidate",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.87~tg53"],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "excluded_scopes": ["san-dataplane"],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-dual-profile-cycle",
+        "api14-post-reboot-control-plane"
+      ]
+    },
+    {
+      "id": "tg53-rc574-api15-san-original-candidate",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.18",
+        "libpve-storage-perl": "9.1.10",
+        "qemu-server": "9.2.7",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.1"
+      },
+      "running_kernel": "7.0.14-16-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane", "thin", "thick-eager", "thick-lazy", "migration"],
+      "required_tests": ["exact-build-profile-evidence-binding", "thin-thick-lazy-lifecycle", "mixed-node-live-migration"]
+    },
+    {
+      "id": "tg53-api15-upstream-9.2.20-k17",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.20",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.2"
+      },
+      "running_kernel": "7.0.14-17-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "operation_qualifications": {
+        "read-only-inventory": {"status": "RETEST_REQUIRED", "evidence": ["runtime-qualification", "upgrade-check-7-of-7"], "required_tests": ["exact-build-evidence-binding"]},
+        "package-lifecycle": {"status": "RETEST_REQUIRED", "evidence": ["rc5.69-in-place-upgrade", "freeze-schema-3-settlement"], "required_tests": ["exact-build-profile-evidence-binding"]},
+        "activation-deactivation": {"status": "RETEST_REQUIRED", "evidence": ["post-upgrade-pvesm-status", "live-migration-return-activation"], "required_tests": ["all-mode-activation-deactivation"]},
+        "allocation-removal": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
+        "snapshot-vmstate": {"status": "BLOCKED", "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait"], "reason": "upstream RAM snapshot failure and empty MTU boundaries remain unresolved"},
+        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["running-and-stopped-resize"]},
+        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["raw-import-export-framing-hash", "vma-file-and-stdin-restore"]},
+        "migration": {"status": "RETEST_REQUIRED", "evidence": ["thick-lazy-live-roundtrip"], "required_tests": ["mixed-node-live-migration"], "reason": "one Thick-Lazy round trip does not qualify every mode and mixed-version edge"},
+        "thin-ownership-autogrow": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
+        "thick-lazy-transition": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]}
+      },
+      "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait", "thin-thick-lazy-lifecycle", "mixed-node-live-migration", "post-reboot-san"],
+      "known_operation_boundaries": [
+        "empty running-nets-host-mtu remains writable by upstream RAM snapshot code",
+        "savevm-end failure and vmstate deactivation share one upstream eval block",
+        "snapshot finalization polls query-savevm without an explicit upstream deadline"
+      ]
+    },
+    {
+      "id": "tg53-api15-upstream-9.2.20-k19",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.20",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.2"
+      },
+      "running_kernel": "7.0.14-19-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "operation_qualifications": {
+        "read-only-inventory": {"status": "RETEST_REQUIRED", "evidence": ["runtime-qualification"], "required_tests": ["exact-build-evidence-binding"]},
+        "package-lifecycle": {"status": "RETEST_REQUIRED", "required_tests": ["post-reboot-san"]},
+        "activation-deactivation": {"status": "RETEST_REQUIRED", "required_tests": ["post-reboot-san"]},
+        "allocation-removal": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
+        "snapshot-vmstate": {"status": "BLOCKED", "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait"], "reason": "upstream RAM snapshot failure and empty MTU boundaries remain unresolved"},
+        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["running-and-stopped-resize"]},
+        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["raw-import-export-framing-hash", "vma-file-and-stdin-restore"]},
+        "migration": {"status": "RETEST_REQUIRED", "required_tests": ["mixed-node-live-migration"]},
+        "thin-ownership-autogrow": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
+        "thick-lazy-transition": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]}
+      },
+      "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait", "thin-thick-lazy-lifecycle", "mixed-node-live-migration", "post-reboot-san"],
+      "known_operation_boundaries": [
+        "empty running-nets-host-mtu remains writable by upstream RAM snapshot code",
+        "savevm-end failure and vmstate deactivation share one upstream eval block",
+        "snapshot finalization polls query-savevm without an explicit upstream deadline"
+      ]
+    },
+    {
+      "id": "tg52-api15-upstream-20260929",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53"],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.2"
+      },
+      "running_kernel": "7.0.14-19-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "operation_qualifications": {
+        "read-only-inventory": {"status": "RETEST_REQUIRED", "evidence": ["runtime-qualification", "api15-control-plane"], "required_tests": ["exact-build-evidence-binding"]},
+        "package-lifecycle": {"status": "RETEST_REQUIRED", "evidence": ["rc5.69-legacy-upgrade", "dual-thick-dual-profile-cycle", "thick-only-reboot-requalification"], "required_tests": ["exact-build-profile-evidence-binding"]},
+        "activation-deactivation": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
+        "allocation-removal": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
+        "snapshot-vmstate": {"status": "BLOCKED", "required_tests": ["snapshot-no-nic-e1000-and-qmp-failure"], "reason": "upstream empty running-nets-host-mtu lifecycle is not qualified"},
+        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["running-and-stopped-resize"]},
+        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["raw-import-export-framing-hash", "vma-file-and-stdin-restore"]},
+        "migration": {"status": "RETEST_REQUIRED", "required_tests": ["mixed-version-old-born-and-new-born-migration"]},
+        "thin-ownership-autogrow": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
+        "thick-lazy-transition": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"}
+      },
+      "required_tests": [
+        "raw-import-export-framing-hash",
+        "vma-file-and-stdin-restore",
+        "snapshot-vmstate-cleanup",
+        "snapshot-no-nic-e1000-and-qmp-failure",
+        "running-and-stopped-resize",
+        "old-born-high-slot-hotplug",
+        "q35-and-i440fx-cold-start",
+        "legacy-machine-preflight",
+        "strict-property-parser-zero-effect-refusal",
+        "mixed-version-old-born-and-new-born-migration",
+        "aligned-misaligned-io",
+        "post-reboot-san",
+        "pve-manager-9.2.21-changelog-and-contract"
+      ],
+      "known_operation_boundaries": [
+        "qemu-server >= 9.2.8 refuses machine versions older than 5.0",
+        "native Lazy VMA restore remains fail-closed until a qualified restore receipt protocol exists",
+        "no-NIC and e1000-only RAM snapshots can create an empty running-nets-host-mtu property on both old and new tuples",
+        "complex EFI/TPM/cloud-init bridge conversion remains explicitly refused"
+      ]
+    }
+  ],
+  "known_incompatible": [
+    {
+      "id": "storage-9.1.11-requires-qemu-9.2.10",
+      "reason": "libpve-storage-perl 9.1.11 declares Breaks: qemu-server (<< 9.2.10)",
+      "storage_min": "9.1.11",
+      "qemu_max_exclusive": "9.2.10"
+    }
+  ],
+  "rolling_edges": [
+    {
+      "from": "tg52-api15-san-original",
+      "to": "tg52-api15-upstream-20260929",
+      "directions": [],
+      "status": "RETEST_REQUIRED",
+      "required_tests": ["old-to-new-old-born-migration", "new-to-old-new-born-migration", "old-born-high-slot-hotplug", "one-node-reboot", "mixed-version-recovery"]
+    }
+  ]
+}

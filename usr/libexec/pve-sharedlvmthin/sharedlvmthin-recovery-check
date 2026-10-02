@@ -284,10 +284,42 @@ def settled_dstate_evidence(tokens):
     status, relevant, unknown = dstate_evidence(tokens)
     if status == "PASS":
         return status, relevant, unknown, 0
-    transient_candidates = len(relevant) + len(unknown)
+    first = relevant + unknown
+    transient_candidates = len(first)
+
+    def identity(item):
+        match = re.search(r"\bpid=(\d+)\b.*\bstarttime=(\d+)\b", item)
+        return match.groups() if match else None
+
+    first_identities = {value for item in first if (value := identity(item)) is not None}
     time.sleep(DSTATE_CONFIRM_SECONDS)
     status, relevant, unknown = dstate_evidence(tokens)
-    return status, relevant, unknown, transient_candidates if status == "PASS" else 0
+    if status == "PASS":
+        return status, relevant, unknown, transient_candidates
+
+    # A busy monitoring service may issue a new, short-lived LVM probe while
+    # the first probe is completing.  A different PID/starttime is not proof
+    # that the original blocked task persisted across the bounded interval.
+    # Only the exact same process identity may turn the second observation
+    # into persistent D-state evidence.  Missing identity evidence remains
+    # UNKNOWN and therefore fail-closed.
+    second = relevant + unknown
+    second_by_identity = {
+        value: item for item in second if (value := identity(item)) is not None
+    }
+    persistent = first_identities.intersection(second_by_identity)
+    if not persistent and len(second_by_identity) == len(second):
+        return "PASS", [], [], transient_candidates + len(second)
+
+    persistent_items = [second_by_identity[value] for value in sorted(persistent)]
+    persistent_relevant = [
+        item for item in persistent_items
+        if any(token and token in item for token in tokens)
+    ]
+    persistent_unknown = [item for item in persistent_items if item not in persistent_relevant]
+    if persistent_relevant:
+        return "FAIL", persistent_relevant, persistent_unknown, 0
+    return "UNKNOWN", [], persistent_unknown or second, 0
 
 
 def active_storage_worker_evidence(vg, proc_root="/proc"):
@@ -336,6 +368,16 @@ def clean(value):
     return str(value or "").strip()
 
 
+def exact_efi_backing_size(declared, authoritative, extent):
+    """Match the qualified 528 KiB EFI geometry to its exact VG extent."""
+    if not all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+               for value in (declared, authoritative, extent)):
+        return False
+    if declared != 528 * 1024:
+        return False
+    return authoritative == ((declared + extent - 1) // extent) * extent
+
+
 def config_boolean(value, field):
     """Parse PVE boolean spellings without treating ambiguity as false."""
     normalized = clean(value or "0").lower()
@@ -369,6 +411,67 @@ def pve_reference_inventory(sid):
         {volid[len(prefix):]: entries for volid, entries in current.items()
          if volid.startswith(prefix)},
     )
+
+
+def pve_config_lock_health(sids):
+    """Fail closed when a PVE guest using any managed SID is config-locked."""
+    managed = {clean(sid) for sid in sids if clean(sid)}
+    if not managed:
+        return "FAIL", ["no storage ID was supplied for the PVE config-lock gate"]
+
+    failures = []
+    contents = {}
+
+    def read_text(path):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                contents[path] = handle.read()
+        except OSError as exc:
+            failures.append(f"cannot read PVE guest config '{path}': {exc}")
+            return None
+        return contents[path]
+
+    references, current, inventory_errors = collect_pve_inventory(
+        read_text=read_text, globber=glob.glob,
+    )
+    failures.extend(
+        f"cannot read PVE guest config '{path}'"
+        for path in inventory_errors
+        if not any(path in failure for failure in failures)
+    )
+    referenced_paths = set()
+    for inventory in (references, current):
+        for volid, entries in inventory.items():
+            if not any(volid.startswith(sid + ":") for sid in managed):
+                continue
+            for entry in entries:
+                referenced_paths.add(entry[0] if isinstance(entry, tuple) else entry)
+
+    lock_re = re.compile(r"^lock\s*:\s*(.*)$")
+    canonical_re = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+    for path in sorted(referenced_paths):
+        text = contents.get(path)
+        if text is None:
+            continue
+        top_level = []
+        for line in text.splitlines():
+            if line.lstrip().startswith("["):
+                break
+            match = lock_re.fullmatch(line.strip())
+            if match:
+                top_level.append(match.group(1).strip())
+        if not top_level:
+            continue
+        if len(top_level) != 1 or not canonical_re.fullmatch(top_level[0]):
+            failures.append(
+                f"managed PVE guest config '{path}' has malformed or ambiguous top-level lock evidence"
+            )
+            continue
+        failures.append(
+            f"managed PVE guest config '{path}' is locked as '{top_level[0]}'; "
+            "resolve the owning PVE task explicitly before storage mutation"
+        )
+    return ("FAIL", failures) if failures else ("PASS", [])
 
 
 def pve_reference_files(sid, vol):
@@ -423,7 +526,8 @@ def pve_snapshot_references(sid):
 
 
 def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None,
-                        reference_size_lookup=None, allowed_sids=None):
+                        reference_size_lookup=None, allowed_sids=None,
+                        vg_extent_size=None):
     """Fail closed on every Thick Generations anchor owned by this storage."""
     anchors = []
     failures = []
@@ -727,11 +831,18 @@ def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None,
             role = current[0][2]
             if role == "detached":
                 continue
-            if (role != "attached" or head_size is None or head_size < 1
+            if role == "auxiliary" and re.fullmatch(
+                r"vm-\d+-state-[A-Za-z0-9][A-Za-z0-9_.-]*", values["vol"]
+            ):
+                continue
+            if (role not in {"attached", "efi"} or head_size is None or head_size < 1
                     or declared is None):
                 failures.append(
                     f"{fields[0]} current PVE or HEAD size is unavailable"
                 )
+            elif role == "efi" and exact_efi_backing_size(
+                    declared, head_size, vg_extent_size):
+                pass
             elif declared != head_size:
                 failures.append(
                     f"{fields[0]} current PVE size {declared} differs from "
@@ -870,9 +981,11 @@ def vg_intent_health(output, sid, expected_vg):
 def main(argv=None):
     argv = argv or sys.argv[1:]
     preinstall = len(argv) == 2 and argv[0] == "--preinstall"
-    sid_arg = argv[1] if preinstall else (argv[0] if len(argv) == 1 else "")
+    qualification = len(argv) == 2 and argv[0] == "--runtime-qualification"
+    offline_probe = preinstall or qualification
+    sid_arg = argv[1] if offline_probe else (argv[0] if len(argv) == 1 else "")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sid_arg):
-        print("Usage: sharedlvmthin recovery-check [--preinstall] <storage-id>", file=sys.stderr)
+        print("Usage: sharedlvmthin recovery-check [--preinstall|--runtime-qualification] <storage-id>", file=sys.stderr)
         return 64
     sid = sid_arg
     try:
@@ -920,14 +1033,14 @@ def main(argv=None):
     # one outstanding LVM/PVE probe maximum and prevents the checker itself
     # from accumulating tasks during a storage incident.
     probes = [
-        ("VG", ["/sbin/vgs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "vg_uuid", vg]),
+        ("VG", ["/sbin/vgs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "vg_uuid,vg_extent_size", "--units", "b", "--nosuffix", vg]),
         ("INTENT", ["/sbin/vgs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "vg_name,vg_tags", vg]),
         ("PV", ["/sbin/pvs", "--readonly", *lvm_scope, "--noheadings", "--separator", "|", "-o", "pv_uuid,pv_name", "--select", f"vg_name={vg}"]),
         # Plain lvs is observational and is required for live device-mapper
         # flags. --readonly suppresses that runtime query and yields X/unknown.
         ("POOL", ["/sbin/lvs", *lvm_scope, "--noheadings", "--separator", "|", "-o", "lv_name,lv_attr,lv_health_status,lv_check_needed,lv_tags,pool_lv,data_percent,lv_size,lv_uuid", "--units", "b", "--nosuffix", vg]),
     ]
-    if not storage_disabled and not preinstall:
+    if not storage_disabled and not offline_probe:
         probes.append(("PVE", ["/usr/sbin/pvesm", "status", "--storage", sid]))
     evidence = {}
     for label, command in probes:
@@ -942,7 +1055,16 @@ def main(argv=None):
     ) else "FAIL"
 
     vg_lines = [x.strip() for x in evidence.get("VG", {}).get("out", "").splitlines() if x.strip()]
-    actual_vg = vg_lines[0] if len(vg_lines) == 1 else ""
+    actual_vg = ""
+    vg_extent_size = None
+    if len(vg_lines) == 1:
+        vg_fields = [x.strip() for x in vg_lines[0].split("|")]
+        if len(vg_fields) == 2:
+            actual_vg = vg_fields[0]
+            try:
+                vg_extent_size = int(vg_fields[1])
+            except (TypeError, ValueError):
+                vg_extent_size = None
     results["VG_UUID_MATCH"] = "PASS" if expected_vg and actual_vg.lower() == expected_vg.lower() else "FAIL"
 
     intent_ok, intent_details = vg_intent_health(
@@ -1022,6 +1144,7 @@ def main(argv=None):
             lambda owner_sid, vol: list(reference_indexes.get(owner_sid, {}).get(vol, [])),
             lambda owner_sid, vol: list(current_reference_indexes.get(owner_sid, {}).get(vol, [])),
             alias_sids,
+            vg_extent_size,
         )
         results["THICK_ANCHORS_HEALTHY"] = (
             "PASS" if anchor_ok and alias_group_ok else "FAIL"
@@ -1074,9 +1197,21 @@ def main(argv=None):
         results["THIN_OWNER_STATE"] = "PASS" if not owner_failures else "FAIL"
         details.extend(f"recovery-required: {item}" for item in owner_failures)
 
+    lock_sids = alias_sids if allocation_mode in (
+        "thick-generations", "thick-generations-lazy"
+    ) else {sid}
+    lock_status, lock_failures = pve_config_lock_health(lock_sids)
+    results["PVE_CONFIG_LOCKS_CLEAR"] = lock_status
+    details.extend(f"recovery-required: {item}" for item in lock_failures)
+
     if storage_disabled:
         results["PVE_STORAGE_HEALTH"] = "PASS"
         details.append("PVE active-status gate is not applicable to explicitly disabled storage")
+    elif qualification:
+        results["PVE_STORAGE_HEALTH"] = "NOT_PROBED"
+        details.append(
+            "PVE active-status is deliberately excluded from bootstrapping runtime qualification"
+        )
     elif preinstall:
         results["PVE_STORAGE_HEALTH"] = "PASS"
         details.append("PVE active-status gate is not applicable to the package offline audit")
@@ -1129,17 +1264,24 @@ def main(argv=None):
                "VG_INTENT_CLEAR",
                "POOL_FLAGS_HEALTHY", "THICK_ANCHORS_HEALTHY", "THIN_REFERENCES_HEALTHY",
                "THIN_OWNER_STATE",
+               "PVE_CONFIG_LOCKS_CLEAR",
                "NO_RELEVANT_DSTATE", "NO_RELEVANT_STORAGE_WORKER", "BOUNDED_LVM_PROBES",
                "PVE_STORAGE_HEALTH", "QUORUM"]
-    safe = all(results.get(name) == "PASS" for name in ordered)
+    qualification_ordered = [name for name in ordered if name != "PVE_STORAGE_HEALTH"]
+    qualification_ready = qualification and all(
+        results.get(name) == "PASS" for name in qualification_ordered
+    )
+    safe = (not qualification) and all(results.get(name) == "PASS" for name in ordered)
     print(f"STORAGE_ID={sid}")
     for name in ordered:
         print(f"{name}={results.get(name, 'UNKNOWN')}")
     print(f"STATE={'HEALTHY' if safe else 'RECOVERY_REQUIRED'}")
     print(f"SAFE_FOR_MUTATION={'YES' if safe else 'NO'}")
+    if qualification:
+        print(f"RUNTIME_QUALIFICATION_READY={'YES' if qualification_ready else 'NO'}")
     for detail in details:
         print(f"DETAIL={detail}")
-    return 0 if safe else 2
+    return 0 if (safe or qualification_ready) else 2
 
 
 if __name__ == "__main__":

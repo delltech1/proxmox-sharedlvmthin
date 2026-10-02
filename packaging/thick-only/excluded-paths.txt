@@ -8,6 +8,7 @@ usr/libexec/pve-sharedlvmthin/sharedlvmthin-thin-import
 usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-maintenance-check
 usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-admission
 usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-plan
+usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology
 usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmp-path-check
 usr/share/perl5/PVE/SharedLvmThinGuard.pm
 usr/share/perl5/PVE/SharedLvmThinGuardClient.pm

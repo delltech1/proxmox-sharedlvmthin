@@ -1,0 +1,6 @@
+{
+  "schema": 2,
+  "mode": "UNSELECTED",
+  "required_scope": "san-dataplane",
+  "notice": "Select FREEZE, QUALIFIED_AUTO or WARN explicitly before changing the watched storage stack."
+}

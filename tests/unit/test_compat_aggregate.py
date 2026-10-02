@@ -130,6 +130,18 @@ class CompatibilityAggregateTests(unittest.TestCase):
                 "scenario_registry_sha256": "d" * 64,
                 "blocked_scenarios": blocked_scenarios or [],
             }) + "\n",
+            "qmdestroy-contract": (
+                "QMDestroy_CONTRACT_VERSION=1\n"
+                "NATIVE_CONFIG_CAS=ABSENT\n"
+                "VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE\n"
+                "FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM\n"
+                "FLEECING_CLEANUP_CALL=PINNED\n"
+                "IPAM_CLEANUP_CALL=PINNED\n"
+                f"CONTRACT_SHA256={'e' * 64}\n"
+                "CONTRACT_VARIANT=API15\n"
+                "MUTATION_ADAPTER=QUALIFIED\n"
+                "QMDestroy_CONTRACT=QUALIFIED\n"
+            ),
             "upstream-inventory": json.dumps(inventory) + "\n",
             "compat-check": compat,
             "upgrade-check": "UPGRADE_SCAN_COMPLETE=YES\nUPGRADE_SAFE=YES\n",
@@ -137,6 +149,7 @@ class CompatibilityAggregateTests(unittest.TestCase):
         }
         tools = {
             "contract-catalogue": "sharedlvmthin-contract-check",
+            "qmdestroy-contract": "sharedlvmthin-qmdestroy-contract-check",
             "upstream-inventory": "sharedlvmthin-upstream-inventory",
             "compat-check": "sharedlvmthin-compat-check",
             "upgrade-check": "sharedlvmthin-upgrade-check",

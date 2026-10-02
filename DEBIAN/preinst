@@ -37,7 +37,12 @@ CANDIDATE_RECOVERY_CHECK="$PREINST_DIR/sharedlvmthin-candidate-recovery-check"
 CANDIDATE_PACKAGE_FILE="$PREINST_DIR/sharedlvmthin-candidate-package"
 CANDIDATE_VERSION_FILE="$PREINST_DIR/sharedlvmthin-candidate-version"
 CANDIDATE_FLAVOR_FILE="$PREINST_DIR/sharedlvmthin-candidate-flavor"
+CANDIDATE_ARCH_FILE="$PREINST_DIR/sharedlvmthin-candidate-architecture"
 CANDIDATE_ARTIFACT_FILE="$PREINST_DIR/sharedlvmthin-candidate-artifact-sha256"
+CANDIDATE_UPDATE_POLICY="$PREINST_DIR/sharedlvmthin-candidate-update-policy"
+CANDIDATE_UPDATE_POLICY_LIB="$PREINST_DIR/sharedlvmthin_update_policy.py"
+CANDIDATE_QUALIFIED_TUPLES="$PREINST_DIR/sharedlvmthin-candidate-qualified-tuples.json"
+UPDATE_POLICY_FILE=/var/lib/pve-sharedlvmthin/update-guard/policy.json
 MAINTENANCE_CHECK="$PREINST_DIR/sharedlvmthin-package-maintenance-check"
 INSTALLED_ARTIFACT_FILE=/usr/share/pve-sharedlvmthin/package-artifact-sha256
 CANDIDATE_PREINSTALL=0
@@ -45,6 +50,7 @@ CANDIDATE_PREINSTALL=0
 CANDIDATE_INVENTORY=
 CANDIDATE_RESULT=
 MAINTENANCE_PREPARE=0
+FREEZE_PACKAGE_PREPARED=0
 
 # Invoked indirectly by the EXIT and signal traps below.
 # shellcheck disable=SC2317
@@ -52,6 +58,7 @@ cleanup_candidate_audit() {
     [ -z "$CANDIDATE_INVENTORY" ] || rm -f -- "$CANDIDATE_INVENTORY"
     [ -z "$CANDIDATE_RESULT" ] || rm -f -- "$CANDIDATE_RESULT"
 }
+
 trap cleanup_candidate_audit EXIT
 trap 'cleanup_candidate_audit; exit 130' HUP INT TERM
 
@@ -109,6 +116,63 @@ verify_candidate_artifact_identity() {
 if ! verify_candidate_artifact_identity "$@"; then
     echo "ERROR: SharedLvmThin candidate artifact identity is invalid or ambiguous. No package data was unpacked." >&2
     exit 1
+fi
+
+# FREEZE deliberately makes the package baseline immutable.  A raw dpkg
+# invocation cannot prepare or settle that baseline safely from inside its own
+# maintainer scripts.  Require the exact durable PREPARED receipt created by
+# package-profile-gate before real unpack; its earlier private preflight stays
+# read-only and therefore skips this admission check.
+if [ "$PREFLIGHT_ONLY" -eq 0 ] && [ -e "$UPDATE_POLICY_FILE" ]; then
+    if ! candidate_package=$(read_identity_line "$CANDIDATE_PACKAGE_FILE"); then
+        echo "ERROR: candidate FREEZE package identity is missing or unsafe." >&2
+        exit 1
+    fi
+    if ! candidate_version=$(read_identity_line "$CANDIDATE_VERSION_FILE"); then
+        echo "ERROR: candidate FREEZE version identity is missing or unsafe." >&2
+        exit 1
+    fi
+    if ! candidate_arch=$(read_identity_line "$CANDIDATE_ARCH_FILE"); then
+        echo "ERROR: candidate FREEZE architecture identity is missing or unsafe." >&2
+        exit 1
+    fi
+    if ! candidate_artifact=$(read_identity_line "$CANDIDATE_ARTIFACT_FILE"); then
+        echo "ERROR: candidate FREEZE artifact identity is missing or unsafe." >&2
+        exit 1
+    fi
+    if ! { [ -f "$CANDIDATE_UPDATE_POLICY" ] && [ ! -L "$CANDIDATE_UPDATE_POLICY" ] \
+        && [ -f "$CANDIDATE_UPDATE_POLICY_LIB" ] \
+        && [ ! -L "$CANDIDATE_UPDATE_POLICY_LIB" ] \
+        && [ -f "$CANDIDATE_QUALIFIED_TUPLES" ] \
+        && [ ! -L "$CANDIDATE_QUALIFIED_TUPLES" ]; }; then
+        echo "ERROR: candidate FREEZE admission payload is missing or unsafe." >&2
+        exit 1
+    fi
+    case "$INSTALLED_FLAVOR" in
+        dual) source_package=pve-sharedlvmthin ;;
+        thick-only) source_package=pve-sharedlvmthin-thick ;;
+        '') source_package=$candidate_package ;;
+        *) echo "ERROR: installed package flavor is invalid." >&2; exit 1 ;;
+    esac
+    source_version=$(dpkg-query -W -f='${Version}' "$source_package" 2>/dev/null \
+        || printf '%s' "$candidate_version")
+    set +e
+    python3 "$CANDIDATE_UPDATE_POLICY" verify-prepared-freeze-package \
+        --source-package "$source_package" --source-version "$source_version" \
+        --target-package "$candidate_package" --target-version "$candidate_version" \
+        --target-architecture "$candidate_arch" \
+        --artifact-sha256 "$candidate_artifact" \
+        --candidate-manifest "$CANDIDATE_QUALIFIED_TUPLES"
+    freeze_admission_rc=$?
+    set -e
+    case "$freeze_admission_rc" in
+        0) FREEZE_PACKAGE_PREPARED=1 ;;
+        3) ;;
+        *)
+            echo "ERROR: active FREEZE refused package unpack. Use the exact package-profile-gate workflow." >&2
+            exit 1
+            ;;
+    esac
 fi
 
 # dpkg has not unpacked the candidate payload yet. Published TG32's installed
@@ -176,7 +240,10 @@ audit_candidate_storages() {
         esac
 
         CANDIDATE_RESULT=$(mktemp) || return 1
-        if [ "$MAINTENANCE_PREPARE" -eq 1 ] || [ "$CANDIDATE_PREINSTALL" -eq 1 ]; then
+        if [ "$PREFLIGHT_ONLY" -eq 1 ] || \
+           [ "$FREEZE_PACKAGE_PREPARED" -eq 1 ] || \
+           [ "$MAINTENANCE_PREPARE" -eq 1 ] || \
+           [ "$CANDIDATE_PREINSTALL" -eq 1 ]; then
             candidate_args="--preinstall"
         else
             candidate_args=

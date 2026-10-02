@@ -1,0 +1,83 @@
+#!/usr/bin/perl -T
+use strict;
+use warnings;
+
+# Private installed entrypoint. No source trees, site Perl, or caller paths.
+BEGIN {
+    die "root required\n" if $> != 0 || $< != 0;
+    %ENV = (PATH => '/usr/sbin:/usr/bin:/sbin:/bin', LC_ALL => 'C', LANG => 'C');
+    die "unsupported interpreter platform\n" if $^O ne 'linux';
+    my ($major, $minor) = "$^V" =~ /\Av(5)\.([0-9]+)\./;
+    die "unsupported interpreter identity\n" if !defined($minor);
+    # Debian/PVE amd64 distro Perl only; discard inherited -I and site paths.
+    @INC = ('/usr/share/perl5', "/usr/lib/x86_64-linux-gnu/perl/$major.$minor",
+        "/usr/share/perl/$major.$minor", "/usr/lib/x86_64-linux-gnu/perl5/$major.$minor");
+    my $launcher = '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-dispatch';
+    my $module = '/usr/share/perl5/PVE/SharedLvmThinVMDestroyDispatcher.pm';
+    die "fixed installed launcher path required\n" if __FILE__ ne $launcher;
+    require Fcntl;
+    my $read = sub {
+        my ($path) = @_;
+        my @parts = split('/', $path); shift @parts; pop @parts;
+        my $directory = '';
+        for my $part (@parts) {
+            $directory .= "/$part";
+            my @st = lstat($directory);
+            die "unsafe installed ancestor\n" if !@st || !Fcntl::S_ISDIR($st[2])
+                || $st[4] != 0 || ($st[2] & 0022);
+        }
+        my @before = lstat($path);
+        die "unsafe installed source\n" if !@before || !Fcntl::S_ISREG($before[2])
+            || $before[4] != 0 || $before[3] != 1 || ($before[2] & 0022)
+            || $before[7] < 1 || $before[7] > 8 * 1024 * 1024;
+        sysopen(my $fh, $path, Fcntl::O_RDONLY() | Fcntl::O_NOFOLLOW()) or die "cannot pin source: $!\n";
+        my @opened = stat($fh);
+        die "source inode changed\n" if !@opened || $opened[0] != $before[0] || $opened[1] != $before[1];
+        my $raw = '';
+        while (1) {
+            my $n = sysread($fh, my $chunk, 65536);
+            die "source read failed\n" if !defined($n);
+            last if !$n;
+            $raw .= $chunk; die "source budget\n" if length($raw) > 8 * 1024 * 1024;
+        }
+        my @after = stat($fh); close($fh) or die "source close failed\n";
+        my @named = lstat($path);
+        my $signature = join(':', @before[0,1,2,3,4,7,9,10]);
+        die "source changed during read\n" if !@named || $signature ne join(':', @after[0,1,2,3,4,7,9,10])
+            || $signature ne join(':', @named[0,1,2,3,4,7,9,10]) || length($raw) != $before[7];
+        return $raw;
+    };
+    my $launcher_raw = $read->($launcher);
+    my $module_raw = $read->($module);
+    require Digest::SHA;
+    $PVE::SharedLvmThinVMDestroyDispatcher::LAUNCHER_SOURCE_SHA256 = Digest::SHA::sha256_hex($launcher_raw);
+    $PVE::SharedLvmThinVMDestroyDispatcher::DISPATCHER_SOURCE_SHA256 = Digest::SHA::sha256_hex($module_raw);
+    require $module;
+    die "dispatcher changed during load\n"
+        if Digest::SHA::sha256_hex($read->($module)) ne $PVE::SharedLvmThinVMDestroyDispatcher::DISPATCHER_SOURCE_SHA256;
+    die "launcher changed during load\n"
+        if Digest::SHA::sha256_hex($read->($launcher)) ne $PVE::SharedLvmThinVMDestroyDispatcher::LAUNCHER_SOURCE_SHA256;
+    $INC{'PVE/SharedLvmThinVMDestroyDispatcher.pm'} = delete $INC{$module};
+}
+use JSON::PP ();
+
+my $operation = shift @ARGV // '';
+die "usage: execute --vmid VMID --txid HEX32 | observe --txid HEX32\n"
+    if $operation ne 'execute' && $operation ne 'observe';
+my ($vmid, $txid);
+if ($operation eq 'execute') {
+    die "exact execute arguments required\n" if @ARGV != 4 || $ARGV[0] ne '--vmid' || $ARGV[2] ne '--txid';
+    ($vmid, $txid) = @ARGV[1,3];
+} else {
+    die "exact observe arguments required\n" if @ARGV != 2 || $ARGV[0] ne '--txid';
+    $txid = $ARGV[1];
+}
+die "invalid transaction identity\n" if !defined($txid) || $txid !~ /\A([0-9a-f]{32})\z/;
+$txid = $1;
+if ($operation eq 'execute') {
+    die "invalid VM identity\n" if !defined($vmid) || $vmid !~ /\A([1-9][0-9]{0,8})\z/;
+    $vmid = $1;
+}
+my $dispatcher = PVE::SharedLvmThinVMDestroyDispatcher->new();
+my $result = $operation eq 'execute' ? $dispatcher->execute($vmid, $txid) : $dispatcher->observe($txid);
+print JSON::PP->new->canonical->ascii->encode($result), "\n";

@@ -51,6 +51,16 @@ def percentage_bytes(size_bytes, value):
     return int(Decimal(size_bytes) * percent / Decimal(100))
 
 
+def exact_efi_backing_size(declared, authoritative, extent):
+    """Match the qualified 528 KiB EFI geometry to its exact VG extent."""
+    if not all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+               for value in (declared, authoritative, extent)):
+        return False
+    if declared != 528 * 1024:
+        return False
+    return authoritative == ((declared + extent - 1) // extent) * extent
+
+
 def run(cmd):
     try:
         p = subprocess.run(
@@ -502,7 +512,7 @@ def vg_info(vg):
         "--units", "b",
         "--nosuffix",
         "--separator", "|",
-        "-o", "vg_name,vg_size,vg_free",
+        "-o", "vg_name,vg_size,vg_free,vg_extent_size",
         vg,
     ])
 
@@ -519,6 +529,7 @@ def vg_info(vg):
             "visible": True,
             "size_bytes": exact_byte_count(fields[1]),
             "free_bytes": exact_byte_count(fields[2]),
+            "extent_size_bytes": exact_byte_count(fields[3]),
         }
     except Exception:
         return {
@@ -903,6 +914,7 @@ def thick_worker_state(
 def evaluate_thick_anchor_references(
     sid, anchors, worker_state=None, reference_index=None,
     current_size_index=None, reference_evidence_errors=None,
+    vg_extent_size=None,
 ):
     """Classify anchors without mutating or guessing cleanup eligibility."""
     results = []
@@ -921,7 +933,9 @@ def evaluate_thick_anchor_references(
         }
         phase = anchor.get("phase")
         transaction = anchor.get("transaction")
-        if phase != "MATERIALIZED":
+        stable_phase = phase in {"MATERIALIZED", "LAZY_DORMANT"}
+        stable_state = "MATERIALIZED" if phase == "MATERIALIZED" else "LAZY_DORMANT"
+        if not stable_phase:
             observed_worker = (
                 worker_state(transaction, sid, volume)
                 if worker_state is not None else "UNKNOWN"
@@ -989,11 +1003,11 @@ def evaluate_thick_anchor_references(
             item["reference_evidence_errors"] = list(reference_evidence_errors)
         elif not volume:
             item["status"] = "WARN"
-            item["materialization_state"] = "MATERIALIZED"
+            item["materialization_state"] = stable_state
             item["reason"] = "anchor volume identity is unavailable; no cleanup attempted"
         elif not references:
             item["status"] = "WARN"
-            item["materialization_state"] = "MATERIALIZED"
+            item["materialization_state"] = stable_state
             item["reason"] = (
                 "unreferenced Thick Generations volume; it may be an incomplete "
                 "destination after an interrupted import, clone, or move; prove its "
@@ -1019,12 +1033,21 @@ def evaluate_thick_anchor_references(
                 )
             elif role == "detached":
                 item["status"] = "PASS"
-                item["materialization_state"] = "MATERIALIZED"
+                item["materialization_state"] = stable_state
                 item["reason"] = (
                     "volume has one detached PVE unused reference; attached-size "
                     "reconciliation is not applicable"
                 )
-            elif role != "attached" \
+            elif role == "auxiliary" and re.fullmatch(
+                r"vm-\d+-state-[A-Za-z0-9][A-Za-z0-9_.-]*", volume
+            ):
+                item["status"] = "PASS"
+                item["materialization_state"] = stable_state
+                item["reason"] = (
+                    "volume has one authoritative PVE vmstate reference; disk-size "
+                    "reconciliation is not applicable"
+                )
+            elif role not in {"attached", "efi"} \
                     or not isinstance(authoritative, int) or authoritative < 1 \
                     or not isinstance(declared, int) or declared < 1:
                 item["status"] = "FAIL"
@@ -1032,6 +1055,14 @@ def evaluate_thick_anchor_references(
                 item["reason"] = (
                     "current PVE or authoritative HEAD size is unavailable; "
                     "further mutation is blocked"
+                )
+            elif role == "efi" and exact_efi_backing_size(
+                    declared, authoritative, vg_extent_size):
+                item["status"] = "PASS"
+                item["materialization_state"] = stable_state
+                item["reason"] = (
+                    "volume has one exact current efidisk0 reference whose qualified "
+                    "logical EFI geometry rounds exactly to the physical VG extent"
                 )
             elif declared != authoritative:
                 item["status"] = "FAIL"
@@ -1043,13 +1074,13 @@ def evaluate_thick_anchor_references(
                 )
             else:
                 item["status"] = "PASS"
-                item["materialization_state"] = "MATERIALIZED"
+                item["materialization_state"] = stable_state
                 item["reason"] = (
                     "volume has one current PVE reference with exact HEAD size"
                 )
         else:
             item["status"] = "PASS"
-            item["materialization_state"] = "MATERIALIZED"
+            item["materialization_state"] = stable_state
             item["reason"] = "volume has exactly one PVE configuration reference"
         results.append(item)
     return results
@@ -1067,7 +1098,7 @@ def evaluate_thick_materialization_admission(anchors, limit):
         }
     active = sum(
         1 for anchor in anchors or []
-        if anchor.get("phase") != "MATERIALIZED"
+        if anchor.get("phase") not in {"MATERIALIZED", "LAZY_DORMANT"}
     )
     available = active < limit
     available_slots = max(0, limit - active)
@@ -1969,6 +2000,7 @@ for storage in parse_storage_cfg():
                 item["thick_anchors"] = evaluate_thick_anchor_references(
                     sid, thick_anchors, worker_state, pve_reference_index,
                     pve_current_size_index, pve_reference_evidence_errors,
+                    item["vg_info"].get("extent_size_bytes"),
                 )
                 materialization_limit = storage.get(
                     "tg_max_active_materializations", 4

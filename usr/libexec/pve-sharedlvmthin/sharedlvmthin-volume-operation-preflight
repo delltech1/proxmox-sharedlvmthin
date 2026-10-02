@@ -1,0 +1,136 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use Digest::SHA qw(sha256_hex);
+use PVE::Cluster;
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::Storage;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+
+sub usage {
+    die "Usage: sharedlvmthin volume-operation-preflight <resize|attach> <vmid> <disk-key|volume-id>\n";
+}
+
+my ($operation, $vmid, $subject, @extra) = @ARGV;
+usage() if !defined($operation) || !defined($vmid) || !defined($subject) || @extra;
+die "operation must be 'resize' or 'attach'\n"
+    if $operation ne 'resize' && $operation ne 'attach';
+die "VMID must be a positive decimal integer\n"
+    if $vmid !~ /^(\d+)$/ || $1 < 1;
+$vmid = int($1);
+
+PVE::Cluster::cfs_update();
+my ($local_node, $local_boot) =
+    PVE::Storage::Custom::SharedLvmThinPlugin->_lazy_local_identity();
+my $config_path = "/etc/pve/local/qemu-server/$vmid.conf";
+die "VM $vmid is not owned by local node '$local_node'\n" if !-f $config_path;
+
+open(my $config_fh, '<', $config_path)
+    or die "cannot read VM $vmid configuration: $!\n";
+local $/;
+my $config_bytes = <$config_fh>;
+close($config_fh) or die "cannot close VM $vmid configuration: $!\n";
+my $config_sha256 = sha256_hex($config_bytes // '');
+my $conf = PVE::QemuConfig->load_config($vmid);
+my (@blocked, @passed);
+push @blocked, "VM_CONFIG: VM has lock '$conf->{lock}'"
+    if defined($conf->{lock}) && $conf->{lock} ne '';
+
+my $volid;
+if ($operation eq 'resize') {
+    die "disk key is unsafe or unsupported\n"
+        if $subject !~ /^(?:(?:ide|sata|scsi|virtio)[0-9]+|efidisk0|tpmstate0)$/;
+    if (!defined($conf->{$subject}) || $conf->{$subject} eq '') {
+        push @blocked, "DISK: '$subject' is absent from the current VM configuration";
+    } else {
+        my $drive = PVE::QemuServer::parse_drive($subject, $conf->{$subject});
+        if (!$drive || !defined($drive->{file}) || $drive->{file} eq '') {
+            push @blocked, "DISK: '$subject' is not a storage-backed volume";
+        } elsif (($drive->{media} // '') eq 'cdrom') {
+            push @blocked, "DISK: '$subject' is a CD-ROM";
+        } else {
+            $volid = $drive->{file};
+        }
+    }
+} else {
+    die "volume ID is unsafe\n"
+        if $subject !~ /^([A-Za-z0-9][A-Za-z0-9_.-]{0,63}):([A-Za-z0-9][A-Za-z0-9_.+\/-]{0,255})$/;
+    $volid = "$1:$2";
+    my ($references, $unused_references) = (0, 0);
+    for my $key (keys %$conf) {
+        next if $key !~ /^(?:(?:ide|sata|scsi|virtio|unused)[0-9]+|efidisk0|tpmstate0)$/;
+        my $drive = PVE::QemuServer::parse_drive($key, $conf->{$key});
+        next if !$drive || !defined($drive->{file});
+        if ($drive->{file} eq $volid) {
+            $references++;
+            $unused_references++ if $key =~ /^unused[0-9]+$/;
+        }
+    }
+    push @blocked, "VOLUME: '$volid' is not referenced exactly once by this VM configuration"
+        if $references != 1;
+    push @blocked, "VOLUME: '$volid' is not an unused disk of VM $vmid"
+        if $references == 1 && $unused_references != 1;
+}
+
+my ($storeid, $volname, $scfg);
+if (defined($volid)) {
+    my $parse_ok = eval {
+        ($storeid, $volname) = PVE::Storage::parse_volume_id($volid);
+        my $storecfg = PVE::Storage::config();
+        $scfg = PVE::Storage::storage_check_enabled($storecfg, $storeid);
+        1;
+    };
+    push @blocked, "VOLUME: cannot resolve enabled storage for '$volid': $@" if !$parse_ok;
+}
+
+if ($scfg) {
+    if (($scfg->{type} // '') ne 'sharedlvmthin') {
+        push @passed, "$volid: external storage; native PVE admission remains authoritative";
+    } elsif (!$scfg->{shared}) {
+        push @blocked, "$volid: sharedlvmthin source is not configured shared";
+    } else {
+        my $mode = PVE::Storage::Custom::SharedLvmThinPlugin->_allocation_mode($scfg);
+        if ($mode eq 'thin') {
+            push @passed, "$volid: Thin source does not use the Lazy activation graph";
+        } else {
+            my $read_ok = eval {
+                my ($state) = PVE::Storage::Custom::SharedLvmThinPlugin->_thick_read_anchor(
+                    $storeid, $scfg, $volname,
+                );
+                my $phase = $state->{phase} // 'UNKNOWN';
+                if ($phase eq 'MATERIALIZED') {
+                    push @passed, "$volid: materialized Thick source";
+                } elsif ($mode ne 'thick-generations-lazy') {
+                    push @blocked, "$volid: Eager Thick anchor is '$phase', not MATERIALIZED";
+                } elsif ($phase eq 'LAZY_DORMANT') {
+                    push @blocked, "$volid: Lazy source is not materialized; materialize it before $operation";
+                } elsif ($phase eq 'LAZY_ACTIVE') {
+                    my $owner_node = $state->{owner_node} // '';
+                    my $owner_boot = $state->{owner_boot} // '';
+                    my $owner = $owner_node eq $local_node && $owner_boot eq $local_boot
+                        ? 'this exact node/boot' : 'a foreign or stale node/boot';
+                    push @blocked, "$volid: active unmaterialized Lazy source is owned by $owner; materialize or recover it before $operation";
+                } else {
+                    push @blocked, "$volid: Lazy phase '$phase' requires explicit recovery before $operation";
+                }
+                1;
+            };
+            push @blocked, "$volid: anchor inspection failed: $@" if !$read_ok;
+        }
+    }
+}
+
+print "VOLUME_OPERATION_PREFLIGHT_VERSION=1\n";
+print "OPERATION=$operation\nVMID=$vmid\nNODE=$local_node\nBOOT_ID=$local_boot\n";
+print "CONFIG_SHA256=$config_sha256\nSUBJECT=$subject\n";
+print "VOLUME=$volid\n" if defined($volid);
+print "PASS=$_\n" for @passed;
+print "BLOCKED=$_\n" for @blocked;
+if (@blocked) {
+    print "VOLUME_OPERATION_READY=NO\nRESULT=BLOCKED\n";
+    exit 2;
+}
+print "VOLUME_OPERATION_READY=YES\nRESULT=PASS\n";
+exit 0;

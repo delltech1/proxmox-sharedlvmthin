@@ -84,6 +84,63 @@ class ContractCatalogueTests(unittest.TestCase):
         errors = self.module.validate_catalogue(document, ROOT)
         self.assertIn("runtime command has no contract binding: modprobe", errors)
 
+    def test_thick_tree_peer_coverage_binds_configured_nodelist_and_behavior_tests(self):
+        symbol = "PVE::Cluster::get_nodelist"
+        coverage = self.document["source_dependency_coverage"]
+        self.assertEqual(coverage["perl_symbols"][symbol], "cluster.mutation-admission")
+        self.assertIn(symbol, self.module.inventory_literal_tuple(ROOT, "REQUIRED_PVE_SYMBOLS"))
+        contract = next(item for item in self.document["contracts"]
+                        if item["id"] == "cluster.mutation-admission")
+        self.assertIn("tests/unit/thick_tree_delete.t", contract["static_tests"])
+        document = json.loads(json.dumps(self.document))
+        del document["source_dependency_coverage"]["perl_symbols"][symbol]
+        errors = self.module.validate_catalogue(document, ROOT)
+        self.assertIn(f"uncovered upstream Perl dependency: {symbol}", errors)
+
+    def test_qmdestroy_admission_upstream_call_contracts_are_exactly_covered(self):
+        coverage = self.document["source_dependency_coverage"]["perl_symbols"]
+        symbols = self.module.inventory_literal_tuple(ROOT, "REQUIRED_PVE_SYMBOLS")
+        for symbol in (
+            "PVE::AbstractConfig::lock_config",
+            "PVE::AbstractConfig::lock_config_full",
+            "PVE::HA::Config::service_is_configured",
+            "PVE::QemuConfig::check_lock",
+            "PVE::QemuConfig::check_protection",
+            "PVE::QemuConfig::cleanup_fleecing_images",
+            "PVE::QemuConfig::parse_volume",
+            "PVE::QemuServer::destroy_vm",
+            "PVE::QemuServer::drive_is_cdrom",
+            "PVE::QemuServer::parse_vm_config",
+            "PVE::QemuServer::restore_file_archive",
+            "PVE::QemuServer::restore_vma_archive",
+            "PVE::QemuServer::Network::delete_ifaces_ipams_ips",
+            "PVE::QemuServer::Network::get_nets_host_mtu",
+            "PVE::QemuServer::Network::parse_net",
+            "PVE::Network::SDN::Vnets::del_ips_from_mac",
+            "PVE::ReplicationConfig::new",
+            "PVE::Storage::vdisk_free",
+        ):
+            self.assertIn(symbol, coverage)
+            self.assertIn(symbol, symbols)
+        files = self.module.inventory_literal_tuple(ROOT, "CRITICAL_FILES")
+        self.assertIn("/usr/share/perl5/PVE/AbstractConfig.pm", files)
+        self.assertIn("/usr/share/perl5/PVE/API2/Qemu.pm", files)
+        self.assertIn("/usr/share/perl5/PVE/QemuServer/Network.pm", files)
+        self.assertIn("/usr/share/perl5/PVE/Network/SDN/Vnets.pm", files)
+        self.assertIn("libpve-guest-common-perl", self.module.inventory_literal_tuple(ROOT, "PACKAGES"))
+
+    def test_lazy_move_admission_has_exact_upstream_and_behavior_bindings(self):
+        coverage = self.document["source_dependency_coverage"]["perl_symbols"]
+        symbols = self.module.inventory_literal_tuple(ROOT, "REQUIRED_PVE_SYMBOLS")
+        for symbol in ("PVE::QemuServer::clone_disk", "PVE::QemuServer::OVMF::create_efidisk", "PVE::Storage::vdisk_alloc",
+                       "PVE::Storage::activate_volumes",
+                       "PVE::Storage::deactivate_volumes"):
+            self.assertEqual(coverage[symbol], "pve.qemu-raw-lifecycle")
+            self.assertIn(symbol, symbols)
+        contract = next(item for item in self.document["contracts"]
+                        if item["id"] == "pve.qemu-raw-lifecycle")
+        self.assertIn("tests/unit/lazy_move_admission.t", contract["static_tests"])
+
     def test_runtime_hook_without_contract_binding_fails_closed(self):
         document = json.loads(json.dumps(self.document))
         del document["source_dependency_coverage"]["hooks"]["volume_resize"]

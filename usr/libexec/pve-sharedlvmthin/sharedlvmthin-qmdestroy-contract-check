@@ -1,0 +1,154 @@
+#!/usr/bin/python3
+"""Read-only qualification of the PVE VM-destroy effect ordering."""
+
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import stat
+import sys
+
+DEFAULT_QEMU = "/usr/share/perl5/PVE/QemuServer.pm"
+DEFAULT_API = "/usr/share/perl5/PVE/API2/Qemu.pm"
+MAX_SOURCE = 8 * 1024 * 1024
+QUALIFIED_CONTRACTS = {
+    "06e848db8abaf5e765845577b90d38f97d8d3e0d29e24212504d77ee60c0c1ab": "API14",
+    "d52049347b091b6091671887b8c5087e9001445c793c1a719823fbbb047a220e": "API15",
+}
+
+
+def read_source(name):
+    path = Path(name)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or path.is_symlink():
+        raise RuntimeError(f"unsafe upstream source: {path}")
+    if info.st_size < 1 or info.st_size > MAX_SOURCE:
+        raise RuntimeError(f"upstream source size is outside the qualified bound: {path}")
+    data = path.read_bytes()
+    if len(data) != info.st_size or b"\0" in data:
+        raise RuntimeError(f"ambiguous upstream source read: {path}")
+    return data.decode("utf-8", errors="strict")
+
+
+def section(text, start, end):
+    first = text.find(start)
+    if first < 0:
+        raise RuntimeError(f"missing upstream boundary: {start}")
+    last = text.find(end, first + len(start))
+    if last < 0 or last <= first:
+        raise RuntimeError(f"missing upstream boundary: {end}")
+    return text[first:last]
+
+
+def ordered(fragment, tokens, label):
+    position = -1
+    for token in tokens:
+        found = fragment.find(token, position + 1)
+        if found < 0:
+            raise RuntimeError(f"{label} contract token is absent or reordered: {token}")
+        position = found
+
+
+def exact_variant(fragment, variants, label):
+    matched = []
+    for name, tokens in variants.items():
+        if all(fragment.count(token) == 1 for token in tokens):
+            matched.append((name, tokens))
+    all_tokens = {token for tokens in variants.values() for token in tokens}
+    if len(matched) != 1 or sum(fragment.count(token) for token in all_tokens) != len(matched[0][1]):
+        raise RuntimeError(f"{label} has no single exact qualified upstream variant")
+    return matched[0]
+
+
+def qualify(qemu_text, api_text):
+    destroy = section(qemu_text, "sub destroy_vm {", "my $fleecing_section_schema")
+    variant, tokens = exact_variant(destroy, {
+        "API14": (
+            "my ($path, $owner) = PVE::Storage::path($storecfg, $volid)",
+            "warn \"Could not remove disk '$volid', check manually: $@\" if $@",
+        ),
+        "API15": (
+            "my ($path, $owner) = eval { PVE::Storage::path($storecfg, $volid) }",
+            "log_warn(\"Could not remove disk '$volid', check manually: $@\") if $@",
+        ),
+    }, "QemuServer::destroy_vm")
+    owner_lookup, removal_warning = tokens
+    ordered(destroy, [
+        "my ($storecfg, $vmid, $skiplock, $replacement_conf, $purge_unreferenced) = @_",
+        "eval { PVE::QemuConfig::cleanup_fleecing_images($vmid, $storecfg) }",
+        "my $remove_owned_drive = sub",
+        owner_lookup,
+        "return if !$path || !$owner || ($owner != $vmid)",
+        "eval { PVE::Storage::vdisk_free($storecfg, $volid) }",
+        removal_warning,
+        "PVE::QemuConfig->foreach_volume_full($conf, $include_opts, $remove_owned_drive)",
+        "for my $snap (values %{ $conf->{snapshots} })",
+        "$remove_owned_drive->('vmstate', $drive)",
+        "PVE::QemuConfig->foreach_volume_full($conf->{pending}, $include_opts, $remove_owned_drive)",
+        "eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) }",
+        "warn $@ if $@",
+        "if (defined $replacement_conf)",
+        "PVE::QemuConfig->write_config($vmid, $replacement_conf)",
+        "PVE::QemuConfig->destroy_config($vmid)",
+    ], "QemuServer::destroy_vm")
+    if destroy.count("eval { PVE::Storage::vdisk_free($storecfg, $volid) }") != 2:
+        raise RuntimeError("QemuServer::destroy_vm vdisk_free warning boundaries changed")
+    if destroy.count("eval { PVE::QemuConfig::cleanup_fleecing_images($vmid, $storecfg) }") != 1:
+        raise RuntimeError("QemuServer::destroy_vm fleecing cleanup boundary changed")
+    if destroy.count("eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) }") != 1:
+        raise RuntimeError("QemuServer::destroy_vm IPAM cleanup boundary changed")
+    if destroy.count("PVE::QemuConfig->write_config($vmid, $replacement_conf)") != 1 \
+            or destroy.count("PVE::QemuConfig->destroy_config($vmid)") != 1:
+        raise RuntimeError("QemuServer::destroy_vm replacement publication cardinality changed")
+
+    api = section(api_text, "name => 'destroy_vm'", "name => 'unlink'")
+    if "digest" in section(api, "parameters =>", "returns =>"):
+        raise RuntimeError("native destroy unexpectedly exposes a digest parameter; requalification required")
+    ordered(api, [
+        "PVE::QemuConfig->lock_config(",
+        "my $ha_managed = $early_checks->()",
+        "PVE::QemuServer::destroy_vm(",
+        "{ lock => 'destroyed' }",
+        "PVE::AccessControl::remove_vm_access($vmid)",
+        "PVE::Firewall::remove_vmfw_conf($vmid)",
+        "PVE::QemuConfig->destroy_config($vmid)",
+    ], "API2::Qemu destroy worker")
+    if api.count("PVE::QemuConfig->destroy_config($vmid)") != 1:
+        raise RuntimeError("API2::Qemu final config-removal cardinality changed")
+    return destroy, api, variant
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--qemuserver", default=DEFAULT_QEMU)
+    parser.add_argument("--api2-qemu", default=DEFAULT_API)
+    args = parser.parse_args()
+    try:
+        qemu_text = read_source(args.qemuserver)
+        api_text = read_source(args.api2_qemu)
+        destroy, api, variant = qualify(qemu_text, api_text)
+    except (OSError, UnicodeError, RuntimeError) as error:
+        print(f"QMDestroy_CONTRACT=RETEST_REQUIRED\nREASON={error}")
+        return 2
+    digest = hashlib.sha256((destroy + "\0" + api).encode()).hexdigest()
+    if QUALIFIED_CONTRACTS.get(digest) != variant:
+        print("QMDestroy_CONTRACT=RETEST_REQUIRED")
+        print(f"CONTRACT_VARIANT={variant}")
+        print(f"CONTRACT_SHA256={digest}")
+        print("REASON=semantic source digest is not in the qualified mutation-adapter allowlist")
+        return 2
+    print("QMDestroy_CONTRACT_VERSION=1")
+    print("NATIVE_CONFIG_CAS=ABSENT")
+    print("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE")
+    print("FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM")
+    print("FLEECING_CLEANUP_CALL=PINNED")
+    print("IPAM_CLEANUP_CALL=PINNED")
+    print(f"CONTRACT_SHA256={digest}")
+    print(f"CONTRACT_VARIANT={variant}")
+    print("MUTATION_ADAPTER=QUALIFIED")
+    print("QMDestroy_CONTRACT=QUALIFIED")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

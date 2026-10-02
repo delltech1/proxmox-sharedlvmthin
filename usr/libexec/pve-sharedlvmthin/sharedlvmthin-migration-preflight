@@ -1,0 +1,125 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use PVE::Cluster;
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::QemuServer::Helpers;
+use PVE::Storage;
+use PVE::Storage::Custom::SharedLvmThinPlugin;
+
+sub usage {
+    die "Usage: sharedlvmthin migration-preflight <vmid> <target-node> [--online]\n";
+}
+
+my ($vmid, $target, @options) = @ARGV;
+usage() if !defined($vmid) || !defined($target) || @options > 1;
+die "VMID must be a positive decimal integer\n"
+    if $vmid !~ /^(\d+)$/ || $1 < 1;
+$vmid = int($1);
+die "target node name is unsafe\n"
+    if $target !~ /^([A-Za-z0-9][A-Za-z0-9_.-]{0,62})$/;
+$target = $1;
+my $online = @options ? 1 : 0;
+usage() if @options && $options[0] ne '--online';
+
+PVE::Cluster::cfs_update();
+my $nodes = PVE::Cluster::get_nodelist();
+die "cluster node inventory is unavailable\n" if ref($nodes) ne 'ARRAY';
+my @target_match = grep { lc($_) eq lc($target) } @$nodes;
+die "target node '$target' is not a unique cluster member\n"
+    . "known nodes: " . join(',', @$nodes) . "\n"
+    if @target_match != 1;
+$target = $target_match[0];
+
+my ($local_node, $local_boot) =
+    PVE::Storage::Custom::SharedLvmThinPlugin->_lazy_local_identity();
+die "target node must differ from the local source node\n"
+    if $target eq $local_node;
+die "VM $vmid is not owned by local source node '$local_node'\n"
+    if !-e "/etc/pve/local/qemu-server/$vmid.conf";
+
+my $running = PVE::QemuServer::Helpers::vm_running_locally($vmid) ? 1 : 0;
+die "online migration preflight requires a locally running VM\n"
+    if $online && !$running;
+die "offline migration preflight requires the VM to be stopped\n"
+    if !$online && $running;
+
+my $conf = PVE::QemuConfig->load_config($vmid);
+my $storecfg = PVE::Storage::config();
+my @volumes;
+PVE::QemuServer::foreach_volid($conf, sub {
+    my ($volid, $info) = @_;
+    return if !$info->{is_attached} || $info->{cdrom} || $info->{is_cloudinit};
+    push @volumes, $volid;
+});
+die "VM $vmid has no attached writable volume to qualify\n" if !@volumes;
+
+my @blocked;
+my @passed;
+for my $volid (sort @volumes) {
+    my ($storeid, $volname) = PVE::Storage::parse_volume_id($volid);
+    my $scfg = PVE::Storage::storage_config($storecfg, $storeid);
+    next if ($scfg->{type} // '') ne 'sharedlvmthin';
+    die "storage '$storeid' is not shared\n" if !$scfg->{shared};
+
+    my $mode = PVE::Storage::Custom::SharedLvmThinPlugin->_allocation_mode($scfg);
+    if ($mode eq 'thin') {
+        if ($online) {
+            push @blocked,
+                "$volid: direct Thin live migration is unsupported; use the "
+                . "Materialized Migration Bridge or stop the VM and perform an offline handoff";
+        } else {
+            push @passed, "$volid: stopped Thin volume is eligible for guarded offline handoff";
+        }
+        next;
+    }
+
+    my ($state) = PVE::Storage::Custom::SharedLvmThinPlugin->_thick_read_anchor(
+        $storeid, $scfg, $volname,
+    );
+    if (($state->{phase} // '') eq 'MATERIALIZED') {
+        push @passed, "$volid: materialized Thick volume";
+        next;
+    }
+    if ($mode ne 'thick-generations-lazy') {
+        push @blocked, "$volid: Thick anchor is not MATERIALIZED";
+        next;
+    }
+    if ($online) {
+        my $owner_node = $state->{owner_node} // '';
+        my $owner_boot = $state->{owner_boot} // '';
+        if ($owner_node eq $local_node && $owner_boot ne $local_boot) {
+            push @blocked,
+                "$volid: stale local boot epoch; use ownership recovery and do not materialize blindly";
+        } elsif ($owner_node ne $local_node || $owner_boot ne $local_boot) {
+            push @blocked,
+                "$volid: Lazy owner is not the exact local node/boot epoch";
+        } else {
+            push @blocked,
+                "$volid: unmaterialized Lazy volume; run 'sharedlvmthin "
+                . "thick-lazy-materialize $storeid $volname' on this running source VM, "
+                . "verify completion, then repeat this preflight";
+        }
+    } elsif (($state->{phase} // '') eq 'LAZY_DORMANT') {
+        push @passed, "$volid: closed Lazy volume is eligible for guarded offline handoff";
+    } else {
+        push @blocked,
+            "$volid: offline handoff requires LAZY_DORMANT; found '"
+            . ($state->{phase} // 'UNKNOWN') . "'";
+    }
+}
+
+print "MIGRATION_PREFLIGHT_VERSION=1\n";
+print "VMID=$vmid\nSOURCE_NODE=$local_node\nTARGET_NODE=$target\n";
+print "MIGRATION_MODE=" . ($online ? 'ONLINE' : 'OFFLINE') . "\n";
+print "PASS=$_\n" for @passed;
+print "BLOCKED=$_\n" for @blocked;
+print "VOLUMES_CHECKED=" . (@passed + @blocked) . "\n";
+if (@blocked) {
+    print "MIGRATION_SAFE=NO\nRESULT=BLOCKED\n";
+    exit 2;
+}
+print "MIGRATION_SAFE=YES\nRESULT=PASS\n";
+exit 0;

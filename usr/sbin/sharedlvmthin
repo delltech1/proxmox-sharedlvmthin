@@ -35,6 +35,7 @@ PLUGIN="/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm"
 MONITOR="/usr/libexec/pve-sharedlvmthin/pve-sharedlvmthin-monitor"
 LVMCONF="/etc/lvm/lvmlocal.conf"
 STORAGECFG="/etc/pve/storage.cfg"
+UPDATE_POLICY="/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy"
 
 PASS=0
 WARN=0
@@ -177,6 +178,28 @@ doctor() {
         pass "Autogrow monitor present and executable"
     else
         fail "Autogrow monitor missing/not executable: $MONITOR"
+    fi
+
+    section "Update policy integrity"
+    if [ ! -x "$UPDATE_POLICY" ]; then
+        fail "Update-policy integrity checker is missing"
+    else
+        if [ -n "${SLT_EXPECTED_POST_GATE:-}" ]; then
+            UPDATE_POLICY_STATUS="$($UPDATE_POLICY status --expected-post-gate "$SLT_EXPECTED_POST_GATE" 2>&1)"
+        else
+            UPDATE_POLICY_STATUS="$($UPDATE_POLICY status 2>&1)"
+        fi
+        UPDATE_POLICY_RC=$?
+        printf '%s\n' "$UPDATE_POLICY_STATUS" | while IFS= read -r line; do
+            info "$line"
+        done
+        if [ "$UPDATE_POLICY_RC" -ne 0 ]; then
+            fail "Update policy is unsettled, ambiguous or has integrity drift"
+        elif printf '%s\n' "$UPDATE_POLICY_STATUS" | grep -qx 'UPDATE_POLICY=UNSELECTED'; then
+            warn "Update protection mode has not been selected by the administrator"
+        else
+            pass "Update policy state is internally consistent and settled"
+        fi
     fi
 
     section "Proxmox compatibility"
@@ -982,7 +1005,14 @@ for storage in document.get("storages", []):
 
     section "PVE storage status"
 
-    PVE_STATUS="$(timeout --foreground 20 pvesm status 2>/dev/null || true)"
+    # Some PVE storage backends start a long-lived helper during a status
+    # query.  An upstream helper may inherit stdout and keep a command-
+    # substitution pipe open after the short-lived query exits.  Give the
+    # query a private regular file; only cat that closed snapshot afterwards.
+    PVE_STATUS_FILE="$(mktemp)"
+    timeout --foreground 20 pvesm status >"$PVE_STATUS_FILE" 2>/dev/null || true
+    PVE_STATUS="$(cat "$PVE_STATUS_FILE")"
+    rm -f -- "$PVE_STATUS_FILE"
 
     for SID in $STOREIDS; do
         if storage_is_disabled "$SID"; then
@@ -1430,6 +1460,18 @@ case "${1:-doctor}" in
         shift
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-upstream-inventory "$@"
         ;;
+    update-plan)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-plan "$@"
+        ;;
+    snapshot-observe)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-snapshot-observe "$@"
+        ;;
+    update-policy)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy "$@"
+        ;;
     candidate-inspect)
         shift
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-candidate-inspect "$@"
@@ -1457,6 +1499,30 @@ case "${1:-doctor}" in
         fi
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize \
             --resume "$2" "$3"
+        ;;
+    migration-preflight)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight "$@"
+        ;;
+    storage-move-preflight)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight "$@"
+        ;;
+    volume-operation-preflight)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-volume-operation-preflight "$@"
+        ;;
+    qmdestroy-contract-check)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmdestroy-contract-check "$@"
+        ;;
+    vm-destroy-observe)
+        shift
+        exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C LANG=C /usr/bin/python3 -I /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy observe "$@"
+        ;;
+    snapshot-preflight)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-snapshot-preflight "$@"
         ;;
     thick-lazy-materialize)
         if [ -z "${2:-}" ] || [ -z "${3:-}" ] || [ -n "${4:-}" ]; then
@@ -1588,12 +1654,26 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin upgrade-check [--fail-fast]"
         echo "  sharedlvmthin compat-check"
         echo "  sharedlvmthin upstream-inventory [--output FILE] [--compare QUALIFICATION.json]"
+        echo "  sharedlvmthin update-plan [--json]"
+        echo "  sharedlvmthin snapshot-observe <vmid> <snapshot> --ram|--disk-only --upid EXACT_UPID [--deadline-sec N]"
+        echo "  sharedlvmthin update-policy status"
+        echo "  sharedlvmthin update-policy select freeze|qualified-auto|warn"
+        echo "  sharedlvmthin update-policy migrate-freeze-schema"
+        echo "  sharedlvmthin update-policy authorize-proposal"
+        echo "  sharedlvmthin update-policy postcheck"
+        echo "  sharedlvmthin update-policy recover-zero-effect"
         echo "  sharedlvmthin candidate-inspect --current-inventory INVENTORY.json PACKAGE.deb [...]"
         echo "  sharedlvmthin contract-check [--catalogue FILE] [--source-root DIR]"
         echo "  sharedlvmthin compatibility-gate --phase pre-upgrade|post-reboot --collection-plan PLAN.json --output-dir DIR [--qualification FILE] [--candidate-deb FILE ...]"
         echo "  sharedlvmthin compatibility-aggregate --collection-plan PLAN.json --node-result DIR/gate-result.json [...] --output FILE"
         echo "  sharedlvmthin lab-evidence-check --catalogue FILE --cluster-aggregate FILE --manifest FILE --evidence-dir DIR --output FILE"
         echo "  sharedlvmthin thick-resume <storage-id> <volume>"
+        echo "  sharedlvmthin migration-preflight <vmid> <target-node> [--online]"
+        echo "  sharedlvmthin storage-move-preflight <vmid> <disk> <target-storage>"
+        echo "  sharedlvmthin volume-operation-preflight <resize|attach> <vmid> <disk-key|volume-id>"
+        echo "  sharedlvmthin qmdestroy-contract-check"
+        echo "  sharedlvmthin vm-destroy-observe --request-id 32_HEX"
+        echo "  sharedlvmthin snapshot-preflight <vmid> [--ram]"
         echo "  sharedlvmthin thick-lazy-materialize <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-lazy-pivot <storage-id> <volume>"
         echo "  sharedlvmthin thick-recover-delete <storage-id> <volume>"

@@ -66,6 +66,7 @@ CONTROL_ARTIFACT="$TMP/control/sharedlvmthin-candidate-artifact-sha256"
 CONTROL_PACKAGE="$TMP/control/sharedlvmthin-candidate-package"
 CONTROL_VERSION="$TMP/control/sharedlvmthin-candidate-version"
 CONTROL_FLAVOR="$TMP/control/sharedlvmthin-candidate-flavor"
+RUNTIME_BUILD_ID_FILE="$TMP/root/usr/share/pve-sharedlvmthin/runtime-build-id"
 identity_is_one_line() {
     identity_file=$1
     [ -f "$identity_file" ] && [ ! -L "$identity_file" ] || return 1
@@ -74,12 +75,27 @@ identity_is_one_line() {
     printf '%s\n' "$identity_value" | cmp -s - "$identity_file"
 }
 for identity_file in "$DATA_ARTIFACT" "$CONTROL_ARTIFACT" "$CONTROL_PACKAGE" \
-    "$CONTROL_VERSION" "$CONTROL_FLAVOR"; do
+    "$CONTROL_VERSION" "$CONTROL_FLAVOR" "$RUNTIME_BUILD_ID_FILE"; do
     if ! identity_is_one_line "$identity_file"; then
         echo "package artifact identity file is missing or malformed: $identity_file" >&2
         exit 1
     fi
 done
+RUNTIME_BUILD_ID=$(sed -n '1p' "$RUNTIME_BUILD_ID_FILE")
+case "$RUNTIME_BUILD_ID" in
+    *[!0-9a-f]*|'') echo "runtime build identity is malformed" >&2; exit 1 ;;
+esac
+[ "${#RUNTIME_BUILD_ID}" -eq 64 ] || {
+    echo "runtime build identity has invalid length" >&2
+    exit 1
+}
+PLUGIN_RUNTIME_ID=$(sed -n \
+    "s/^[[:space:]]*return '\([0-9a-f]\{64\}\)';[[:space:]]*$/\1/p" \
+    "$TMP/root/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm")
+if [ "$PLUGIN_RUNTIME_ID" != "$RUNTIME_BUILD_ID" ]; then
+    echo "loaded-runtime identity embedded in plugin differs from package marker" >&2
+    exit 1
+fi
 ARTIFACT_SHA256=$(python3 "$ROOT/scripts/package-artifact-identity.py" \
     "$TMP/root" "$TMP/control")
 if [ "$(sed -n '1p' "$DATA_ARTIFACT")" != "$ARTIFACT_SHA256" ] || \

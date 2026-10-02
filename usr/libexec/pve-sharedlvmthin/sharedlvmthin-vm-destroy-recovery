@@ -1,0 +1,248 @@
+#!/usr/bin/python3 -I
+"""Private immutable recovery descriptors; no PVE/storage mutation authority.
+
+Source-only substrate. The fixed root must already exist, root-owned 0700.
+No retry, replace, adoption, delete, package integration or public CLI exposure.
+"""
+
+import argparse
+import contextlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+BASE = Path('/var/lib/pve-sharedlvmthin/vm-destroy-recovery')
+LIMIT = 1024 * 1024
+SCHEMA = 'sharedlvmthin-vm-destroy-recovery/v1'
+RESULT_SCHEMA = 'sharedlvmthin-vm-destroy-recovery-result/v1'
+CORE_SCHEMA = 'sharedlvmthin-vm-destroy-executor-core/v1'
+
+
+class Refusal(RuntimeError):
+    pass
+
+
+def require(ok, message):
+    if not ok:
+        raise Refusal(message)
+
+
+def canonical(value):
+    try:
+        return json.dumps(value, sort_keys=True, separators=(',', ':'),
+                          ensure_ascii=True, allow_nan=False).encode('ascii')
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise Refusal('noncanonical JSON value') from exc
+
+
+def digest(value):
+    return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def validate_txid(txid):
+    require(type(txid) is str and re.fullmatch('[0-9a-f]{32}', txid), 'invalid txid')
+
+
+def validate_descriptor(value, txid):
+    validate_txid(txid)
+    require(type(value) is dict and set(value) == {
+        'schema', 'authority', 'txid', 'context', 'context_sha256'}, 'descriptor fields')
+    require(value['schema'] == SCHEMA and value['authority'] == 'NONE'
+            and value['txid'] == txid, 'descriptor schema/authority/identity')
+    context = value['context']
+    require(type(context) is dict and set(context) == {'schema', 'receipt'}
+            and context['schema'] == CORE_SCHEMA, 'executor context schema')
+    core = context['receipt']
+    require(type(core) is dict and set(core) == {'schema', 'txid', 'vmid', 'config', 'runtime', 'plan'},
+            'full executor core required')
+    require(type(core['schema']) is int and core['schema'] == 1 and core['txid'] == txid,
+            'executor core identity')
+    require(type(core['vmid']) is int and 1 <= core['vmid'] <= 999999999, 'executor vmid')
+    require(all(type(core[key]) is dict and core[key] for key in ('config', 'runtime', 'plan')),
+            'executor core objects missing')
+    require(value['context_sha256'] == digest(context), 'context digest mismatch')
+    # This is a lossless identity envelope, not a storage-plan/runtime qualifier.
+    return value
+
+
+def decode(raw, txid):
+    require(type(raw) is bytes and 0 < len(raw) <= LIMIT, 'descriptor size')
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, 'duplicate JSON key')
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs,
+                           parse_constant=lambda _: (_ for _ in ()).throw(Refusal('nonfinite JSON')))
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise Refusal('malformed JSON') from exc
+    require(raw == canonical(value) + b'\n', 'noncanonical descriptor bytes')
+    return validate_descriptor(value, txid)
+
+
+def signature(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+class Store:
+    """Test injection is Python-only; production CLI exposes no path/uid switch."""
+    def __init__(self, base=BASE, *, expected_uid=0, fault=None):
+        self.base = Path(base)
+        require(self.base.is_absolute() and '..' not in self.base.parts, 'unsafe base path')
+        self.uid = expected_uid
+        self.fault = fault or (lambda _: None)
+
+    @contextlib.contextmanager
+    def locked(self):
+        require(os.name == 'posix', 'POSIX semantics required')
+        import fcntl
+        fds, links = [], []
+        try:
+            parent = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            fds.append(parent)
+            for name in self.base.parts[1:]:
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=parent)
+                fds.append(child)
+                info = os.fstat(child)
+                links.append((parent, name, child, info.st_dev, info.st_ino))
+                parent = child
+            require(len(fds) > 1, 'filesystem root forbidden')
+            def recheck():
+                for parent_fd, name, child, dev, ino in links:
+                    opened = os.fstat(child)
+                    named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                    require(stat.S_ISDIR(named.st_mode)
+                            and (named.st_dev, named.st_ino) == (dev, ino) == (opened.st_dev, opened.st_ino),
+                            'directory namespace changed')
+                    # Root-owned sticky /tmp is allowed only as an ancestor,
+                    # enabling isolated POSIX tests; final base stays exact 0700.
+                    require(opened.st_uid in (0, self.uid)
+                            and (not (stat.S_IMODE(opened.st_mode) & 0o022)
+                                 or (opened.st_uid == 0 and opened.st_mode & stat.S_ISVTX)),
+                            'unsafe ancestor owner/mode')
+                info = os.fstat(fds[-1])
+                require(info.st_uid == self.uid and stat.S_IMODE(info.st_mode) == 0o700,
+                        'unsafe base owner/mode')
+            recheck()
+            try:
+                fcntl.flock(fds[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise Refusal('descriptor store busy; no retry') from exc
+            recheck()
+            yield fds[-1], fds[-2], recheck
+            recheck()
+        finally:
+            for fd in reversed(fds):
+                os.close(fd)
+
+    def _read(self, directory, name, txid):
+        fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     dir_fd=directory)
+        try:
+            before = os.fstat(fd)
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == self.uid
+                    and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1
+                    and 0 < before.st_size <= LIMIT, 'unsafe descriptor inode')
+            raw = b''
+            while len(raw) < before.st_size:
+                chunk = os.read(fd, before.st_size - len(raw))
+                require(chunk, 'short descriptor read')
+                raw += chunk
+            require(os.read(fd, 1) == b'', 'descriptor grew')
+            value = decode(raw, txid)
+            os.fsync(fd)
+            require(signature(before) == signature(os.fstat(fd)) ==
+                    signature(os.stat(name, dir_fd=directory, follow_symlinks=False)),
+                    'descriptor changed during read')
+            return value, signature(before)
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def result(value):
+        return {'schema': RESULT_SCHEMA, 'authority': 'NONE', 'durable': True,
+                'txid': value['txid'], 'descriptor': value, 'descriptor_sha256': digest(value)}
+
+    def create(self, txid, raw):
+        value = decode(raw, txid)  # fully validate before any namespace effect
+        name = txid + '.json'
+        with self.locked() as (directory, parent, recheck):
+            os.fsync(parent)
+            recheck()
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=directory)
+            try:
+                created = os.fstat(fd)
+                require(created.st_uid == self.uid and stat.S_IMODE(created.st_mode) == 0o600
+                        and stat.S_ISREG(created.st_mode) and created.st_nlink == 1, 'unsafe created inode')
+                # Persist the empty create-only latch before writing its body.
+                # A torn body remains a durable blocker, never an adoption path.
+                os.fsync(fd)
+                os.fsync(directory)
+                os.fsync(parent)
+                self.fault('after_create')
+                offset = 0
+                while offset < len(raw):
+                    size = os.write(fd, raw[offset:])
+                    require(size > 0, 'descriptor write made no progress')
+                    offset += size
+                os.fsync(fd)
+                published = signature(os.fstat(fd))
+                self.fault('after_file_fsync')
+                recheck()
+                require(published == signature(os.stat(name, dir_fd=directory, follow_symlinks=False)),
+                        'created descriptor replaced')
+                os.fsync(directory)
+                os.fsync(parent)
+                self.fault('after_directory_fsync')
+                reread, observed = self._read(directory, name, txid)
+                require(observed == published and canonical(reread) == canonical(value), 'publication readback mismatch')
+                recheck()
+                return self.result(value)
+            finally:
+                # An empty/torn or fully durable file survives every failure.
+                # Never unlink, replace or treat existence as success.
+                os.close(fd)
+
+    def read(self, txid):
+        validate_txid(txid)
+        name = txid + '.json'
+        with self.locked() as (directory, parent, recheck):
+            value, identity = self._read(directory, name, txid)
+            self.fault('after_read')
+            os.fsync(directory)
+            os.fsync(parent)
+            recheck()
+            require(identity == signature(os.stat(name, dir_fd=directory, follow_symlinks=False)),
+                    'descriptor changed before acknowledgement')
+            return self.result(value)
+
+
+def main(argv=None, stdin=None):
+    require(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root required')
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('operation', choices=['_create', '_read'])
+    parser.add_argument('--txid', required=True)
+    args = parser.parse_args(argv)
+    validate_txid(args.txid)
+    store = Store()
+    if args.operation == '_create':
+        result = store.create(args.txid, (stdin or sys.stdin.buffer).read(LIMIT + 1))
+    else:
+        result = store.read(args.txid)
+    print(canonical(result).decode('ascii'))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (Refusal, OSError) as exc:
+        raise SystemExit(f'VM_DESTROY_RECOVERY_DESCRIPTOR_REFUSED: {exc}')

@@ -360,6 +360,7 @@ class ThickMaterializationAdmissionHealthTests(unittest.TestCase):
     def test_slots_are_counted_from_non_materialized_anchors(self):
         status, result = self.evaluate([
             {"phase": "MATERIALIZED"},
+            {"phase": "LAZY_DORMANT"},
             {"phase": "HYDRATING"},
             {"phase": "HYDRATION_COMPLETE"},
         ], 3)
@@ -368,6 +369,15 @@ class ThickMaterializationAdmissionHealthTests(unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertEqual(result["available_slots"], 1)
         self.assertEqual(result["state"], "AVAILABLE")
+
+    def test_closed_lazy_dormant_anchor_does_not_consume_worker_slot(self):
+        status, result = self.evaluate([
+            {"phase": "LAZY_DORMANT"},
+        ], 1)
+        self.assertEqual(status, "PASS")
+        self.assertEqual(result["active"], 0)
+        self.assertEqual(result["available_slots"], 1)
+        self.assertTrue(result["available"])
 
     def test_saturated_limit_is_visible_but_not_false_failure(self):
         status, result = self.evaluate([
@@ -1034,6 +1044,12 @@ class ThickAnchorReferenceTests(unittest.TestCase):
         )
         namespace = {
             "re": re,
+            "exact_efi_backing_size": lambda declared, authoritative, extent: (
+                all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                    for value in (declared, authoritative, extent))
+                and declared == 528 * 1024
+                and authoritative == ((declared + extent - 1) // extent) * extent
+            ),
             "pve_volume_reference_files": lambda volid: [
                 f"config-{index}" for index in range(counts.get(volid, 0))
             ],
@@ -1053,6 +1069,25 @@ class ThickAnchorReferenceTests(unittest.TestCase):
         self.assertEqual(result[0]["status"], "PASS")
         self.assertEqual(result[0]["reference_count"], 1)
 
+    def test_closed_lazy_dormant_reference_is_healthy_without_worker(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        result = evaluate(
+            "thick",
+            [{
+                "name": "sltg-a-key", "volume": "vm-100-disk-0",
+                "phase": "LAZY_DORMANT", "transaction": "a" * 32,
+                "head_size_bytes": 4 * 2**30,
+            }],
+            worker_state=lambda *_args: "ABSENT",
+            reference_index={"thick:vm-100-disk-0": ["config"]},
+            current_size_index={
+                "thick:vm-100-disk-0": [("config", 4 * 2**30, "attached")]
+            },
+        )
+        self.assertEqual(result[0]["status"], "PASS")
+        self.assertEqual(result[0]["materialization_state"], "LAZY_DORMANT")
+        self.assertNotIn("worker_state", result[0])
+
     def test_stale_current_pve_size_is_recovery_required(self):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
         result = evaluate(
@@ -1071,6 +1106,26 @@ class ThickAnchorReferenceTests(unittest.TestCase):
             result[0]["materialization_state"], "RECOVERY_REQUIRED"
         )
         self.assertIn("differs from authoritative HEAD", result[0]["reason"])
+
+    def test_exact_efi_geometry_accepts_only_extent_rounded_backing(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-2": 1})
+        base = {
+            "name": "sltg-a-key", "volume": "vm-100-disk-2",
+            "phase": "MATERIALIZED", "head_size_bytes": 4 * 2**20,
+        }
+        indexes = {
+            "reference_index": {"thick:vm-100-disk-2": ["config"]},
+            "current_size_index": {
+                "thick:vm-100-disk-2": [("config", 528 * 1024, "efi")]
+            },
+        }
+        result = evaluate("thick", [base], vg_extent_size=4 * 2**20, **indexes)
+        self.assertEqual(result[0]["status"], "PASS")
+        self.assertIn("logical EFI geometry", result[0]["reason"])
+        for extent, size in ((None, 4 * 2**20), (4 * 2**20, 8 * 2**20)):
+            candidate = dict(base, head_size_bytes=size)
+            failed = evaluate("thick", [candidate], vg_extent_size=extent, **indexes)
+            self.assertEqual(failed[0]["status"], "FAIL")
 
     def test_detached_unused_reference_does_not_require_declared_size(self):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})

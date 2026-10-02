@@ -21,6 +21,7 @@ class UpgradeCheckTests(unittest.TestCase):
             root = Path(directory)
             storage = root / "storage.cfg"
             recovery = root / "recovery-check"
+            update_policy = root / "update-policy"
             calls = root / "calls"
             storage.write_text(textwrap.dedent(config), encoding="utf-8")
             recovery.write_text(
@@ -30,6 +31,14 @@ class UpgradeCheckTests(unittest.TestCase):
                 encoding="utf-8",
             )
             recovery.chmod(0o755)
+            update_policy.write_text(
+                "#!/bin/sh\n"
+                "echo UPDATE_POLICY=FREEZE\n"
+                "echo UPDATE_POLICY_SETTLED=YES\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            update_policy.chmod(0o755)
             test_script = root / "upgrade-check"
             source = SCRIPT.read_text(encoding="utf-8")
             source = source.replace(
@@ -37,6 +46,9 @@ class UpgradeCheckTests(unittest.TestCase):
             ).replace(
                 "RECOVERY_CHECK=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check",
                 f"RECOVERY_CHECK={recovery}",
+            ).replace(
+                "UPDATE_POLICY=/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy",
+                f"UPDATE_POLICY={update_policy}",
             ).replace("PROBE_TIMEOUT=150", "PROBE_TIMEOUT=5")
             if inventory_failure:
                 source = source.replace(
@@ -87,6 +99,27 @@ class UpgradeCheckTests(unittest.TestCase):
         )
         self.assertIn("UPGRADE_STORAGES_SKIPPED_NODE_SCOPE=0", result.stdout)
         self.assertIn("UPGRADE_SAFE=YES", result.stdout)
+
+    def test_runtime_qualification_uses_only_direct_recovery_probe(self):
+        result, invoked = self.run_check(
+            """
+            sharedlvmthin: thick-store
+                    vgname shared-vg
+                    slt-allocation-mode thick-generations
+            """,
+            """
+            echo THICK_ANCHORS_HEALTHY=PASS
+            echo VG_INTENT_CLEAR=PASS
+            echo RUNTIME_QUALIFICATION_READY=YES
+            echo SAFE_FOR_MUTATION=NO
+            exit 0
+            """,
+            "--runtime-qualification",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(invoked, ["--runtime-qualification"])
+        self.assertIn("UPDATE_POLICY_STATUS=HELD_BY_RUNTIME_GATE", result.stdout)
+        self.assertIn("RUNTIME_QUALIFICATION_READY=YES", result.stdout)
 
     def test_disabled_storage_with_recovery_evidence_blocks_upgrade(self):
         result, invoked = self.run_check(

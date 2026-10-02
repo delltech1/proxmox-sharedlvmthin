@@ -319,14 +319,15 @@ print(rows[0].get("node", ""))' "$vmid"
         echo "authoritative VM node is neither saved source nor target" >&2
         exit 70
     fi
+    authoritative_topology=$(
+        printf '%s\n' "$authoritative_cfg" \
+        | /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology \
+            "$thin_store" "$thick_store"
+    ) || { echo "authoritative VM storage topology is unsupported" >&2; exit 70; }
     if [[ $version =~ ^(3|4)$ ]]; then
         cmp -s \
             <(cut -d'|' -f1 "$manifest_file" | sort) \
-            <(printf '%s\n' "$authoritative_cfg" | awk '
-                /^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {
-                    key=$1; sub(/:$/, "", key); print key
-                }
-            ' | sort) \
+            <(printf '%s\n' "$authoritative_topology" | cut -d'|' -f1 | sort) \
             || { echo "authoritative disk slots do not match saved manifest" >&2; exit 70; }
     fi
     # pmxcfs may be updated before QEMU completes (or rolls back) an online
@@ -366,10 +367,9 @@ print(rows[0].get("node", ""))' "$vmid"
     grep -qx 'RUNTIME_PATHS=PASS' <<<"$runtime_evidence" \
         || { echo "runtime path proof is incomplete" >&2; exit 70; }
     read -r observed_disks observed_thin observed_thick < <(
-        printf '%s\n' "$authoritative_cfg" | awk -v thin="$thin_store" -v thick="$thick_store" '
-            /^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {
-                n++; if ($2 ~ ("^" thin ":")) t++; if ($2 ~ ("^" thick ":")) k++
-            }
+        printf '%s\n' "$authoritative_topology" \
+        | awk -F'[|:]' -v thin="$thin_store" -v thick="$thick_store" '
+            {n++; if ($2 == thin) t++; if ($2 == thick) k++}
             END {print n+0, t+0, k+0}
         '
     )
@@ -609,6 +609,18 @@ print(rows[0].get("node", ""))' "$vmid"
             && [ "$admission" = none ] \
             || { echo "thick migration resume evidence is incomplete" >&2; exit 70; }
         sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
+        migration_cfg=$(qm config "$vmid") \
+            || { echo "cannot re-read VM topology before migration" >&2; exit 70; }
+        migration_topology=$(printf '%s\n' "$migration_cfg" \
+            | /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology \
+                "$thin_store" "$thick_store") \
+            || { echo "VM topology changed before migration" >&2; exit 70; }
+        cmp -s <(cut -d'|' -f1 "$manifest_file" | sort) \
+            <(printf '%s\n' "$migration_topology" | cut -d'|' -f1 | sort) \
+            || { echo "VM disk slots changed before migration" >&2; exit 70; }
+        printf '%s\n' "$migration_topology" \
+            | awk -F'[|:]' -v thick="$thick_store" '$2 != thick {exit 1}' \
+            || { echo "not every VM disk is Thick before migration" >&2; exit 70; }
         resume_publish_state MATERIALIZED_THICK "$disk_count" none 100
         set +e
         qm migrate "$vmid" "$target" --online 1
@@ -791,26 +803,14 @@ esac
 status=$(qm status "$vmid" | awk '{print $2}')
 [ "$status" = running ] || { echo "bridge run requires a running VM; use native offline migration for a stopped VM" >&2; exit 65; }
 
-mapfile -t disks < <(
-    qm config "$vmid" | awk -v sid="$thin_store" '
-        /^(ide|sata|scsi|virtio)[0-9]+:/ {
-            key=$1; sub(/:$/, "", key)
-            vol=$2; sub(/,.*/, "", vol)
-            split(vol, a, ":")
-            if (a[1] == sid) print key "|" vol
-        }
-    '
-)
+initial_cfg=$(qm config "$vmid") \
+    || { echo "cannot read authoritative VM configuration" >&2; exit 70; }
+topology=$(
+    printf '%s\n' "$initial_cfg" \
+    | /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology "$thin_store"
+) || exit $?
+mapfile -t disks <<<"$topology"
 [ "${#disks[@]}" -gt 0 ] || { echo "VM has no disk on source Thin storage" >&2; exit 65; }
-
-# Version 1 deliberately refuses mixed layouts.  This prevents a successful
-# bridge from being followed by a native migration failure caused by an
-# unrelated local-only disk.
-all_disk_count=$(qm config "$vmid" | awk '/^(ide|sata|scsi|virtio)[0-9]+:/ && $0 !~ /media=cdrom/ {n++} END {print n+0}')
-[ "$all_disk_count" -eq "${#disks[@]}" ] || {
-    echo "bridge v1 requires every non-CD disk to reside on '$thin_store'" >&2
-    exit 65
-}
 
 sharedlvmthin recovery-check "$thin_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
 sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
@@ -1013,6 +1013,18 @@ env PVE_SLT_BRIDGE_TX="$tx" PVE_SLT_BRIDGE_NODE="$local_node" \
     sharedlvmthin recovery-check "$thick_store" | grep -qx 'SAFE_FOR_MUTATION=YES'
 bridge_release_local_set "$tx" "$local_node" "$thin_store" "$thick_store"
 
+migration_cfg=$(qm config "$vmid") \
+    || { echo "cannot re-read VM topology before migration" >&2; exit 70; }
+migration_topology=$(printf '%s\n' "$migration_cfg" \
+    | /usr/libexec/pve-sharedlvmthin/sharedlvmthin-bridge-topology \
+        "$thin_store" "$thick_store") \
+    || { echo "VM topology changed before migration" >&2; exit 70; }
+cmp -s <(cut -d'|' -f1 "$manifest_file" | sort) \
+    <(printf '%s\n' "$migration_topology" | cut -d'|' -f1 | sort) \
+    || { echo "VM disk slots changed before migration" >&2; exit 70; }
+printf '%s\n' "$migration_topology" \
+    | awk -F'[|:]' -v thick="$thick_store" '$2 != thick {exit 1}' \
+    || { echo "not every VM disk is Thick before migration" >&2; exit 70; }
 qm migrate "$vmid" "$target" --online 1
 settled=0
 for _ in $(seq 1 30); do

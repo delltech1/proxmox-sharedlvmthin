@@ -150,7 +150,8 @@ def exact_dpkg_process(record):
     require(proc_executable(pid) == "/usr/bin/dpkg",
             "authorized process is not dpkg")
     require(proc_cmdline(pid)
-            == [b"/usr/bin/dpkg", b"-i", record["candidate"].encode()],
+            == [b"/usr/bin/dpkg", b"--force-hold", b"-i",
+                record["candidate"].encode()],
             "authorized dpkg arguments changed")
 
 
@@ -326,7 +327,8 @@ def execute(args):
             if signal != b"1":
                 os._exit(125)
             pinned = str(ROOT / "candidate.deb")
-            os.execve("/usr/bin/dpkg", ["/usr/bin/dpkg", "-i", pinned],
+            os.execve("/usr/bin/dpkg",
+                      ["/usr/bin/dpkg", "--force-hold", "-i", pinned],
                       {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
         except BaseException:
             os._exit(126)
@@ -388,8 +390,13 @@ def installed_exact(record):
         ["/usr/bin/dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}",
          record["target_package"]], text=True, capture_output=True, check=False,
         env=env, timeout=30)
+    # FREEZE normally owns a hold on the newly installed target, so its
+    # desired-state column is ``h`` rather than ``i``.  Both states have an
+    # exact installed current-state (second column ``i``); pending
+    # remove/purge and all half-configured/error states remain refused.
     require(result.returncode == 0
-            and result.stdout == f"ii  {record['target_version']}",
+            and result.stdout in {f"ii  {record['target_version']}",
+                                  f"hi  {record['target_version']}"},
             "target package is not exactly installed")
     other = subprocess.run(
         ["/usr/bin/dpkg-query", "-W", "-f=${db:Status-Abbrev}",

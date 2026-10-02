@@ -28,14 +28,14 @@ dpkg-deb --extract "$THICK_PACKAGE" "$THICK_ROOT"
 
 # Thick-only is a restricted build profile, not a fork. Every non-document
 # regular file it retains must be byte-identical to the dual-mode artifact,
-# except for the explicit package-flavor marker and the derived whole-artifact
-# identity. Each artifact identity is independently recomputed by
+# except for the explicit package-flavor marker, profile-scoped loaded-runtime
+# identity and the derived whole-artifact identity. Each artifact identity is independently recomputed by
 # check-release.sh and must differ because package metadata and payload scope
 # differ between profiles.
 if ! find "$THICK_ROOT" -type f -print | while IFS= read -r thick_file; do
     relative=${thick_file#"$THICK_ROOT/"}
     case "$relative" in
-        usr/share/pve-sharedlvmthin/package-flavor|usr/share/pve-sharedlvmthin/package-artifact-sha256)
+        usr/share/pve-sharedlvmthin/package-flavor|usr/share/pve-sharedlvmthin/package-artifact-sha256|usr/share/pve-sharedlvmthin/runtime-build-id)
             continue
             ;;
         usr/share/doc/pve-sharedlvmthin-thick/*)
@@ -49,7 +49,16 @@ if ! find "$THICK_ROOT" -type f -print | while IFS= read -r thick_file; do
         echo "Thick-only file has no dual-mode source counterpart: $relative" >&2
         exit 1
     fi
-    if ! cmp -s "$dual_file" "$thick_file"; then
+    if [ "$relative" = usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm ]; then
+        sed "s/return '[0-9a-f]\{64\}';/return '__SLT_RUNTIME_BUILD_ID__';/" \
+            "$dual_file" >"$TMP/dual-plugin-normalized"
+        sed "s/return '[0-9a-f]\{64\}';/return '__SLT_RUNTIME_BUILD_ID__';/" \
+            "$thick_file" >"$TMP/thick-plugin-normalized"
+        cmp -s "$TMP/dual-plugin-normalized" "$TMP/thick-plugin-normalized" || {
+            echo "shared plugin differs beyond its profile runtime identity" >&2
+            exit 1
+        }
+    elif ! cmp -s "$dual_file" "$thick_file"; then
         echo "shared package-profile file content differs: $relative" >&2
         exit 1
     fi
@@ -100,6 +109,20 @@ esac
 if [ "${#DUAL_ARTIFACT}" -ne 64 ] || [ "${#THICK_ARTIFACT}" -ne 64 ] || \
    [ "$DUAL_ARTIFACT" = "$THICK_ARTIFACT" ]; then
     echo "package-profile artifact identities are invalid or not profile-specific" >&2
+    exit 1
+fi
+
+DUAL_RUNTIME=$(sed -n '1p' "$DUAL_ROOT/usr/share/pve-sharedlvmthin/runtime-build-id")
+THICK_RUNTIME=$(sed -n '1p' "$THICK_ROOT/usr/share/pve-sharedlvmthin/runtime-build-id")
+case "$DUAL_RUNTIME:$THICK_RUNTIME" in
+    *[!0-9a-f:]*|:* )
+        echo "package-profile runtime identity is malformed" >&2
+        exit 1
+        ;;
+esac
+if [ "${#DUAL_RUNTIME}" -ne 64 ] || [ "${#THICK_RUNTIME}" -ne 64 ] || \
+   [ "$DUAL_RUNTIME" = "$THICK_RUNTIME" ]; then
+    echo "package-profile runtime identities are invalid or not profile-specific" >&2
     exit 1
 fi
 
