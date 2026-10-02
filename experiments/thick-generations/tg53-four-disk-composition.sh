@@ -260,7 +260,10 @@ names = [row.get("name") for row in rows]
 if snap_a in names or snap_b in names or any(name != "current" for name in names):
     raise SystemExit(f"snapshot inventory did not settle: {names!r}")
 PY
-! qm config "$SOURCE_VMID" | grep -Eq '^(lock|snapstate):'
+if qm config "$SOURCE_VMID" | grep -Eq '^(lock|snapstate):'; then
+    echo "REFUSE=SOURCE_LOCK_OR_SNAPSTATE"
+    exit 2
+fi
 
 for disk in "${DISKS[@]}"; do
     VOLUME[$disk]=$(volume_for "$SOURCE_VMID" "$disk")
@@ -304,7 +307,10 @@ echo "VMA_VERIFY=PASS"
 
 qmrestore "$archive" "$RESTORE_VMID" --storage "$LAZY_STORAGE" --unique 1
 restore_cfg=$(qm config "$RESTORE_VMID")
-! grep -Eq '^(lock|snapstate):' <<<"$restore_cfg"
+if grep -Eq '^(lock|snapstate):' <<<"$restore_cfg"; then
+    echo "REFUSE=RESTORE_LOCK_OR_SNAPSTATE"
+    exit 2
+fi
 for disk in "${DISKS[@]}"; do
     restored=$(volume_for "$RESTORE_VMID" "$disk")
     [[ "$restored" == "$LAZY_STORAGE:"* ]]

@@ -40,7 +40,10 @@ done
 [[ -x "$WRITE_CANARY" ]]
 [[ "$(qm status "$SOURCE_VMID")" == "status: stopped" ]]
 source_config="$(qm config "$SOURCE_VMID")"
-! grep -Eq '^(lock|snapstate):' <<<"$source_config"
+if grep -Eq '^(lock|snapstate):' <<<"$source_config"; then
+    echo "REFUSE=SOURCE_LOCK_OR_SNAPSTATE"
+    exit 2
+fi
 for disk in scsi0 scsi1 scsi2; do
     grep -Eq "^${disk}: [^,]+" <<<"$source_config"
 done
@@ -136,7 +139,10 @@ for index in 0 1 2; do
     echo "RESTORE_START=$vmid:$storage:$(date -u +%FT%TZ)"
     qmrestore "$archive" "$vmid" --storage "$storage" --unique 1
     restored_config="$(qm config "$vmid")"
-    ! grep -Eq '^(lock|snapstate):' <<<"$restored_config"
+    if grep -Eq '^(lock|snapstate):' <<<"$restored_config"; then
+        echo "REFUSE=RESTORE_LOCK_OR_SNAPSTATE:$vmid"
+        exit 2
+    fi
     for disk in scsi0 scsi1 scsi2; do
         volume="$(sed -n "s/^${disk}: \([^,]*\).*/\1/p" <<<"$restored_config")"
         [[ "$volume" == "$storage:"* ]]
@@ -167,7 +173,10 @@ echo "SOURCE_UNCHANGED=PASS"
 
 for vmid in "${dest_ids[@]}"; do
     qm destroy "$vmid" --purge 1 --destroy-unreferenced-disks 1
-    ! qm config "$vmid" >/dev/null 2>&1
+    if qm config "$vmid" >/dev/null 2>&1; then
+        echo "REFUSE=DESTROYED_VMID_STILL_PRESENT:$vmid"
+        exit 2
+    fi
     echo "DESTROY_VM_${vmid}=PASS"
 done
 rm -f -- "$archive"

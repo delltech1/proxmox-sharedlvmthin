@@ -107,11 +107,16 @@ tg53_wait_exact_task() {
     local node="$1" vmid="$2" kind="$3" since="$4" deadline="$5"
     local terminal_policy="${6:-require-ok}"
     local probe_sec="${TG53_OBSERVER_PROBE_SEC:-30}"
-    local now rows observation rc upid= past_deadline
+    local now rows observation rc upid='' past_deadline
     [[ "$terminal_policy" =~ ^(require-ok|any-terminal)$ ]] || return 64
     [[ "$probe_sec" =~ ^[0-9]+$ && "$probe_sec" -ge 5 && "$probe_sec" -le 300 ]] || return 64
+    # Public result variables are consumed by callers after this sourced
+    # helper returns; they are intentionally assigned in this function.
+    # shellcheck disable=SC2034
     TG53_LAST_TASK_UPID=
+    # shellcheck disable=SC2034
     TG53_LAST_TASK_STATE=
+    # shellcheck disable=SC2034
     TG53_LAST_TASK_EXITSTATUS=
     while :; do
         if [[ -z "$upid" ]]; then
@@ -164,6 +169,7 @@ PY
 
             upid="${observation#TASK_UPID=}"
             [[ "$upid" == UPID:* && "$upid" != *$'\n'* ]] || return 75
+            # shellcheck disable=SC2034
             TG53_LAST_TASK_UPID="$upid"
             echo "TASK_PINNED_UPID=$upid"
         fi

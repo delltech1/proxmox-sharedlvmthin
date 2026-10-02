@@ -21,7 +21,6 @@ expected_host=
 expected_current=
 select_update_policy=
 prior_update_policy=
-prior_update_policy_schema=
 freeze_package_txid=
 direct_package_txid=
 direct_recovery_txid=
@@ -362,7 +361,6 @@ if [[ -n "$installed_name" ]] && command -v sharedlvmthin >/dev/null 2>&1; then
     prior_policy_output=$("${clean_env[@]}" sharedlvmthin update-policy status 2>/dev/null)
     set -e
     prior_update_policy=$(sed -n 's/^UPDATE_POLICY=//p' <<<"$prior_policy_output")
-    prior_update_policy_schema=$(sed -n 's/^UPDATE_POLICY_SCHEMA=//p' <<<"$prior_policy_output")
     [[ $(grep -c '^UPDATE_POLICY=' <<<"$prior_policy_output") -le 1 ]] || {
         echo "installed update-policy identity is ambiguous" >&2
         exit 2

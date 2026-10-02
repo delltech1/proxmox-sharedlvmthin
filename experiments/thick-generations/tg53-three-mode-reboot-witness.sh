@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Values written into the root-only manifest are intentionally reloaded as
+# uppercase variables and the per-offset witnesses are addressed dynamically.
+# shellcheck disable=SC2034,SC2153,SC2154
 set -Eeuo pipefail
 
 # Disposable lab qualification for clean-boundary persistence across a node
