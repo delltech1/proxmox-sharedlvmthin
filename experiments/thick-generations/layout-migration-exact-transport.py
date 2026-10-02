@@ -33,7 +33,9 @@ spec = importlib.util.spec_from_file_location('exact_transport_model', HERE / 'l
 M = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(M)
 Refusal, need = M.Refusal, M.need
-NODES = ('node-a', 'node-b', 'node-c', 'node-control')
+# Closed synthetic identities used only by this unshipped formal model. They
+# are not discovered hostnames and carry no addresses or access information.
+NODES = ('PVE01', 'PVE02', 'PVE03', 'PVE04')
 ROOT = Path('/var/lib/pve-sharedlvmthin/maintenance-transport')
 HELPER = '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-exact-restore-transport'
 SUBSYSTEM = 'sharedlvmthin-exact-restore-v1'
@@ -91,17 +93,14 @@ def validate_pins(plan, pins):
     need(pins['schema'] == 'slt-exact-transport-pins/v1' and pins['authority'] == 'NONE'
          and pins['plan_sha256'] == M.digest(plan) and pins['helper_path'] == HELPER, 'pin identity')
     need(type(pins['participants']) is list and len(pins['participants']) == 4, 'closed four-node cohort')
-    cohort = tuple(row['node'] for row in plan['participants'])
-    need(len(set(cohort)) == 4
-         and all(type(node) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', node)
-                 for node in cohort)
+    need(tuple(row['node'] for row in plan['participants']) == NODES
          and all(row['role'] == ('CONTROL_ONLY' if index == 3 else 'SAN')
                  for index, row in enumerate(plan['participants'])), 'fixed SAN/control cohort')
     hosts, keys, helpers = set(), set(), set()
     for index, row in enumerate(pins['participants']):
         M.exact(row, {'node', 'host', 'boot_id', 'ssh_host_key', 'ssh_host_fingerprint',
                       'helper_sha256', 'source_package'}, 'participant pins')
-        need(row['node'] == cohort[index] and row['boot_id'] == plan['participants'][index]['boot_id'],
+        need(row['node'] == NODES[index] and row['boot_id'] == plan['participants'][index]['boot_id'],
              'hostname/boot/participant order differs')
         try:
             host = ipaddress.ip_address(row['host'])
