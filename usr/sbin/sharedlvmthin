@@ -1518,7 +1518,7 @@ case "${1:-doctor}" in
         ;;
     vm-destroy-observe)
         shift
-        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy observe "$@"
+        exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C LANG=C /usr/bin/python3 -I /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy observe "$@"
         ;;
     snapshot-preflight)
         shift

@@ -145,6 +145,9 @@ for PROGRAM in \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-volume-operation-preflight" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmdestroy-contract-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-recovery" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-dispatch" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-state-bootstrap" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-apt-guard" \

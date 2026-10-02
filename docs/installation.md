@@ -124,11 +124,24 @@ time. The profiles conflict and cannot coexist:
 ```bash
 sha256sum --check SHA256SUMS
 # DUAL: Thin and Thick Generations
-apt install ./pve-sharedlvmthin_<version>_all.deb
+DEB="$PWD/pve-sharedlvmthin_<dotted-version>_all.deb"
 
 # OR Thick-only: Thick Generations only
-apt install ./pve-sharedlvmthin-thick_<version>_all.deb
+DEB="$PWD/pve-sharedlvmthin-thick_<dotted-version>_all.deb"
+
+HASH="$(sha256sum "$DEB" | awk '{print $1}')"
+sudo experiments/thick-generations/package-profile-gate.sh \
+  --package "$DEB" --sha256 "$HASH" \
+  --expect-host "$(hostname)" --expect-current none \
+  --select-update-policy freeze --execute
 ```
+
+The release workflow converts Debian `~` separators to dots in GitHub asset
+filenames; use the exact downloaded name. Run the gate from the matching tagged
+source tree. It is intentionally dry-run without `--execute`. For an upgrade,
+set `--expect-current` to the installed profile (`dual` or `thick-only`) and
+run `sharedlvmthin upgrade-check` first. Do not replace this workflow with raw
+`apt install` while `FREEZE` is active.
 
 Existing `/etc/pve-sharedlvmthin/web.conf` and TLS files are preserved during
 upgrade. Non-interactive installation never waits for the optional web

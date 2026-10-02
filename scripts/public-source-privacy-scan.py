@@ -64,7 +64,7 @@ def main() -> int:
         for label, pattern in FIXED:
             if pattern.search(data):
                 findings.append(f"{rel}: {label}")
-        if rel.startswith("docs/") and LAB_HOST.search(data):
+        if not rel.startswith("tests/") and LAB_HOST.search(data):
             findings.append(f"{rel}: lab hostname")
         for match in IPV4.finditer(data):
             value = match.group().decode("ascii")

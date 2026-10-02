@@ -63,7 +63,7 @@ sub run_capability {
         $policy = 'changed' if $opts{config_drift};
         $opts{mutate}->($f) if $opts{mutate};
         my $cap = $class->_lazy_consume_move_allocation($sid, $cfg, $vol, $f->{state});
-        $class->_lazy_recheck_move_capability($sid, $cfg, $vol, $f->{state}, $cap);
+        $class->_lazy_recheck_allocation_capability($sid, $cfg, $vol, $f->{state}, $cap);
         $ok = 1;
     };
     $error = $@;

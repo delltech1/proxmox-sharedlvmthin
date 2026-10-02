@@ -45,7 +45,9 @@ CRITICAL_FILES = (
     "/usr/share/perl5/PVE/Storage.pm",
     "/usr/share/perl5/PVE/JSONSchema.pm",
     "/usr/share/perl5/PVE/Tools.pm",
+    "/usr/share/perl5/PVE/AccessControl.pm",
     "/usr/share/perl5/PVE/Cluster.pm",
+    "/usr/share/perl5/PVE/Firewall.pm",
     "/usr/share/perl5/PVE/HA/Config.pm",
     "/usr/share/perl5/PVE/INotify.pm",
     "/usr/share/perl5/PVE/QemuConfig.pm",
@@ -54,6 +56,9 @@ CRITICAL_FILES = (
     "/usr/share/perl5/PVE/QemuServer.pm",
     "/usr/share/perl5/PVE/QemuServer/QemuImage.pm",
     "/usr/share/perl5/PVE/QemuServer/Drive.pm",
+    "/usr/share/perl5/PVE/QemuServer/Network.pm",
+    "/usr/share/perl5/PVE/Network/SDN/Vnets.pm",
+    "/usr/share/perl5/PVE/ReplicationConfig.pm",
     "/usr/share/perl5/PVE/SSHInfo.pm",
     "/usr/share/perl5/PVE/Storage/LVMPlugin.pm",
     "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm",
@@ -75,17 +80,27 @@ REQUIRED_HOOKS = (
 )
 REQUIRED_PVE_SYMBOLS = (
     "PVE::AbstractConfig::lock_config", "PVE::AbstractConfig::lock_config_full",
-    "PVE::AccessControl::remove_vm_access",
+    "PVE::AccessControl::lock_user_config", "PVE::AccessControl::remove_vm_access",
     "PVE::Cluster::cfs_update", "PVE::Cluster::cfs_lock_storage",
     "PVE::Cluster::check_cfs_quorum", "PVE::Cluster::get_members",
-    "PVE::Cluster::get_nodelist",
+    "PVE::Cluster::get_nodelist", "PVE::Cluster::get_vmlist",
+    "PVE::Cluster::cfs_read_file",
     "PVE::HA::Config::read_manager_status", "PVE::HA::Config::read_resources_config",
+    "PVE::HA::Config::service_is_configured",
     "PVE::Firewall::remove_vmfw_conf",
     "PVE::INotify::nodename", "PVE::QemuConfig::load_config",
     "PVE::QemuConfig::destroy_config", "PVE::QemuConfig::foreach_volume_full",
+    "PVE::QemuConfig::check_lock", "PVE::QemuConfig::check_protection",
+    "PVE::QemuConfig::cleanup_fleecing_images", "PVE::QemuConfig::parse_volume",
     "PVE::QemuConfig::lock_config", "PVE::QemuConfig::write_config",
     "PVE::QemuServer::check_running", "PVE::QemuServer::foreach_volid", "PVE::QemuServer::destroy_vm",
-    "PVE::QemuServer::parse_drive",
+    "PVE::QemuServer::parse_drive", "PVE::QemuServer::parse_vm_config",
+    "PVE::QemuServer::restore_file_archive", "PVE::QemuServer::restore_vma_archive",
+    "PVE::QemuServer::drive_is_cdrom", "PVE::ReplicationConfig::new",
+    "PVE::QemuServer::Network::delete_ifaces_ipams_ips",
+    "PVE::QemuServer::Network::get_nets_host_mtu",
+    "PVE::QemuServer::Network::parse_net",
+    "PVE::Network::SDN::Vnets::del_ips_from_mac",
     "PVE::QemuServer::Helpers::vm_running_locally", "PVE::Storage::parse_volume_id",
     "PVE::QemuServer::clone_disk",
     "PVE::QemuServer::OVMF::create_efidisk",
@@ -239,7 +254,9 @@ def _pve_api():
     code = (
         "use JSON::PP; use PVE::Storage; use PVE::Storage::Plugin; "
         "use PVE::Storage::LVMPlugin; use PVE::Tools; use PVE::Cluster; use PVE::SSHInfo; "
-        "use PVE::HA::Config; use PVE::INotify; use PVE::QemuConfig; use PVE::QemuServer; "
+        "use PVE::AccessControl; use PVE::Firewall; use PVE::HA::Config; use PVE::INotify; "
+        "use PVE::QemuConfig; use PVE::QemuServer; use PVE::QemuServer::Network; "
+        "use PVE::Network::SDN::Vnets; use PVE::ReplicationConfig; "
         "use PVE::Storage::Custom::SharedLvmThinPlugin; "
         "my @h=qw(" + " ".join(REQUIRED_HOOKS) + "); "
         "my @s=qw(" + " ".join(REQUIRED_PVE_SYMBOLS) + "); "
@@ -252,7 +269,9 @@ def _pve_api():
         "symbols=>{map {$_ => has_symbol($_)} @s},"
         "loaded_paths=>{map {$_ => ($INC{$_}//q{})} "
         "qw(PVE/Storage.pm PVE/Storage/Plugin.pm PVE/Storage/LVMPlugin.pm PVE/Tools.pm "
-        "PVE/Cluster.pm PVE/HA/Config.pm PVE/INotify.pm PVE/QemuConfig.pm PVE/QemuServer.pm "
+        "PVE/AccessControl.pm PVE/Cluster.pm PVE/Firewall.pm PVE/HA/Config.pm PVE/INotify.pm "
+        "PVE/Network/SDN/Vnets.pm PVE/QemuServer/Network.pm "
+        "PVE/QemuConfig.pm PVE/QemuServer.pm PVE/ReplicationConfig.pm "
         "PVE/SSHInfo.pm PVE/Storage/Custom/SharedLvmThinPlugin.pm)}});"
     )
     result = _run(["perl", "-I/usr/share/perl5", "-e", code])

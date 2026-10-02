@@ -540,6 +540,57 @@ sub __snapshot_create_vol_snapshots_hook {
             )
         self.assertEqual(findings, [])
 
+    def test_historical_ram_snapshot_requires_mtu_map_for_virtio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vm_dir = root / "qemu-server"
+            vm_dir.mkdir()
+            (vm_dir / "206.conf").write_text(
+                "[ram]\n"
+                "net0: virtio=00:11:22:33:44:65,bridge=vmbr0\n"
+                "vmstate: eager:vm-206-state-ram\n",
+                encoding="utf-8",
+            )
+            run_root = root / "run"
+            proc_root = root / "proc"
+            run_root.mkdir()
+            proc_root.mkdir()
+            findings = self.module.scan_configuration_risks(
+                str(root), str(run_root), str(proc_root), node_name="node-test",
+            )
+        self.assertEqual([row["code"] for row in findings], [
+            "RAM_SNAPSHOT_MTU_SET_MISSING",
+        ])
+        self.assertEqual(findings[0]["expected_virtio_nics"], ["net0"])
+
+    def test_duplicate_snapshot_section_and_vmstate_are_ambiguous(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vm_dir = root / "qemu-server"
+            vm_dir.mkdir()
+            (vm_dir / "207.conf").write_text(
+                "[ram]\n"
+                "vmstate: eager:vm-207-state-one\n"
+                "[ram]\n"
+                "vmstate: eager:vm-207-state-two\n",
+                encoding="utf-8",
+            )
+            run_root = root / "run"
+            proc_root = root / "proc"
+            run_root.mkdir()
+            proc_root.mkdir()
+            findings = self.module.scan_configuration_risks(
+                str(root), str(run_root), str(proc_root), node_name="node-test",
+            )
+        self.assertEqual({row["code"] for row in findings}, {
+            "DUPLICATE_VM_CONFIG_SECTION", "RAM_SNAPSHOT_VMSTATE_AMBIGUOUS",
+        })
+        duplicate = next(
+            row for row in findings if row["code"] == "DUPLICATE_VM_CONFIG_SECTION"
+        )
+        self.assertEqual(duplicate["section"], "ram")
+        self.assertEqual(duplicate["line"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

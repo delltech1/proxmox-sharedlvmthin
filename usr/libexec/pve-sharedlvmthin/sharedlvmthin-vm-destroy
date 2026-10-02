@@ -1,24 +1,30 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Local destroy journal substrate ONLY; never dispatches PVE/storage commands.
 
 Stage names describe caller-recorded progress, not independently verified effects.
 An interrupted create poisons the journal rather than permitting an implicit retry.
-The public CLI is root-only and observation-only. No package/CLI integration yet.
+The public wrapper is observation-only. Private root-only journal plumbing
+records evidence but never grants mutation authority.
 """
 
 import argparse
 import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import sys
 
 SCHEMA = "sharedlvmthin-vm-destroy-journal/v1"
 STAGES = ("PREPARED", "DISPATCHED", "STORAGE_ABSENT", "FINALIZING", "COMPLETE")
 UNKNOWN = "PARTIAL_OR_UNKNOWN"
 LIMIT = 1024 * 1024
+MAX_RECORDS = 32
+BASE = Path("/var/lib/pve-sharedlvmthin/vm-destroy")
+APPEND_SCHEMA = "sharedlvmthin-vm-destroy-append/v1"
 FIELDS = {"schema", "sequence", "request_id", "stage", "previous_sha256",
           "context_sha256", "context", "evidence", "authority"}
 
@@ -36,7 +42,7 @@ def canonical(value):
     try:
         return json.dumps(value, sort_keys=True, separators=(",", ":"),
                           ensure_ascii=True, allow_nan=False).encode("ascii")
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RecursionError) as exc:
         raise Refusal("noncanonical JSON value") from exc
 
 
@@ -55,7 +61,7 @@ def strict_json(raw):
         return json.loads(raw, object_pairs_hook=pairs,
                           parse_constant=lambda _: (_ for _ in ()).throw(
                               Refusal("nonfinite JSON number")))
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
         raise Refusal("malformed JSON record") from exc
 
 
@@ -65,7 +71,8 @@ def next_stage(current, requested):
     if current is None:
         require(requested == "PREPARED", "first stage must be PREPARED")
     else:
-        require(requested == UNKNOWN or requested == STAGES[STAGES.index(current) + 1],
+        require(requested == UNKNOWN or (current == requested == "FINALIZING")
+                or requested == STAGES[STAGES.index(current) + 1],
                 "stage skip, replay or regression refused")
 
 
@@ -100,9 +107,16 @@ class Journal:
             for name in self.root.parts[1:]:
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY |
                                 os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
-                info = os.fstat(child)
-                links.append((fd, name, child, info.st_dev, info.st_ino))
                 descriptors.append(child)
+                info = os.fstat(child)
+                # Root-owned sticky /tmp is acceptable for isolated tests;
+                # writable non-sticky ancestors never are. The final private
+                # directory below remains exact owner/mode 0700.
+                require(info.st_uid in (0, self.uid) and
+                        (not (stat.S_IMODE(info.st_mode) & 0o022) or
+                         (info.st_uid == 0 and info.st_mode & stat.S_ISVTX)),
+                        "unsafe journal ancestor")
+                links.append((fd, name, child, info.st_dev, info.st_ino))
                 fd = child
             info = os.fstat(fd)
             require(info.st_uid == self.uid and stat.S_IMODE(info.st_mode) == 0o700,
@@ -120,6 +134,10 @@ class Journal:
                     require(stat.S_ISDIR(named.st_mode) and
                             (named.st_dev, named.st_ino) == (dev, ino) ==
                             (opened.st_dev, opened.st_ino), "directory namespace changed")
+                    require(opened.st_uid in (0, self.uid) and
+                            (not (stat.S_IMODE(opened.st_mode) & 0o022) or
+                             (opened.st_uid == 0 and opened.st_mode & stat.S_ISVTX)),
+                            "journal ancestor permissions changed")
                 current = os.fstat(fd)
                 require(current.st_uid == self.uid and
                         stat.S_IMODE(current.st_mode) == 0o700,
@@ -167,7 +185,7 @@ class Journal:
 
     def _records(self, directory):
         names = sorted(os.listdir(directory))
-        require(len(names) <= len(STAGES) + 1, "unexpected journal contents")
+        require(len(names) <= MAX_RECORDS, "unexpected journal contents")
         records = []
         for index, name in enumerate(names, 1):
             row = self._read(directory, name)
@@ -188,18 +206,34 @@ class Journal:
                     "broken record hash chain")
             if previous:
                 require(row["request_id"] == previous["request_id"] and
-                        row["context"] == previous["context"], "request context changed")
+                        canonical(row["context"]) == canonical(previous["context"]), "request context changed")
             records.append(row)
         require(sorted(os.listdir(directory)) == names, "journal file set changed")
         return records
 
-    def observe(self):
-        with self._locked(False) as (directory, recheck):
+    def observe(self, *, durable=False):
+        with self._locked(durable) as (directory, recheck):
             records = self._records(directory)
+            if durable:
+                # A prior process may have died after file fsync but before
+                # directory fsync. Establish durability without adding records.
+                for row in records:
+                    fd = os.open(filename(row["sequence"], row["stage"]),
+                                 os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 dir_fd=directory)
+                    try:
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                os.fsync(directory)
+                require(self._records(directory) == records, "journal changed during durable observation")
             recheck()
-            return {"schema": SCHEMA, "authority": "NONE", "records": records,
+            result = {"schema": SCHEMA, "authority": "NONE", "records": records,
                     "stage": records[-1]["stage"] if records else "EMPTY",
                     "last_sha256": digest(records[-1]) if records else None}
+            if durable:
+                result["durable"] = True
+            return result
 
     def append(self, stage, *, request_id, context, evidence, expected_previous):
         """Record progress only. Never retry an existing/partially written stage."""
@@ -210,12 +244,13 @@ class Journal:
         context, evidence = strict_json(canonical([context, evidence]))
         with self._locked(True) as (directory, recheck):
             records = self._records(directory)
+            require(len(records) < MAX_RECORDS, "journal record budget exhausted")
             previous = records[-1] if records else None
             require(expected_previous == (digest(previous) if previous else None),
                     "journal CAS mismatch")
             next_stage(previous["stage"] if previous else None, stage)
             if previous:
-                require(previous["request_id"] == request_id and previous["context"] == context,
+                require(previous["request_id"] == request_id and canonical(previous["context"]) == canonical(context),
                         "request context changed")
             row = {"schema": SCHEMA, "sequence": len(records) + 1,
                    "request_id": request_id, "stage": stage,
@@ -247,16 +282,72 @@ class Journal:
             return digest(row)
 
 
-def main():
+def read_append_payload(stream, request_id):
+    raw = stream.read(LIMIT + 1)
+    require(isinstance(raw, bytes) and 0 < len(raw) <= LIMIT, "append input size invalid")
+    value = strict_json(raw)
+    require(raw == canonical(value) + b"\n", "append input is not canonical JSON")
+    require(type(value) is dict and set(value) == {
+        "schema", "authority", "request_id", "stage", "expected_previous", "context", "evidence"
+    }, "append fields invalid")
+    require(value["schema"] == APPEND_SCHEMA and value["authority"] == "NONE", "append schema/authority invalid")
+    require(value["request_id"] == request_id and type(request_id) is str and
+            re.fullmatch(r"[0-9a-f]{32}", request_id), "append request identity mismatch")
+    require(type(value["stage"]) is str and value["stage"] in (*STAGES, UNKNOWN), "append stage invalid")
+    previous = value["expected_previous"]
+    require(previous is None or (type(previous) is str and re.fullmatch(r"[0-9a-f]{64}", previous)), "append CAS invalid")
+    require(type(value["context"]) is dict and type(value["evidence"]) is dict, "append context/evidence invalid")
+    require((value["stage"] == "PREPARED") == (previous is None), "append initial CAS/stage mismatch")
+    return value
+
+
+def append_request(payload, *, base=BASE, expected_uid=0, fault=None):
+    """Private journal publication only: never authorizes or dispatches storage.
+
+    The base must already exist, exact owned 0700. PREPARED creates a NEW
+    request directory; even an empty existing directory is never adopted.
+    Test-only base/uid/fault injection is not exposed by the CLI.
+    """
+    require(type(payload) is dict, "append payload must be an object")
+    payload = read_append_payload(io.BytesIO(canonical(payload) + b"\n"), payload.get("request_id"))
+    fault = fault or (lambda _: None)
+    pinned = Journal(base, expected_uid=expected_uid)
+    with pinned._locked(True) as (directory, recheck):
+        request_id = payload["request_id"]
+        if payload["stage"] == "PREPARED":
+            recheck()
+            os.mkdir(request_id, mode=0o700, dir_fd=directory)  # no replace/adoption
+            fault("after_request_mkdir")
+            os.fsync(directory)
+            fault("after_request_parent_fsync")
+        else:
+            named = os.stat(request_id, dir_fd=directory, follow_symlinks=False)
+            require(stat.S_ISDIR(named.st_mode), "request directory missing or unsafe")
+        recheck()
+        journal = Journal(Path(base) / request_id, expected_uid=expected_uid, fault=fault)
+        head = journal.append(payload["stage"], request_id=request_id,
+                              context=payload["context"], evidence=payload["evidence"],
+                              expected_previous=payload["expected_previous"])
+        recheck()
+        return {"schema": "sharedlvmthin-vm-destroy-append-result/v1", "authority": "NONE",
+                "request_id": request_id, "stage": payload["stage"],
+                "previous_sha256": payload["expected_previous"], "last_sha256": head,
+                "request_sha256": digest(payload)}
+
+
+def main(argv=None, stdin=None):
     require(hasattr(os, "geteuid") and os.geteuid() == 0, "root required")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["observe"])
+    parser.add_argument("operation", choices=["observe", "_append", "_observe-durable"])
     parser.add_argument("--request-id", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     require(re.fullmatch(r"[0-9a-f]{32}", args.request_id), "request ID invalid")
-    result = Journal(Path("/var/lib/pve-sharedlvmthin/vm-destroy") / args.request_id).observe()
-    require(all(row["request_id"] == args.request_id for row in result["records"]),
-            "request directory identity mismatch")
+    if args.operation == "_append":
+        result = append_request(read_append_payload(stdin or sys.stdin.buffer, args.request_id))
+    else:
+        result = Journal(BASE / args.request_id).observe(durable=args.operation == "_observe-durable")
+        require(all(row["request_id"] == args.request_id for row in result["records"]),
+                "request directory identity mismatch")
     print(canonical(result).decode("ascii"))
 
 

@@ -1,18 +1,21 @@
 # Compatibility
 
-RC5.79 TG53 is intended exclusively for **Proxmox VE 9**. Its plugin hooks
-retain the Storage API 14 and 15 source contract, but the **current RC5.79
-artifact is a `RETEST_REQUIRED` candidate until its exact gates complete**. API 14
-has historical control-plane/package evidence through RC5.69 and an RC5.74
-retest candidate; RC5.79 on API 14 is currently `RETEST_REQUIRED` and its
-runtime qualification gate must fail closed. PVE 8 and earlier are
+RC5.87 TG53 is intended exclusively for **Proxmox VE 9**. Its plugin hooks
+retain the Storage API 14 and 15 source contract. The exact RC5.85 DUAL
+artifact completed its recorded API 15 package, rolling-reboot, recovery and
+targeted three-mode SAN gates; that evidence does not qualify an unlisted
+tuple or operation. API 14 retains source/control-plane compatibility, but the
+RC5.87 candidate has an exact API14 package/control-plane tuple marked
+`RETEST_REQUIRED`; it does not claim an API14 SAN dataplane. Its runtime
+qualification gate must therefore remain fail-closed as
+`RETEST_REQUIRED`. PVE 8 and earlier are
 unsupported. A package being installable or compiling is not evidence that a
 new PVE package tuple is compatible with storage mutations.
 
 | PVE | Storage API | Plugin API | Status |
 |---|---:|---:|---|
-| 9.2.x | 14 | 14 | Hook-compatible; RC5.79 exact artifact is `RETEST_REQUIRED` |
-| 9.2.x | 15 | 15 | RC5.79 exact artifact is `RETEST_REQUIRED` pending package/live replay |
+| 9.2.x | 14 | 14 | RC5.87 exact package/control-plane candidate; SAN dataplane excluded and `RETEST_REQUIRED` |
+| 9.2.x | 15 | 15 | RC5.85 evidence remains applicable only to byte-identical paths; RC5.87 requires exact artifact replay |
 
 ## Exact TG53 qualification tuples
 
@@ -25,11 +28,11 @@ regressions pass.
 
 | Scope | pve-manager | libpve-storage-perl | qemu-server | pve-qemu-kvm | Kernel | libpve-common-perl | Status |
 |---|---|---|---|---|---|---|---|
-| Historical API 14 clean install and in-place plugin upgrade (through RC5.69; not RC5.79) | 9.2.2 | 9.1.5 | 9.1.15 | 11.0.0-3 | 7.0.2-6-pve | 9.1.12 | Historical exact control-plane/package evidence only; RC5.79 remains `RETEST_REQUIRED` and the node had no SAN dataplane |
-| API 15 DUAL SAN lifecycle, rolling plugin upgrade and reboot | 9.2.18 | 9.1.10 | 9.2.7 | 11.0.3-3 | 7.0.14-16-pve | 9.2.1 | Exact lab-tested on the recorded disposable SAN scope |
-| API 15 updated SAN node | 9.2.20 | 9.1.10 | 9.2.7 | 11.0.3-3 | 7.0.14-17-pve | 9.2.2 | Exact TG53 package gate, Thick RAM-snapshot clone/rollback, RAW-to-Thin and QCOW2-to-Thick two-disk import, hashes and cleanup passed; broader tuple remains targeted-retest scope |
-| Previous SAN candidate | 9.2.20 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-17-pve | 9.2.2 | RC5.77 package/runtime gate; Thin/Eager/materialized-Lazy lifecycle, supported migration, multi-mode resize, supported RAM snapshot/rollback/delete, exact canaries and cleanup passed; RC5.79 replay remains required |
-| Previous no-SAN package/profile node | 9.2.21 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-19-pve | 9.2.2 | RC5.77 DUAL/Thick-only build/profile checks and guarded package transition passed; RC5.79 replay remains required and SAN dataplane is not in scope |
+| API 14 RC5.87 candidate package/control plane | 9.2.2 | 9.1.5 | 9.1.15 | 11.0.0-3 | 7.0.2-6-pve | 9.1.12 | Exact tuple is listed conservatively as `RETEST_REQUIRED`; required clean-install, in-place-upgrade, bidirectional profile-cycle and reboot evidence must be external and artifact-bound; SAN dataplane is excluded |
+| API 15 DUAL SAN lifecycle, RC5.85 rolling upgrade and reboot | 9.2.18 | 9.1.10 | 9.2.7 | 11.0.3-3 | 7.0.14-16-pve | 9.2.1 | Exact RC5.85 package/reboot/storage-settlement evidence on the recorded disposable SAN scope; earlier byte-identical data-path lifecycle evidence remains operation-scoped |
+| API 15 updated SAN node and primary RC5.85 canary | 9.2.20 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-17-pve | 9.2.2 | Exact RC5.85 package/reboot settlement plus Thin/Eager/Lazy ten-VM snapshot burst and post-wave recovery passed; other operations retain their named evidence scope |
+| API 15 updated SAN rolling node | 9.2.20 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-19-pve | 9.2.2 | Exact RC5.85 guarded upgrade, compatibility, assigned-storage recovery and controlled reboot settlement passed; one node-scoped unavailable FC definition was explicitly skipped |
+| Previous no-SAN package/profile node | 9.2.21 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-19-pve | 9.2.2 | Earlier DUAL/Thick-only build/profile transition evidence only; RC5.85 SAN dataplane is not in scope |
 
 `libpve-storage-perl 9.1.11` and `qemu-server 9.2.10` are a coherent
 upstream pair. Storage 9.1.11 declares `Breaks: qemu-server (<< 9.2.10)` due
@@ -165,16 +168,23 @@ substitute for this lifecycle contract.
 The empty `running-nets-host-mtu:` RAM-snapshot defect was reproduced with
 both qemu-server 9.2.7 and 9.2.10 for no-NIC and e1000-only guests. It is a
 latent upstream snapshot/config inconsistency, not evidence of a new 9.2.10
-regression and not repaired by downgrading. Such snapshot configurations must
-remain an explicit negative qualification cell. The read-only update plan now
+regression and not repaired by downgrading. `sharedlvmthin snapshot-preflight
+VMID --ram` now invokes the same read-only upstream host-MTU probe before any
+snapshot request and requires one syntactically valid value for every configured VirtIO
+NIC. It therefore refuses no-NIC, e1000-only and partial QMP-probe outcomes
+before the caller dispatches a mutation. This is an operator gate, not a PVE
+patch: native GUI/API callers that omit it can still reproduce the upstream
+defect. Such snapshot configurations remain an explicit negative
+qualification cell. The read-only update plan now
 binds each finding to its raw-config digest and exact section, but deliberately
 does not repair it: no-NIC-at-snapshot and VirtIO-QMP-failure histories cannot
 be distinguished safely from the current config alone, and inventing or
-deleting resume metadata can change the RAM-state device contract. Native Lazy VMA restore also
-remains fail-closed: PVE activates newly allocated restore volumes before the
-final guest disk reference is published, and the activation hook has no
-trusted restore identity. Do not weaken the Lazy discard/reference guard to
-make that path appear functional.
+deleting resume metadata can change the RAM-state device contract. Native Lazy
+VMA restore is admitted only by TG53's consumed one-shot capability for exact
+recognized API 14/15 restore call frames. RC5.83 qualified ordinary RAW guest
+disks live on the recorded API 15 tuple; unrecognized callers, call-frame drift
+and richer untested layouts remain fail-closed. This narrow admission does not
+weaken the Lazy discard/reference guard or qualify an unlisted tuple.
 
 The native snapshot-orchestration fixture additionally records the actual
 `PVE::QemuConfig` effect order. The API14/qemu-server 9.1.15 reference allocates

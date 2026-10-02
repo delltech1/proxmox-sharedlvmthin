@@ -122,10 +122,17 @@ chmod 0755 "$MATERIALIZER" "$HEALTH" "$WEB" \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-migration-preflight \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-storage-move-preflight \
     /usr/libexec/pve-sharedlvmthin/sharedlvmthin-volume-operation-preflight \
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmdestroy-contract-check \
-    /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy \
+      /usr/libexec/pve-sharedlvmthin/sharedlvmthin-qmdestroy-contract-check \
+      /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy \
+      /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-recovery \
+      /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-dispatch \
+      /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-state-bootstrap \
     /usr/sbin/sharedlvmthin \
     /usr/sbin/sharedlvmthin-web-configure
+
+# Both profiles preserve existing receipts and refuse unsafe private roots.
+/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C LANG=C \
+    /usr/bin/python3 -I /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy-state-bootstrap
 
 if [ "$PACKAGE_FLAVOR" = "dual" ]; then
     chmod 0755 "$MONITOR" "$THIN_GUARDD" \

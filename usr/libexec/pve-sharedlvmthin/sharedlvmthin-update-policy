@@ -14,6 +14,9 @@ import subprocess
 import sys
 import tempfile
 import secrets
+import hashlib
+import stat
+import tarfile
 
 # Loading the adjacent policy module must not create an unmanaged __pycache__
 # inside the package-owned runtime directory.  The profile integrity inventory
@@ -45,6 +48,14 @@ LAST_FREEZE_MIGRATION = STATE / "last-freeze-schema-migration.json"
 LOCK = STATE / "policy.lock"
 LAST_POLICY_MIGRATION = STATE / "last-policy-schema-migration.json"
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+class UnlistedRuntimeTuple(RuntimeError):
+    """Typed non-qualification, never a generic package/probe failure."""
+    def __init__(self, identity, manifest_sha256):
+        super().__init__("exact installed package/PVE/kernel tuple is unlisted; runtime remains closed")
+        self.identity = identity
+        self.manifest_sha256 = manifest_sha256
 
 
 def exact_runtime_build_id(path=None):
@@ -100,8 +111,25 @@ def replacement_proof(receipt, replacement_txid, library):
         raise RuntimeError("cross-profile settlement requires exact replacement txid")
     helper = load_profile_replacement()
     done = read_json(helper.DONE)
+    complete = read_json(helper.COMPLETE)
     extras = {"consumed", "dpkg_completed", "dpkg_exit"}
-    if done is not None:
+    if complete is not None:
+        # Cleanup can crash after COMPLETE but before any subset of the old
+        # INTENT/DONE files is removed. COMPLETE carries the same dpkg proof.
+        helper.validate_complete(complete)
+        if complete.get("settlement") != "DPKG_EXIT_ZERO":
+            raise RuntimeError("cleanup completion is not successful DPKG_DONE proof")
+        for path, phase, fields in ((helper.INTENT, "PRERM_INTENT", {"consumed"}),
+                                    (helper.DONE, "DPKG_DONE", extras),
+                                    (helper.READY, "READY", set())):
+            fragment = read_json(path)
+            if fragment is not None:
+                helper.validate_shape(fragment, phase, fields)
+                helper.same_transaction(fragment, complete)
+                if any(fragment.get(key) != complete.get(key) for key in fields):
+                    raise RuntimeError("cleanup fragment identity changed")
+        done = complete
+    elif done is not None:
         helper.validate_shape(done, "DPKG_DONE", extras)
         intent = read_json(helper.INTENT)
         if not isinstance(intent, dict):
@@ -548,7 +576,10 @@ def migrate_freeze_schema(manifest, library):
     """Crash-safe schema-2 to schema-3 split of baseline and hold targets."""
     if POST_GATE.exists() or PACKAGE_TRANSITION.exists():
         raise RuntimeError("FREEZE schema migration refused while another update transaction is pending")
-    replacement_root = pathlib.Path("/var/lib/pve-sharedlvmthin/profile-replacement")
+    # One fixed production state namespace; trusted tests relocate STATE and
+    # must not accidentally consult the real host's sibling transaction tree.
+    # No CLI/environment path override is exposed.
+    replacement_root = STATE.parent / "profile-replacement"
     if any((replacement_root / name).exists()
            for name in ("ready.json", "prerm-intent.json", "dpkg-done.json")):
         raise RuntimeError("FREEZE schema migration refused while profile replacement is pending")
@@ -724,7 +755,7 @@ def prepare_freeze_package(source_package, source_version, target_package,
 
 
 def settle_freeze_package(package, version, candidate_sha256, txid,
-                          manifest, library, replacement_txid=None):
+                          manifest, library, replacement_txid=None, before_release=None):
     """Rotate an existing FREEZE baseline after one exact package transaction.
 
     Ordinary ``select freeze`` deliberately refuses any package or manifest
@@ -804,7 +835,11 @@ def settle_freeze_package(package, version, candidate_sha256, txid,
             completed = dict(receipt)
             completed.update(state="COMPLETE", successor_generation=record["generation"],
                              successor_ledger_sha256=library.digest(record))
+            if before_release is not None:
+                before_release()
             atomic_json(LAST_PACKAGE_TRANSITION, completed)
+            if before_release is not None:
+                before_release()
             unlink_durable(PACKAGE_TRANSITION)
         return record
 
@@ -941,14 +976,19 @@ def settle_freeze_package(package, version, candidate_sha256, txid,
     completed = dict(receipt)
     completed.update({"state": "COMPLETE", "successor_generation": settled["generation"],
                       "successor_ledger_sha256": library.digest(settled)})
+    if before_release is not None:
+        before_release()
     atomic_json(LAST_PACKAGE_TRANSITION, completed)
+    if before_release is not None:
+        before_release()
     unlink_durable(PACKAGE_TRANSITION)
     return settled
 
 
 def prepare_direct_package(source_package, source_version, target_package,
                            target_version, target_architecture, candidate_sha256,
-                           candidate_artifact_sha256, candidate_manifest_path):
+                           candidate_artifact_sha256, candidate_manifest_path,
+                           bootstrap_policy="NONE"):
     """Close mutation admission for first install or a non-FREEZE direct gate."""
     if POST_GATE.exists() or PACKAGE_TRANSITION.exists() \
             or RUNTIME_QUALIFICATION.exists() or FREEZE_MIGRATION.exists():
@@ -968,11 +1008,21 @@ def prepare_direct_package(source_package, source_version, target_package,
     elif installed != {source_package: source_version}:
         raise RuntimeError("direct package transition source identity changed")
     policy = read_json(POLICY, {"mode": "UNSELECTED"})
-    if not initial and policy.get("mode") not in {
+    requested_policy = bootstrap_policy.upper().replace("-", "_")
+    if requested_policy not in {"NONE", "FREEZE", "QUALIFIED_AUTO", "WARN"}:
+        raise RuntimeError("direct package transition bootstrap policy is invalid")
+    policy_mode = policy.get("mode", "UNSELECTED")
+    if not initial and policy_mode == "UNSELECTED" \
+            and requested_policy != "FREEZE":
+        raise RuntimeError(
+            "legacy UNSELECTED package upgrade requires an explicit FREEZE bootstrap"
+        )
+    if not initial and policy_mode not in {
+            "UNSELECTED",
             "WARN", "QUALIFIED_AUTO", "MANUAL_OVERRIDE", "QUALIFIED_ONLY"}:
         raise RuntimeError(
             "non-FREEZE direct transition requires WARN, QUALIFIED_AUTO or "
-            "one exact schema-1 predecessor"
+            "one exact schema-1 predecessor, or an explicit legacy FREEZE bootstrap"
         )
     library = load_library()
     candidate_manifest = library.strict_json(candidate_manifest_path)
@@ -986,16 +1036,63 @@ def prepare_direct_package(source_package, source_version, target_package,
         "candidate_sha256": candidate_sha256,
         "candidate_artifact_sha256": candidate_artifact_sha256,
         "candidate_manifest_sha256": library.digest(candidate_manifest),
-        "policy_mode": policy.get("mode", "UNSELECTED"),
+        "policy_mode": policy_mode,
+        "requested_policy": requested_policy,
     }
     create_json(PACKAGE_TRANSITION, receipt)
     return receipt
 
 
-def settle_direct_package(package, version, candidate_sha256, txid):
+def settle_direct_package(package, version, candidate_sha256, txid,
+                          bootstrap_policy="NONE"):
     """Close one exact direct package transaction after runtime qualification."""
     receipt = read_json(PACKAGE_TRANSITION)
     release = read_json(RUNTIME_RELEASE)
+    pending = read_json(RUNTIME_QUALIFICATION)
+    requested_policy = bootstrap_policy.upper().replace("-", "_")
+    if receipt is None:
+        completed = read_json(LAST_PACKAGE_TRANSITION)
+        if not isinstance(completed, dict) or completed.get("schema") != 2 \
+                or completed.get("state") != "COMPLETE" \
+                or completed.get("kind") != "DIRECT_PROFILE_GATE" \
+                or completed.get("txid") != txid \
+                or completed.get("target_package") != package \
+                or completed.get("target_version") != version \
+                or completed.get("candidate_sha256") != candidate_sha256 \
+                or completed.get("requested_policy", "NONE") != requested_policy:
+            raise RuntimeError("direct package settlement has no exact prepared transaction")
+        manifest, library = manifest_and_lib()
+        opposite = "pve-sharedlvmthin-thick" if package == "pve-sharedlvmthin" \
+            else "pve-sharedlvmthin"
+        policy = read_json(POLICY, {"mode": "UNSELECTED"})
+        freeze = read_json(FREEZE) if requested_policy == "FREEZE" else None
+        prepared_digest = library.digest(completed_prepared_transition(completed))
+        pending_matches = isinstance(pending, dict) \
+            and pending.get("state") == "QUALIFYING" \
+            and pending.get("txid") == txid \
+            and pending.get("transition_sha256") == prepared_digest
+        finalized = read_json(LAST_RUNTIME_FINALIZATION)
+        finalization_matches = pending is None \
+            and isinstance(finalized, dict) \
+            and finalized.get("schema") == 1 \
+            and finalized.get("state") == "COMPLETE" \
+            and finalized.get("txid") == txid \
+            and finalized.get("release_sha256") == library.digest(release) \
+            and finalized.get("boot_id") == pathlib.Path(
+                "/proc/sys/kernel/random/boot_id").read_text().strip() \
+            and finalized.get("kernel_release") == os.uname().release
+        if package_version(package) != version or package_version(opposite) is not None \
+                or not isinstance(release, dict) \
+                or release.get("qualification_txid") != txid \
+                or library.digest(release) != completed.get("runtime_release_sha256") \
+                or release.get("transition_sha256") != prepared_digest \
+                or not (pending_matches or finalization_matches) \
+                or library.digest(policy) != completed.get("settled_policy_sha256") \
+                or (requested_policy == "FREEZE" and
+                    (library.digest(freeze) != completed.get("settled_freeze_sha256") or
+                     freeze_integrity(freeze, manifest, library).get("result") != "PASS")):
+            raise RuntimeError("direct package settlement replay identity changed")
+        return completed
     if not isinstance(receipt, dict) or receipt.get("schema") != 2 \
             or receipt.get("state") != "PREPARED" \
             or receipt.get("kind") != "DIRECT_PROFILE_GATE":
@@ -1004,6 +1101,13 @@ def settle_direct_package(package, version, candidate_sha256, txid):
             or receipt.get("target_version") != version \
             or receipt.get("candidate_sha256") != candidate_sha256:
         raise RuntimeError("direct package settlement transaction identity changed")
+    if receipt.get("requested_policy", "NONE") != requested_policy:
+        raise RuntimeError("direct package settlement bootstrap policy changed")
+    if not isinstance(pending, dict) or pending.get("schema") != 1 \
+            or pending.get("state") != "QUALIFYING" \
+            or pending.get("txid") != txid \
+            or pending.get("transition_sha256") != load_library().digest(receipt):
+        raise RuntimeError("direct package settlement lacks matching QUALIFYING latch")
     if not isinstance(release, dict) or release.get("qualified") != "QUALIFIED" \
             or release.get("qualification_txid") != txid \
             or release.get("artifact_sha256") != receipt.get("candidate_artifact_sha256"):
@@ -1012,7 +1116,7 @@ def settle_direct_package(package, version, candidate_sha256, txid):
         else "pve-sharedlvmthin"
     if package_version(package) != version or package_version(opposite) is not None:
         raise RuntimeError("direct package settlement installed profile differs")
-    _, library = manifest_and_lib()
+    manifest, library = manifest_and_lib()
     if receipt.get("candidate_manifest_sha256") != library.digest(
             library.strict_json(MANIFEST)):
         raise RuntimeError("direct package settlement manifest differs")
@@ -1025,11 +1129,62 @@ def settle_direct_package(package, version, candidate_sha256, txid):
     if audit.returncode or audit.stdout.strip() or audit.stderr.strip() \
             or verify.returncode or verify.stdout.strip() or verify.stderr.strip():
         raise RuntimeError("direct package settlement package database is not clean")
-    if read_json(PACKAGE_TRANSITION) != receipt or read_json(RUNTIME_RELEASE) != release:
+    if read_json(PACKAGE_TRANSITION) != receipt \
+            or read_json(RUNTIME_RELEASE) != release \
+            or read_json(RUNTIME_QUALIFICATION) != pending:
         raise RuntimeError("direct package settlement CAS changed")
+    if requested_policy != "NONE":
+        if requested_policy == "FREEZE":
+            enter_freeze(manifest, library)
+        else:
+            leave_freeze()
+        requested_record = {
+            "schema": 2,
+            "mode": requested_policy,
+            "required_scope": "san-dataplane",
+        }
+        atomic_json(POLICY, requested_record)
+        unlink_durable(AUTH)
+        if requested_policy == "FREEZE" \
+                and freeze_integrity(read_json(FREEZE), manifest, library).get(
+                    "result") != "PASS":
+            raise RuntimeError("direct package settlement could not establish FREEZE")
+        if read_json(POLICY) != requested_record:
+            raise RuntimeError("direct package settlement policy CAS changed")
+    else:
+        existing_policy = read_json(POLICY)
+        if isinstance(existing_policy, dict) and existing_policy.get("schema") == 1:
+            legacy_mapping = {
+                "MANUAL_OVERRIDE": "WARN",
+                "QUALIFIED_ONLY": "QUALIFIED_AUTO",
+                "WARN": "WARN",
+                "QUALIFIED_AUTO": "QUALIFIED_AUTO",
+            }
+            if existing_policy.get("mode") not in legacy_mapping:
+                raise RuntimeError("direct package settlement found unsupported legacy policy")
+            migrated_policy = dict(existing_policy)
+            migrated_policy.update(
+                schema=2, mode=legacy_mapping[existing_policy["mode"]],
+                required_scope="san-dataplane")
+            atomic_json(POLICY, migrated_policy)
+            unlink_durable(AUTH)
+            if read_json(POLICY) != migrated_policy:
+                raise RuntimeError("direct package settlement legacy policy CAS changed")
+    settled_policy = read_json(POLICY, {"mode": "UNSELECTED"})
+    settled_freeze = read_json(FREEZE) if requested_policy == "FREEZE" else None
+    if read_json(PACKAGE_TRANSITION) != receipt \
+            or read_json(RUNTIME_RELEASE) != release \
+            or read_json(RUNTIME_QUALIFICATION) != pending \
+            or read_json(POLICY, {"mode": "UNSELECTED"}) != settled_policy \
+            or (requested_policy == "FREEZE"
+                and read_json(FREEZE) != settled_freeze):
+        raise RuntimeError("direct package settlement CAS changed after policy effects")
     completed = dict(receipt)
     completed["state"] = "COMPLETE"
     completed["runtime_release_sha256"] = library.digest(release)
+    completed["settled_policy_sha256"] = library.digest(settled_policy)
+    if requested_policy == "FREEZE":
+        completed["settled_freeze_sha256"] = library.digest(settled_freeze)
     atomic_json(LAST_PACKAGE_TRANSITION, completed)
     unlink_durable(PACKAGE_TRANSITION)
     return completed
@@ -1061,6 +1216,7 @@ def command_prepare_direct_package(args):
         args.source_package, args.source_version, args.target_package,
         args.target_version, args.target_architecture, args.sha256.lower(),
         args.artifact_sha256.lower(), args.candidate_manifest,
+        args.bootstrap_policy,
     )
     print(f"DIRECT_PACKAGE_TXID={receipt['txid']}")
     print("DIRECT_PACKAGE_PREPARED=PASS")
@@ -1068,7 +1224,8 @@ def command_prepare_direct_package(args):
 
 def command_settle_direct_package(args):
     require_root()
-    settle_direct_package(args.package, args.version, args.sha256.lower(), args.txid)
+    settle_direct_package(args.package, args.version, args.sha256.lower(), args.txid,
+                          args.bootstrap_policy)
     print("DIRECT_PACKAGE_SETTLEMENT=PASS")
 
 
@@ -1120,12 +1277,614 @@ def command_settle_freeze_package(args):
     if POST_GATE.exists():
         raise RuntimeError("post-update gate is still required; FREEZE settlement refused")
     manifest, library = manifest_and_lib()
+    pending = read_json(RUNTIME_QUALIFICATION)
+    release = read_json(RUNTIME_RELEASE)
+    if not isinstance(pending, dict) or pending.get("state") != "QUALIFYING" \
+            or pending.get("txid") != args.txid \
+            or pending.get("plugin_package") != args.package \
+            or pending.get("plugin_version") != args.version \
+            or pending.get("plan_digest") != args.sha256 \
+            or not isinstance(release, dict) or release.get("qualified") != "QUALIFIED" \
+            or release.get("qualification_txid") != args.txid:
+        raise RuntimeError("FREEZE settlement requires a matching runtime latch/candidate; use explicit closed settlement for UNLISTED")
+
+    def recheck_runtime_latch():
+        if read_json(RUNTIME_QUALIFICATION) != pending or read_json(RUNTIME_RELEASE) != release:
+            raise RuntimeError("FREEZE settlement runtime latch/candidate CAS changed")
+
     record = settle_freeze_package(args.package, args.version, args.sha256,
-                                   args.txid, manifest, library, args.replacement_txid)
+                                   args.txid, manifest, library, args.replacement_txid,
+                                   before_release=recheck_runtime_latch)
     unlink_durable(AUTH)
     print("UPDATE_POLICY=FREEZE")
     print("FREEZE_BASELINE_ROTATED=YES")
     print("HELD=" + ",".join(record["hold_targets"]))
+
+
+def assert_blocked_transition(receipt, pending, library):
+    """Match the immutable PREPARED core through exact settlement prefixes."""
+    prepared = pending.get("prepared_transition") if isinstance(pending, dict) else None
+    if not isinstance(prepared, dict) or prepared.get("schema") != 2 \
+            or prepared.get("state") != "PREPARED" \
+            or pending.get("transition_sha256") != library.digest(prepared):
+        raise RuntimeError("closed-runtime prepared transition identity is invalid")
+    extensions = {"replacement_proof", "successor_ledger", "rotation_ledger_sha256",
+                  "successor_generation", "successor_ledger_sha256"}
+    if not isinstance(receipt, dict) or receipt.get("state") not in {
+            "PREPARED", "SETTLEMENT_PREPARED", "COMPLETE"} \
+            or set(receipt) - set(prepared) - extensions \
+            or any(receipt.get(key) != value for key, value in prepared.items() if key != "state"):
+        raise RuntimeError("closed-runtime package transition changed")
+    return prepared
+
+
+def completed_prepared_transition(receipt):
+    """Recover only the immutable PREPARED prefix of an exact settlement."""
+    if not isinstance(receipt, dict) or receipt.get("schema") != 2 \
+            or receipt.get("state") != "COMPLETE":
+        raise RuntimeError("completed package settlement identity is missing")
+    prepared = dict(receipt)
+    if receipt.get("kind") == "DIRECT_PROFILE_GATE":
+        extensions = {"runtime_release_sha256", "settled_policy_sha256",
+                      "settled_freeze_sha256"}
+    else:
+        extensions = {"replacement_proof", "successor_ledger",
+                      "rotation_ledger_sha256", "successor_generation",
+                      "successor_ledger_sha256"}
+    for key in extensions:
+        prepared.pop(key, None)
+    prepared["state"] = "PREPARED"
+    return prepared
+
+
+def recovery_file_digest(path, *, limit):
+    """Pin a root-owned, single-link recovery input without following links."""
+    path = pathlib.Path(path)
+    if os.name != "posix" or not path.is_absolute() or ".." in path.parts:
+        raise RuntimeError("recovery code input requires an absolute POSIX path")
+    for parent in path.parents:
+        entry = parent.lstat()
+        sticky_tmp = str(parent) in {"/tmp", "/var/tmp"} and bool(entry.st_mode & stat.S_ISVTX)
+        if not stat.S_ISDIR(entry.st_mode) or entry.st_uid != 0 \
+                or (entry.st_mode & 0o022 and not sticky_tmp):
+            raise RuntimeError("unsafe recovery code ancestor")
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_nlink != 1 \
+            or before.st_mode & 0o022 or not 0 < before.st_size <= limit:
+        raise RuntimeError("unsafe recovery code file")
+    signature = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+                              item.st_nlink, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        if signature(os.fstat(fd)) != signature(before):
+            raise RuntimeError("recovery code inode changed")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(fd, min(1024 * 1024, limit + 1 - size))
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                raise RuntimeError("recovery code size limit")
+            digest.update(chunk)
+        if size != before.st_size or signature(os.fstat(fd)) != signature(before) \
+                or signature(path.lstat()) != signature(before):
+            raise RuntimeError("recovery code changed during read")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def recovery_carrier_members(path):
+    """Read a bounded, flat control archive; do not install or extract paths."""
+    import resource
+    limit = 8 * 1024 * 1024
+
+    def restrict_output():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+    wanted = {"control", "sharedlvmthin-candidate-update-policy", "sharedlvmthin_update_policy.py"}
+    with tempfile.TemporaryFile() as archive_file, tempfile.TemporaryFile() as errors:
+        result = subprocess.run(["/usr/bin/dpkg-deb", "--ctrl-tarfile", str(path)],
+                                stdin=subprocess.DEVNULL, stdout=archive_file, stderr=errors,
+                                timeout=30, check=False, preexec_fn=restrict_output,
+                                env={"PATH": SAFE_PATH, "LC_ALL": "C", "LANG": "C"})
+        errors.seek(0)
+        if result.returncode or errors.read(1):
+            raise RuntimeError("recovery code control archive inspection failed")
+        archive_file.seek(0, os.SEEK_END)
+        if not 0 < archive_file.tell() <= limit:
+            raise RuntimeError("recovery control archive byte limit")
+        archive_file.seek(0)
+        found, seen = {}, set()
+        with tarfile.open(fileobj=archive_file, mode="r:") as archive:
+            for index, member in enumerate(archive, 1):
+                if index > 128:
+                    raise RuntimeError("recovery control archive member limit")
+                if member.isdir() and member.name in {".", "./"}:
+                    continue
+                name = member.name.removeprefix("./")
+                if not re.fullmatch(r"[A-Za-z0-9_.+-]+", name) or name in {".", ".."} \
+                        or name in seen or not member.isfile() or not 0 <= member.size <= 4 * 1024 * 1024:
+                    raise RuntimeError("unsafe or duplicate recovery control member")
+                seen.add(name)
+                if name in wanted:
+                    with archive.extractfile(member) as stream:
+                        raw = stream.read(member.size + 1)
+                    if len(raw) != member.size:
+                        raise RuntimeError("short recovery control member")
+                    found[name] = raw
+        if set(found) != wanted:
+            raise RuntimeError("recovery code control archive is incomplete")
+        return found
+
+
+def recovery_executor_identity(args):
+    """Carrier approves recovery CODE, never the installed target/tuple."""
+    carrier = getattr(args, "recovery_code_deb", None)
+    expected = getattr(args, "recovery_code_sha256", None)
+    if not carrier and not expected:
+        return None
+    if not isinstance(carrier, str) or not isinstance(expected, str) \
+            or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise RuntimeError("recovery code carrier requires an independently approved SHA-256")
+    carrier_digest = recovery_file_digest(carrier, limit=512 * 1024 * 1024)
+    if carrier_digest != expected:
+        raise RuntimeError("recovery code carrier SHA-256 mismatch")
+    helper_digest = recovery_file_digest(__file__, limit=4 * 1024 * 1024)
+    core_digest = recovery_file_digest(LIB, limit=4 * 1024 * 1024)
+    members = recovery_carrier_members(carrier)
+    if hashlib.sha256(members["sharedlvmthin-candidate-update-policy"]).hexdigest() != helper_digest \
+            or hashlib.sha256(members["sharedlvmthin_update_policy.py"]).hexdigest() != core_digest:
+        raise RuntimeError("executing recovery code differs from its approved carrier")
+    try:
+        control = members["control"].decode("utf-8")
+    except UnicodeError as exc:
+        raise RuntimeError("recovery code carrier control is not UTF-8") from exc
+    fields = {}
+    for key in ("Package", "Version", "Architecture"):
+        values = re.findall(r"^" + key + r": ([^\r\n]+)$", control, re.MULTILINE)
+        if len(values) != 1:
+            raise RuntimeError("ambiguous recovery carrier package identity")
+        fields[key] = values[0]
+    if fields["Package"] != args.package or fields["Architecture"] != "all" \
+            or not re.fullmatch(r"[A-Za-z0-9.+:~_-]{1,128}", fields["Version"]):
+        raise RuntimeError("recovery code carrier profile/architecture identity differs")
+    if recovery_file_digest(carrier, limit=512 * 1024 * 1024) != carrier_digest \
+            or recovery_file_digest(__file__, limit=4 * 1024 * 1024) != helper_digest \
+            or recovery_file_digest(LIB, limit=4 * 1024 * 1024) != core_digest:
+        raise RuntimeError("recovery executor changed during identity inspection")
+    return {"schema": "sharedlvmthin-recovery-executor/v1",
+            "carrier_sha256": carrier_digest, "carrier_package": fields["Package"],
+            "carrier_version": fields["Version"], "carrier_architecture": fields["Architecture"],
+            "helper_sha256": helper_digest, "core_sha256": core_digest}
+
+
+def closed_runtime_release(pending):
+    """The non-authorizing release paired with a durable closed latch."""
+    keys = ("schema", "runtime_build_id", "artifact_sha256", "plan_digest", "boot_id",
+            "kernel_release", "plugin_package", "plugin_version", "runtime_manifest_sha256",
+            "runtime_identity_sha256", "transition_sha256")
+    if not isinstance(pending, dict) or any(key not in pending for key in keys) \
+            or pending.get("state") != "PACKAGE_SETTLED_RUNTIME_CLOSED" \
+            or pending.get("authority") != "NONE" \
+            or pending.get("reason") != "UNLISTED_RUNTIME_TUPLE":
+        raise RuntimeError("closed runtime predecessor is incomplete")
+    release = {key: pending[key] for key in keys}
+    release.update(qualified="UNQUALIFIED", qualification_txid=pending.get("txid"),
+                   verdict="PACKAGE_ONLY_SETTLEMENT", reason=pending["reason"])
+    return release
+
+
+def closed_runtime_successor(receipt, pending, library):
+    """Admit one exact closed-to-closed edge, never an unrelated pending tx."""
+    completed = read_json(LAST_PACKAGE_TRANSITION)
+    old_prepared = assert_blocked_transition(completed, pending, library)
+    freeze = read_json(FREEZE)
+    release = read_json(RUNTIME_RELEASE)
+    if completed.get("state") != "COMPLETE" or not isinstance(freeze, dict) \
+            or freeze.get("phase") != "ACTIVE" \
+            or library.digest(freeze) != completed.get("successor_ledger_sha256") \
+            or freeze.get("generation") != completed.get("successor_generation") \
+            or release != closed_runtime_release(pending):
+        raise RuntimeError("closed successor requires exact completed predecessor and FREEZE baseline")
+    if not isinstance(receipt, dict) or receipt.get("schema") != 2 \
+            or receipt.get("state") != "PREPARED" or "kind" in receipt \
+            or receipt.get("txid") == pending.get("txid") \
+            or pending.get("txid") != old_prepared.get("txid") \
+            or receipt.get("parent_generation") != freeze.get("generation") \
+            or receipt.get("parent_ledger_sha256") != library.digest(freeze) \
+            or receipt.get("source_package") != old_prepared.get("target_package") \
+            or receipt.get("source_version") != old_prepared.get("target_version") \
+            or pending.get("plugin_package") != old_prepared.get("target_package") \
+            or pending.get("plugin_version") != old_prepared.get("target_version") \
+            or pending.get("artifact_sha256") != old_prepared.get("candidate_artifact_sha256") \
+            or pending.get("plan_digest") != old_prepared.get("candidate_sha256") \
+            or pending.get("runtime_manifest_sha256") != old_prepared.get("candidate_manifest_sha256") \
+            or receipt.get("hostname") != old_prepared.get("hostname") \
+            or receipt.get("boot_id") != old_prepared.get("boot_id") \
+            or pending.get("boot_id") != old_prepared.get("boot_id"):
+        raise RuntimeError("closed successor package transition is not the exact next edge")
+    predecessor = {
+        "qualification_sha256": library.digest(pending),
+        "release_sha256": library.digest(release),
+        "package_settlement_sha256": library.digest(completed),
+        "freeze_ledger_sha256": library.digest(freeze),
+        "txid": pending["txid"],
+    }
+    preimage = {"schema": 1, "qualification": pending, "release": release,
+                "package_settlement": completed, "freeze_ledger": freeze}
+    if len(json.dumps(preimage, sort_keys=True, separators=(",", ":")).encode()) > 1024 * 1024:
+        raise RuntimeError("closed predecessor archive exceeds its bound")
+    predecessor["preimage_sha256"] = library.digest(preimage)
+    return predecessor, completed, freeze, release, preimage
+
+
+def closed_profile_package_proof(txid, manifest, library):
+    """Current package proof only; never infer runtime qualification/ancestry."""
+    snapshot = {"policy": read_json(POLICY), "pending": read_json(RUNTIME_QUALIFICATION),
+                "release": read_json(RUNTIME_RELEASE), "completed": read_json(LAST_PACKAGE_TRANSITION),
+                "freeze": read_json(FREEZE), "active": read_json(PACKAGE_TRANSITION)}
+    pending, completed, freeze = (snapshot[key] for key in ("pending", "completed", "freeze"))
+    if not isinstance(snapshot["policy"], dict) or snapshot["policy"].get("mode") != "FREEZE" \
+            or any(read_json(path, Ellipsis) is not Ellipsis for path in (POST_GATE, FREEZE_MIGRATION)) \
+            or not isinstance(pending, dict) or pending.get("txid") != txid \
+            or snapshot["release"] != closed_runtime_release(pending):
+        raise RuntimeError("profile evidence closure requires exact durable runtime closure")
+    prepared = assert_blocked_transition(completed, pending, library)
+    if completed.get("state") != "COMPLETE" or not isinstance(freeze, dict) \
+            or freeze.get("phase") != "ACTIVE" \
+            or library.digest(freeze) != completed.get("successor_ledger_sha256") \
+            or freeze.get("generation") != completed.get("successor_generation") \
+            or freeze_integrity(freeze, manifest, library).get("result") != "PASS":
+        raise RuntimeError("profile evidence closure requires exact COMPLETE and intact FREEZE")
+    if snapshot["active"] is not None:
+        # A later PREPARED may exist, but no part of it is consumed or changed.
+        closed_runtime_successor(snapshot["active"], pending, library)
+    package, version = prepared["target_package"], prepared["target_version"]
+    opposite = next(name for name in PLUGIN_PACKAGES if name != package)
+    rows = package_state_records([package])
+    if prepared.get("txid") != txid or prepared.get("hostname") != os.uname().nodename \
+            or prepared.get("boot_id") != pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip() \
+            or pending.get("boot_id") != prepared.get("boot_id") \
+            or pending.get("kernel_release") != os.uname().release \
+            or package_version(package) != version or package_version(opposite) is not None \
+            or len(rows) != 1 or rows[0].get("package") != package \
+            or rows[0].get("version") != version or rows[0].get("status") != "installed" \
+            or rows[0].get("architecture") != prepared.get("target_architecture") \
+            or pending.get("plugin_package") != package or pending.get("plugin_version") != version \
+            or pending.get("plan_digest") != prepared.get("candidate_sha256") \
+            or pending.get("artifact_sha256") != prepared.get("candidate_artifact_sha256") \
+            or exact_hex_identity(PACKAGE_ARTIFACT_FILE, "installed package artifact identity") != pending.get("artifact_sha256") \
+            or exact_runtime_build_id() != pending.get("runtime_build_id") \
+            or library.digest(manifest) != prepared.get("candidate_manifest_sha256") \
+            or library.digest(manifest) != pending.get("runtime_manifest_sha256"):
+        raise RuntimeError("profile evidence closure installed package proof changed")
+    for argv in (["dpkg", "--audit"], ["dpkg", "--verify", package]):
+        result = run(argv)
+        if result.returncode or result.stdout.strip() or result.stderr.strip():
+            raise RuntimeError("profile evidence closure requires clean package database/payload")
+    return snapshot
+
+
+def finalize_closed_profile_evidence(package_txid, replacement_txid, *, superseded=False):
+    """Archive metadata only. Keep runtime latch and any next PREPARED intact."""
+    if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)
+               for value in (package_txid, replacement_txid)):
+        raise RuntimeError("profile evidence closure transaction identity is invalid")
+    manifest, library = manifest_and_lib()
+    snapshot = closed_profile_package_proof(package_txid, manifest, library)
+    helper = load_profile_replacement()
+    def recheck():
+        current_manifest, _ = manifest_and_lib()
+        if library.digest(current_manifest) != library.digest(manifest) \
+                or closed_profile_package_proof(package_txid, manifest, library) != snapshot:
+            raise RuntimeError("profile evidence closure package CAS changed")
+    try:
+        with helper.Locked():
+            recheck()
+            if not superseded:
+                completed = snapshot["completed"]
+                proof = replacement_proof(completed, replacement_txid, library)
+                if proof is None or proof != completed.get("replacement_proof") \
+                        or proof != snapshot["pending"].get("replacement_proof"):
+                    raise RuntimeError("profile evidence closure is not bound to the completed package")
+                reference = (read_json(helper.COMPLETE) or read_json(helper.DONE) or
+                             read_json(helper.ARCHIVE / f"{replacement_txid}.json"))
+                if helper.executor_is_alive(reference):
+                    raise RuntimeError("profile evidence closure executor is still alive")
+                # Refuse any foreign fragment before the existing finalizer's
+                # cleanup; it must never remove another executor's evidence.
+                for path, phase, extras in ((helper.READY, "READY", set()),
+                        (helper.INTENT, "PRERM_INTENT", {"consumed"}),
+                        (helper.DONE, "DPKG_DONE", {"consumed", "dpkg_completed", "dpkg_exit"})):
+                    record = read_json(path)
+                    if record is not None:
+                        helper.validate_shape(record, phase, extras)
+                        if record.get("txid") != replacement_txid:
+                            raise RuntimeError("foreign profile replacement fragment blocks cleanup")
+                        helper.same_transaction(record, reference)
+                recheck()
+                helper.finalize(argparse.Namespace(txid=replacement_txid,
+                    target_package=completed["target_package"], target_version=completed["target_version"],
+                    candidate_sha256=completed["candidate_sha256"], recovery=True))
+                if replacement_proof(completed, replacement_txid, library) != proof:
+                    raise RuntimeError("archived replacement proof changed")
+            else:
+                archive_superseded_profile_evidence(helper, replacement_txid, snapshot, library, recheck)
+            recheck()
+    except helper.Refusal as exc:
+        raise RuntimeError(f"profile evidence closure refused: {exc}") from exc
+    print("PROFILE_EVIDENCE_CLOSURE=SUPERSEDED_METADATA_ONLY" if superseded else
+          "PROFILE_EVIDENCE_CLOSURE=EXACT_PACKAGE_COMPLETE")
+
+
+def archive_superseded_profile_evidence(helper, txid, snapshot, library, recheck):
+    """Not ancestry proof: archive stale successful dpkg metadata, no authority."""
+    verdict = "SUPERSEDED_DPKG_EXIT_ZERO_RUNTIME_CLOSED"
+    archive = helper.ARCHIVE / f"{txid}.json"
+    normal_extras = {"consumed", "dpkg_completed", "dpkg_exit"}
+    complete_extras = normal_extras | {"completed", "settlement", "metadata_cleanup_proof"}
+    complete = read_json(helper.COMPLETE)
+    archived = read_json(archive)
+    if complete is not None and archived is not None:
+        raise RuntimeError("ambiguous superseded cleanup completion")
+    record = complete if complete is not None else archived if archived is not None else read_json(helper.DONE)
+    if not isinstance(record, dict):
+        raise RuntimeError("superseded cleanup requires exact successful DPKG_DONE")
+    helper.validate_shape(record, "COMPLETE" if complete is not None or archived is not None else "DPKG_DONE",
+                          complete_extras if complete is not None or archived is not None else normal_extras)
+    if record.get("txid") != txid or type(record.get("dpkg_exit")) is not int or record["dpkg_exit"] != 0 \
+            or type(record.get("consumed")) is not int or type(record.get("dpkg_completed")) is not int \
+            or not record["created"] <= record["consumed"] <= record["dpkg_completed"]:
+        raise RuntimeError("superseded cleanup dpkg identity/outcome differs")
+    current = snapshot["completed"]
+    active = snapshot["active"]
+    if not isinstance(active, dict) or active.get("state") != "PREPARED" \
+            or active.get("source_package") != current.get("target_package") \
+            or active.get("source_version") != current.get("target_version") \
+            or record.get("target_package") != current.get("target_package"):
+        raise RuntimeError("superseded cleanup requires exact current-profile next PREPARED")
+    comparison = run(["dpkg", "--compare-versions", current["target_version"], "ge", record["target_version"]])
+    if comparison.returncode or comparison.stdout.strip() or comparison.stderr.strip():
+        raise RuntimeError("superseded cleanup refuses downgrade or unavailable version ordering")
+    if helper.executor_is_alive(record):
+        raise RuntimeError("superseded cleanup executor is still alive")
+    identity = {key: record[key] for key in (helper.BASE_KEYS - {"phase"}) | normal_extras}
+    proof = {"authority": "NONE", "ancestry": "NOT_CLAIMED", "dpkg_done_sha256": library.digest(identity),
+             "current_closed_package_txid": current["txid"], "next_prepared_txid": active["txid"],
+             "package_state_sha256": library.digest(snapshot)}
+    if complete is not None or archived is not None:
+        if record.get("settlement") != verdict or record.get("metadata_cleanup_proof") != proof:
+            raise RuntimeError("superseded cleanup receipt proof changed")
+    for path, phase, extras in ((helper.INTENT, "PRERM_INTENT", {"consumed"}),
+                               (helper.DONE, "DPKG_DONE", normal_extras),
+                               (helper.READY, "READY", set())):
+        fragment = read_json(path)
+        if fragment is None:
+            if complete is None and archived is None and path == helper.INTENT:
+                raise RuntimeError("superseded DPKG_DONE requires exact consumed INTENT")
+            continue
+        helper.validate_shape(fragment, phase, extras)
+        helper.same_transaction(fragment, record)
+        if any(fragment.get(key) != record.get(key) for key in extras):
+            raise RuntimeError("superseded cleanup fragment proof changed")
+        if archived is not None:
+            raise RuntimeError("archived superseded cleanup has unexpected active evidence")
+    candidate = pathlib.Path(record["candidate"])
+    if archived is not None:
+        if os.path.lexists(candidate):
+            raise RuntimeError("archived superseded cleanup has unexpected candidate")
+        return
+    if complete is None or os.path.lexists(candidate):
+        helper.validate_candidate(record)
+    recheck()
+    if complete is None:
+        complete = dict(record, phase="COMPLETE", completed=int(helper.time.time()),
+                        settlement=verdict, metadata_cleanup_proof=proof)
+        helper.write_create(helper.COMPLETE, complete)
+    # Existing finalizer order/primitives, but a deliberately distinct receipt
+    # which validate_complete/replacement_proof cannot accept as qualification.
+    for path, mode in ((candidate, 0o400), (helper.INTENT, 0o600),
+                       (helper.DONE, 0o600), (helper.READY, 0o600)):
+        recheck()
+        if os.path.lexists(path):
+            helper.safe_regular(path, mode)
+            path.unlink()
+            helper.fsync_dir(helper.ROOT)
+    recheck()
+    if os.path.lexists(archive):
+        raise RuntimeError("superseded cleanup archive already exists")
+    os.replace(helper.COMPLETE, archive)
+    helper.fsync_dir(helper.ARCHIVE)
+    helper.fsync_dir(helper.ROOT)
+
+
+def command_finalize_closed_profile_evidence(args):
+    require_root()
+    # An explicit stale-evidence repair may be executed by newer recovery code
+    # while the older, closed target remains installed.  In that case bind the
+    # executing helper and its core library to an independently approved DEB;
+    # the carrier authorizes code only and cannot qualify or reopen runtime.
+    if getattr(args, "recovery_code_deb", None) \
+            or getattr(args, "recovery_code_sha256", None):
+        if not getattr(args, "package", None):
+            raise RuntimeError("closed profile recovery carrier requires its package identity")
+        recovery_executor_identity(args)
+    finalize_closed_profile_evidence(args.txid, args.replacement_txid, superseded=args.superseded)
+
+
+def command_settle_unqualified_freeze_package(args):
+    """Settle exact package state only. Persist runtime closure indefinitely.
+
+    Only typed UNLISTED classification is accepted, never arbitrary Doctor,
+    source, dpkg or storage failure. This command cannot publish QUALIFIED.
+    """
+    require_root()
+    policy = read_json(POLICY)
+    if not isinstance(policy, dict) or policy.get("mode") != "FREEZE" \
+            or POST_GATE.exists() or FREEZE_MIGRATION.exists():
+        raise RuntimeError("unqualified package settlement requires isolated FREEZE policy")
+    if args.package not in PLUGIN_PACKAGES \
+            or not re.fullmatch(r"[0-9a-f]{32}", args.txid) \
+            or not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
+        raise RuntimeError("unqualified package settlement identity is invalid")
+    manifest, library = manifest_and_lib()
+    receipt = read_json(PACKAGE_TRANSITION)
+    pending = read_json(RUNTIME_QUALIFICATION)
+    successor_context = None
+    predecessor = None
+    if pending is not None:
+        if not isinstance(pending, dict) or pending.get("schema") != 1 \
+                or pending.get("state") != "PACKAGE_SETTLED_RUNTIME_CLOSED":
+            raise RuntimeError("a different runtime qualification is pending")
+        if isinstance(receipt, dict) and receipt.get("txid") != pending.get("txid"):
+            successor_context = closed_runtime_successor(receipt, pending, library)
+            predecessor = successor_context[0]
+            prepared = dict(receipt)
+        else:
+            receipt = receipt if receipt is not None else read_json(LAST_PACKAGE_TRANSITION)
+            prepared = assert_blocked_transition(receipt, pending, library)
+            predecessor = pending.get("closed_predecessor")
+    else:
+        if not isinstance(receipt, dict) or receipt.get("schema") != 2 \
+                or receipt.get("state") != "PREPARED" or "kind" in receipt:
+            raise RuntimeError("unqualified settlement requires exact PREPARED FREEZE transition")
+        prepared = dict(receipt)
+    if prepared.get("txid") != args.txid or prepared.get("target_package") != args.package \
+            or prepared.get("target_version") != args.version \
+            or prepared.get("candidate_sha256") != args.sha256:
+        raise RuntimeError("unqualified package settlement transaction identity changed")
+    if predecessor is not None:
+        digest_keys = {"qualification_sha256", "release_sha256", "package_settlement_sha256",
+                       "freeze_ledger_sha256"}
+        if isinstance(predecessor, dict) and "preimage_sha256" in predecessor:
+            digest_keys.add("preimage_sha256")
+        if not isinstance(predecessor, dict) or set(predecessor) != digest_keys | {"txid"} \
+                or any(not isinstance(predecessor.get(key), str) or
+                       not re.fullmatch(r"[0-9a-f]{64}", predecessor[key]) for key in digest_keys) \
+                or not isinstance(predecessor.get("txid"), str) \
+                or not re.fullmatch(r"[0-9a-f]{32}", predecessor["txid"]) \
+                or predecessor["txid"] == args.txid \
+                or predecessor["freeze_ledger_sha256"] != prepared.get("parent_ledger_sha256"):
+            raise RuntimeError("closed-runtime predecessor binding is invalid")
+        if successor_context is None and "preimage_sha256" in predecessor:
+            archived = read_json(STATE / "closed-runtime-history" / f"{predecessor['txid']}.json")
+            if library.digest(archived) != predecessor["preimage_sha256"]:
+                raise RuntimeError("closed-runtime predecessor preimage changed or is absent")
+    previous_release_sha256 = (library.digest(successor_context[3]) if successor_context else
+                               pending.get("previous_runtime_release_sha256") if pending is not None
+                               else library.digest(read_json(RUNTIME_RELEASE)))
+    if not isinstance(previous_release_sha256, str) \
+            or not re.fullmatch(r"[0-9a-f]{64}", previous_release_sha256) \
+            or (predecessor is not None and
+                previous_release_sha256 != predecessor["release_sha256"]):
+        raise RuntimeError("closed-runtime predecessor release identity is invalid")
+
+    def proof():
+        current_manifest, _ = manifest_and_lib()
+        if library.digest(current_manifest) != library.digest(manifest) \
+                or prepared.get("candidate_manifest_sha256") != library.digest(manifest):
+            raise RuntimeError("unqualified settlement installed manifest changed")
+        boot = pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if prepared.get("hostname") != os.uname().nodename or prepared.get("boot_id") != boot:
+            raise RuntimeError("unqualified settlement node/boot changed")
+        opposite = next(name for name in PLUGIN_PACKAGES if name != args.package)
+        if package_version(args.package) != args.version or package_version(opposite) is not None:
+            raise RuntimeError("unqualified settlement installed profile differs")
+        rows = package_state_records([args.package])
+        if len(rows) != 1 or rows[0].get("package") != args.package \
+                or rows[0].get("version") != args.version \
+                or rows[0].get("architecture") != prepared.get("target_architecture") \
+                or rows[0].get("status") != "installed":
+            raise RuntimeError("unqualified settlement target is not exactly configured")
+        artifact = exact_hex_identity(PACKAGE_ARTIFACT_FILE, "installed package artifact identity")
+        if artifact != prepared.get("candidate_artifact_sha256"):
+            raise RuntimeError("unqualified settlement installed artifact differs")
+        build = exact_runtime_build_id()
+        for argv in (["dpkg", "--audit"], ["dpkg", "--verify", args.package]):
+            result = run(argv)
+            if result.returncode or result.stdout.strip() or result.stderr.strip():
+                raise RuntimeError("unqualified settlement package database/payload is not clean")
+        try:
+            assert_listed_runtime_tuple(manifest, library, args.package, args.version)
+        except UnlistedRuntimeTuple as unlisted:
+            identity = unlisted.identity
+        else:
+            raise RuntimeError("package-only settlement is restricted to an UNLISTED runtime")
+        result = {"schema": 1, "state": "PACKAGE_SETTLED_RUNTIME_CLOSED",
+                "txid": args.txid, "transition_sha256": library.digest(prepared),
+                "prepared_transition": prepared, "plugin_package": args.package,
+                "plugin_version": args.version, "artifact_sha256": artifact,
+                "runtime_build_id": build, "plan_digest": args.sha256,
+                "boot_id": boot, "kernel_release": os.uname().release,
+                "runtime_manifest_sha256": library.digest(manifest),
+                "runtime_identity_sha256": library.digest(identity),
+                "reason": "UNLISTED_RUNTIME_TUPLE", "authority": "NONE",
+                "previous_runtime_release_sha256": previous_release_sha256,
+                "replacement_proof": replacement_proof(prepared, args.replacement_txid, library)}
+        executor = recovery_executor_identity(args)
+        if executor is not None:
+            result["recovery_executor"] = executor
+        if predecessor is not None:
+            result["closed_predecessor"] = predecessor
+        return result
+
+    expected = proof()
+    if pending is not None and successor_context is None and pending != expected:
+        raise RuntimeError("closed-runtime settlement proof changed")
+    if successor_context is not None:
+        # main() holds the policy lock. Recheck all predecessor/edge records
+        # after package probes, then replace CLOSED with CLOSED atomically.
+        if read_json(POLICY) != policy or read_json(PACKAGE_TRANSITION) != receipt \
+                or read_json(RUNTIME_QUALIFICATION) != pending \
+                or closed_runtime_successor(receipt, pending, library) != successor_context:
+            raise RuntimeError("closed-runtime successor CAS changed")
+        archive_path = STATE / "closed-runtime-history" / f"{predecessor['txid']}.json"
+        archived = read_json(archive_path, Ellipsis)
+        if archived is Ellipsis:
+            create_json(archive_path, successor_context[4])
+        elif archived != successor_context[4]:
+            raise RuntimeError("closed-runtime predecessor archive fork")
+        if read_json(POLICY) != policy or read_json(PACKAGE_TRANSITION) != receipt \
+                or read_json(RUNTIME_QUALIFICATION) != pending \
+                or closed_runtime_successor(receipt, pending, library) != successor_context:
+            raise RuntimeError("closed-runtime successor CAS changed after archive")
+        atomic_json(RUNTIME_QUALIFICATION, expected)
+    elif pending is None:
+        if read_json(PACKAGE_TRANSITION) != receipt:
+            raise RuntimeError("package transition changed before runtime closure")
+        create_json(RUNTIME_QUALIFICATION, expected)
+    # The durable latch is the admission fence. A stale same-build/same-boot
+    # QUALIFIED release must not become usable when package state is settled.
+    closed_release = closed_runtime_release(expected)
+    if read_json(RUNTIME_QUALIFICATION) != expected or proof() != expected:
+        raise RuntimeError("runtime closure changed before unqualified publication")
+    current_release = read_json(RUNTIME_RELEASE)
+    if current_release != closed_release and library.digest(current_release) != previous_release_sha256:
+        raise RuntimeError("runtime release changed outside the closed settlement")
+    atomic_json(RUNTIME_RELEASE, closed_release)
+
+    def recheck():
+        if read_json(POLICY) != policy or read_json(RUNTIME_QUALIFICATION) != expected \
+                or read_json(RUNTIME_RELEASE) != closed_release or proof() != expected:
+            raise RuntimeError("closed-runtime settlement CAS changed")
+        active = read_json(PACKAGE_TRANSITION)
+        assert_blocked_transition(active if active is not None else
+                                  read_json(LAST_PACKAGE_TRANSITION), expected, library)
+
+    recheck()
+    settle_freeze_package(args.package, args.version, args.sha256, args.txid,
+                          manifest, library, args.replacement_txid, before_release=recheck)
+    recheck()
+    unlink_durable(AUTH)
+    if args.replacement_txid:
+        finalize_closed_profile_evidence(args.txid, args.replacement_txid)
+    print("PACKAGE_SETTLEMENT=COMPLETE")
+    print("RUNTIME_QUALIFICATION=UNQUALIFIED")
+    print("RUNTIME_ADMISSION=CLOSED")
+    print("RESULT=PACKAGE_SETTLED_RUNTIME_CLOSED")
 
 
 def command_prepare_freeze_package(args):
@@ -1171,8 +1930,13 @@ def recover_prepared_freeze_source(txid, manifest, library):
     candidate was never unpacked.  Any former runtime release is invalidated,
     so mutation admission stays closed until a new exact qualification.
     """
-    if POST_GATE.exists() or RUNTIME_QUALIFICATION.exists() \
-            or FREEZE_MIGRATION.exists():
+    # Use the state reader consistently: injected state stays isolated, and
+    # every existing JSON value (including null/false/{}) still means HOLD.
+    absent = Ellipsis  # Cannot be a decoded JSON value; stable under fixture copies.
+    def gates_pending():
+        return any(read_json(path, absent) is not absent for path in
+                   (POST_GATE, RUNTIME_QUALIFICATION, FREEZE_MIGRATION))
+    if gates_pending():
         raise RuntimeError("source recovery refused while another gate is pending")
     if not re.fullmatch(r"[0-9a-f]{32}", txid):
         raise RuntimeError("source recovery transaction identity is invalid")
@@ -1213,7 +1977,7 @@ def recover_prepared_freeze_source(txid, manifest, library):
     audit = run(["dpkg", "--audit"])
     if audit.returncode or audit.stdout.strip() or audit.stderr.strip():
         raise RuntimeError("source recovery requires a clean dpkg audit")
-    if read_json(PACKAGE_TRANSITION) != receipt \
+    if gates_pending() or read_json(PACKAGE_TRANSITION) != receipt \
             or read_json(FREEZE) != record \
             or package_state_records(baseline_targets) != baseline_before \
             or held_packages() != holds_before:
@@ -1222,7 +1986,7 @@ def recover_prepared_freeze_source(txid, manifest, library):
     completed.update({
         "state": "SOURCE_REVALIDATED_AFTER_FAILED_TRANSACTION",
         "recovery_proof": "CURRENT_SOURCE_PACKAGE_AND_FROZEN_BASELINE_REVALIDATED",
-        "runtime_release_invalidated": RUNTIME_RELEASE.exists(),
+        "runtime_release_invalidated": read_json(RUNTIME_RELEASE, absent) is not absent,
     })
     create_json(archive, completed)
     unlink_durable(RUNTIME_RELEASE)
@@ -1301,7 +2065,13 @@ def command_status(args):
         (freeze or {}).get("hold_targets", (freeze or {}).get("targets", []))))
     print(f"POST_GATE_REQUIRED={'YES' if post else 'NO'}")
     print(f"RUNTIME_QUALIFICATION={(runtime_release or {}).get('qualified', 'ABSENT')}")
-    print(f"RUNTIME_QUALIFIED_BOOT={(runtime_release or {}).get('boot_id', 'ABSENT')}")
+    qualified_boot = (runtime_release or {}).get("boot_id")
+    current_boot = pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    boot_match = bool(qualified_boot and qualified_boot == current_boot)
+    print(f"CURRENT_BOOT_ID={current_boot}")
+    print(f"RUNTIME_QUALIFIED_BOOT={qualified_boot or 'ABSENT'}")
+    print(f"RUNTIME_BOOT_MATCH={'YES' if boot_match else 'NO'}")
+    print(f"REBOOT_REQUALIFICATION_REQUIRED={'NO' if boot_match else 'YES'}")
     print(f"RUNTIME_QUALIFIED_KERNEL={(runtime_release or {}).get('kernel_release', 'ABSENT')}")
     print(f"RUNTIME_FINALIZATION_PENDING={'YES' if runtime_pending else 'NO'}")
     transition = read_json(PACKAGE_TRANSITION)
@@ -1428,8 +2198,7 @@ def assert_listed_runtime_tuple(manifest, library, expected_package=None,
         running_kernel=os.uname().release, plugin_version=plugin_version,
     )
     if not isinstance(observed, dict):
-        raise RuntimeError(
-            "exact installed package/PVE/kernel tuple is unlisted; runtime remains closed")
+        raise UnlistedRuntimeTuple(identity, library.digest(manifest))
     status = observed.get("status")
     if status not in {"EXACT_LAB_TESTED", "RETEST_REQUIRED"}:
         raise RuntimeError(
@@ -1685,6 +2454,26 @@ def command_qualify_runtime(args):
         raise RuntimeError("runtime qualification transaction identity is invalid")
     manifest, library = manifest_and_lib()
     transition = read_json(PACKAGE_TRANSITION)
+    blocked = read_json(RUNTIME_QUALIFICATION)
+    settled_transition = None
+    settled_freeze = None
+    if transition is None and isinstance(blocked, dict) \
+            and blocked.get("schema") == 1 \
+            and (blocked.get("state") == "PACKAGE_SETTLED_RUNTIME_CLOSED" or
+                 (blocked.get("state") == "QUALIFYING" and
+                  isinstance(blocked.get("prepared_transition"), dict))):
+        settled_transition = read_json(LAST_PACKAGE_TRANSITION)
+        if not isinstance(settled_transition, dict) or settled_transition.get("state") != "COMPLETE":
+            raise RuntimeError("closed-runtime recovery requires exact completed package settlement")
+        transition = assert_blocked_transition(settled_transition, blocked, library)
+        if blocked.get("state") == "QUALIFYING" \
+                and blocked.get("package_settlement_sha256") != library.digest(settled_transition):
+            raise RuntimeError("closed-runtime qualification settlement identity changed")
+        settled_freeze = read_json(FREEZE)
+        if not isinstance(settled_freeze, dict) \
+                or library.digest(settled_freeze) != settled_transition.get("successor_ledger_sha256") \
+                or freeze_integrity(settled_freeze, manifest, library).get("result") != "PASS":
+            raise RuntimeError("closed-runtime qualification requires its exact intact FREEZE successor")
     if not isinstance(transition, dict) or transition.get("schema") != 2 \
             or transition.get("state") != "PREPARED":
         raise RuntimeError("runtime qualification requires one exact prepared package transition")
@@ -1735,9 +2524,20 @@ def command_qualify_runtime(args):
         "runtime_identity_sha256": runtime_tuple["identity_sha256"],
     }
     existing = read_json(RUNTIME_QUALIFICATION)
-    if existing and existing != pending:
+    if settled_transition is not None:
+        pending["prepared_transition"] = transition
+        pending["package_settlement_sha256"] = library.digest(settled_transition)
+        if existing != blocked or read_json(PACKAGE_TRANSITION) is not None \
+                or read_json(LAST_PACKAGE_TRANSITION) != settled_transition \
+                or read_json(FREEZE) != settled_freeze:
+            raise RuntimeError("closed-runtime recovery CAS changed before qualification")
+        # This is not a new package authorization. Qualification consumes only
+        # the exact immutable already-completed package transition and still
+        # has to pass tuple, artifact, dpkg, boot and all read-only probes.
+        atomic_json(RUNTIME_QUALIFICATION, pending)
+    elif existing and existing != pending:
         raise RuntimeError("a different runtime qualification is pending")
-    if not existing:
+    elif not existing:
         create_json(RUNTIME_QUALIFICATION, pending)
     check = run(["/usr/bin/timeout", "--foreground", "--kill-after=10", "1800",
                  "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check",
@@ -1745,7 +2545,11 @@ def command_qualify_runtime(args):
                 timeout=1820)
     if check.returncode or "RUNTIME_QUALIFICATION_READY=YES" not in check.stdout:
         raise RuntimeError("direct read-only runtime qualification did not pass")
-    if read_json(PACKAGE_TRANSITION) != transition \
+    if ((settled_transition is None and read_json(PACKAGE_TRANSITION) != transition)
+            or (settled_transition is not None and
+                (read_json(PACKAGE_TRANSITION) is not None or
+                 read_json(LAST_PACKAGE_TRANSITION) != settled_transition or
+                 read_json(FREEZE) != settled_freeze))) \
             or read_json(RUNTIME_QUALIFICATION) != pending:
         raise RuntimeError("runtime qualification CAS changed during read-only probes")
     if package_version(args.package) != args.version \
@@ -1822,6 +2626,19 @@ def command_finalize_runtime(args):
     assert_exact_installed_release(release)
     manifest, library = manifest_and_lib()
     assert_bound_runtime_tuple(release, manifest, library)
+    settled_transition = read_json(LAST_PACKAGE_TRANSITION)
+    if not isinstance(settled_transition, dict) \
+            or settled_transition.get("state") != "COMPLETE" \
+            or settled_transition.get("txid") != args.transaction_id:
+        raise RuntimeError("runtime finalization requires exact completed package settlement")
+    prepared_transition = completed_prepared_transition(settled_transition)
+    prepared_digest = library.digest(prepared_transition)
+    if pending.get("transition_sha256") != prepared_digest \
+            or release.get("transition_sha256") != prepared_digest \
+            or (pending.get("package_settlement_sha256") is not None and
+                pending.get("package_settlement_sha256") != library.digest(
+                    settled_transition)):
+        raise RuntimeError("runtime finalization package settlement identity changed")
     policy = read_json(POLICY)
     if not isinstance(policy, dict) or policy.get("schema") != 2 \
             or policy.get("mode") not in {"FREEZE", "WARN", "QUALIFIED_AUTO"}:
@@ -1830,6 +2647,22 @@ def command_finalize_runtime(args):
     if policy.get("mode") == "FREEZE" \
             and freeze_integrity(freeze, manifest, library).get("result") != "PASS":
         raise RuntimeError("runtime finalization requires an intact settled FREEZE baseline")
+    if settled_transition.get("kind") == "DIRECT_PROFILE_GATE":
+        requested_policy = settled_transition.get("requested_policy", "NONE")
+        if settled_transition.get("runtime_release_sha256") != library.digest(release):
+            raise RuntimeError("runtime finalization direct release digest changed")
+        if requested_policy != "NONE" and policy.get("mode") != requested_policy:
+            raise RuntimeError("runtime finalization direct policy differs from settlement")
+        if library.digest(policy) != settled_transition.get("settled_policy_sha256"):
+            raise RuntimeError("runtime finalization direct policy digest changed")
+        if requested_policy == "FREEZE" \
+                and library.digest(freeze) != settled_transition.get(
+                    "settled_freeze_sha256"):
+            raise RuntimeError("runtime finalization direct FREEZE digest changed")
+    elif policy.get("mode") == "FREEZE" \
+            and library.digest(freeze) != settled_transition.get(
+                "successor_ledger_sha256"):
+        raise RuntimeError("runtime finalization FREEZE successor digest changed")
     policy_digest = library.digest(policy)
     freeze_digest = library.digest(freeze) if policy.get("mode") == "FREEZE" else None
     check = run(["/usr/bin/timeout", "--foreground", "--kill-after=10", "1800",
@@ -1840,6 +2673,7 @@ def command_finalize_runtime(args):
         raise RuntimeError("post-release PVE operational qualification did not pass")
     if read_json(RUNTIME_QUALIFICATION) != pending \
             or read_json(RUNTIME_RELEASE) != release \
+            or read_json(LAST_PACKAGE_TRANSITION) != settled_transition \
             or library.digest(read_json(POLICY)) != policy_digest \
             or (policy.get("mode") == "FREEZE"
                 and library.digest(read_json(FREEZE)) != freeze_digest) \
@@ -1858,7 +2692,11 @@ def command_finalize_runtime(args):
     assert_exact_installed_release(release)
     assert_bound_runtime_tuple(release, manifest, library)
     if read_json(RUNTIME_QUALIFICATION) != pending \
-            or read_json(RUNTIME_RELEASE) != release:
+            or read_json(RUNTIME_RELEASE) != release \
+            or read_json(LAST_PACKAGE_TRANSITION) != settled_transition \
+            or library.digest(read_json(POLICY)) != policy_digest \
+            or (policy.get("mode") == "FREEZE"
+                and library.digest(read_json(FREEZE)) != freeze_digest):
         raise RuntimeError("runtime finalization CAS changed before completion")
     unlink_durable(RUNTIME_QUALIFICATION)
     print("RUNTIME_FINALIZATION=PASS")
@@ -2026,6 +2864,24 @@ def main():
     settle.add_argument("--txid", required=True)
     settle.add_argument("--replacement-txid")
     settle.set_defaults(func=command_settle_freeze_package)
+    settle_closed = subs.add_parser("settle-unqualified-freeze-package")
+    settle_closed.add_argument("--package", required=True)
+    settle_closed.add_argument("--version", required=True)
+    settle_closed.add_argument("--sha256", required=True)
+    settle_closed.add_argument("--txid", required=True)
+    settle_closed.add_argument("--replacement-txid")
+    settle_closed.add_argument("--recovery-code-deb")
+    settle_closed.add_argument("--recovery-code-sha256")
+    settle_closed.set_defaults(func=command_settle_unqualified_freeze_package)
+    close_profile = subs.add_parser("finalize-closed-profile-evidence")
+    close_profile.add_argument("--txid", required=True, help="current closed COMPLETE package transaction")
+    close_profile.add_argument("--replacement-txid", required=True)
+    close_profile.add_argument("--superseded", action="store_true",
+                               help="archive stale dpkg metadata only; never claim ancestry or qualification")
+    close_profile.add_argument("--package", choices=sorted(PLUGIN_PACKAGES))
+    close_profile.add_argument("--recovery-code-deb")
+    close_profile.add_argument("--recovery-code-sha256")
+    close_profile.set_defaults(func=command_finalize_closed_profile_evidence)
     prepare = subs.add_parser("prepare-freeze-package")
     prepare.add_argument("--source-package", required=True)
     prepare.add_argument("--source-version", required=True)
@@ -2048,12 +2904,16 @@ def main():
     prepare_direct.add_argument("--sha256", required=True)
     prepare_direct.add_argument("--artifact-sha256", required=True)
     prepare_direct.add_argument("--candidate-manifest", required=True)
+    prepare_direct.add_argument("--bootstrap-policy", required=True,
+                                choices=("none", "freeze", "qualified-auto", "warn"))
     prepare_direct.set_defaults(func=command_prepare_direct_package)
     settle_direct = subs.add_parser("settle-direct-package")
     settle_direct.add_argument("--package", required=True)
     settle_direct.add_argument("--version", required=True)
     settle_direct.add_argument("--sha256", required=True)
     settle_direct.add_argument("--txid", required=True)
+    settle_direct.add_argument("--bootstrap-policy", required=True,
+                               choices=("none", "freeze", "qualified-auto", "warn"))
     settle_direct.set_defaults(func=command_settle_direct_package)
     verify_prepared = subs.add_parser("verify-prepared-freeze-package")
     verify_prepared.add_argument("--source-package", required=True)
@@ -2098,7 +2958,11 @@ def main():
             else policy_lock(exclusive=args.command != "status")
         with lock_context:
             result = args.func(args)
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+    except UnlistedRuntimeTuple as exc:
+        print(f"UPDATE_POLICY_ERROR={exc}", file=sys.stderr)
+        print("RUNTIME_TUPLE=UNLISTED", file=sys.stderr)
+        return 78
+    except (OSError, RuntimeError, ValueError, tarfile.TarError, subprocess.SubprocessError) as exc:
         print(f"UPDATE_POLICY_ERROR={exc}", file=sys.stderr)
         return 1
     return result or 0

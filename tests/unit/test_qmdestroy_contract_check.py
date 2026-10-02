@@ -27,6 +27,8 @@ $remove_owned_drive->('vmstate', $drive);
 }
 PVE::QemuConfig->foreach_volume_full($conf->{pending}, $include_opts, $remove_owned_drive);
 eval { PVE::Storage::vdisk_free($storecfg, $volid) };
+eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) };
+warn $@ if $@;
 if (defined $replacement_conf) {
 PVE::QemuConfig->write_config($vmid, $replacement_conf);
 } else {
@@ -116,6 +118,13 @@ class QMDestroyContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "absent or reordered"):
             module.qualify(changed, API)
+
+    def test_missing_or_duplicate_ipam_cleanup_boundary_is_retested(self):
+        token = "eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) };"
+        with self.assertRaisesRegex(RuntimeError, "absent or reordered"):
+            module.qualify(QEMU.replace(token + "\n", ""), API)
+        with self.assertRaisesRegex(RuntimeError, "IPAM cleanup boundary changed"):
+            module.qualify(QEMU.replace(token, token + "\n" + token), API)
 
     def test_native_digest_contract_change_requires_requalification(self):
         changed = API.replace("purge => {}", "purge => {}, digest => {}")

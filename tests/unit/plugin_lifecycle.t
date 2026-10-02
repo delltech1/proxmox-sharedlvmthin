@@ -7210,14 +7210,15 @@ subtest 'Thick size and snapshot-copy geometry are mapper independent' => sub {
     like($@, qr/do not retry while the transition result is unresolved/,
         'ambiguous transition error does not suggest a blind retry');
     $phase = 'LAZY_ACTIVE';
-    eval { $class->volume_size_info(
+    is($class->volume_size_info(
         $cfg, 'thick-test', 'vm-900021-disk-0', 7,
-    ) };
-    like($@,
-        qr{sharedlvmthin thick-lazy-materialize thick-test vm-900021-disk-0},
-        'settled Lazy size refusal gives the exact materialization command');
-    like($@, qr/recovery-check both pass/,
-        'settled Lazy guidance requires command and recovery proof before retry');
+    ), 1073741824,
+        'active Lazy backup geometry comes from authenticated HEAD inventory');
+    $phase = 'LAZY_DORMANT';
+    is($class->volume_size_info(
+        $cfg, 'thick-test', 'vm-900021-disk-0', 7,
+    ), 1073741824,
+        'dormant Lazy backup geometry comes from authenticated HEAD inventory');
     $phase = 'MATERIALIZED';
     $head_size = 0;
     eval { $class->volume_size_info(

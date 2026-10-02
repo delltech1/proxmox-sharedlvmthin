@@ -7,6 +7,8 @@ use PVE::Cluster;
 use PVE::QemuConfig;
 use PVE::QemuServer;
 use PVE::QemuServer::Helpers;
+use PVE::QemuServer::Network;
+use PVE::SharedLvmThinSnapshotPreflight;
 use PVE::Storage;
 use PVE::Storage::Custom::SharedLvmThinPlugin;
 
@@ -37,12 +39,56 @@ close($config_fh) or die "cannot close VM $vmid configuration: $!\n";
 my $config_sha256 = sha256_hex($config_bytes // '');
 
 my $running = PVE::QemuServer::Helpers::vm_running_locally($vmid) ? 1 : 0;
-my $conf = PVE::QemuConfig->load_config($vmid);
+# Hash and policy must describe the same bytes.  load_config() performs a
+# separate pmxcfs read and can parse leniently, so it would leave a small TOCTOU
+# window and could hide an already malformed snapshot section.  Use the native
+# strict parser on the captured bytes instead.
+my $conf = eval {
+    PVE::QemuServer::parse_vm_config($config_path, $config_bytes, 1);
+};
+die "cannot strictly parse captured VM $vmid configuration: $@"
+    if !$conf || $@;
 my $storecfg = PVE::Storage::config();
 my (@volumes, @passed, @blocked);
 
 if (defined($conf->{lock}) && $conf->{lock} ne '') {
     push @blocked, "VM_CONFIG: VM has lock '$conf->{lock}'";
+}
+
+# These keys belong to an in-flight/suspended runtime image, never to the
+# ordinary current configuration of a running VM about to take a new RAM
+# snapshot.  AbstractConfig copies current keys after save_vmstate; accepting a
+# stale value here could overwrite the freshly observed machine/CPU/MTU state.
+my $runtime_metadata =
+    PVE::SharedLvmThinSnapshotPreflight::evaluate_current_runtime_metadata($conf);
+push @blocked, map { "VM_CONFIG: $_" } @{$runtime_metadata->{blocked}};
+
+if ($ram) {
+    if (!$running) {
+        push @blocked, "RAM_SNAPSHOT: VM is not running";
+    } else {
+        # Call the same read-only upstream probe used by QemuConfig immediately
+        # before it writes running-nets-host-mtu into the snapshot section.
+        # qemu-server currently serializes an empty result even though its own
+        # property validator rejects that value on the next strict read.  A
+        # preflight must therefore prove one numeric MTU for every configured
+        # VirtIO NIC; merely seeing a NIC in the static config is insufficient
+        # because qom-get can fail independently for one adapter.
+        my $network = PVE::SharedLvmThinSnapshotPreflight::evaluate_ram_network(
+            conf => $conf,
+            parse => sub { PVE::QemuServer::Network::parse_net($_[0]) },
+            probe => sub {
+                PVE::QemuServer::Network::get_nets_host_mtu($vmid, $conf)
+            },
+        );
+        push @blocked, map { "RAM_SNAPSHOT: $_" } @{$network->{blocked}};
+        if ($network->{ok}) {
+            push @passed,
+                "RAM_SNAPSHOT: upstream host-MTU probe exactly covers every VirtIO NIC ("
+                . join(',', map { "$_=$network->{observed}->{$_}" }
+                    @{$network->{virtio}}) . ")";
+        }
+    }
 }
 
 PVE::QemuServer::foreach_volid($conf, sub {
@@ -122,6 +168,14 @@ if ($ram && $vmstate_storage ne 'AUTO') {
     push @blocked, "VMSTATE: configured storage '$vmstate_storage' is unavailable: $@"
         if !$vmstate_ok;
 }
+
+open(my $final_config_fh, '<', $config_path)
+    or die "cannot re-read VM $vmid configuration: $!\n";
+local $/;
+my $final_config_bytes = <$final_config_fh>;
+close($final_config_fh) or die "cannot close VM $vmid configuration: $!\n";
+push @blocked, 'VM_CONFIG: configuration changed during preflight observation'
+    if sha256_hex($final_config_bytes // '') ne $config_sha256;
 
 print "SNAPSHOT_PREFLIGHT_VERSION=1\n";
 print "VMID=$vmid\nNODE=$local_node\nBOOT_ID=$local_boot\n";

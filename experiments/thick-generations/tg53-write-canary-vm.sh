@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# This deliberately overwrites bytes at 8 MiB. It is valid only for a blank,
+# disposable data disk created for this test, never a boot or valuable disk.
+[[ "${CONFIRM_DISPOSABLE_DATA_DISK:-}" == YES ]] || {
+    echo "REFUSE=CONFIRM_DISPOSABLE_DATA_DISK_REQUIRED" >&2
+    exit 64
+}
+
 VMID="${1:?usage: $0 VMID DISK MARKER}"
 DISK="${2:?usage: $0 VMID DISK MARKER}"
 MARKER="${3:?usage: $0 VMID DISK MARKER}"

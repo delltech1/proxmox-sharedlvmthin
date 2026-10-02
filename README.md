@@ -118,7 +118,7 @@ probably do not need this project.
 
 ## Release status
 
-`RC5.79 TG53` (`0.9.0~rc5.79~tg53`) is the current experimental candidate.
+`RC5.87 TG53` (`0.9.0~rc5.87~tg53`) is the current experimental candidate.
 It is intended exclusively for disposable Proxmox VE 9 labs with
 disposable storage and guest data. Both Thin and Thick Generations remain
 experimental, unsupported and without warranty.
@@ -132,8 +132,8 @@ package-replacement gates, and expanded upgrade/reboot compatibility checks.
 Eager and Lazy aliases may share one dedicated Thick VG. Thin must use a
 different dedicated VG.
 
-The final source candidate passed 2,162 Python tests (one declared skip) and
-1,278 Perl tests across 30 files. Both package
+The final source candidate passed 2,515 Python tests (one intentional
+environment skip) and 1,674 Perl tests. Both package
 profiles were built reproducibly, inspected for forbidden/private content,
 and compared for shared-payload parity. The same executable lineage previously
 passed a rolling DUAL-package upgrade and controlled reboot with Eager, Lazy
@@ -152,7 +152,8 @@ Unlisted relevant tuples require a reviewed contract check and, when the
 changed path can mutate or carry guest data, targeted disposable-lab
 regression before cluster rollout.
 
-See the [RC5.79 TG53 release notes](docs/RELEASE-NOTES-RC5.79-TG53.md),
+See the [RC5.87 TG53 release notes](docs/RELEASE-NOTES-RC5.87-TG53.md),
+the previous [RC5.79 TG53 release notes](docs/RELEASE-NOTES-RC5.79-TG53.md),
 the previous [RC5.75 TG53 release notes](docs/RELEASE-NOTES-RC5.75-TG53.md),
 the previous [RC5.74 TG53 release notes](docs/RELEASE-NOTES-RC5.74-TG53.md),
 the previous [RC5.31 TG52 release notes](docs/RELEASE-NOTES-RC5.31-TG52.md),
@@ -188,9 +189,13 @@ logical size. See [clone/restore burst capacity](docs/clone-restore-burst-capaci
 
 ## Requirements
 
-- Proxmox VE 9. RC5.79 retains the API 14/15 source contract but is an exact
-  `RETEST_REQUIRED` candidate until its package and live replay gates finish.
-  API 14 additionally requires its documented package/profile/reboot replay.
+- Proxmox VE 9. RC5.87 retains the API 14/15 source contract. The preceding
+  RC5.85 artifact passed its recorded API 15 package, rolling-reboot,
+  storage-settlement and targeted SAN gates; RC5.87 still requires its own
+  exact-artifact replay, and neither result qualifies unlisted tuples or
+  operations. API 14 still requires
+  its documented current-artifact package/profile/reboot and SAN replay and
+  therefore remains `RETEST_REQUIRED` for RC5.87 dataplane use.
   Proxmox VE 8 and earlier are unsupported.
 - The same existing shared LUN, multipath identity, PV and VG visible on every
   participating node.
@@ -259,10 +264,16 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 ```bash
 sha256sum --check SHA256SUMS
 # DUAL profile: experimental Thin + Thick Generations
-apt install './pve-sharedlvmthin_0.9.0~rc5.79~tg53_all.deb'
+DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.87.tg53_all.deb"
 
 # OR Thick-only profile: experimental Thick Generations only
-apt install './pve-sharedlvmthin-thick_0.9.0~rc5.79~tg53_all.deb'
+DEB="$PWD/pve-sharedlvmthin-thick_0.9.0.rc5.87.tg53_all.deb"
+
+HASH="$(sha256sum "$DEB" | awk '{print $1}')"
+sudo experiments/thick-generations/package-profile-gate.sh \
+  --package "$DEB" --sha256 "$HASH" \
+  --expect-host "$(hostname)" --expect-current none \
+  --select-update-policy freeze --execute
 ```
 
 Install the same version on every participating PVE node, one node at a time.
@@ -279,7 +290,12 @@ Run the read-only gate first, then replace one node at a time:
 
 ```bash
 sharedlvmthin upgrade-check
-apt install './pve-sharedlvmthin_0.9.0~rc5.79~tg53_all.deb'
+DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.87.tg53_all.deb"
+HASH="$(sha256sum "$DEB" | awk '{print $1}')"
+sudo experiments/thick-generations/package-profile-gate.sh \
+  --package "$DEB" --sha256 "$HASH" \
+  --expect-host "$(hostname)" --expect-current dual \
+  --select-update-policy freeze --execute
 sharedlvmthin doctor
 sharedlvmthin recovery-check <storage-id>
 ```

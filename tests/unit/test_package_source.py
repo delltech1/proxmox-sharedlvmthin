@@ -3,6 +3,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -176,12 +177,19 @@ class PackageSourceTests(unittest.TestCase):
         self.assertNotIn("sharedlvmthin-qmdestroy-contract-check", excluded)
         self.assertIn("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE", qmdestroy_contract)
         self.assertIn("NATIVE_CONFIG_CAS=ABSENT", qmdestroy_contract)
+        self.assertIn("IPAM_CLEANUP_CALL=PINNED", qmdestroy_contract)
         self.assertNotIn("subprocess", qmdestroy_contract)
         self.assertIn("vm-destroy-observe)", cli)
         self.assertIn("sharedlvmthin-vm-destroy", build)
         self.assertIn("sharedlvmthin-vm-destroy", postinst)
         self.assertNotIn("sharedlvmthin-vm-destroy", excluded)
-        self.assertIn('choices=["observe"]', vm_destroy_journal)
+        self.assertIn('choices=["observe", "_append", "_observe-durable"]', vm_destroy_journal)
+        self.assertIn(
+            'exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C LANG=C /usr/bin/python3 -I /usr/libexec/pve-sharedlvmthin/sharedlvmthin-vm-destroy observe "$@"',
+            cli,
+        )
+        self.assertNotIn("_append)", cli)
+        self.assertNotIn("_observe-durable)", cli)
         self.assertIn('"authority": "NONE"', vm_destroy_journal)
         for forbidden in (
             "run_command(", "system(", "qx/", "`qm ", "lvchange", "dmsetup",
@@ -299,7 +307,7 @@ class PackageSourceTests(unittest.TestCase):
             for path in perl_files:
                 path.write_text("1;\n", encoding="ascii")
             for name in ("sharedlvmthin-health-json", "sharedlvmthin_pve_inventory.py",
-                         "sharedlvmthin-web"):
+                         "sharedlvmthin-web", "sharedlvmthin-vm-destroy-state-bootstrap"):
                 (paths["libexec"] / name).write_text("pass\n", encoding="ascii")
             checker_log = root / "checker.log"
             checker = paths["libexec"] / "sharedlvmthin-package-maintenance-check"
@@ -317,6 +325,8 @@ class PackageSourceTests(unittest.TestCase):
                          "sharedlvmthin-volume-operation-preflight",
                          "sharedlvmthin-qmdestroy-contract-check",
                          "sharedlvmthin-vm-destroy",
+                         "sharedlvmthin-vm-destroy-recovery",
+                         "sharedlvmthin-vm-destroy-dispatch",
                          "sharedlvmthin-bridge-topology", "sharedlvmthin-thin-metadata-check",
                          "sharedlvmthin-qmp-path-check",
                          "sharedlvmthin-profile-replacement"):
@@ -1063,19 +1073,6 @@ class PackageSourceTests(unittest.TestCase):
         candidate_preinst.chmod(0o755)
 
         commands = {
-            "env": f"""#!/bin/sh
-[ "$1" = -i ] && shift
-unset PYTHONPATH PERL5LIB PERL5OPT BASH_ENV ENV
-export PATH="{temp_path}:/usr/sbin:/usr/bin:/sbin:/bin"
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        PATH=*|LC_ALL=*) shift ;;
-        *=*) export "$1"; shift ;;
-        *) break ;;
-    esac
-done
-exec "$@"
-""",
             "dpkg-deb": """#!/bin/sh
 if [ "$1" = --control ]; then
     mkdir -p "$3"
@@ -1132,26 +1129,42 @@ fi
 exec /usr/bin/python3 "$@"
 """,
         }
+        fixture_values = {
+            "dpkg-deb": {"CANDIDATE_CONTROL_SOURCE": str(control_source)},
+            "dpkg-query": {"INSTALLED_NAME": installed_name,
+                           "INSTALLED_VERSION": installed_version,
+                           "INSTALLED_STATUS": installed_status},
+            "systemctl": {"ACTIVE_UNITS": active_units},
+        }
         for name, source in commands.items():
+            # Fixture values live in mock executables, not inherited env: the
+            # gate must execute the REAL absolute /usr/bin/env -i sanitizer.
+            assignments = ''.join(f'{key}={shlex.quote(value)}\n'
+                                  for key, value in fixture_values.get(name, {}).items())
+            source = source.replace('#!/bin/sh\n', '#!/bin/sh\n' + assignments, 1)
             command = temp_path / name
             command.write_text(source, encoding="utf-8")
             command.chmod(0o755)
 
         env = os.environ.copy()
         env["PATH"] = f"{temp.name}{os.pathsep}{env['PATH']}"
-        env["ACTIVE_UNITS"] = active_units
-        env["DPKG_LOG"] = str(log)
-        env["CANDIDATE_CONTROL_SOURCE"] = str(control_source)
-        env["INSTALLED_NAME"] = installed_name
-        env["INSTALLED_VERSION"] = installed_version
-        env["INSTALLED_STATUS"] = installed_status
         digest = hashlib.sha256(package.read_bytes()).hexdigest()
         hostname = subprocess.run(
             ["hostname"], text=True, capture_output=True, check=True
         ).stdout.strip()
+        # Test-only copy changes exactly the two fixed PATH endpoints. Never
+        # weaken the checked-in gate or intercept /usr/bin/env itself.
+        gate_source = (ROOT / "experiments/thick-generations/package-profile-gate.sh").read_text(encoding="utf-8")
+        fixed_path = 'PATH=/usr/sbin:/usr/bin:/sbin:/bin'
+        self.assertEqual(gate_source.count(fixed_path), 2)
+        self.assertIn('clean_env=(/usr/bin/env -i ' + fixed_path + ' LC_ALL=C)', gate_source)
+        gate_source = gate_source.replace(fixed_path,
+            'PATH=' + shlex.quote(f'{temp_path}:/usr/sbin:/usr/bin:/sbin:/bin'))
+        isolated_gate = temp_path / 'package-profile-gate.sh'
+        isolated_gate.write_text(gate_source, encoding='utf-8')
         arguments = [
                 "/bin/bash",
-                str(ROOT / "experiments/thick-generations/package-profile-gate.sh"),
+                str(isolated_gate),
                 "--package",
                 str(package),
                 "--sha256",
@@ -1186,6 +1199,12 @@ exec /usr/bin/python3 "$@"
                 arguments, env=env, text=True, capture_output=True, check=False,
             )
         return result, log
+
+    def test_package_profile_gate_environment_is_fixed_and_absolute(self):
+        source = (ROOT / "experiments/thick-generations/package-profile-gate.sh").read_text(encoding="utf-8")
+        self.assertIn('export PATH=/usr/sbin:/usr/bin:/sbin:/bin\n', source)
+        self.assertIn('clean_env=(/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C)', source)
+        self.assertNotIn('clean_env=(env ', source)
 
     @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
     def test_package_profile_gate_default_is_a_real_dry_run(self):
@@ -2897,10 +2916,10 @@ exec /usr/bin/python3 "$@"
         self.assertIn("An already active FREEZE policy is part of the package transaction", profile_gate)
         self.assertIn("select_update_policy=freeze", profile_gate)
         self.assertIn("active FREEZE must be changed in a separate settled policy operation", profile_gate)
-        self.assertIn(
-            'sharedlvmthin update-policy select "$select_update_policy"',
-            profile_gate,
-        )
+        self.assertIn("settle-direct-package", profile_gate)
+        self.assertIn('--bootstrap-policy "${select_update_policy:-none}"', profile_gate)
+        self.assertNotIn('sharedlvmthin update-policy select "$select_update_policy"',
+                         profile_gate)
         self.assertIn("current package profile mismatch", profile_gate)
         self.assertLess(
             profile_gate.index("installed_name="),
@@ -4473,7 +4492,7 @@ exec /usr/bin/python3 "$@"
         self.assertLess(intent, remove)
         self.assertIn("snapshot identity changed after admission", locked)
 
-    def test_lazy_move_capability_is_one_shot_and_rechecked_before_claim(self):
+    def test_lazy_allocation_capabilities_are_one_shot_and_rechecked_before_claim(self):
         source = (ROOT / "usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm").read_text(encoding="utf-8")
         bodies = {match.group("name"): match.group("body") for match in re.finditer(
             r"^sub (?P<name>\S+) \{(?P<body>.*?)(?=^sub |\Z)", source, re.MULTILINE | re.DOTALL)}
@@ -4486,10 +4505,20 @@ exec /usr/bin/python3 "$@"
         for marker in ("$cap->{pid} != $$", "$cap->{expires}", "$cap->{anchor_digest}",
                        "_thick_pve_reference_files", "_lazy_move_context", "_lazy_move_source_policy"):
             self.assertIn(marker, recheck)
+        restore_consume = bodies["_lazy_consume_unreferenced_allocation"]
+        self.assertLess(
+            restore_consume.index("delete $lazy_restore_allocation"),
+            restore_consume.index("_lazy_recheck_restore_capability("),
+        )
+        dispatcher = bodies["_lazy_recheck_allocation_capability"]
+        self.assertIn("$cap->{kind} eq 'move'", dispatcher)
+        self.assertIn("$cap->{kind} eq 'restore'", dispatcher)
+        self.assertIn("capability kind '$cap->{kind}' is invalid", dispatcher)
         activation = bodies["_lazy_activate_volume_locked"]
         claim = activation.index("phase => 'LAZY_CLAIMED'")
-        self.assertLess(activation.index("_with_vg_lock("), activation.index("_lazy_recheck_move_capability("))
-        self.assertLess(activation.index("_lazy_recheck_move_capability("), claim)
+        locked_recheck = activation.index("_lazy_recheck_allocation_capability(")
+        self.assertLess(activation.index("_with_vg_lock("), locked_recheck)
+        self.assertLess(locked_recheck, claim)
         policy = bodies["_lazy_verify_guest_discard_config"]
         self.assertIn("if !$matched && $scfg && $state", policy)
         self.assertIn("if $matched != 1", policy)

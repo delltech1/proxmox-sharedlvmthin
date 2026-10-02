@@ -21,17 +21,20 @@ deactivate() {
         PVE::Storage::deactivate_volumes($cfg,[$volid]);
     ' "$VOLID"
 }
-trap deactivate EXIT HUP INT TERM
+
+# The materializing process is the storage worker.  It must never be killed by
+# an observer deadline, and an interrupted/unknown outcome must not trigger a
+# blind deactivation.  Leave the exact volume active for explicit recovery.
+trap 'echo "RESULT=INTERRUPTED_UNKNOWN" >&2; echo "RECOVERY_REQUIRED=YES" >&2' HUP INT TERM
 
 perl -MPVE::Storage -e '
     my ($volid)=@ARGV; my $cfg=PVE::Storage::config();
     PVE::Storage::activate_volumes($cfg,[$volid]);
 ' "$VOLID"
 
-timeout --foreground --kill-after=10s 300s \
-    /usr/sbin/sharedlvmthin thick-lazy-materialize "$STORAGE" "$VOLUME"
+/usr/sbin/sharedlvmthin thick-lazy-materialize "$STORAGE" "$VOLUME"
 
 deactivate
-trap - EXIT HUP INT TERM
+trap - HUP INT TERM
 echo "END_UTC=$(date -u +%FT%TZ)"
 echo "TG53_MATERIALIZE_VOLUME=PASS"

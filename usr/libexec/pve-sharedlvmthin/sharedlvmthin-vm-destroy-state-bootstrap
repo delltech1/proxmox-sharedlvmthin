@@ -1,0 +1,89 @@
+#!/usr/bin/python3 -I
+"""Create fixed private destroy roots; never repair or adopt unsafe state.
+
+No PVE operation, append, cleanup or CLI path override. Function arguments
+exist only for trusted isolated filesystem tests.
+"""
+import os
+from pathlib import Path
+import stat
+import sys
+
+BASE = Path('/var/lib/pve-sharedlvmthin')
+LEAVES = ('vm-destroy', 'vm-destroy-recovery')
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError('VM destroy state bootstrap refused: ' + message)
+
+
+def bootstrap(base=BASE, *, expected_uid=0):
+    base = Path(base)
+    require(base.is_absolute() and '..' not in base.parts and len(base.parts) > 2, 'unsafe fixed base')
+    require(os.name == 'posix', 'POSIX semantics required')
+    descriptors, links = [], []
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptors.append(fd)
+
+        def recheck():
+            for parent, name, child, identity, exact_mode in links:
+                named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                current = os.fstat(child)
+                require(stat.S_ISDIR(named.st_mode) and
+                        (named.st_dev, named.st_ino) == identity == (current.st_dev, current.st_ino),
+                        'directory namespace changed')
+                require(current.st_uid in (0, expected_uid) and
+                        (not (current.st_mode & 0o022) or
+                         (exact_mode is None and current.st_uid == 0 and current.st_mode & stat.S_ISVTX)),
+                        'unsafe ancestor owner/mode')
+                if exact_mode is not None:
+                    require(current.st_uid == expected_uid and stat.S_IMODE(current.st_mode) == exact_mode,
+                            'unsafe existing private root; no repair')
+
+        def open_child(parent, name, *, create=False, exact_mode=None):
+            recheck()
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=parent)
+            descriptors.append(child)
+            info = os.fstat(child)
+            links.append((parent, name, child, (info.st_dev, info.st_ino), exact_mode))
+            recheck()
+            if create:
+                os.fsync(child)
+                os.fsync(parent)
+                recheck()
+            return child
+
+        parts = base.parts[1:]
+        for index, name in enumerate(parts):
+            # Existing shared parent may legitimately be 0755; preserve it.
+            fd = open_child(fd, name, create=index == len(parts) - 1)
+        for name in LEAVES:
+            open_child(fd, name, create=True, exact_mode=0o700)
+        recheck()
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def main():
+    require(os.geteuid() == 0 and os.getuid() == 0, 'root required')
+    require(len(sys.argv) == 1, 'no arguments accepted')
+    os.environ.clear()
+    os.environ.update(PATH='/usr/sbin:/usr/bin:/sbin:/bin', LC_ALL='C', LANG='C')
+    bootstrap()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError) as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

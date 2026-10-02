@@ -177,11 +177,20 @@ def scan_configuration_risks(
         current_networks = []
         current_virtio_networks = []
         section_metadata = {"current": {"net": [], "mtu": [], "vmstate": []}}
+        section_counts = {"current": 1}
         for line_number, line in enumerate(lines, 1):
             section_match = re.match(r"^\[([^]\r\n]+)\]$", line)
             if section_match:
                 section = section_match.group(1)
                 section_metadata.setdefault(section, {"net": [], "mtu": [], "vmstate": []})
+                section_counts[section] = section_counts.get(section, 0) + 1
+                if section_counts[section] > 1:
+                    findings.append({
+                        "code": "DUPLICATE_VM_CONFIG_SECTION", "vm": vmid,
+                        "node": scan_node, "section": section, "line": line_number,
+                        "raw_config_sha256": config_digest,
+                        "impact": "repeated section identity makes snapshot metadata ambiguous",
+                    })
                 continue
             if line.startswith("scsihw:"):
                 scsihw = line.split(":", 1)[1].strip()
@@ -251,14 +260,31 @@ def scan_configuration_risks(
         for snapshot, metadata in section_metadata.items():
             if snapshot in {"current", "PENDING"} or not metadata["vmstate"]:
                 continue
-            # Empty values already have a more specific strict-parser finding.
-            nonempty = [row for row in metadata["mtu"] if row["value"]]
-            if not nonempty:
+            if len(metadata["vmstate"]) != 1:
+                findings.append({
+                    "code": "RAM_SNAPSHOT_VMSTATE_AMBIGUOUS", "vm": vmid,
+                    "node": scan_node, "snapshot": snapshot,
+                    "count": len(metadata["vmstate"]),
+                    "raw_config_sha256": config_digest,
+                    "impact": "RAM snapshot does not contain one exact vmstate reference",
+                })
                 continue
-            net_ids = [row["id"] for row in metadata["net"]]
             expected = sorted(
                 row["id"] for row in metadata["net"] if row["model"] == "virtio"
             )
+            # Empty values already have a more specific strict-parser finding.
+            nonempty = [row for row in metadata["mtu"] if row["value"]]
+            if not nonempty:
+                if expected and not metadata["mtu"]:
+                    findings.append({
+                        "code": "RAM_SNAPSHOT_MTU_SET_MISSING", "vm": vmid,
+                        "node": scan_node, "snapshot": snapshot,
+                        "expected_virtio_nics": expected,
+                        "raw_config_sha256": config_digest,
+                        "impact": "RAM snapshot with VirtIO NICs lacks MTU metadata",
+                    })
+                continue
+            net_ids = [row["id"] for row in metadata["net"]]
             actual = []
             malformed = len(nonempty) != 1 or len(net_ids) != len(set(net_ids))
             if not malformed:

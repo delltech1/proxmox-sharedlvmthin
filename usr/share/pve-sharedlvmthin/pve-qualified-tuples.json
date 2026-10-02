@@ -145,9 +145,32 @@
       "required_tests": ["api14-clean-install", "api14-in-place-upgrade", "dual-thick-dual-profile-cycle"]
     },
     {
+      "id": "tg53-rc587-api14-control-candidate",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.87~tg53"],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "excluded_scopes": ["san-dataplane"],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-dual-profile-cycle",
+        "api14-post-reboot-control-plane"
+      ]
+    },
+    {
       "id": "tg53-rc574-api15-san-original-candidate",
       "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53"],
+      "plugin_versions": ["0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.18",
@@ -164,7 +187,7 @@
     {
       "id": "tg53-api15-upstream-9.2.20-k17",
       "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.20",
@@ -198,7 +221,7 @@
     {
       "id": "tg53-api15-upstream-9.2.20-k19",
       "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.79~tg53"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.20",
@@ -247,14 +270,14 @@
       "operation_qualifications": {
         "read-only-inventory": {"status": "RETEST_REQUIRED", "evidence": ["runtime-qualification", "api15-control-plane"], "required_tests": ["exact-build-evidence-binding"]},
         "package-lifecycle": {"status": "RETEST_REQUIRED", "evidence": ["rc5.69-legacy-upgrade", "dual-thick-dual-profile-cycle", "thick-only-reboot-requalification"], "required_tests": ["exact-build-profile-evidence-binding"]},
-        "activation-deactivation": {"status": "NOT_IN_SCOPE", "reason": "PVE04 has no assigned SAN data plane"},
-        "allocation-removal": {"status": "NOT_IN_SCOPE", "reason": "PVE04 has no assigned SAN data plane"},
+        "activation-deactivation": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
+        "allocation-removal": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
         "snapshot-vmstate": {"status": "BLOCKED", "required_tests": ["snapshot-no-nic-e1000-and-qmp-failure"], "reason": "upstream empty running-nets-host-mtu lifecycle is not qualified"},
         "resize": {"status": "RETEST_REQUIRED", "required_tests": ["running-and-stopped-resize"]},
         "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["raw-import-export-framing-hash", "vma-file-and-stdin-restore"]},
         "migration": {"status": "RETEST_REQUIRED", "required_tests": ["mixed-version-old-born-and-new-born-migration"]},
-        "thin-ownership-autogrow": {"status": "NOT_IN_SCOPE", "reason": "PVE04 has no assigned SAN data plane"},
-        "thick-lazy-transition": {"status": "NOT_IN_SCOPE", "reason": "PVE04 has no assigned SAN data plane"}
+        "thin-ownership-autogrow": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
+        "thick-lazy-transition": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"}
       },
       "required_tests": [
         "raw-import-export-framing-hash",

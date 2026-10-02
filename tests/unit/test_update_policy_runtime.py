@@ -518,6 +518,7 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
     def test_post_reboot_settlement_is_explicit_and_after_health_proof(self):
         source = (ROOT / "experiments/thick-generations/package-post-reboot-gate.sh").read_text(
             encoding="utf-8")
+        self.assertIn('/bin/bash "$0"', source)
         self.assertIn("--settle-runtime", source)
         requalify = source.rindex("sharedlvmthin update-policy requalify-boot")
         self.assertLess(source.rindex("health_file=\n"), requalify)
@@ -657,6 +658,51 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         with mock.patch.object(self.module, "require_root"):
             with self.assertRaisesRegex(RuntimeError, "schema-1"):
                 self.module.command_migrate_policy_schema(mock.Mock())
+
+    def test_legacy_unselected_package_upgrade_requires_explicit_freeze_bootstrap(self):
+        manifest = Path(self.temporary.name) / "candidate.json"
+        manifest.write_text('{"schema":1}', encoding="utf-8")
+
+        def installed(name):
+            return "0.9.0~rc5.11~tg32" if name == "pve-sharedlvmthin" else None
+
+        common = (
+            "pve-sharedlvmthin", "0.9.0~rc5.11~tg32",
+            "pve-sharedlvmthin", "0.9.0~rc5.87~tg53", "all",
+            "a" * 64, "b" * 64, manifest,
+        )
+        with mock.patch.object(self.module, "package_version", side_effect=installed), \
+                mock.patch.object(self.module, "load_library", return_value=self.core):
+            with self.assertRaisesRegex(RuntimeError, "explicit FREEZE bootstrap"):
+                self.module.prepare_direct_package(*common, "none")
+            receipt = self.module.prepare_direct_package(*common, "freeze")
+
+        self.assertEqual(receipt["policy_mode"], "UNSELECTED")
+        self.assertEqual(receipt["requested_policy"], "FREEZE")
+        self.assertEqual(
+            self.module.read_json(self.module.PACKAGE_TRANSITION)["txid"],
+            receipt["txid"],
+        )
+
+    def test_direct_package_settlement_cannot_change_bootstrap_policy(self):
+        manifest = Path(self.temporary.name) / "candidate.json"
+        manifest.write_text('{"schema":1}', encoding="utf-8")
+
+        def installed(name):
+            return "0.9.0~rc5.11~tg32" if name == "pve-sharedlvmthin" else None
+
+        with mock.patch.object(self.module, "package_version", side_effect=installed), \
+                mock.patch.object(self.module, "load_library", return_value=self.core):
+            receipt = self.module.prepare_direct_package(
+                "pve-sharedlvmthin", "0.9.0~rc5.11~tg32",
+                "pve-sharedlvmthin", "0.9.0~rc5.87~tg53", "all",
+                "a" * 64, "b" * 64, manifest, "freeze",
+            )
+            with self.assertRaisesRegex(RuntimeError, "bootstrap policy changed"):
+                self.module.settle_direct_package(
+                    "pve-sharedlvmthin", "0.9.0~rc5.87~tg53",
+                    "a" * 64, receipt["txid"], "warn",
+                )
 
     def test_schema2_migration_releases_only_owned_plugin_hold(self):
         manifest = {"watched_packages": ["pve-sharedlvmthin", "qemu-server"],
@@ -1222,6 +1268,37 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
             rc = self.module.command_status(mock.Mock())
         self.assertEqual(rc, 1)
         self.assertIn("POST_GATE_REQUIRED=YES", output.getvalue())
+
+    def test_status_exposes_stale_boot_qualification_without_conflating_post_gate(self):
+        old_boot = "11111111-2222-3333-4444-555555555555"
+        new_boot = "99999999-2222-3333-4444-555555555555"
+        self.module.atomic_json(self.module.RUNTIME_RELEASE, {
+            "qualified": "QUALIFIED", "boot_id": old_boot,
+            "kernel_release": "fixture-kernel",
+        })
+        output = io.StringIO()
+        real_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if str(path) == "/proc/sys/kernel/random/boot_id":
+                return new_boot + "\n"
+            if str(path) == "/usr/share/pve-sharedlvmthin/package-flavor":
+                return "dual\n"
+            return real_read_text(Path(path), *args, **kwargs)
+
+        with mock.patch.object(self.module, "manifest_and_lib",
+                               return_value=(self.manifest(), self.core)), \
+                mock.patch.object(self.module.pathlib.Path, "read_text", read_text), \
+                mock.patch.object(self.module, "run",
+                                  return_value=mock.Mock(returncode=1, stdout="")), \
+                redirect_stdout(output):
+            self.module.command_status(mock.Mock())
+        status = output.getvalue()
+        self.assertIn(f"CURRENT_BOOT_ID={new_boot}", status)
+        self.assertIn(f"RUNTIME_QUALIFIED_BOOT={old_boot}", status)
+        self.assertIn("RUNTIME_BOOT_MATCH=NO", status)
+        self.assertIn("REBOOT_REQUALIFICATION_REQUIRED=YES", status)
+        self.assertIn("POST_GATE_REQUIRED=NO", status)
 
 
 if __name__ == "__main__":

@@ -100,13 +100,33 @@ class ContractCatalogueTests(unittest.TestCase):
     def test_qmdestroy_admission_upstream_call_contracts_are_exactly_covered(self):
         coverage = self.document["source_dependency_coverage"]["perl_symbols"]
         symbols = self.module.inventory_literal_tuple(ROOT, "REQUIRED_PVE_SYMBOLS")
-        for symbol in ("PVE::AbstractConfig::lock_config", "PVE::AbstractConfig::lock_config_full",
-                       "PVE::Storage::vdisk_free", "PVE::QemuServer::destroy_vm"):
+        for symbol in (
+            "PVE::AbstractConfig::lock_config",
+            "PVE::AbstractConfig::lock_config_full",
+            "PVE::HA::Config::service_is_configured",
+            "PVE::QemuConfig::check_lock",
+            "PVE::QemuConfig::check_protection",
+            "PVE::QemuConfig::cleanup_fleecing_images",
+            "PVE::QemuConfig::parse_volume",
+            "PVE::QemuServer::destroy_vm",
+            "PVE::QemuServer::drive_is_cdrom",
+            "PVE::QemuServer::parse_vm_config",
+            "PVE::QemuServer::restore_file_archive",
+            "PVE::QemuServer::restore_vma_archive",
+            "PVE::QemuServer::Network::delete_ifaces_ipams_ips",
+            "PVE::QemuServer::Network::get_nets_host_mtu",
+            "PVE::QemuServer::Network::parse_net",
+            "PVE::Network::SDN::Vnets::del_ips_from_mac",
+            "PVE::ReplicationConfig::new",
+            "PVE::Storage::vdisk_free",
+        ):
             self.assertIn(symbol, coverage)
             self.assertIn(symbol, symbols)
         files = self.module.inventory_literal_tuple(ROOT, "CRITICAL_FILES")
         self.assertIn("/usr/share/perl5/PVE/AbstractConfig.pm", files)
         self.assertIn("/usr/share/perl5/PVE/API2/Qemu.pm", files)
+        self.assertIn("/usr/share/perl5/PVE/QemuServer/Network.pm", files)
+        self.assertIn("/usr/share/perl5/PVE/Network/SDN/Vnets.pm", files)
         self.assertIn("libpve-guest-common-perl", self.module.inventory_literal_tuple(ROOT, "PACKAGES"))
 
     def test_lazy_move_admission_has_exact_upstream_and_behavior_bindings(self):

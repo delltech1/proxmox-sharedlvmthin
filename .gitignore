@@ -1,5 +1,8 @@
 *.deb
 *.tar.gz
+*.tar
+*.b64
+.tg53-tracked-files
 *.key
 __pycache__/
 *.pyc

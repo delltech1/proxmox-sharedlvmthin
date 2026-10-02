@@ -49,19 +49,26 @@
     storage. Existing signed 4/8 KiB transitions retain their exact geometry;
     they are compatibility state, not the new-transition default. See the
     [upstream region semantics](https://docs.kernel.org/admin-guide/device-mapper/dm-clone.html#regions).
-11. Native offline VMA restore directly to an unpublished Lazy volume is not
-    supported. PVE allocates and activates restore volumes before publishing
-    the final guest disk reference, while the storage activation hook receives
-    no trusted restore transaction identity. Lazy therefore refuses this path
-    rather than bypassing its discard and reference guards. Restore to Eager or
-    Thin first and use a separately qualified storage move. A future dedicated
-    restore receipt protocol must be crash-tested before this boundary changes.
+11. Native offline VMA restore to Lazy is supported only through TG53's
+    dedicated one-shot restore capability on an exact recognized API 14/15 VMA
+    call chain. The capability binds the VM lock, archive/config digest,
+    destination policy, allocator identity and fresh anchor, is consumed before
+    validation and is rechecked under the physical-VG lock. Unknown callers,
+    source drift, unqualified upstream call frames and direct activation of an
+    unpublished Lazy volume remain fail-closed. The live RC5.83 qualification
+    covered ordinary RAW guest disks on API 15, including zero visibility,
+    data hashes, start/stop and exact cleanup; it does not qualify every rich
+    EFI/TPM/cloud-init layout or an unlisted API tuple. For those cases restore
+    to Eager or Thin first and use a separately qualified storage move.
 12. RAM snapshots of no-NIC and e1000-only guests can leave an empty
     `running-nets-host-mtu:` snapshot property which strict PVE config parsing
     subsequently rejects. This was reproduced on qemu-server 9.2.7 and 9.2.10;
     it is not fixed by reverting only the newer package. Disk-only snapshots
     and the separately tested VirtIO-network RAM snapshot path are distinct
-    qualification cells. `sharedlvmthin update-plan` reports the VM, node,
+    qualification cells. Run `sharedlvmthin snapshot-preflight VMID --ram`
+    before the native request: it reuses the upstream QMP probe and refuses an
+    empty or incomplete VirtIO MTU set. This cannot force unrelated PVE GUI/API
+    callers to perform the preflight. `sharedlvmthin update-plan` reports the VM, node,
     exact section/line, occurrence count and raw-config SHA256 without changing
     the config. TG53 does not automatically delete or synthesize the property:
     an empty line can mean either that no relevant VirtIO-net device existed or

@@ -85,6 +85,8 @@ def qualify(qemu_text, api_text):
         "for my $snap (values %{ $conf->{snapshots} })",
         "$remove_owned_drive->('vmstate', $drive)",
         "PVE::QemuConfig->foreach_volume_full($conf->{pending}, $include_opts, $remove_owned_drive)",
+        "eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) }",
+        "warn $@ if $@",
         "if (defined $replacement_conf)",
         "PVE::QemuConfig->write_config($vmid, $replacement_conf)",
         "PVE::QemuConfig->destroy_config($vmid)",
@@ -93,6 +95,8 @@ def qualify(qemu_text, api_text):
         raise RuntimeError("QemuServer::destroy_vm vdisk_free warning boundaries changed")
     if destroy.count("eval { PVE::QemuConfig::cleanup_fleecing_images($vmid, $storecfg) }") != 1:
         raise RuntimeError("QemuServer::destroy_vm fleecing cleanup boundary changed")
+    if destroy.count("eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) }") != 1:
+        raise RuntimeError("QemuServer::destroy_vm IPAM cleanup boundary changed")
     if destroy.count("PVE::QemuConfig->write_config($vmid, $replacement_conf)") != 1 \
             or destroy.count("PVE::QemuConfig->destroy_config($vmid)") != 1:
         raise RuntimeError("QemuServer::destroy_vm replacement publication cardinality changed")
@@ -138,6 +142,7 @@ def main():
     print("VDISK_FREE_FAILURE_POLICY=WARN_AND_CONTINUE")
     print("FINAL_CONFIG_REMOVAL=AFTER_DESTROY_VM")
     print("FLEECING_CLEANUP_CALL=PINNED")
+    print("IPAM_CLEANUP_CALL=PINNED")
     print(f"CONTRACT_SHA256={digest}")
     print(f"CONTRACT_VARIANT={variant}")
     print("MUTATION_ADAPTER=QUALIFIED")

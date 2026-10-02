@@ -11,7 +11,7 @@ use Errno qw(ENOENT);
 use Digest::SHA qw(sha256_hex);
 use JSON::PP qw(decode_json);
 use POSIX ();
-use Scalar::Util qw(tainted);
+use Scalar::Util qw(tainted refaddr);
 use Time::HiRes ();
 use PVE::Storage::Plugin;
 use PVE::Storage::LVMPlugin;
@@ -1089,6 +1089,7 @@ sub _lazy_front_pivot_state {
 }
 
 my %lazy_move_allocation;
+my %lazy_restore_allocation;
 
 sub _lazy_move_context {
     my ($class, $storeid, $scfg, $vmid, $volname, $stage, $frames) = @_;
@@ -1151,7 +1152,7 @@ sub _lazy_move_context {
             || ($dest->{volid} // '') ne "$storeid:$volname"
             || @$newvols != 1 || $newvols->[0] ne "$storeid:$volname";
     }
-    return { source => $source, dest => $dest, newvols => $newvols, lock => $lock->[2],
+    return { kind => 'move', source => $source, dest => $dest, newvols => $newvols, lock => $lock->[2],
         source_sid => $source_sid, source_vol => $source_vol, vmid => "$vmid",
         slot => $source->{drivename}, bytes => $source->{size} };
 }
@@ -1181,6 +1182,225 @@ sub _lazy_prepare_move_allocation {
     my $context = $class->_lazy_move_context($storeid, $scfg, $vmid, undef, 'allocate', $frames);
     $context->{config_digest} = $class->_lazy_move_source_policy($context);
     return $context;
+}
+
+sub _lazy_restore_config_path {
+    return "/var/tmp/vzdumptmp$$/qemu-server.conf";
+}
+
+sub _lazy_restore_context {
+    my ($class, $storeid, $scfg, $vmid, $volname, $stage, $frames) = @_;
+    my $hook_name = __PACKAGE__ . ($stage eq 'allocate' ? '::alloc_image' : '::activate_volume');
+    my $storage_name = $stage eq 'allocate'
+        ? 'PVE::Storage::vdisk_alloc' : 'PVE::Storage::activate_volumes';
+    my @hook = grep { ($frames->[$_]->{sub} // '') eq $hook_name } 0 .. $#$frames;
+    my @storage = grep { ($frames->[$_]->{sub} // '') eq $storage_name } 0 .. $#$frames;
+    my @restore = grep {
+        ($frames->[$_]->{sub} // '') eq 'PVE::QemuServer::restore_vma_archive'
+    } 0 .. $#$frames;
+    my @restore_file = grep {
+        ($frames->[$_]->{sub} // '') eq 'PVE::QemuServer::restore_file_archive'
+    } 0 .. $#$frames;
+    my @full_lock = grep {
+        ($frames->[$_]->{sub} // '') eq 'PVE::AbstractConfig::lock_config_full'
+    } 0 .. $#$frames;
+    die "Lazy restore requires exact upstream hook/storage/restore/lock frames\n"
+        if @hook != 1 || @storage != 1 || @restore != 1
+        || @restore_file != 1 || @full_lock != 1
+        || $hook[0] >= $storage[0] || $storage[0] >= $restore[0];
+    die "Lazy restore caller ordering is unqualified\n"
+        if $restore[0] >= $restore_file[0] || $restore_file[0] >= $full_lock[0];
+
+    # In both qualified qemu-server tuples the lexical restore allocator is
+    # the immediate caller of vdisk_alloc()/activate_volumes().  Many other
+    # anonymous callbacks exist in restore_vma_archive, so never authorize an
+    # arbitrary __ANON__ frame found elsewhere in the stack.
+    my $allocator_index = $storage[0] + 1;
+    die "Lazy restore allocator callsite is unqualified\n"
+        if $allocator_index >= @$frames
+        || ($frames->[$allocator_index]->{sub} // '') ne 'PVE::QemuServer::__ANON__'
+        || ($frames->[$allocator_index]->{package} // '') ne 'PVE::QemuServer'
+        || ($frames->[$allocator_index]->{file} // '') ne '/usr/share/perl5/PVE/QemuServer.pm';
+
+    my ($hook_args, $storage_args, $allocator_args, $restore_args,
+        $restore_file_args, $lock_args) = map {
+        $frames->[$_]->{args}
+    } ($hook[0], $storage[0], $allocator_index, $restore[0],
+        $restore_file[0], $full_lock[0]);
+    die "Lazy restore allocator signature is unqualified\n"
+        if @$allocator_args != 3 || ref($allocator_args->[0]) ne 'HASH'
+        || ref($allocator_args->[1]) ne 'HASH' || ($allocator_args->[2] // '') ne "$vmid";
+    my ($storecfg, $rows) = @$allocator_args;
+    die "Lazy restore storage configuration identity changed\n"
+        if ref($storecfg->{ids}) ne 'HASH' || ($storecfg->{ids}->{$storeid} // '') ne $scfg;
+
+    die "Lazy restore_vma_archive signature is unqualified\n"
+        if ($frames->[$restore[0]]->{package} // '') ne 'PVE::QemuServer'
+        || ($frames->[$restore[0]]->{file} // '') ne '/usr/share/perl5/PVE/QemuServer.pm'
+        || @$restore_args != 5 || !defined($restore_args->[0])
+        || ($restore_args->[1] // '') ne "$vmid"
+        || ($restore_args->[2] // '') !~ /^[A-Za-z0-9_.-]+\@[A-Za-z0-9_.-]+$/
+        || ref($restore_args->[3]) ne 'HASH';
+    my ($archive, undef, $user, $opts, $compression) = @$restore_args;
+    die "Lazy restore_file_archive identity changed\n"
+        if ($frames->[$restore_file[0]]->{package} // '') ne 'PVE::API2::Qemu'
+        || ($frames->[$restore_file[0]]->{file} // '') ne '/usr/share/perl5/PVE/API2/Qemu.pm'
+        || @$restore_file_args != 4 || $restore_file_args->[0] ne $archive
+        || ($restore_file_args->[1] // '') ne "$vmid"
+        || $restore_file_args->[2] ne $user || $restore_file_args->[3] ne $opts;
+    die "Lazy restore requires the exact API VM config lock\n"
+        if @$lock_args != 4 || $lock_args->[0] ne 'PVE::QemuConfig'
+        || ($lock_args->[1] // '') ne "$vmid" || ($lock_args->[2] // '') ne '1'
+        || ref($lock_args->[3]) ne 'CODE';
+    die "Lazy restore refuses pipe, live or implicit/mixed destinations\n"
+        if $archive eq '-' || $opts->{live} || ($opts->{storage} // '') ne $storeid;
+    die "Lazy restore override contains a disk policy\n"
+        if ref($opts->{override_conf}) ne 'HASH'
+        || grep { /^(?:ide|sata|scsi|virtio)\d+$/ } keys %{$opts->{override_conf}};
+
+    die "Lazy restore public hook identity changed\n"
+        if @$hook_args != 7 || $hook_args->[0] ne __PACKAGE__
+        || $hook_args->[1] ne $storeid || $hook_args->[2] ne $scfg;
+    my ($row_key, $row);
+    if ($stage eq 'allocate') {
+        die "Lazy restore allocation arguments changed\n"
+            if @$storage_args != 6 || $storage_args->[0] ne $storecfg
+            || $storage_args->[1] ne $storeid || ($storage_args->[2] // '') ne "$vmid"
+            || ($storage_args->[3] // '') ne 'raw' || defined($storage_args->[4])
+            || ($storage_args->[5] // '') !~ /^[1-9][0-9]*$/
+            || $hook_args->[3] ne "$vmid" || ($hook_args->[4] // '') ne 'raw'
+            || defined($hook_args->[5]) || $hook_args->[6] != $storage_args->[5];
+        # restore_allocate_devices iterates lexical sort order and sets volid
+        # immediately after vdisk_alloc returns.  Therefore the first row
+        # without volid is the exact row responsible for this allocation.
+        ($row_key) = grep { !defined($rows->{$_}->{volid}) } sort keys %$rows;
+        die "Lazy restore cannot identify the next archive disk row\n" if !defined($row_key);
+        $row = $rows->{$row_key};
+        die "Lazy restore archive disk row is unqualified\n"
+            if ref($row) ne 'HASH' || ($row->{storeid} // '') ne $storeid
+            || ($row->{format} // '') ne 'raw'
+            || ($row->{virtdev} // '') !~ /^(?:ide|sata|scsi|virtio)[0-9]+$/
+            || $row_key ne $row->{virtdev} || $row->{is_cloudinit}
+            || ($row->{devname} // '') eq '' || ($row->{size} // '') !~ /^[1-9][0-9]*$/
+            || int(($row->{size} + 1023) / 1024) != $storage_args->[5];
+    } else {
+        die "Lazy restore target activation arguments changed\n"
+            if @$storage_args != 2 || $storage_args->[0] ne $storecfg
+            || ref($storage_args->[1]) ne 'ARRAY' || @{$storage_args->[1]} != 1
+            || $storage_args->[1]->[0] ne "$storeid:$volname"
+            || $hook_args->[3] ne $volname || defined($hook_args->[4])
+            || defined($hook_args->[6]);
+        my @matches = grep {
+            ref($rows->{$_}) eq 'HASH'
+                && ($rows->{$_}->{volid} // '') eq "$storeid:$volname"
+        } keys %$rows;
+        die "Lazy restore target row is ambiguous\n" if @matches != 1;
+        $row_key = $matches[0];
+        $row = $rows->{$row_key};
+    }
+
+    my $config_path = $class->_lazy_restore_config_path();
+    my @stat = lstat($config_path);
+    die "Lazy restore extracted configuration is not a bounded regular file\n"
+        if !@stat || !S_ISREG($stat[2]) || -l _ || $stat[4] != $>
+        || $stat[7] < 1 || $stat[7] > 1024 * 1024;
+    open(my $fh, '<', $config_path)
+        or die "reading Lazy restore extracted configuration failed: $!\n";
+    local $/;
+    my $config = <$fh>;
+    close($fh) or die "closing Lazy restore extracted configuration failed: $!\n";
+    my @policy = grep { /^\Q$row->{virtdev}\E:\s*/ } split(/\n/, $config);
+    die "Lazy restore cannot prove one exact archive disk policy\n" if @policy != 1;
+    my @map = grep {
+        /^\#qmdump\#map:\Q$row->{virtdev}\E:\Q$row->{devname}\E:[^:]*:[^:]*:$/
+    } split(/\n/, $config);
+    die "Lazy restore cannot prove one exact archive device map\n" if @map != 1;
+    die "Lazy restore refuses archive configuration sections\n"
+        if $config =~ /^\[/m;
+    die "Lazy restore refuses non-ignore discard policy\n"
+        if $policy[0] =~ /(?:^|,)discard=([^,\s]+)/ && $1 ne 'ignore';
+    die "Lazy restore refuses nonzero detect_zeroes policy\n"
+        if $policy[0] =~ /(?:^|,)detect_zeroes=([^,\s]+)/ && $1 ne '0';
+
+    return {
+        kind => 'restore', vmid => "$vmid", bytes => int($row->{size}),
+        row_key => $row_key, row_ref => refaddr($row), rows_ref => refaddr($rows),
+        storecfg_ref => refaddr($storecfg), opts_ref => refaddr($opts),
+        lock_callback_ref => refaddr($lock_args->[3]),
+        archive => "$archive", user => "$user",
+        compression => defined($compression) ? "$compression" : '',
+        config_digest => sha256_hex($config),
+    };
+}
+
+sub _lazy_prepare_restore_allocation {
+    my ($class, $storeid, $scfg, $vmid) = @_;
+    my $frames = $class->_thick_destroy_call_frames();
+    return undef if !grep {
+        ($_->{sub} // '') eq 'PVE::QemuServer::restore_vma_archive'
+    } @$frames;
+    return $class->_lazy_restore_context(
+        $storeid, $scfg, $vmid, undef, 'allocate', $frames,
+    );
+}
+
+sub _lazy_record_restore_allocation {
+    my ($class, $storeid, $volname, $context, $state) = @_;
+    return if !$context;
+    die "Lazy restore publication is not the exact fresh dormant allocation\n"
+        if $state->{phase} ne 'LAZY_DORMANT' || $state->{publication} != 1
+        || $state->{generation} != 0 || $state->{bytes} < $context->{bytes};
+    my $now = $class->_thick_progress_clock();
+    for my $key (keys %lazy_restore_allocation) {
+        delete $lazy_restore_allocation{$key}
+            if $lazy_restore_allocation{$key}->{pid} != $$
+            || $lazy_restore_allocation{$key}->{expires} < $now;
+    }
+    die "Lazy restore capability budget exceeded\n"
+        if keys(%lazy_restore_allocation) >= 16;
+    my $key = "$storeid:$volname";
+    die "Lazy restore capability already exists\n"
+        if exists($lazy_restore_allocation{$key});
+    $lazy_restore_allocation{$key} = {
+        %$context, pid => $$, expires => $now + 120,
+        anchor_digest => sha256_hex(join('|', map { "$_=$state->{$_}" } sort keys %$state)),
+    };
+    return;
+}
+
+sub _lazy_recheck_restore_capability {
+    my ($class, $storeid, $scfg, $volname, $state, $cap) = @_;
+    die "Lazy restore capability is absent, expired or from another process\n"
+        if !$cap || $cap->{pid} != $$ || $class->_thick_progress_clock() > $cap->{expires};
+    die "Lazy restore target allocation identity changed\n"
+        if sha256_hex(join('|', map { "$_=$state->{$_}" } sort keys %$state)) ne $cap->{anchor_digest};
+    die "Lazy restore target is already referenced\n"
+        if @{$class->_thick_pve_reference_files($storeid, $volname)};
+    my $current = $class->_lazy_restore_context(
+        $storeid, $scfg, $cap->{vmid}, $volname, 'activate',
+        $class->_thick_destroy_call_frames(),
+    );
+    for my $field (qw(kind vmid bytes row_key row_ref rows_ref storecfg_ref opts_ref lock_callback_ref archive user compression config_digest)) {
+        die "Lazy restore capability context changed at '$field'\n"
+            if $current->{$field} ne $cap->{$field};
+    }
+    return $cap;
+}
+
+sub _lazy_consume_unreferenced_allocation {
+    my ($class, $storeid, $scfg, $volname, $state) = @_;
+    my $key = "$storeid:$volname";
+    die "Lazy unreferenced allocation has ambiguous capabilities\n"
+        if exists($lazy_move_allocation{$key}) && exists($lazy_restore_allocation{$key});
+    if (exists($lazy_restore_allocation{$key})) {
+        my $cap = delete $lazy_restore_allocation{$key};
+        return $class->_lazy_recheck_restore_capability(
+            $storeid, $scfg, $volname, $state, $cap,
+        );
+    }
+    return $class->_lazy_consume_move_allocation(
+        $storeid, $scfg, $volname, $state,
+    );
 }
 
 sub _lazy_efi_allocation_requires_eager {
@@ -1226,7 +1446,7 @@ sub _lazy_recheck_move_capability {
         if @{$class->_thick_pve_reference_files($storeid, $volname)};
     my $current = $class->_lazy_move_context($storeid, $scfg, $cap->{vmid}, $volname,
         'activate', $class->_thick_destroy_call_frames());
-    for my $field (qw(source dest newvols lock source_sid source_vol vmid slot bytes)) {
+    for my $field (qw(kind source dest newvols lock source_sid source_vol vmid slot bytes)) {
         die "Lazy move capability context changed at '$field'\n" if $current->{$field} ne $cap->{$field};
     }
     die "Lazy move source configuration changed\n"
@@ -1239,6 +1459,19 @@ sub _lazy_consume_move_allocation {
     # Consumed before validation/effects: even a failed attempt cannot replay.
     my $cap = delete $lazy_move_allocation{"$storeid:$volname"};
     return $class->_lazy_recheck_move_capability($storeid, $scfg, $volname, $state, $cap);
+}
+
+sub _lazy_recheck_allocation_capability {
+    my ($class, $storeid, $scfg, $volname, $state, $cap) = @_;
+    die "Lazy allocation capability kind is absent or invalid\n"
+        if ref($cap) ne 'HASH' || !defined($cap->{kind});
+    return $class->_lazy_recheck_move_capability(
+        $storeid, $scfg, $volname, $state, $cap,
+    ) if $cap->{kind} eq 'move';
+    return $class->_lazy_recheck_restore_capability(
+        $storeid, $scfg, $volname, $state, $cap,
+    ) if $cap->{kind} eq 'restore';
+    die "Lazy allocation capability kind '$cap->{kind}' is invalid\n";
 }
 
 sub _lazy_verify_guest_discard_config {
@@ -1257,7 +1490,7 @@ sub _lazy_verify_guest_discard_config {
         }
         close($fh) or die "closing PVE disk policy '$file' failed: $!\n";
     }
-    return $class->_lazy_consume_move_allocation($storeid, $scfg, $volname, $state)
+    return $class->_lazy_consume_unreferenced_allocation($storeid, $scfg, $volname, $state)
         if !$matched && $scfg && $state;
     die "Lazy Thick activation cannot prove an exact PVE disk policy for '$volid'\n"
         if $matched != 1;
@@ -2593,7 +2826,9 @@ sub _lazy_activate_volume_locked {
         || ($initial_state->{op} // '') =~ /^(?:SNAPSHOT|ROLLBACK)$/;
     die "Lazy Thick snapshots are unavailable until explicit materialization\n"
         if defined($snapname);
-    my $move_cap = $class->_lazy_verify_guest_discard_config($storeid, $volname, $scfg, $initial_state);
+    my $allocation_cap = $class->_lazy_verify_guest_discard_config(
+        $storeid, $volname, $scfg, $initial_state,
+    );
     $class->_assert_no_active_storage_worker($vg);
     my ($node, $boot) = $class->_lazy_local_identity();
     my $owner_epoch = $class->_new_transaction_id();
@@ -2603,8 +2838,9 @@ sub _lazy_activate_volume_locked {
         $class->_require_no_vg_intent($scfg, $vg, $device);
         my ($state, undef, $anchor_name) =
             $class->_thick_read_anchor($storeid, $scfg, $volname);
-        $class->_lazy_recheck_move_capability($storeid, $scfg, $volname, $state, $move_cap)
-            if ref($move_cap) eq 'HASH';
+        $class->_lazy_recheck_allocation_capability(
+            $storeid, $scfg, $volname, $state, $allocation_cap,
+        ) if ref($allocation_cap) eq 'HASH';
         $anchor = $anchor_name;
         if ($state->{phase} eq 'LAZY_ACTIVE') {
             $class->_lazy_require_local_owner(
@@ -5537,6 +5773,9 @@ sub _lazy_alloc_image {
     die "Lazy Thick supports canonical guest disks only\n"
         if $name !~ /^vm-\Q$vmid\E-disk-\d+$/;
     my $move_context = $class->_lazy_prepare_move_allocation($storeid, $scfg, $vmid);
+    my $restore_context = $class->_lazy_prepare_restore_allocation($storeid, $scfg, $vmid);
+    die "Lazy allocation matched both move and restore authorities\n"
+        if $move_context && $restore_context;
     die "invalid Lazy Thick allocation size\n"
         if !defined($size) || $size !~ /^\d+$/ || $size < 1;
 
@@ -5733,6 +5972,7 @@ sub _lazy_alloc_image {
             || int($published->{publication}) != 1;
         $class->_clear_vg_intent($scfg, $vg, %intent, _device => $device);
         $class->_lazy_record_move_allocation($storeid, $name, $move_context, $published);
+        $class->_lazy_record_restore_allocation($storeid, $name, $restore_context, $published);
         return;
     }, $device);
     return $name;
@@ -6520,14 +6760,17 @@ sub volume_size_info {
         my ($state, $head) = $class->_thick_read_anchor(
             $storeid, $scfg, $volname,
         );
-        if (($state->{phase} // '') ne 'MATERIALIZED') {
-            my $guidance = ($state->{phase} // '') =~ /^(?:LAZY_ACTIVE|LAZY_DORMANT)$/
-                ? "; materialize it first with 'sharedlvmthin thick-lazy-materialize "
-                    . "$storeid $volname' and retry only after the command and "
-                    . "recovery-check both pass"
-                : "; do not retry while the transition result is unresolved";
+        my $phase = $state->{phase} // '';
+        # LAZY_DORMANT and LAZY_ACTIVE are settled states with the same fully
+        # allocated destination geometry recorded by the authenticated HEAD.
+        # Native backup asks for that logical geometry while the guest may be
+        # using the clone frontend.  Returning the HEAD size is read-only and
+        # does not imply hydration/materialization; transitional phases remain
+        # unavailable because their publication outcome may be ambiguous.
+        if ($phase !~ /^(?:MATERIALIZED|LAZY_DORMANT|LAZY_ACTIVE)$/) {
+            my $guidance = "; do not retry while the transition result is unresolved";
             die "thick-generations size is unavailable while '$storeid:$volname' "
-                . "is in phase '$state->{phase}'$guidance\n";
+                . "is in phase '$phase'$guidance\n";
         }
         my $size = int($head->{lv_size} // 0);
         die "thick-generations HEAD size is missing for '$storeid:$volname'\n"

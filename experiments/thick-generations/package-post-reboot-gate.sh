@@ -276,7 +276,7 @@ if ((settle_runtime == 1)); then
     # read-only mode against the successor receipt and current live state.
     # A failed replay leaves the runtime command non-zero and this outer gate
     # must not print RESULT=POST_REBOOT_PASS.
-    "$0" \
+    /bin/bash "$0" \
         --expect-host "$expected_host" \
         --expect-profile "$expected_profile" \
         --expect-version "$expected_version" \
