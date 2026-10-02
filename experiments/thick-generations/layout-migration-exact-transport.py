@@ -92,8 +92,9 @@ def validate_pins(plan, pins):
          and pins['plan_sha256'] == M.digest(plan) and pins['helper_path'] == HELPER, 'pin identity')
     need(type(pins['participants']) is list and len(pins['participants']) == 4, 'closed four-node cohort')
     cohort = tuple(row['node'] for row in plan['participants'])
-    synthetic_legacy_fixture = tuple(f"pve0{i}" for i in range(1, 5))
-    need(cohort in (NODES, synthetic_legacy_fixture)
+    need(len(set(cohort)) == 4
+         and all(type(node) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', node)
+                 for node in cohort)
          and all(row['role'] == ('CONTROL_ONLY' if index == 3 else 'SAN')
                  for index, row in enumerate(plan['participants'])), 'fixed SAN/control cohort')
     hosts, keys, helpers = set(), set(), set()
