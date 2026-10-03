@@ -46,9 +46,9 @@ push @blocked, "VM_CONFIG: VM has lock '$conf->{lock}'"
 push @blocked, "DISK: '$disk' is absent from the current VM configuration"
     if !defined($conf->{$disk}) || $conf->{$disk} eq '';
 
-my ($source_store, $volname, $volid);
+my ($source_store, $volname, $volid, $drive);
 if (defined($conf->{$disk}) && $conf->{$disk} ne '') {
-    my $drive = PVE::QemuServer::parse_drive($disk, $conf->{$disk});
+    $drive = PVE::QemuServer::parse_drive($disk, $conf->{$disk});
     if (!$drive || !defined($drive->{file}) || $drive->{file} eq '') {
         push @blocked, "DISK: '$disk' is not a storage-backed volume";
     } elsif (($drive->{media} // '') eq 'cdrom') {
@@ -130,11 +130,23 @@ if ($source_scfg) {
     }
 }
 
+my $running = PVE::QemuServer::Helpers::vm_running_locally($vmid) ? 1 : 0;
 if ($target_scfg) {
+    if (($target_scfg->{type} // '') eq 'sharedlvmthin'
+        && PVE::Storage::Custom::SharedLvmThinPlugin->_allocation_mode($target_scfg)
+            eq 'thick-generations-lazy') {
+        push @blocked, "TARGET: Lazy Thick native Storage Move requires a stopped VM"
+            if $running;
+        push @blocked, "TARGET: Lazy Thick native Storage Move does not admit EFI or TPM state disks"
+            if $disk eq 'efidisk0' || $disk eq 'tpmstate0';
+        push @blocked, "TARGET: Lazy Thick native Storage Move requires discard=ignore"
+            if $drive && ($drive->{discard} // 'ignore') ne 'ignore';
+        push @blocked, "TARGET: Lazy Thick native Storage Move requires detect_zeroes=0"
+            if $drive && ($drive->{detect_zeroes} // '0') ne '0';
+    }
     push @passed, "TARGET: storage '$target_store' is enabled on '$local_node'";
 }
 
-my $running = PVE::QemuServer::Helpers::vm_running_locally($vmid) ? 1 : 0;
 print "STORAGE_MOVE_PREFLIGHT_VERSION=1\n";
 print "VMID=$vmid\nNODE=$local_node\nBOOT_ID=$local_boot\nDISK=$disk\n";
 print "VM_STATE=" . ($running ? 'RUNNING' : 'STOPPED') . "\n";

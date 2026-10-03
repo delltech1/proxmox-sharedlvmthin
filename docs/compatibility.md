@@ -1,11 +1,11 @@
 # Compatibility
 
-RC5.87 TG53 is intended exclusively for **Proxmox VE 9**. Its plugin hooks
+RC5.88 TG53 is intended exclusively for **Proxmox VE 9**. Its plugin hooks
 retain the Storage API 14 and 15 source contract. The exact RC5.85 DUAL
 artifact completed its recorded API 15 package, rolling-reboot, recovery and
 targeted three-mode SAN gates; that evidence does not qualify an unlisted
 tuple or operation. API 14 retains source/control-plane compatibility, but the
-RC5.87 candidate has an exact API14 package/control-plane tuple marked
+RC5.88 candidate has an exact API14 package/control-plane tuple marked
 `RETEST_REQUIRED`; it does not claim an API14 SAN dataplane. Its runtime
 qualification gate must therefore remain fail-closed as
 `RETEST_REQUIRED`. PVE 8 and earlier are
@@ -14,8 +14,8 @@ new PVE package tuple is compatible with storage mutations.
 
 | PVE | Storage API | Plugin API | Status |
 |---|---:|---:|---|
-| 9.2.x | 14 | 14 | RC5.87 exact package/control-plane candidate; SAN dataplane excluded and `RETEST_REQUIRED` |
-| 9.2.x | 15 | 15 | RC5.85 evidence remains applicable only to byte-identical paths; RC5.87 requires exact artifact replay |
+| 9.2.x | 14 | 14 | RC5.88 exact package/control-plane candidate; SAN dataplane excluded and `RETEST_REQUIRED` |
+| 9.2.x | 15 | 15 | RC5.88 exact package/update/reboot and targeted SAN lifecycle qualification passed on the 2026-10-03 tuple below |
 
 ## Exact TG53 qualification tuples
 
@@ -28,7 +28,8 @@ regressions pass.
 
 | Scope | pve-manager | libpve-storage-perl | qemu-server | pve-qemu-kvm | Kernel | libpve-common-perl | Status |
 |---|---|---|---|---|---|---|---|
-| API 14 RC5.87 candidate package/control plane | 9.2.2 | 9.1.5 | 9.1.15 | 11.0.0-3 | 7.0.2-6-pve | 9.1.12 | Exact tuple is listed conservatively as `RETEST_REQUIRED`; required clean-install, in-place-upgrade, bidirectional profile-cycle and reboot evidence must be external and artifact-bound; SAN dataplane is excluded |
+| API 14 RC5.88 candidate package/control plane | 9.2.2 | 9.1.5 | 9.1.15 | 11.0.0-3 | 7.0.2-6-pve | 9.1.12 | Exact tuple is listed conservatively as `RETEST_REQUIRED`; required clean-install, in-place-upgrade, bidirectional profile-cycle and reboot evidence must be external and artifact-bound; SAN dataplane is excluded |
+| API 15 RC5.88 updated SAN canary | 9.2.21 | 9.1.11 | 9.2.10 | 11.0.3-4 | 7.0.14-20-pve | 9.2.2 | Exact RC5.88 DUAL artifact: guarded update refusal/authorization, reboot, 103-point compatibility gate, six-storage recovery, ten-volume Thin/Eager snapshot create/delete, Lazy refusal boundary, Thin/Eager/Lazy move with SHA-256 witness, native Lazy backup/Eager restore, mixed-version Thick live-migration round trip and Thin online-refusal/offline-handoff passed. This is operation-scoped lab evidence, not universal SAN certification. |
 | API 15 DUAL SAN lifecycle, RC5.85 rolling upgrade and reboot | 9.2.18 | 9.1.10 | 9.2.7 | 11.0.3-3 | 7.0.14-16-pve | 9.2.1 | Exact RC5.85 package/reboot/storage-settlement evidence on the recorded disposable SAN scope; earlier byte-identical data-path lifecycle evidence remains operation-scoped |
 | API 15 updated SAN node and primary RC5.85 canary | 9.2.20 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-17-pve | 9.2.2 | Exact RC5.85 package/reboot settlement plus Thin/Eager/Lazy ten-VM snapshot burst and post-wave recovery passed; other operations retain their named evidence scope |
 | API 15 updated SAN rolling node | 9.2.20 | 9.1.11 | 9.2.10 | 11.0.3-3 | 7.0.14-19-pve | 9.2.2 | Exact RC5.85 guarded upgrade, compatibility, assigned-storage recovery and controlled reboot settlement passed; one node-scoped unavailable FC definition was explicitly skipped |
