@@ -264,10 +264,10 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 ```bash
 sha256sum --check SHA256SUMS
 # DUAL profile: experimental Thin + Thick Generations
-DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.88.tg53_all.deb"
+DEB="$PWD/pve-sharedlvmthin_0.9.0~rc5.88~tg53_all.deb"
 
 # OR Thick-only profile: experimental Thick Generations only
-DEB="$PWD/pve-sharedlvmthin-thick_0.9.0.rc5.88.tg53_all.deb"
+DEB="$PWD/pve-sharedlvmthin-thick_0.9.0~rc5.88~tg53_all.deb"
 
 HASH="$(sha256sum "$DEB" | awk '{print $1}')"
 sudo experiments/thick-generations/package-profile-gate.sh \
@@ -290,7 +290,7 @@ Run the read-only gate first, then replace one node at a time:
 
 ```bash
 sharedlvmthin upgrade-check
-DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.88.tg53_all.deb"
+DEB="$PWD/pve-sharedlvmthin_0.9.0~rc5.88~tg53_all.deb"
 HASH="$(sha256sum "$DEB" | awk '{print $1}')"
 sudo experiments/thick-generations/package-profile-gate.sh \
   --package "$DEB" --sha256 "$HASH" \
