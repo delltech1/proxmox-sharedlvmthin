@@ -55,6 +55,17 @@ class CandidateInspectorTests(unittest.TestCase):
         self.assertNotIn("perl -c", self.source)
         self.assertNotIn("extractall", self.source)
 
+    def test_qemu_vma_executables_are_part_of_candidate_identity(self):
+        for path in (
+            "./usr/bin/vma",
+            "./usr/bin/qemu-img",
+            "./usr/bin/qemu-io",
+            "./usr/bin/qemu-system-x86_64",
+        ):
+            self.assertIn(path, self.module.BINARY_PATHS)
+        self.assertIn('member.name in BINARY_PATHS', self.source)
+        self.assertIn('"changed_relevant_payloads": changed', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

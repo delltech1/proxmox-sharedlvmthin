@@ -172,6 +172,10 @@ class UpstreamInventoryEvaluationTests(unittest.TestCase):
         self.assertEqual(evidence["error"], "package owner unavailable")
 
     def test_loaded_upstream_modules_are_critical_files(self):
+        self.assertEqual(len(self.module.LOADED_PVE_MODULES),
+                         len(set(self.module.LOADED_PVE_MODULES)))
+        for module in self.module.LOADED_PVE_MODULES:
+            self.assertIn(f"/usr/share/perl5/{module}", self.module.CRITICAL_FILES)
         for path in (
                 "/usr/share/perl5/PVE/JSONSchema.pm",
                 "/usr/share/perl5/PVE/QemuConfig.pm",
@@ -226,6 +230,27 @@ class UpstreamInventoryEvaluationTests(unittest.TestCase):
             update_errors.append("APT candidate evidence unavailable")
         self.assertEqual(runtime_errors, [])
         self.assertEqual(update_errors, ["APT candidate evidence unavailable"])
+
+    def test_running_kernel_identity_binds_images_modules_vermagic_and_owner(self):
+        digest = {"ok": True, "sha256": "a" * 64, "mode": 0o644,
+                  "uid": 0, "gid": 0, "size": 123}
+        def probe(argv):
+            if argv[:2] == ["modinfo", "-n"]:
+                return {"ok": True, "rc": 0,
+                        "stdout": f"/lib/modules/7.0-test/{argv[2]}.ko\n", "error": ""}
+            if argv[:3] == ["modinfo", "-F", "vermagic"]:
+                return {"ok": True, "rc": 0,
+                        "stdout": "7.0-test SMP preempt mod_unload\n", "error": ""}
+            if argv[:2] == ["dpkg-query", "-S"]:
+                return {"ok": True, "rc": 0,
+                        "stdout": f"kernel-owner: {argv[2]}\n", "error": ""}
+            raise AssertionError(argv)
+        with mock.patch.object(self.module, "_sha256", return_value=digest), \
+                mock.patch.object(self.module, "_run", side_effect=probe):
+            identity = self.module._running_kernel_identity("7.0-test")
+        self.assertTrue(identity["ok"])
+        self.assertEqual(set(identity["modules"]),
+                         {"dm_clone", "dm_thin_pool", "dm_multipath"})
 
     def test_fixture_matches_upstream_lvm_name_boundaries(self):
         fixture = ROOT / "tests/unit/lib/PVE/Storage/Plugin.pm"

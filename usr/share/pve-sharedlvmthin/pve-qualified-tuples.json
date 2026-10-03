@@ -147,7 +147,7 @@
     {
       "id": "tg53-rc587-api14-control-candidate",
       "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.87~tg53"],
+      "plugin_versions": ["0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53"],
       "api": 14,
       "packages": {
         "pve-manager": "9.2.2",
@@ -170,7 +170,7 @@
     {
       "id": "tg53-rc574-api15-san-original-candidate",
       "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
+      "plugin_versions": ["0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53"],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.18",
@@ -187,7 +187,7 @@
     {
       "id": "tg53-api15-upstream-9.2.20-k17",
       "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53"],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.20",
@@ -221,7 +221,7 @@
     {
       "id": "tg53-api15-upstream-9.2.20-k19",
       "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53"],
+      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53"],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.20",
@@ -296,9 +296,58 @@
       ],
       "known_operation_boundaries": [
         "qemu-server >= 9.2.8 refuses machine versions older than 5.0",
-        "native Lazy VMA restore remains fail-closed until a qualified restore receipt protocol exists",
+        "stdin or live restore to an unmaterialized Lazy destination remains fail-closed; ordinary file VMA restore is supported after admission",
         "no-NIC and e1000-only RAM snapshots can create an empty running-nets-host-mtu property on both old and new tuples",
         "complex EFI/TPM/cloud-init bridge conversion remains explicitly refused"
+      ]
+    },
+    {
+      "id": "tg53-api15-upstream-20261003",
+      "profiles": ["dual", "thick-only"],
+      "plugin_versions": ["0.9.0~rc5.88~tg53"],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.2"
+      },
+      "running_kernel": "7.0.14-20-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
+      "operation_qualifications": {
+        "read-only-inventory": {"status": "RETEST_REQUIRED", "required_tests": ["exact-build-evidence-binding", "qemu-vma-binary-identity", "kernel-image-module-identity"]},
+        "package-lifecycle": {"status": "RETEST_REQUIRED", "required_tests": ["control-node-upgrade", "one-node-upgrade-reboot", "post-reboot-san"]},
+        "activation-deactivation": {"status": "RETEST_REQUIRED", "required_tests": ["post-reboot-san"]},
+        "allocation-removal": {"status": "RETEST_REQUIRED", "required_tests": ["ten-vm-thin-thick-lazy-wave"]},
+        "snapshot-vmstate": {"status": "RETEST_REQUIRED", "required_tests": ["ram-snapshot-rollback-delete", "snapshot-no-nic-e1000-and-qmp-failure", "ten-vm-thin-thick-lazy-wave"]},
+        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["thin-eager-lazy-grow-zero-tail"]},
+        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["vma-file-thin-eager-lazy", "vma-stdin-lazy-refusal", "old-new-vma-interoperability"]},
+        "migration": {"status": "RETEST_REQUIRED", "required_tests": ["mixed-version-old-born-and-new-born-migration"]},
+        "thin-ownership-autogrow": {"status": "RETEST_REQUIRED", "required_tests": ["ten-vm-thin-thick-lazy-wave"]},
+        "thick-lazy-transition": {"status": "RETEST_REQUIRED", "required_tests": ["lazy-partial-write-zero-pivot", "post-reboot-san"]}
+      },
+      "required_tests": [
+        "control-node-upgrade",
+        "qemu-vma-binary-identity",
+        "kernel-image-module-identity",
+        "one-node-upgrade-reboot",
+        "post-reboot-san",
+        "ten-vm-thin-thick-lazy-wave",
+        "ram-snapshot-rollback-delete",
+        "vma-file-thin-eager-lazy",
+        "vma-stdin-lazy-refusal",
+        "old-new-vma-interoperability",
+        "mixed-version-old-born-and-new-born-migration",
+        "thin-eager-lazy-grow-zero-tail",
+        "lazy-partial-write-zero-pivot"
+      ],
+      "known_operation_boundaries": [
+        "the tuple is an immutable qualification candidate and is not authorized by package presence alone",
+        "stdin or live restore to an unmaterialized Lazy destination remains fail-closed",
+        "a bounded observer timeout is UNKNOWN and cannot prove hydration, pivot or worker failure",
+        "no-NIC, e1000-only and ambiguous QMP MTU RAM snapshots are refused before dispatch"
       ]
     }
   ],

@@ -37,7 +37,8 @@ COMMANDS = (
     "lsblk", "lvm", "pveversion", "uname", "dmeventd", "ip", "ss", "openssl",
     "ps", "awk", "sed", "grep", "cmp", "find", "flock", "sync", "cut", "tr",
     "sort", "wc", "head", "cat", "du", "date", "hostname", "sleep", "mkdir",
-    "chmod", "chown", "mv", "rm", "dirname", "mktemp", "xargs",
+    "chmod", "chown", "mv", "rm", "dirname", "mktemp", "xargs", "vma",
+    "qemu-system-x86_64",
 )
 CRITICAL_FILES = (
     "/usr/share/perl5/PVE/Storage/Plugin.pm",
@@ -68,6 +69,10 @@ CRITICAL_FILES = (
     "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json",
     "/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json",
     "/usr/share/pve-sharedlvmthin/pve-lab-scenarios.json",
+    "/usr/bin/vma",
+    "/usr/bin/qemu-img",
+    "/usr/bin/qemu-io",
+    "/usr/bin/qemu-system-x86_64",
 )
 REQUIRED_HOOKS = (
     "type", "plugindata", "properties", "options", "status", "list_images",
@@ -77,6 +82,14 @@ REQUIRED_HOOKS = (
     "volume_snapshot_rollback", "volume_snapshot_needs_fsfreeze",
     "volume_has_feature", "path", "parse_volname",
     "filesystem_path", "clone_image", "volume_rollback_is_possible",
+)
+LOADED_PVE_MODULES = (
+    "PVE/Storage.pm", "PVE/Storage/Plugin.pm", "PVE/Storage/LVMPlugin.pm",
+    "PVE/Tools.pm", "PVE/AccessControl.pm", "PVE/Cluster.pm",
+    "PVE/Firewall.pm", "PVE/HA/Config.pm", "PVE/INotify.pm",
+    "PVE/Network/SDN/Vnets.pm", "PVE/QemuServer/Network.pm",
+    "PVE/QemuConfig.pm", "PVE/QemuServer.pm", "PVE/ReplicationConfig.pm",
+    "PVE/SSHInfo.pm", "PVE/Storage/Custom/SharedLvmThinPlugin.pm",
 )
 REQUIRED_PVE_SYMBOLS = (
     "PVE::AbstractConfig::lock_config", "PVE::AbstractConfig::lock_config_full",
@@ -250,6 +263,33 @@ def _kernel_packages():
     return {"ok": result["ok"], "rows": rows, "error": result["error"]}
 
 
+def _running_kernel_identity(release):
+    if not isinstance(release, str) or not release:
+        return {"ok": False, "error": "running kernel release unavailable"}
+    files = {}
+    for path in (f"/boot/vmlinuz-{release}", f"/boot/initrd.img-{release}"):
+        files[path] = _sha256(path)
+    modules = {}
+    for name in ("dm_clone", "dm_thin_pool", "dm_multipath"):
+        location = _run(["modinfo", "-n", name])
+        vermagic = _run(["modinfo", "-F", "vermagic", name])
+        path = location["stdout"].strip() if location["ok"] else ""
+        modules[name] = {
+            "path": path or None,
+            "sha256": _sha256(path) if path else {"ok": False, "error": "module path unavailable"},
+            "vermagic": vermagic["stdout"].strip() if vermagic["ok"] else None,
+            "owner": _run(["dpkg-query", "-S", path]) if path else {
+                "ok": False, "rc": 1, "stdout": "", "error": "module path unavailable"
+            },
+        }
+    ok = all(item.get("ok") for item in files.values()) and all(
+        row["sha256"].get("ok") and row["owner"].get("ok")
+        and isinstance(row.get("vermagic"), str) and release in row["vermagic"]
+        for row in modules.values()
+    )
+    return {"ok": ok, "release": release, "files": files, "modules": modules}
+
+
 def _pve_api():
     code = (
         "use JSON::PP; use PVE::Storage; use PVE::Storage::Plugin; "
@@ -267,12 +307,8 @@ def _pve_api():
         "plugin_api=>PVE::Storage::Custom::SharedLvmThinPlugin->api(),"
         "hooks=>{map {$_ => (PVE::Storage::Custom::SharedLvmThinPlugin->can($_)?1:0)} @h},"
         "symbols=>{map {$_ => has_symbol($_)} @s},"
-        "loaded_paths=>{map {$_ => ($INC{$_}//q{})} "
-        "qw(PVE/Storage.pm PVE/Storage/Plugin.pm PVE/Storage/LVMPlugin.pm PVE/Tools.pm "
-        "PVE/AccessControl.pm PVE/Cluster.pm PVE/Firewall.pm PVE/HA/Config.pm PVE/INotify.pm "
-        "PVE/Network/SDN/Vnets.pm PVE/QemuServer/Network.pm "
-        "PVE/QemuConfig.pm PVE/QemuServer.pm PVE/ReplicationConfig.pm "
-        "PVE/SSHInfo.pm PVE/Storage/Custom/SharedLvmThinPlugin.pm)}});"
+        "loaded_paths=>{map {$_ => ($INC{$_}//q{})} qw("
+        + " ".join(LOADED_PVE_MODULES) + ")}});"
     )
     result = _run(["perl", "-I/usr/share/perl5", "-e", code])
     if not result["ok"]:
@@ -538,18 +574,7 @@ def collect():
         errors.append("required upstream PVE Perl symbol missing")
     else:
         expected_loaded = {
-            "PVE/Storage.pm": "/usr/share/perl5/PVE/Storage.pm",
-            "PVE/Storage/Plugin.pm": "/usr/share/perl5/PVE/Storage/Plugin.pm",
-            "PVE/Storage/LVMPlugin.pm": "/usr/share/perl5/PVE/Storage/LVMPlugin.pm",
-            "PVE/Tools.pm": "/usr/share/perl5/PVE/Tools.pm",
-            "PVE/Cluster.pm": "/usr/share/perl5/PVE/Cluster.pm",
-            "PVE/HA/Config.pm": "/usr/share/perl5/PVE/HA/Config.pm",
-            "PVE/INotify.pm": "/usr/share/perl5/PVE/INotify.pm",
-            "PVE/QemuConfig.pm": "/usr/share/perl5/PVE/QemuConfig.pm",
-            "PVE/QemuServer.pm": "/usr/share/perl5/PVE/QemuServer.pm",
-            "PVE/SSHInfo.pm": "/usr/share/perl5/PVE/SSHInfo.pm",
-            "PVE/Storage/Custom/SharedLvmThinPlugin.pm":
-                "/usr/share/perl5/PVE/Storage/Custom/SharedLvmThinPlugin.pm",
+            module: f"/usr/share/perl5/{module}" for module in LOADED_PVE_MODULES
         }
         if api.get("loaded_paths") != expected_loaded:
             errors.append("PVE/plugin Perl modules loaded from unexpected paths")
@@ -577,6 +602,10 @@ def collect():
     dm_targets = _run(["dmsetup", "targets"])
     if not kernel["ok"] or not boot["ok"] or not dm_targets["ok"]:
         errors.append("running kernel/device-mapper evidence incomplete")
+    kernel_identity = _running_kernel_identity(kernel["stdout"]) if kernel["ok"] \
+        else {"ok": False, "error": "running kernel unavailable"}
+    if not kernel_identity.get("ok"):
+        errors.append("running kernel image/module identity incomplete")
 
     flavor_path = "/usr/share/pve-sharedlvmthin/package-flavor"
     try:
@@ -623,6 +652,7 @@ def collect():
         "installed_profile_payload": profile_payload,
         "packages": runtime_packages,
         "running_kernel": kernel["stdout"] if kernel["ok"] else None,
+        "running_kernel_identity": kernel_identity,
         "dm_targets": sorted(dm_targets["stdout"].splitlines()) if dm_targets["ok"] else None,
         "commands": commands,
         "critical_files": files,
