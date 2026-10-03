@@ -41,6 +41,23 @@ observed_total=-1
 observed_region=-1
 max_gap=0
 samples=0
+worker_starttime=""
+
+read_worker_identity() {
+    local stat tail state starttime
+    [[ -r /proc/$worker_pid/stat ]] || return 1
+    stat=$(<"/proc/$worker_pid/stat")
+    tail=${stat##*) }
+    state=${tail%% *}
+    starttime=$(awk '{print $20}' <<<"$tail")
+    [[ $state =~ ^[A-Z]$ && $starttime =~ ^[0-9]+$ ]] || return 1
+    printf '%s %s\n' "$state" "$starttime"
+}
+
+if ! read -r _initial_worker_state worker_starttime < <(read_worker_identity); then
+    echo "ERROR: worker identity is not observable" >&2
+    exit 3
+fi
 
 finish() {
     local result=$1 rc=$2 now_mono_ns elapsed_ns elapsed progress_regions
@@ -67,6 +84,7 @@ finish() {
         echo "RESULT=$result"
         echo "MAPPER=$mapper"
         echo "WORKER_PID=$worker_pid"
+        echo "WORKER_STARTTIME=$worker_starttime"
         echo "SAMPLES=$samples"
         echo "ELAPSED_SECONDS=$elapsed"
         echo "ELAPSED_NANOSECONDS=$elapsed_ns"
@@ -101,10 +119,13 @@ while :; do
     read -r start length target rest <<<"$status"
     worker_state=ABSENT
     worker_rss=0
-    if [[ -r /proc/$worker_pid/stat ]]; then
-        stat=$(<"/proc/$worker_pid/stat")
-        tail=${stat##*) }
-        worker_state=${tail%% *}
+    current_worker_starttime=""
+    worker_identity=""
+    if worker_identity=$(read_worker_identity); then
+        read -r worker_state current_worker_starttime <<<"$worker_identity"
+        if [[ $current_worker_starttime != "$worker_starttime" ]]; then
+            finish WORKER_IDENTITY_CHANGED 4
+        fi
         worker_rss=$(awk '/^VmRSS:/ { print $2; found=1 } END { if (!found) print 0 }' "/proc/$worker_pid/status" 2>/dev/null || echo 0)
     fi
     mem_available=$(awk '/^MemAvailable:/ { print $2; found=1 } END { if (!found) print 0 }' /proc/meminfo)
@@ -163,7 +184,7 @@ while :; do
         finish WORKER_ABSENT_CLONE_INCOMPLETE 3
     fi
     if (( max_samples > 0 && samples >= max_samples )); then
-        finish SAMPLE_LIMIT_REACHED 0
+        finish OBSERVATION_LIMIT_UNKNOWN 3
     fi
     sleep "$interval"
 done

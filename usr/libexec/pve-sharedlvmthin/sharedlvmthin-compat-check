@@ -74,7 +74,7 @@ echo "KERNEL=$(uname -r)"
 
 SLT_REQUIRED_RUNTIME_COMMANDS='bash sh perl python3 pvesm pvesh pvecm qm pct lvs vgs pvs
 lvcreate lvremove lvchange lvextend lvconvert lvrename vgchange vgcfgbackup dmsetup
-multipath multipathd iscsiadm qemu-img qemu-io timeout systemctl ssh systemd-run
+multipath multipathd iscsiadm qemu-img qemu-io qemu-system-x86_64 vma timeout systemctl ssh systemd-run
 blockdev blkdiscard thin_check dd env stat sha256sum sharedlvmthin lsinitramfs
 update-initramfs modinfo modprobe apt-cache apt-config dpkg dpkg-deb dpkg-query
 lsblk lvm pveversion uname dmeventd ip ss openssl ps awk sed grep cmp find flock

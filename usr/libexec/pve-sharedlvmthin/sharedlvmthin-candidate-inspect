@@ -21,6 +21,12 @@ ALLOWED_PREFIXES = (
     "./usr/bin/",
 )
 SOURCE_SUFFIXES = (".pm", ".pl", ".py", ".js")
+BINARY_PATHS = {
+    "./usr/bin/qemu-img",
+    "./usr/bin/qemu-io",
+    "./usr/bin/qemu-system-x86_64",
+    "./usr/bin/vma",
+}
 
 
 def _run(argv, timeout=30):
@@ -174,18 +180,19 @@ def _candidate_sources(path):
                     raise ValueError("candidate archive contains duplicate member path")
                 seen_members.add(normalized)
                 member_types[normalized] = member.type
-                relevant = member.name.startswith(ALLOWED_PREFIXES) \
-                    and member.name.endswith(SOURCE_SUFFIXES)
+                relevant = (member.name.startswith(ALLOWED_PREFIXES)
+                            and member.name.endswith(SOURCE_SUFFIXES)) \
+                    or member.name in BINARY_PATHS
                 if not relevant:
                     continue
                 if not member.isfile():
                     relevant_nonregular.append(member.name)
                     continue
-                if member.size < 0 or member.size > 16 * 1024 * 1024:
-                    raise ValueError("candidate selected source exceeds per-file size limit")
+                if member.size < 0 or member.size > 512 * 1024 * 1024:
+                    raise ValueError("candidate selected payload exceeds per-file size limit")
                 selected_total += member.size
-                if selected_total > 256 * 1024 * 1024:
-                    raise ValueError("candidate selected sources exceed total size limit")
+                if selected_total > 1024 * 1024 * 1024:
+                    raise ValueError("candidate selected payloads exceed total size limit")
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     raise ValueError(f"cannot stream candidate member {member.name}")
@@ -246,6 +253,9 @@ def inspect_package(path):
         "relevant_source_count": len(sources),
         "changed_relevant_sources": changed,
         "new_or_missing_installed_sources": missing_installed,
+        "relevant_payload_count": len(sources),
+        "changed_relevant_payloads": changed,
+        "new_or_missing_installed_payloads": missing_installed,
         "_source_paths": sorted(sources),
     }
 
