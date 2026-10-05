@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - 'dev/rc5.89-lifecycle-adapter'
 
 permissions:
   contents: write
@@ -64,13 +62,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$GITHUB_REF_TYPE" = "branch" ]; then
-            tag_name="v0.9.0-rc5.89-tg53"
-            target_sha="40b2224d469a707c10facbb81c53b4c921d29a67"
-          else
-            tag_name="${GITHUB_REF_NAME##*/}"
-            target_sha="$GITHUB_SHA"
-          fi
+          tag_name="${GITHUB_REF_NAME##*/}"
           case "$tag_name" in
             v0.9.0-*) release_name="${tag_name#v0.9.0-}" ;;
             v*) release_name="${tag_name#v}" ;;
@@ -88,7 +80,7 @@ jobs:
           else
             gh release create "$tag_name" \
               dist/*.deb dist/SHA256SUMS \
-              --target "$target_sha" \
+              --target "$GITHUB_SHA" \
               --prerelease \
               --title "SharedLvmThin ${release_name}" \
               --notes-file "$notes"
