@@ -1,0 +1,206 @@
+#!/usr/bin/python3
+"""Resolve one exact PVE lifecycle family without nearest-version fallback."""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+
+REGISTRY = "/usr/share/pve-sharedlvmthin/pve-lifecycle-adapters.json"
+CATALOGUE = "/usr/share/pve-sharedlvmthin/pve-compatibility-contracts.json"
+SAFE_ENV = {"LC_ALL": "C", "LANG": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+ID_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?\Z")
+PACKAGES = (
+    "pve-manager", "libpve-storage-perl", "qemu-server",
+    "pve-qemu-kvm", "libpve-common-perl",
+)
+
+
+def strict_load(path):
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle, object_pairs_hook=reject_duplicates)
+
+
+def validate_registry(document, contracts):
+    errors = []
+    if not isinstance(document, dict) or set(document) != {
+            "schema", "catalogue", "operation_groups", "adapters"} \
+            or document.get("schema") != 1 \
+            or document.get("catalogue") != "pve-lifecycle-adapters-v1":
+        return ["unsupported lifecycle adapter registry"]
+    groups = document.get("operation_groups")
+    if not isinstance(groups, list) or not groups \
+            or len(groups) != len(set(groups)) \
+            or any(not isinstance(item, str) or not ID_RE.fullmatch(item)
+                   for item in groups):
+        errors.append("invalid operation group registry")
+        groups = []
+    contract_ids = {
+        row.get("id") for row in contracts.get("contracts", [])
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    }
+    seen_ids = set()
+    signatures = set()
+    adapters = document.get("adapters")
+    if not isinstance(adapters, list) or not adapters:
+        return errors + ["lifecycle adapter registry is empty"]
+    for adapter in adapters:
+        if not isinstance(adapter, dict) or set(adapter) != {
+                "id", "api", "package_versions", "operations"}:
+            errors.append("invalid lifecycle adapter row")
+            continue
+        adapter_id = adapter.get("id")
+        if not isinstance(adapter_id, str) or not ID_RE.fullmatch(adapter_id) \
+                or adapter_id in seen_ids:
+            errors.append(f"invalid or duplicate lifecycle adapter id: {adapter_id}")
+        seen_ids.add(adapter_id)
+        if type(adapter.get("api")) is not int or adapter["api"] not in (14, 15):
+            errors.append(f"{adapter_id}: invalid Storage API")
+        versions = adapter.get("package_versions")
+        if not isinstance(versions, dict) or set(versions) != set(PACKAGES):
+            errors.append(f"{adapter_id}: incomplete package identity")
+            continue
+        normalized = []
+        for package in PACKAGES:
+            allowed = versions.get(package)
+            if not isinstance(allowed, list) or not allowed \
+                    or len(allowed) != len(set(allowed)) \
+                    or any(not isinstance(value, str) or not value for value in allowed):
+                errors.append(f"{adapter_id}: invalid package versions for {package}")
+                continue
+            normalized.append((package, tuple(sorted(allowed))))
+        signature = (adapter.get("api"), tuple(normalized))
+        if signature in signatures:
+            errors.append(f"{adapter_id}: duplicate adapter match signature")
+        signatures.add(signature)
+        operations = adapter.get("operations")
+        if not isinstance(operations, dict) or set(operations) != set(groups):
+            errors.append(f"{adapter_id}: operation coverage is incomplete")
+            continue
+        for group, binding in operations.items():
+            if not isinstance(binding, dict) or set(binding) != {
+                    "contract", "model", "required_preflights", "required_tests"}:
+                errors.append(f"{adapter_id}:{group}: invalid operation binding")
+                continue
+            if binding.get("contract") not in contract_ids \
+                    or not isinstance(binding.get("model"), str) \
+                    or not ID_RE.fullmatch(binding["model"]):
+                errors.append(f"{adapter_id}:{group}: unknown contract or model")
+            for field in ("required_preflights", "required_tests"):
+                values = binding.get(field)
+                if not isinstance(values, list) or not values \
+                        or len(values) != len(set(values)) \
+                        or any(not isinstance(item, str) or not ID_RE.fullmatch(item)
+                               for item in values):
+                    errors.append(f"{adapter_id}:{group}: invalid {field}")
+    return sorted(set(errors))
+
+
+def collect_runtime():
+    api = subprocess.run(
+        ["/usr/bin/perl", "-MPVE::Storage", "-e",
+         "print PVE::Storage::APIVER . qq(\\n) . PVE::Storage::APIAGE"],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=SAFE_ENV, timeout=30,
+    ).stdout.splitlines()
+    if len(api) != 2 or not all(value.isdigit() for value in api):
+        raise ValueError("Storage API identity is malformed")
+    packages = {}
+    for package in PACKAGES:
+        value = subprocess.run(
+            ["/usr/bin/dpkg-query", "-W", "-f=${Version}", package],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=SAFE_ENV, timeout=30,
+        ).stdout
+        if not value or "\n" in value or "\r" in value:
+            raise ValueError(f"package identity is malformed: {package}")
+        packages[package] = value
+    return {"api": int(api[0]), "apiage": int(api[1]), "packages": packages}
+
+
+def validate_runtime(runtime):
+    if not isinstance(runtime, dict) or set(runtime) != {"api", "apiage", "packages"} \
+            or type(runtime.get("api")) is not int \
+            or type(runtime.get("apiage")) is not int \
+            or not isinstance(runtime.get("packages"), dict) \
+            or set(runtime["packages"]) != set(PACKAGES) \
+            or any(not isinstance(value, str) or not value
+                   for value in runtime["packages"].values()):
+        raise ValueError("runtime identity is malformed")
+
+
+def resolve(document, runtime, operation=None):
+    matches = []
+    for adapter in document["adapters"]:
+        if adapter["api"] != runtime["api"]:
+            continue
+        if all(runtime["packages"][package] in allowed
+               for package, allowed in adapter["package_versions"].items()):
+            matches.append(adapter)
+    if len(matches) != 1:
+        return {
+            "verdict": "BLOCKED",
+            "reason": "unknown lifecycle family" if not matches
+                      else "ambiguous lifecycle family",
+            "adapter": None,
+            "operations": {},
+        }
+    adapter = matches[0]
+    operations = adapter["operations"]
+    if operation is not None:
+        operations = {operation: operations[operation]}
+    return {
+        "verdict": "RETEST_REQUIRED",
+        "reason": "adapter identity matched; operation evidence is still required",
+        "adapter": adapter["id"],
+        "operations": operations,
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--registry", default=REGISTRY)
+    parser.add_argument("--catalogue", default=CATALOGUE)
+    parser.add_argument("--runtime-json")
+    parser.add_argument("--operation")
+    args = parser.parse_args(argv)
+    try:
+        registry = strict_load(args.registry)
+        catalogue = strict_load(args.catalogue)
+        errors = validate_registry(registry, catalogue)
+        if errors:
+            raise ValueError("; ".join(errors))
+        if args.operation is not None \
+                and args.operation not in registry["operation_groups"]:
+            raise ValueError("unknown operation group")
+        runtime = strict_load(args.runtime_json) if args.runtime_json else collect_runtime()
+        validate_runtime(runtime)
+        result = resolve(registry, runtime, args.operation)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError,
+            json.JSONDecodeError) as exc:
+        result = {
+            "verdict": "BLOCKED", "reason": str(exc), "adapter": None,
+            "operations": {},
+        }
+        runtime = None
+    output = {
+        "kind": "pve-lifecycle-adapter-resolution",
+        "schema": 1,
+        "runtime": runtime,
+        **result,
+        "upgrade_authorized": False,
+    }
+    print(json.dumps(output, sort_keys=True, indent=2))
+    return 3 if result["verdict"] == "RETEST_REQUIRED" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
