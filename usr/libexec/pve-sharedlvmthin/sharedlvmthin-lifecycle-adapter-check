@@ -54,7 +54,7 @@ def validate_registry(document, contracts):
         return errors + ["lifecycle adapter registry is empty"]
     for adapter in adapters:
         if not isinstance(adapter, dict) or set(adapter) != {
-                "id", "api", "package_versions", "operations"}:
+                "id", "api", "apiage", "package_versions", "operations"}:
             errors.append("invalid lifecycle adapter row")
             continue
         adapter_id = adapter.get("id")
@@ -64,6 +64,8 @@ def validate_registry(document, contracts):
         seen_ids.add(adapter_id)
         if type(adapter.get("api")) is not int or adapter["api"] not in (14, 15):
             errors.append(f"{adapter_id}: invalid Storage API")
+        if type(adapter.get("apiage")) is not int or adapter["apiage"] < 0:
+            errors.append(f"{adapter_id}: invalid Storage API age")
         versions = adapter.get("package_versions")
         if not isinstance(versions, dict) or set(versions) != set(PACKAGES):
             errors.append(f"{adapter_id}: incomplete package identity")
@@ -77,7 +79,7 @@ def validate_registry(document, contracts):
                 errors.append(f"{adapter_id}: invalid package versions for {package}")
                 continue
             normalized.append((package, tuple(sorted(allowed))))
-        signature = (adapter.get("api"), tuple(normalized))
+        signature = (adapter.get("api"), adapter.get("apiage"), tuple(normalized))
         if signature in signatures:
             errors.append(f"{adapter_id}: duplicate adapter match signature")
         signatures.add(signature)
@@ -140,7 +142,8 @@ def validate_runtime(runtime):
 def resolve(document, runtime, operation=None):
     matches = []
     for adapter in document["adapters"]:
-        if adapter["api"] != runtime["api"]:
+        if adapter["api"] != runtime["api"] \
+                or adapter["apiage"] != runtime["apiage"]:
             continue
         if all(runtime["packages"][package] in allowed
                for package, allowed in adapter["package_versions"].items()):

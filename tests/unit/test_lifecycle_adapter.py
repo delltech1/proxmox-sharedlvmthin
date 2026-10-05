@@ -60,6 +60,13 @@ class LifecycleAdapterTests(unittest.TestCase):
         self.assertIsNone(result["adapter"])
         self.assertEqual(result["operations"], {})
 
+    def test_changed_apiage_fails_closed(self):
+        runtime = self.runtime()
+        runtime["apiage"] = 7
+        result = self.module.resolve(self.registry, runtime)
+        self.assertEqual(result["verdict"], "BLOCKED")
+        self.assertIsNone(result["adapter"])
+
     def test_operation_resolution_is_bounded(self):
         result = self.module.resolve(
             self.registry, self.runtime(), "snapshot-vmstate"
