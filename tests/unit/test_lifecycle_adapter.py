@@ -36,7 +36,7 @@ class LifecycleAdapterTests(unittest.TestCase):
             "libpve-common-perl": "9.2.2",
         }
         packages.update(updates)
-        return {"api": 15, "apiage": 1, "packages": packages}
+        return {"api": 15, "apiage": 6, "packages": packages}
 
     def test_registry_is_complete_and_references_real_contracts(self):
         self.assertEqual(

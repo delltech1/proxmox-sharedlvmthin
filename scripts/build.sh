@@ -154,6 +154,7 @@ for PROGRAM in \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-candidate-inspect" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-contract-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-gate" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-lifecycle-adapter-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-aggregate" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-lab-evidence-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-readonly-lab-observe" \
