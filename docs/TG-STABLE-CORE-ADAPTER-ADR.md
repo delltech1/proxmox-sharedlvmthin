@@ -1,6 +1,9 @@
 # TG stable core and PVE adapter boundary
 
-Status: accepted design; not yet a claim of implemented or qualified behaviour.
+Status: accepted design. The read-only exact-family resolver and compatibility-
+gate binding are implemented; storage algorithms and on-disk formats remain
+unchanged. A matched adapter still returns `RETEST_REQUIRED`, never automatic
+qualification.
 
 ## 2026-09-30 independent design review
 
@@ -172,3 +175,17 @@ PVE source patching, or per-package-version adapter is introduced now.
    tests before allowing the coordinator schema to advance.
 6. Consider a durable FIFO/anti-replay protocol only after the above gates are
    qualified and a demonstrated fairness requirement exists.
+
+## Implemented lifecycle-family resolver
+
+`sharedlvmthin lifecycle-adapter-check` resolves the current Storage API and
+the exact versions of the PVE manager, storage, QEMU server, QEMU binary and
+common library stack against `pve-lifecycle-adapters.json`. It has no nearest-
+version fallback. No match or more than one match is `BLOCKED`; exactly one
+match is only `RETEST_REQUIRED` and reports the operation-specific contract,
+preflights and regression tests still required.
+
+The node compatibility gate runs this resolver before QEMU destroy semantics,
+inventory comparison, upgrade checks or candidate inspection. This is a
+compatibility firewall, not a claim that a package tuple is safe: exact tuple,
+loaded-worker, boot/kernel and executable lab evidence remain separate gates.

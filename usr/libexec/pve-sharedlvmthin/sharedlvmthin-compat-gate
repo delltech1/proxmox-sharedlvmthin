@@ -255,6 +255,11 @@ def main(argv=None):
             staging, timeout=60,
         ))
         steps.append(run_step(
+            "lifecycle-adapter",
+            [f"{TOOL_DIR}/sharedlvmthin-lifecycle-adapter-check"],
+            staging, timeout=60, accepted=(3,),
+        ))
+        steps.append(run_step(
             "qmdestroy-contract",
             [f"{TOOL_DIR}/sharedlvmthin-qmdestroy-contract-check"],
             staging, timeout=60,

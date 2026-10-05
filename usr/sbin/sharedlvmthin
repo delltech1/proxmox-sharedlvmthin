@@ -1480,6 +1480,10 @@ case "${1:-doctor}" in
         shift
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-contract-check "$@"
         ;;
+    lifecycle-adapter-check)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-lifecycle-adapter-check "$@"
+        ;;
     compatibility-gate)
         shift
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-gate "$@"
@@ -1664,6 +1668,7 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin update-policy recover-zero-effect"
         echo "  sharedlvmthin candidate-inspect --current-inventory INVENTORY.json PACKAGE.deb [...]"
         echo "  sharedlvmthin contract-check [--catalogue FILE] [--source-root DIR]"
+        echo "  sharedlvmthin lifecycle-adapter-check [--operation GROUP]"
         echo "  sharedlvmthin compatibility-gate --phase pre-upgrade|post-reboot --collection-plan PLAN.json --output-dir DIR [--qualification FILE] [--candidate-deb FILE ...]"
         echo "  sharedlvmthin compatibility-aggregate --collection-plan PLAN.json --node-result DIR/gate-result.json [...] --output FILE"
         echo "  sharedlvmthin lab-evidence-check --catalogue FILE --cluster-aggregate FILE --manifest FILE --evidence-dir DIR --output FILE"

@@ -46,6 +46,16 @@ class CompatibilityGateTests(unittest.TestCase):
         self.assertLess(qmdestroy, inventory)
         self.assertIn("sharedlvmthin-qmdestroy-contract-check", source[qmdestroy:inventory])
 
+    def test_lifecycle_adapter_precedes_all_mutation_semantic_checks(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        adapter = source.index('"lifecycle-adapter"')
+        qmdestroy = source.index('"qmdestroy-contract"')
+        inventory = source.index('"upstream-inventory"', qmdestroy)
+        self.assertLess(adapter, qmdestroy)
+        self.assertLess(qmdestroy, inventory)
+        self.assertIn("sharedlvmthin-lifecycle-adapter-check", source[adapter:qmdestroy])
+        self.assertIn("accepted=(3,)", source[adapter:qmdestroy])
+
     @unittest.skipUnless(os.name == "posix", "process-group gate test requires POSIX")
     def test_step_records_bounded_success_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
