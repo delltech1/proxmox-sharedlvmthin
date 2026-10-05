@@ -118,7 +118,7 @@ probably do not need this project.
 
 ## Release status
 
-`RC5.88 TG53` (`0.9.0~rc5.88~tg53`) is the current experimental pre-release.
+`RC5.89 TG53` (`0.9.0~rc5.89~tg53`) is the current experimental pre-release.
 It is intended exclusively for disposable Proxmox VE 9 labs with
 disposable storage and guest data. Both Thin and Thick Generations remain
 experimental, unsupported and without warranty.
@@ -132,8 +132,8 @@ package-replacement gates, and expanded upgrade/reboot compatibility checks.
 Eager and Lazy aliases may share one dedicated Thick VG. Thin must use a
 different dedicated VG.
 
-The final source candidate passed 2,517 Python tests (one intentional
-environment skip) and 1,674 Perl tests. Both package
+The final source candidate passed 2,526 Python tests (53 environment-dependent
+skips) and 1,674 Perl tests. Both package
 profiles were built reproducibly, inspected for forbidden/private content,
 and compared for shared-payload parity. The same executable lineage previously
 passed a rolling DUAL-package upgrade and controlled reboot with Eager, Lazy
@@ -152,7 +152,8 @@ Unlisted relevant tuples require a reviewed contract check and, when the
 changed path can mutate or carry guest data, targeted disposable-lab
 regression before cluster rollout.
 
-See the [RC5.88 TG53 release notes](docs/RELEASE-NOTES-RC5.88-TG53.md),
+See the [RC5.89 TG53 release notes](docs/RELEASE-NOTES-RC5.89-TG53.md),
+the previous [RC5.88 TG53 release notes](docs/RELEASE-NOTES-RC5.88-TG53.md),
 the previous [RC5.87 TG53 release notes](docs/RELEASE-NOTES-RC5.87-TG53.md),
 the previous [RC5.79 TG53 release notes](docs/RELEASE-NOTES-RC5.79-TG53.md),
 the previous [RC5.75 TG53 release notes](docs/RELEASE-NOTES-RC5.75-TG53.md),
@@ -190,12 +191,12 @@ logical size. See [clone/restore burst capacity](docs/clone-restore-burst-capaci
 
 ## Requirements
 
-- Proxmox VE 9. RC5.88 retains the API 14/15 source contract. Its exact DUAL
+- Proxmox VE 9. RC5.89 retains the API 14/15 source contract. Its exact DUAL
   artifact passed the documented API 15 package/update/reboot and targeted SAN
   lifecycle gates on the exact tuple in the compatibility matrix. This does
   not qualify unlisted tuples or operations. API 14 still requires
   its documented current-artifact package/profile/reboot and SAN replay and
-  therefore remains `RETEST_REQUIRED` for RC5.88 dataplane use.
+  therefore remains `RETEST_REQUIRED` for RC5.89 dataplane use.
   Proxmox VE 8 and earlier are unsupported.
 - The same existing shared LUN, multipath identity, PV and VG visible on every
   participating node.
@@ -264,10 +265,10 @@ Download the `.deb` and `SHA256SUMS` from the GitHub release, then verify it:
 ```bash
 sha256sum --check SHA256SUMS
 # DUAL profile: experimental Thin + Thick Generations
-DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.88.tg53_all.deb"
+DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.89.tg53_all.deb"
 
 # OR Thick-only profile: experimental Thick Generations only
-DEB="$PWD/pve-sharedlvmthin-thick_0.9.0.rc5.88.tg53_all.deb"
+DEB="$PWD/pve-sharedlvmthin-thick_0.9.0.rc5.89.tg53_all.deb"
 
 HASH="$(sha256sum "$DEB" | awk '{print $1}')"
 sudo experiments/thick-generations/package-profile-gate.sh \
@@ -290,7 +291,7 @@ Run the read-only gate first, then replace one node at a time:
 
 ```bash
 sharedlvmthin upgrade-check
-DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.88.tg53_all.deb"
+DEB="$PWD/pve-sharedlvmthin_0.9.0.rc5.89.tg53_all.deb"
 HASH="$(sha256sum "$DEB" | awk '{print $1}')"
 sudo experiments/thick-generations/package-profile-gate.sh \
   --package "$DEB" --sha256 "$HASH" \
