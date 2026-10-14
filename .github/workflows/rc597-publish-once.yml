@@ -1,0 +1,63 @@
+name: Publish RC5.97 verified CI artifacts
+on:
+  push:
+    branches:
+      - 'publish/rc5.97-tg53'
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 5ca77100dbc313db473cda3271646918126445ee
+      - name: Verify exact green source and retrieve its CI packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          target='5ca77100dbc313db473cda3271646918126445ee'
+          run_id='38574828247'
+          test "$GITHUB_REF_NAME" = 'publish/rc5.97-tg53'
+          test "$(git rev-parse HEAD)" = "$target"
+          test "$(git rev-parse 'HEAD^{tree}')" = '94f3f7e87f283ce33042570d6caa355a7cb1bdb2'
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq .commit.sha)" = "$target"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$run_id" > verified-run.json
+          python3 -c 'import json; r=json.load(open("verified-run.json")); assert r["id"]==38574828247 and r["head_sha"]=="c6fac385bbd441f5d4eac5f6b21cb0d66c81a72a"; assert r["head_branch"]=="dev/rc5.97-api14-16-bridge" and r["event"]=="push"; assert r["status"]=="completed" and r["conclusion"]=="success"; assert r["path"]==".github/workflows/ci.yml"'
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name pve-sharedlvmthin-package-candidates --dir verified-candidates
+          test "$(find verified-candidates -type f -name '*.deb' | wc -l)" -eq 2
+          dual="$(find verified-candidates -type f -name 'pve-sharedlvmthin_0.9.0~rc5.97~tg53_all.deb')"
+          thick="$(find verified-candidates -type f -name 'pve-sharedlvmthin-thick_0.9.0~rc5.97~tg53_all.deb')"
+          test -f "$dual"
+          test -f "$thick"
+          sh scripts/check-release.sh "$dual"
+          sh scripts/check-release.sh "$thick"
+          sh scripts/compare-package-profiles.sh "$dual" "$thick"
+          mkdir dist
+          cp "$dual" dist/pve-sharedlvmthin_0.9.0.rc5.97.tg53_all.deb
+          cp "$thick" dist/pve-sharedlvmthin-thick_0.9.0.rc5.97.tg53_all.deb
+          test "$(dpkg-deb -f "$dual" Version)" = '0.9.0~rc5.97~tg53'
+          test "$(dpkg-deb -f "$thick" Version)" = '0.9.0~rc5.97~tg53'
+          printf '%s\n' \
+            '47f0eb1cb5d5efc7982d1c537dcbd3027666443ab7bc21d39fba9312318eb95e  dist/pve-sharedlvmthin_0.9.0.rc5.97.tg53_all.deb' \
+            '8f39ce3ba9b8247cb6d51034bfd15318919bc361009ddec0e4aa9959450e0e22  dist/pve-sharedlvmthin-thick_0.9.0.rc5.97.tg53_all.deb' | sha256sum --check
+          (cd dist && sha256sum ./*.deb > SHA256SUMS)
+      - name: Publish exact immutable prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          target='5ca77100dbc313db473cda3271646918126445ee'
+          tag_name='v0.9.0-rc5.97-tg53'
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq .commit.sha)" = "$target"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" > existing-releases.json
+          python3 scripts/assert-release-absent.py existing-releases.json "$tag_name"
+          gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/$tag_name" > existing-tags.json
+          python3 -c 'import json,sys; rows=json.load(open(sys.argv[1])); assert isinstance(rows,list); assert not any(r.get("ref")=="refs/tags/"+sys.argv[2] for r in rows), "tag already exists"' existing-tags.json "$tag_name"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/$tag_name" -f sha="$target"
+          gh release create "$tag_name" dist/*.deb dist/SHA256SUMS \
+            --verify-tag --target "$target" --prerelease \
+            --title "BASTRIX SharedLVM RC5.97 TG53" \
+            --notes-file docs/RELEASE-NOTES-RC5.97-TG53.md
