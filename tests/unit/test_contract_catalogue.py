@@ -132,7 +132,7 @@ class ContractCatalogueTests(unittest.TestCase):
     def test_lazy_move_admission_has_exact_upstream_and_behavior_bindings(self):
         coverage = self.document["source_dependency_coverage"]["perl_symbols"]
         symbols = self.module.inventory_literal_tuple(ROOT, "REQUIRED_PVE_SYMBOLS")
-        for symbol in ("PVE::QemuServer::clone_disk", "PVE::QemuServer::OVMF::create_efidisk", "PVE::Storage::vdisk_alloc",
+        for symbol in ("PVE::QemuServer::clone_disk", "PVE::QemuServer::ImportDisk::do_import", "PVE::QemuServer::OVMF::create_efidisk", "PVE::Storage::vdisk_alloc",
                        "PVE::Storage::activate_volumes",
                        "PVE::Storage::deactivate_volumes"):
             self.assertEqual(coverage[symbol], "pve.qemu-raw-lifecycle")
@@ -140,6 +140,11 @@ class ContractCatalogueTests(unittest.TestCase):
         contract = next(item for item in self.document["contracts"]
                         if item["id"] == "pve.qemu-raw-lifecycle")
         self.assertIn("tests/unit/lazy_move_admission.t", contract["static_tests"])
+        self.assertIn("tests/unit/lazy_import_refusal.t", contract["static_tests"])
+        self.assertIn("/usr/share/perl5/PVE/QemuServer/ImportDisk.pm",
+                      self.module.inventory_literal_tuple(ROOT, "CRITICAL_FILES"))
+        self.assertIn("PVE/QemuServer/ImportDisk.pm",
+                      self.module.inventory_literal_tuple(ROOT, "LOADED_PVE_MODULES"))
 
     def test_runtime_hook_without_contract_binding_fails_closed(self):
         document = json.loads(json.dumps(self.document))

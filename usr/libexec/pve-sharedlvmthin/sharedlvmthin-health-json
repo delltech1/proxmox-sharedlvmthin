@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
 import json
+import importlib.machinery
+import importlib.util
 import glob
 import hashlib
 import os
@@ -14,6 +16,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 sys.dont_write_bytecode = True
 from sharedlvmthin_pve_inventory import collect as collect_pve_inventory
 
@@ -280,11 +283,11 @@ def evaluate_api_compatibility(api, apiage, plugin_api_value):
     if api is None or plugin_api_value is None:
         return "FAIL", "Unable to determine PVE/plugin Storage API"
 
-    if api < 14 or api > 15:
+    if api < 14 or api > 16:
         return (
             "FAIL",
             f"PVE Storage API {api} is outside tested SharedLvmThin "
-            "range 14..15",
+            "range 14..16",
         )
 
     minimum_accepted = api - (apiage or 0)
@@ -601,7 +604,7 @@ def lvm_volume_inventory(vg):
         "-o",
         "lv_name,lv_size,lv_attr,lv_tags,seg_monitor,"
         "data_percent,metadata_percent,lv_health_status,lv_check_needed,"
-        "lv_metadata_size,zero,discards,lv_autoactivation,lv_when_full",
+        "lv_metadata_size,zero,discards,lv_autoactivation,lv_when_full,lv_uuid",
         vg,
     ])
 
@@ -911,10 +914,79 @@ def thick_worker_state(
     return "UNKNOWN"
 
 
+def health_object_identity(inventory):
+    if inventory.get("rc") != 0:
+        raise ValueError("health object inventory is unavailable")
+    rows = []
+    for line in (inventory.get("output") or "").splitlines():
+        if not line.strip():
+            continue
+        fields = [field.strip() for field in line.split("|")]
+        if len(fields) != 15 or not fields[0] or not fields[14]:
+            raise ValueError("health object identity is incomplete")
+        rows.append((fields[0], fields[1], fields[2], fields[3], fields[14]))
+    if len({row[0] for row in rows}) != len(rows):
+        raise ValueError("duplicate health object identity")
+    return tuple(sorted(rows))
+
+
+def active_package_health_observer(sid, vg, expected_inventory, expected_references):
+    """Diagnostic reuse of the exact package audit, never mutation authority."""
+    token = os.environ.get("SLT_PACKAGE_FENCE_FD")
+    if token is None:
+        return None
+    from sharedlvmthin_package_executor_fence import read_sealed_context
+    if not token.isdecimal() or len(token) > 10:
+        raise ValueError("invalid package health context descriptor")
+    fd = int(token)
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    context = read_sealed_context(fd, boot)
+    checker = Path(__file__).resolve().parent / "sharedlvmthin-recovery-check"
+    if not checker.is_file() or checker.is_symlink():
+        raise ValueError("exact package health checker unavailable")
+    loader = importlib.machinery.SourceFileLoader("health_package_checker", str(checker))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    carrier = importlib.util.module_from_spec(spec)
+    loader.exec_module(carrier)
+    from sharedlvmthin_package_preservation import collect_snapshot, require_unchanged
+    before = collect_snapshot(carrier, platform.node(), boot)
+    scopes = {tuple(row) for row in context["scopes"]}
+    if not set(before["scopes"]).issubset(scopes):
+        raise ValueError("health preservation scope is incomplete")
+    expected_identity = health_object_identity(expected_inventory)
+    def verify_health_snapshot():
+        if health_object_identity(lvm_volume_inventory(vg)) != expected_identity:
+            raise ValueError("health anchor/object identity changed around package audit")
+        if pve_volume_reference_index(include_current_sizes=True) != expected_references:
+            raise ValueError("health PVE reference identity changed around package audit")
+    verify_health_snapshot()
+    result = subprocess.run(["/usr/bin/python3", str(checker), "--package-preservation", sid],
+        env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "LANG": "C",
+             "SLT_PACKAGE_FENCE_FD": token},
+        pass_fds=(*context["fds"], fd), capture_output=True, text=True, timeout=300)
+    values = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key == "DETAIL":
+            continue
+        if key in values:
+            raise ValueError("duplicate package health evidence field")
+        values[key] = value
+    if result.returncode != 0 or any(values.get(key) != value for key, value in {
+            "STORAGE_ID": sid, "STATE": "PACKAGE_PRESERVATION_READY",
+            "PACKAGE_PRESERVATION_READY": "YES", "SAFE_FOR_MUTATION": "NO"}.items()):
+        raise ValueError("active Lazy package health preservation is unproven")
+    current_boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    read_sealed_context(fd, current_boot)
+    require_unchanged(before, collect_snapshot(carrier, platform.node(), current_boot))
+    verify_health_snapshot()
+    return lambda observed_sid, volume: (observed_sid, volume) in scopes
+
+
 def evaluate_thick_anchor_references(
     sid, anchors, worker_state=None, reference_index=None,
     current_size_index=None, reference_evidence_errors=None,
-    vg_extent_size=None,
+    vg_extent_size=None, active_package_proof=None,
 ):
     """Classify anchors without mutating or guessing cleanup eligibility."""
     results = []
@@ -933,8 +1005,10 @@ def evaluate_thick_anchor_references(
         }
         phase = anchor.get("phase")
         transaction = anchor.get("transaction")
-        stable_phase = phase in {"MATERIALIZED", "LAZY_DORMANT"}
-        stable_state = "MATERIALIZED" if phase == "MATERIALIZED" else "LAZY_DORMANT"
+        active_preserved = (phase == "LAZY_ACTIVE" and active_package_proof is not None
+                            and active_package_proof(sid, volume) is True)
+        stable_phase = phase in {"MATERIALIZED", "LAZY_DORMANT"} or active_preserved
+        stable_state = phase if stable_phase else "RECOVERY_REQUIRED"
         if not stable_phase:
             observed_worker = (
                 worker_state(transaction, sid, volume)
@@ -1082,6 +1156,16 @@ def evaluate_thick_anchor_references(
             item["status"] = "PASS"
             item["materialization_state"] = stable_state
             item["reason"] = "volume has exactly one PVE configuration reference"
+        if active_preserved:
+            item["package_preservation_only"] = True
+            item["safe_for_mutation"] = False
+            item["remote_runtime"] = "NOT_CERTIFIED"
+            if item.get("status") == "PASS":
+                item["status"] = "WARN"
+                item["reason"] += (
+                    "; package graph preservation observed under exact executor scope; "
+                    "not an ownership, remote runtime health or mutation grant"
+                )
         results.append(item)
     return results
 
@@ -2001,6 +2085,10 @@ for storage in parse_storage_cfg():
                     sid, thick_anchors, worker_state, pve_reference_index,
                     pve_current_size_index, pve_reference_evidence_errors,
                     item["vg_info"].get("extent_size_bytes"),
+                    active_package_health_observer(sid, vg, lvm_volume_inventory_cache[vg],
+                        (pve_reference_index, pve_current_size_index, pve_reference_evidence_errors)) if any(
+                        anchor.get("phase") == "LAZY_ACTIVE" for anchor in thick_anchors
+                    ) else None,
                 )
                 materialization_limit = storage.get(
                     "tg_max_active_materializations", 4

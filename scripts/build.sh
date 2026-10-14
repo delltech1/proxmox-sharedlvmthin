@@ -24,6 +24,13 @@ trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 mkdir -p "$OUT"
 cp -a "$ROOT/DEBIAN" "$ROOT/etc" "$ROOT/lib" "$ROOT/usr" "$STAGE/"
 cp "$CONTROL" "$STAGE/DEBIAN/control"
+# Ship the same ordinary gate used by source-based bootstrap. The automatic
+# preservation wrapper derives complete scope; the gate remains the sole
+# package dispatch/settlement implementation for both profiles.
+cp "$ROOT/experiments/thick-generations/package-profile-gate.sh" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-profile-gate"
+cp "$ROOT/experiments/thick-generations/package-post-reboot-gate.sh" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-post-reboot-gate"
 # preinst runs before dpkg unpacks the payload and cannot safely rely on the
 # older installed recovery checker. Ship the exact candidate checker inside
 # the control archive so disabled-storage state is audited with candidate
@@ -32,6 +39,10 @@ cp "$ROOT/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check" \
     "$STAGE/DEBIAN/sharedlvmthin-candidate-recovery-check"
 cp "$ROOT/usr/libexec/pve-sharedlvmthin/sharedlvmthin_pve_inventory.py" \
     "$STAGE/DEBIAN/sharedlvmthin_pve_inventory.py"
+cp "$ROOT/usr/libexec/pve-sharedlvmthin/sharedlvmthin_lazy_package_proof.py" \
+    "$STAGE/DEBIAN/sharedlvmthin_lazy_package_proof.py"
+cp "$ROOT/usr/libexec/pve-sharedlvmthin/sharedlvmthin_package_executor_fence.py" \
+    "$STAGE/DEBIAN/sharedlvmthin_package_executor_fence.py"
 cp "$ROOT/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy" \
     "$STAGE/DEBIAN/sharedlvmthin-candidate-update-policy"
 cp "$ROOT/usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py" \
@@ -137,6 +148,9 @@ for PROGRAM in \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-compat-check" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-preservation" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-profile-gate" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-post-reboot-gate" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upstream-inventory" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-plan" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-snapshot-observe" \

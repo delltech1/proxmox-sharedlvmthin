@@ -30,18 +30,36 @@ use PVE::SharedLvmThinThick qw(
 
 use base qw(PVE::Storage::Plugin);
 
-sub api {
-    # Advertise the exact host API only inside the explicitly qualified range.
-    # This avoids a false "older storage API" warning on API 15 without ever
-    # claiming compatibility with an unaudited future API.
-    my $runtime = __PACKAGE__->_runtime_storage_api();
-    die "PVE Storage API $runtime is outside the tested SharedLvmThin range 14..15\n"
-        if $runtime < 14 || $runtime > 15;
-    return $runtime;
+use constant MIN_TESTED_PVE_STORAGE_API => 14;
+use constant MAX_TESTED_PVE_STORAGE_API => 16;
+
+# API16's generic name/format reconciliation must preserve our raw LV names
+# (including vmstate names with dots), never append a file-format extension
+# or introduce qcow2/vmdk support on a raw block backend.
+use constant FORMAT_EXTENSION => { raw => '' };
+
+sub get_parsed_format {
+    my ($class, $name) = @_;
+    return ($class->parse_volname($name))[6];
 }
 
-use constant MIN_TESTED_PVE_STORAGE_API => 14;
-use constant MAX_TESTED_PVE_STORAGE_API => 15;
+sub volname_with_format {
+    my ($class, $name, $format) = @_;
+    die "unsupported format '$format'\n" if !defined($format) || $format ne 'raw';
+    $class->parse_volname($name);
+    return $name;
+}
+
+sub api {
+    # Advertise the exact host API only inside the explicitly qualified range.
+    # This avoids a false "older storage API" warning without ever
+    # claiming compatibility with an unaudited future API.
+    my $runtime = __PACKAGE__->_runtime_storage_api();
+    die "PVE Storage API $runtime is outside the tested SharedLvmThin range "
+        . MIN_TESTED_PVE_STORAGE_API . '..' . MAX_TESTED_PVE_STORAGE_API . "\n"
+        if $runtime < MIN_TESTED_PVE_STORAGE_API || $runtime > MAX_TESTED_PVE_STORAGE_API;
+    return $runtime;
+}
 
 # scripts/build.sh replaces this template token in the staged package only.
 # A long-lived PVE worker retains the value it actually loaded, while the
@@ -1184,6 +1202,20 @@ sub _lazy_prepare_move_allocation {
     return $context;
 }
 
+sub _lazy_refuse_unqualified_native_import {
+    my ($class, $move_context, $restore_context) = @_;
+    return if $move_context || $restore_context;
+    my $frames = $class->_thick_destroy_call_frames();
+    return if !grep {
+        ($_->{sub} // '') eq 'PVE::QemuServer::ImportDisk::do_import'
+    } @$frames;
+    # Native ImportDisk activates its destination before publishing a PVE
+    # reference. It has neither the qualified move nor restore authority.
+    # Refuse before creating objects; recognizing this frame grants nothing.
+    die "Lazy Thick native image import is not qualified; use an explicit Eager destination. "
+        . "No Lazy destination allocation was issued.\n";
+}
+
 sub _lazy_restore_config_path {
     return "/var/tmp/vzdumptmp$$/qemu-server.conf";
 }
@@ -1684,10 +1716,32 @@ sub _dm_kernel_inventory {
         unshift @command,
             '/usr/bin/timeout', '--foreground', '--kill-after=5s', "${command_timeout}s";
     }
-    my $lines = _command_lines(
-        \@command,
-        'reading authoritative kernel device-mapper inventory failed',
-    );
+    my $lines;
+    for my $attempt (1 .. 3) {
+        my $observation = {};
+        my $ok = eval {
+            $lines = _command_lines(
+                \@command,
+                'reading authoritative kernel device-mapper inventory failed',
+                $observation,
+            );
+            1;
+        };
+        last if $ok;
+        my $error = $@;
+        # dmsetup enumerates maps before querying their info. An unrelated
+        # concurrent removal may make that read-only enumeration exit 1.
+        # Discard ALL partial rows and reobserve, only after a completed exact
+        # ENODEV diagnostic. Timeouts, signals, unknown errors never retry.
+        my $stderr = $observation->{stderr} // [];
+        die $error if $attempt == 3
+            || ($observation->{exitstatus} // -1) != 1
+            || !(@$stderr == 1 && $stderr->[0] eq 'Device does not exist.'
+                || @$stderr == 2 && $stderr->[0] eq 'Device does not exist.'
+                    && $stderr->[1] eq 'Command failed.');
+        warn "device-mapper inventory changed during completed read; reobserving ($attempt/3)\n";
+        Time::HiRes::sleep(0.02);
+    }
     my $inventory = {};
     for my $line (@$lines) {
         die "kernel device-mapper inventory contains a malformed row\n"
@@ -2049,7 +2103,11 @@ sub _thick_verify_clone_status {
     die "dm-clone status counters for '$mapper' are internally impossible\n"
         if !$metadata_block || !$metadata_total || !$total
         || $metadata_used > $metadata_total
-        || $hydrated > $total || $hydrating > $total - $hydrated;
+        || $hydrated > $total || $hydrating > $total;
+    # Kernel hydration_complete() marks the region hydrated before decrementing
+    # hydrations_in_flight. Status counters are separate observations, not one
+    # atomic partition; their sum may exceed total during completion. Pivot
+    # still requires both every region hydrated AND zero in-flight work below.
     die "dm-clone status geometry for '$mapper' does not match the signed transition\n"
         if $status_sectors != $expected_sectors || $region != $expected_region
         || $total != int(($expected_sectors + $expected_region - 1) / $expected_region);
@@ -3907,11 +3965,9 @@ sub _lazy_recover_v5_pivot_locked {
 }
 
 sub _command_lines {
-    my ($command, $errmsg) = @_;
+    my ($command, $errmsg, $observation) = @_;
     my @lines;
-
-    run_command(
-        $command,
+    my %options = (
         outfunc => sub {
             my ($line) = @_;
             $line =~ s/^\s+|\s+$//g;
@@ -3919,6 +3975,25 @@ sub _command_lines {
         },
         errmsg => $errmsg,
     );
+    if (defined($observation)) {
+        die "invalid read-only command observation\n" if ref($observation) ne 'HASH';
+        $observation->{stderr} = [];
+        # PVE run_command's errmsg override throws even with noerr enabled.
+        # Format our own error only after collecting the completed exit code.
+        delete $options{errmsg};
+        $options{noerr} = 1;
+        $options{errfunc} = sub {
+            my ($line) = @_;
+            $line =~ s/^\s+|\s+$//g;
+            push @{$observation->{stderr}}, $line if length($line);
+        };
+    }
+    my $exitstatus = run_command($command, %options);
+    if (defined($observation)) {
+        $observation->{exitstatus} = $exitstatus;
+        die "$errmsg: read-only probe exited with status $exitstatus\n"
+            if !defined($exitstatus) || $exitstatus != 0;
+    }
 
     return \@lines;
 }
@@ -5776,6 +5851,7 @@ sub _lazy_alloc_image {
     my $restore_context = $class->_lazy_prepare_restore_allocation($storeid, $scfg, $vmid);
     die "Lazy allocation matched both move and restore authorities\n"
         if $move_context && $restore_context;
+    $class->_lazy_refuse_unqualified_native_import($move_context, $restore_context);
     die "invalid Lazy Thick allocation size\n"
         if !defined($size) || $size !~ /^\d+$/ || $size < 1;
 
@@ -6500,6 +6576,16 @@ sub _forced_single_node_quorum_from_evidence {
         && !$qdevice_configured;
 }
 
+sub _live_votequorum_status_lines {
+    # pvecm status execs this exact read-only command on supported PVE releases.
+    # Avoid loading the complete pvecm Perl CLI on every admission observation.
+    # Each call still obtains fresh evidence; never cache quorum across waits.
+    return _command_lines(
+        ['/usr/sbin/corosync-quorumtool', '-siH'],
+        'reading cluster vote state failed',
+    );
+}
+
 sub _verify_no_forced_single_node_quorum {
     return 1 if !-e '/etc/pve/corosync.conf';
 
@@ -6513,10 +6599,7 @@ sub _verify_no_forced_single_node_quorum {
     return 1 if $configured_nodes < 2;
     my $qdevice_configured = $config =~ /^\s*quorum\s*\{.*?^\s*device\s*\{/ms ? 1 : 0;
 
-    my $lines = _command_lines(
-        ['/usr/bin/pvecm', 'status'],
-        'reading cluster vote state failed',
-    );
+    my $lines = _live_votequorum_status_lines();
     my $status = join("\n", @$lines);
     my ($online_nodes) = $status =~ /^Nodes:\s+(\d+)/m;
     my ($expected_votes) = $status =~ /^Expected votes:\s+(\d+)/m;

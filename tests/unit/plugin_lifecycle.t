@@ -163,7 +163,7 @@ local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
     die "$command_failure\n"
         if defined($command_failure)
         && join(' ', @$command) =~ $command_failure;
-    return;
+    return 0;
 };
 local *PVE::Storage::Custom::SharedLvmThinPlugin::cluster_lock_storage = sub {
     my ($class, $storeid, $shared, $timeout, $code) = @_;
@@ -1534,34 +1534,34 @@ subtest 'thin-pool health gate blocks mutation before repair or mutation command
     is(scalar(@commands), 0, 'health failures executed zero LVM mutation or repair commands');
 };
 
-subtest 'explicit PVE Storage API 14..15 compatibility policy' => sub {
-    for my $api (14, 15) {
+subtest 'explicit PVE Storage API 14..16 compatibility policy' => sub {
+    for my $api (14, 15, 16) {
         no warnings 'redefine';
         local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_storage_api = sub { return $api; };
         is($class->api(), $api, "plugin declares exact qualified host API $api");
     }
 
-    for my $api (13, 16) {
+    for my $api (13, 17) {
         no warnings 'redefine';
         local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_storage_api = sub { return $api; };
         my $ok = eval { $class->api(); 1 };
         ok(!$ok, "plugin registration fails closed on API $api");
-        like($@, qr/outside the tested SharedLvmThin range 14\.\.15/, 'registration reports explicit tested range');
+        like($@, qr/outside the tested SharedLvmThin range 14\.\.16/, 'registration reports explicit tested range');
     }
 
-    for my $api (14, 15) {
+    for my $api (14, 15, 16) {
         no warnings 'redefine';
         local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_storage_api = sub { return $api; };
         my $ok = eval { $verify_mutation_quorum->($class, 'local-test', { shared => 0 }); 1 };
         ok($ok, "runtime API $api allows mutation preflight");
     }
 
-    for my $api (13, 16) {
+    for my $api (13, 17) {
         no warnings 'redefine';
         local *PVE::Storage::Custom::SharedLvmThinPlugin::_runtime_storage_api = sub { return $api; };
         my $ok = eval { $verify_mutation_quorum->($class, 'local-test', { shared => 0 }); 1 };
         ok(!$ok, "runtime API $api fails closed");
-        like($@, qr/outside the tested SharedLvmThin range 14\.\.15/, 'explicit tested range reported');
+        like($@, qr/outside the tested SharedLvmThin range 14\.\.16/, 'explicit tested range reported');
     }
 };
 
@@ -1910,6 +1910,33 @@ subtest 'standalone non-shared mutation does not require cluster quorum' => sub 
     local *PVE::Cluster::check_cfs_quorum = sub { die "must not be called\n"; };
     ok($verify_mutation_quorum->($class, 'sharedthin-test', { %$scfg, shared => 0 }), 'non-shared allowed');
     is(scalar(@commands), 0, 'non-shared preflight is read-only');
+};
+
+subtest 'votequorum observations use fresh exact read-only native probes' => sub {
+    no warnings 'redefine';
+    my @calls;
+    my @samples = (['Nodes: 4', 'Expected votes: 4'], ['Nodes: 1', 'Expected votes: 1']);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        my ($argv, $error) = @_;
+        push @calls, [@$argv];
+        is($error, 'reading cluster vote state failed', 'probe failure remains explicit');
+        return shift @samples;
+    };
+    is_deeply(PVE::Storage::Custom::SharedLvmThinPlugin::_live_votequorum_status_lines(),
+        ['Nodes: 4', 'Expected votes: 4'], 'first observation preserved');
+    is_deeply(PVE::Storage::Custom::SharedLvmThinPlugin::_live_votequorum_status_lines(),
+        ['Nodes: 1', 'Expected votes: 1'], 'changed live evidence is not cached');
+    is_deeply(\@calls, [(['/usr/sbin/corosync-quorumtool', '-siH']) x 2],
+        'both observations issue exact non-mutating native argv');
+};
+
+subtest 'votequorum command failures never produce cached success' => sub {
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        die "reading cluster vote state failed\n";
+    };
+    eval { PVE::Storage::Custom::SharedLvmThinPlugin::_live_votequorum_status_lines() };
+    like($@, qr/reading cluster vote state failed/, 'unavailable vote evidence fails closed');
 };
 
 subtest 'forced expected-votes override classification is topology-aware' => sub {
@@ -5422,6 +5449,17 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         "/usr/bin/timeout --foreground --kill-after=5s 120s /sbin/dmsetup status --noflush $mapper",
         'configured clone status deadline reaches the process boundary');
 
+    @reads = (['0 8192 clone 8 70/5120 8 1023/1024 2 0 0 rw']);
+    is_deeply([$class->_thick_verify_clone_status($mapper, 0, 8192, 8, 30)], [1023, 1024, 2],
+        'independently sampled completion counters need not form an atomic partition');
+    @reads = (['0 8192 clone 8 70/5120 8 1024/1024 1 0 0 rw']);
+    is_deeply([$class->_thick_verify_clone_status($mapper, 0, 8192, 8, 30)], [1024, 1024, 1],
+        'last completed region can still have an in-flight completion descriptor');
+    @reads = (['0 8192 clone 8 70/5120 8 1024/1024 1 0 0 rw']);
+    eval { $class->_thick_verify_clone_status($mapper, 1, 8192, 8, 30) };
+    like($@, qr/hydration .* is incomplete/,
+        'all hydrated with remaining in-flight work still cannot authorize pivot');
+
     @reads = (['0 8192 clone 8 70/5120 8 4/1024 1 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 ro']);
     eval { $class->_thick_verify_clone_status($mapper, 0, 8192, 8, 30) };
     like($@, qr/metadata is read-only; automatic hydration or pivot is unsafe/,
@@ -5444,7 +5482,7 @@ subtest 'thick clone frontend and hydration wait require exact evidence' => sub 
         ['0 8192 clone 8 70/5120 8 4/512 1 0 0 rw', 8192, 8, 'wrong total regions'],
         ['0 8192 clone 8 70/5120 8 1025/1024 0 0 0 rw', 8192, 8, 'impossible hydrated count'],
         ['0 8192 clone 8 5121/5120 8 4/1024 1 0 0 rw', 8192, 8, 'impossible metadata use'],
-        ['0 8192 clone 8 70/5120 8 1023/1024 2 0 0 rw', 8192, 8, 'overlapping hydration counters'],
+        ['0 8192 clone 8 70/5120 8 1023/1024 1025 0 0 rw', 8192, 8, 'impossible in-flight count'],
     ) {
         @reads = ([$case->[0]]);
         eval { $class->_thick_verify_clone_status($mapper, 0, $case->[1], $case->[2], 30) };

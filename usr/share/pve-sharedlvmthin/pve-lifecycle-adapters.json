@@ -74,5 +74,89 @@
         "backup-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api15-qemu9210-backup-v1", "required_preflights": ["compat-check"], "required_tests": ["backup-restore", "vma-file-thin-eager-lazy"]}
       }
     }
+    ,{
+      "id": "pve9-api16-qemu9210-v1",
+      "api": 16,
+      "apiage": 7,
+      "package_versions": {
+        "pve-manager": ["9.2.21"],
+        "libpve-storage-perl": ["9.1.12"],
+        "qemu-server": ["9.2.10"],
+        "pve-qemu-kvm": ["11.0.3-4"],
+        "libpve-common-perl": ["9.2.3"]
+      },
+      "operations": {
+        "activation-deactivation": {"contract": "lvm.inventory-and-mutation", "model": "pve9-api16-activation-v1", "required_preflights": ["compat-check"], "required_tests": ["activation-deactivation", "post-reboot-san"]},
+        "allocation-removal": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-raw-allocation-v1", "required_preflights": ["compat-check", "qmdestroy-contract-check"], "required_tests": ["allocate-free", "api16-raw-name-reconciliation"]},
+        "snapshot-vmstate": {"contract": "thick.snapshot-generation", "model": "pve9-api16-snapshot-v1", "required_preflights": ["snapshot-preflight", "snapshot-observe"], "required_tests": ["ram-snapshot-rollback-delete", "snapshot-no-nic-e1000-and-qmp-failure"]},
+        "resize": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-resize-v1", "required_preflights": ["volume-operation-preflight"], "required_tests": ["running-and-stopped-resize", "thin-eager-lazy-grow-zero-tail"]},
+        "move-import-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-move-restore-v1", "required_preflights": ["storage-move-preflight"], "required_tests": ["raw-import-export-framing-hash", "vma-file-thin-eager-lazy"]},
+        "migration": {"contract": "pve.migration-offline-live", "model": "pve9-api16-migration-v1", "required_preflights": ["migration-preflight"], "required_tests": ["offline-migration", "live-migration", "mixed-api15-api16-migration"]},
+        "backup-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-backup-v1", "required_preflights": ["compat-check"], "required_tests": ["backup-restore", "vma-file-thin-eager-lazy"]}
+      }
+    }
+    ,{
+      "id": "pve9-api16-qemu9211-v1",
+      "api": 16,
+      "apiage": 7,
+      "package_versions": {
+        "pve-manager": ["9.2.21"],
+        "libpve-storage-perl": ["9.1.13"],
+        "qemu-server": ["9.2.11"],
+        "pve-qemu-kvm": ["11.0.3-4"],
+        "libpve-common-perl": ["9.2.3"]
+      },
+      "operations": {
+        "activation-deactivation": {"contract": "lvm.inventory-and-mutation", "model": "pve9-api16-activation-v1", "required_preflights": ["compat-check"], "required_tests": ["activation-deactivation", "post-reboot-san"]},
+        "allocation-removal": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-raw-allocation-v1", "required_preflights": ["compat-check", "qmdestroy-contract-check"], "required_tests": ["allocate-free", "api16-raw-name-reconciliation"]},
+        "snapshot-vmstate": {"contract": "thick.snapshot-generation", "model": "pve9-api16-snapshot-v1", "required_preflights": ["snapshot-preflight", "snapshot-observe"], "required_tests": ["ram-snapshot-rollback-delete", "snapshot-no-nic-e1000-and-qmp-failure"]},
+        "resize": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-resize-v1", "required_preflights": ["volume-operation-preflight"], "required_tests": ["running-and-stopped-resize", "thin-eager-lazy-grow-zero-tail"]},
+        "move-import-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-move-restore-v1", "required_preflights": ["storage-move-preflight"], "required_tests": ["raw-import-export-framing-hash", "vma-file-thin-eager-lazy"]},
+        "migration": {"contract": "pve.migration-offline-live", "model": "pve9-api16-migration-v1", "required_preflights": ["migration-preflight"], "required_tests": ["offline-migration", "live-migration", "mixed-api15-api16-migration"]},
+        "backup-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-backup-v1", "required_preflights": ["compat-check"], "required_tests": ["backup-restore", "vma-file-thin-eager-lazy"]}
+      }
+    }
+    ,{
+      "id": "pve9-api16-qemu9210-manager9218-v1",
+      "api": 16,
+      "apiage": 7,
+      "package_versions": {
+        "pve-manager": ["9.2.18"],
+        "libpve-storage-perl": ["9.1.12"],
+        "qemu-server": ["9.2.10"],
+        "pve-qemu-kvm": ["11.0.3-3"],
+        "libpve-common-perl": ["9.2.3"]
+      },
+      "operations": {
+        "activation-deactivation": {"contract": "lvm.inventory-and-mutation", "model": "pve9-api16-activation-v1", "required_preflights": ["compat-check"], "required_tests": ["activation-deactivation", "post-reboot-san"]},
+        "allocation-removal": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-raw-allocation-v1", "required_preflights": ["compat-check", "qmdestroy-contract-check"], "required_tests": ["allocate-free", "api16-raw-name-reconciliation"]},
+        "snapshot-vmstate": {"contract": "thick.snapshot-generation", "model": "pve9-api16-snapshot-v1", "required_preflights": ["snapshot-preflight", "snapshot-observe"], "required_tests": ["ram-snapshot-rollback-delete", "snapshot-no-nic-e1000-and-qmp-failure"]},
+        "resize": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-resize-v1", "required_preflights": ["volume-operation-preflight"], "required_tests": ["running-and-stopped-resize", "thin-eager-lazy-grow-zero-tail"]},
+        "move-import-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-move-restore-v1", "required_preflights": ["storage-move-preflight"], "required_tests": ["raw-import-export-framing-hash", "vma-file-thin-eager-lazy"]},
+        "migration": {"contract": "pve.migration-offline-live", "model": "pve9-api16-migration-v1", "required_preflights": ["migration-preflight"], "required_tests": ["offline-migration", "live-migration", "mixed-api15-api16-migration"]},
+        "backup-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-backup-v1", "required_preflights": ["compat-check"], "required_tests": ["backup-restore", "vma-file-thin-eager-lazy"]}
+      }
+    }
+    ,{
+      "id": "pve9-api16-qemu9210-manager9220-v1",
+      "api": 16,
+      "apiage": 7,
+      "package_versions": {
+        "pve-manager": ["9.2.20"],
+        "libpve-storage-perl": ["9.1.12"],
+        "qemu-server": ["9.2.10"],
+        "pve-qemu-kvm": ["11.0.3-3"],
+        "libpve-common-perl": ["9.2.3"]
+      },
+      "operations": {
+        "activation-deactivation": {"contract": "lvm.inventory-and-mutation", "model": "pve9-api16-activation-v1", "required_preflights": ["compat-check"], "required_tests": ["activation-deactivation", "post-reboot-san"]},
+        "allocation-removal": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-raw-allocation-v1", "required_preflights": ["compat-check", "qmdestroy-contract-check"], "required_tests": ["allocate-free", "api16-raw-name-reconciliation"]},
+        "snapshot-vmstate": {"contract": "thick.snapshot-generation", "model": "pve9-api16-snapshot-v1", "required_preflights": ["snapshot-preflight", "snapshot-observe"], "required_tests": ["ram-snapshot-rollback-delete", "snapshot-no-nic-e1000-and-qmp-failure"]},
+        "resize": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-resize-v1", "required_preflights": ["volume-operation-preflight"], "required_tests": ["running-and-stopped-resize", "thin-eager-lazy-grow-zero-tail"]},
+        "move-import-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-move-restore-v1", "required_preflights": ["storage-move-preflight"], "required_tests": ["raw-import-export-framing-hash", "vma-file-thin-eager-lazy"]},
+        "migration": {"contract": "pve.migration-offline-live", "model": "pve9-api16-migration-v1", "required_preflights": ["migration-preflight"], "required_tests": ["offline-migration", "live-migration", "mixed-api15-api16-migration"]},
+        "backup-restore": {"contract": "pve.qemu-raw-lifecycle", "model": "pve9-api16-backup-v1", "required_preflights": ["compat-check"], "required_tests": ["backup-restore", "vma-file-thin-eager-lazy"]}
+      }
+    }
   ]
 }

@@ -13,6 +13,8 @@ import time
 import hashlib
 import glob
 import platform
+import stat
+from pathlib import Path
 sys.dont_write_bytecode = True
 from sharedlvmthin_pve_inventory import collect as collect_pve_inventory
 
@@ -527,7 +529,7 @@ def pve_snapshot_references(sid):
 
 def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None,
                         reference_size_lookup=None, allowed_sids=None,
-                        vg_extent_size=None):
+                        vg_extent_size=None, active_package_proof=None):
     """Fail closed on every Thick Generations anchor owned by this storage."""
     anchors = []
     failures = []
@@ -626,18 +628,27 @@ def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None,
             failures.append(f"{fields[0]} invalid dm-clone region")
             continue
         if values["v"] == "6":
+            # Default recovery/mutation qualification remains dormant-only.
+            # A future package-preservation caller must supply a complete
+            # owner/graph/fence proof; phase tags alone never authorize it.
+            active_package = values["phase"] == "LAZY_ACTIVE" and active_package_proof is not None
+            owner_ok = (values["owner_node"] == "none"
+                        and values["owner_boot"] == "none"
+                        and values["owner_epoch"] == "none")
+            if active_package:
+                owner_ok = (values["owner_node"] != "none"
+                            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", values["owner_boot"])
+                            and re.fullmatch(r"[0-9a-f]{32}", values["owner_epoch"]))
             head = rows.get(values["head"])
             if not head:
                 failures.append(f"{fields[0]} authoritative HEAD LV is missing")
                 continue
-            if (values["phase"] != "LAZY_DORMANT" or values["op"] != "ALLOC"
+            if ((values["phase"] != "LAZY_DORMANT" and not active_package) or values["op"] != "ALLOC"
                     or values["snapshot"] != "none"
                     or len({values[key] for key in ("source", "old", "new", "head")}) != 1
                     or values["policy"] != "lazy-zero"
                     or values["zero_source"] != "dm-zero"
-                    or values["owner_node"] != "none"
-                    or values["owner_boot"] != "none"
-                    or values["owner_epoch"] != "none"
+                    or not owner_ok
                     or not values["bytes"].isdigit()
                     or int(values["bytes"]) < 512
                     or int(values["bytes"]) % 512
@@ -729,6 +740,13 @@ def thick_anchor_health(pool_output, sid, namespace, reference_lookup=None,
                     continue
                 if current[0][2] == "attached" and current[0][1] != int(values["bytes"]):
                     failures.append(f"{fields[0]} Lazy Thick current PVE size differs from data size")
+                    continue
+            if active_package:
+                try:
+                    if active_package_proof(dict(values), rows) is not True:
+                        raise ValueError("active package proof did not positively pass")
+                except (RuntimeError, ValueError, OSError) as exc:
+                    failures.append(f"{fields[0]} active Lazy package preservation refused: {exc}")
             continue
         if values["phase"] != "MATERIALIZED":
             failures.append(
@@ -978,16 +996,96 @@ def vg_intent_health(output, sid, expected_vg):
     return False, [f"OPEN {values['op']} intent blocks mutation and requires exact recovery"]
 
 
+def package_preservation_proof(configs, alias_sids, inventory, inventory_command, details=None):
+    """Explicit observational callback; never used by ordinary recovery."""
+    from sharedlvmthin_package_executor_fence import read_sealed_context, verify_inherited_executors
+    from sharedlvmthin_lazy_package_proof import audit_active_graph, audit_remote_local_absence
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    transport = os.environ.get("SLT_PACKAGE_FENCE_FD", "")
+    if not transport.isdigit() or len(transport) > 10:
+        raise ValueError("package preservation requires inherited sealed fence context")
+    context = read_sealed_context(int(transport), boot)
+    scope = {tuple(row) for row in context["scopes"]}
+
+    def run_observation(argv):
+        if argv[0] not in {"/sbin/dmsetup", "/sbin/lvs", "/sbin/pvs", "/sbin/vgs"} \
+                or (argv[0] == "/sbin/dmsetup" and argv[1] not in {"info", "table", "deps", "status"}):
+            raise ValueError("command outside package observation allowlist")
+        result = bounded_probe(argv)
+        if result["status"] != "PASS":
+            raise ValueError("package observation did not pass: " + result["status"])
+        return result["out"]
+
+    def read_attribute(devno, relative):
+        base = Path("/sys/dev/block", devno).resolve(strict=True)
+        if not str(base).startswith("/sys/devices/virtual/block/dm-"):
+            raise ValueError("package graph is not a virtual DM identity")
+        fd = os.open(base / relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            observed = os.fstat(fd)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_uid != 0:
+                raise ValueError("package graph attribute is not a root-owned regular leaf")
+            data = os.read(fd, 129)
+        finally:
+            os.close(fd)
+        if len(data) > 128 or not data.strip().isdigit():
+            raise ValueError("invalid bounded package graph integer")
+        return int(data.strip())
+
+    def block_devno(path):
+        observed = os.stat(path)
+        if not stat.S_ISBLK(observed.st_mode):
+            raise ValueError("package graph node is not a block device")
+        return f"{os.major(observed.st_rdev)}:{os.minor(observed.st_rdev)}"
+
+    def proof(anchor, rows):
+        required = {(sid, anchor["vol"]) for sid in alias_sids}
+        if not required <= scope:
+            raise ValueError("package fence does not cover all exact volume aliases")
+        verify_inherited_executors(context["scopes"], context["fds"])
+        owner = next(item for item in configs if item["id"] == anchor["sid"])
+        refs = {sid: pve_reference_inventory(sid) for sid in alias_sids}
+        if anchor["owner_node"] == platform.node():
+            audit_active_graph(anchor, owner, rows, run_observation, read_attribute,
+                               block_devno, node=platform.node(), boot=boot)
+        else:
+            result = audit_remote_local_absence(anchor, owner, rows, run_observation,
+                                               node=platform.node())
+            if details is not None:
+                details.append(result["state"] + "; remote runtime is NOT_CERTIFIED; package-only nonownership proof")
+        if run_observation(inventory_command) != inventory or storage_configs() != configs \
+                or any(pve_reference_inventory(sid) != refs[sid] for sid in alias_sids) \
+                or Path("/proc/sys/kernel/random/boot_id").read_text().strip() != boot:
+            raise ValueError("package graph anchor/configuration changed during audit")
+        verify_inherited_executors(context["scopes"], context["fds"])
+        return True
+    return proof
+
+
 def main(argv=None):
     argv = argv or sys.argv[1:]
     preinstall = len(argv) == 2 and argv[0] == "--preinstall"
     qualification = len(argv) == 2 and argv[0] == "--runtime-qualification"
-    offline_probe = preinstall or qualification
+    preservation = len(argv) == 2 and argv[0] == "--package-preservation"
+    offline_probe = preinstall or qualification or preservation
     sid_arg = argv[1] if offline_probe else (argv[0] if len(argv) == 1 else "")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sid_arg):
-        print("Usage: sharedlvmthin recovery-check [--preinstall|--runtime-qualification] <storage-id>", file=sys.stderr)
+        print("Usage: sharedlvmthin recovery-check [--preinstall|--runtime-qualification|--package-preservation] <storage-id>", file=sys.stderr)
         return 64
     sid = sid_arg
+    if preservation:
+        try:
+            from sharedlvmthin_package_executor_fence import read_sealed_context
+            inherited = os.environ.get("SLT_PACKAGE_FENCE_FD", "")
+            if not inherited.isdigit() or len(inherited) > 10:
+                raise ValueError("sealed inherited package fence is missing")
+            read_sealed_context(int(inherited), Path("/proc/sys/kernel/random/boot_id").read_text().strip())
+        except (ValueError, RuntimeError, OSError) as exc:
+            print("STATE=RECOVERY_REQUIRED")
+            print("SAFE_FOR_MUTATION=NO")
+            print("PACKAGE_PRESERVATION_READY=NO")
+            print(f"DETAIL={exc}")
+            return 2
     try:
         configs = storage_configs()
         cfg = next(item for item in configs if item.get("id") == sid)
@@ -1139,12 +1237,22 @@ def main(argv=None):
             (reference_indexes[alias_sid], current_reference_indexes[alias_sid]) = (
                 pve_reference_inventory(alias_sid)
             )
+        active_proof = None
+        if preservation:
+            try:
+                active_proof = package_preservation_proof(
+                    configs, alias_sids, evidence.get("POOL", {}).get("out", ""),
+                    next(command for label, command in probes if label == "POOL"), details)
+            except (ValueError, RuntimeError, OSError) as exc:
+                alias_group_ok = False
+                details.append(f"package-preservation refused: {exc}")
         anchor_ok, anchors, anchor_failures = thick_anchor_health(
             evidence.get("POOL", {}).get("out", ""), sid, expected_vg,
             lambda owner_sid, vol: list(reference_indexes.get(owner_sid, {}).get(vol, [])),
             lambda owner_sid, vol: list(current_reference_indexes.get(owner_sid, {}).get(vol, [])),
             alias_sids,
             vg_extent_size,
+            active_package_proof=active_proof,
         )
         results["THICK_ANCHORS_HEALTHY"] = (
             "PASS" if anchor_ok and alias_group_ok else "FAIL"
@@ -1207,10 +1315,11 @@ def main(argv=None):
     if storage_disabled:
         results["PVE_STORAGE_HEALTH"] = "PASS"
         details.append("PVE active-status gate is not applicable to explicitly disabled storage")
-    elif qualification:
+    elif qualification or preservation:
         results["PVE_STORAGE_HEALTH"] = "NOT_PROBED"
         details.append(
-            "PVE active-status is deliberately excluded from bootstrapping runtime qualification"
+            "PVE active-status is deliberately excluded from package graph preservation; post-install operational qualification remains required"
+            if preservation else "PVE active-status is deliberately excluded from bootstrapping runtime qualification"
         )
     elif preinstall:
         results["PVE_STORAGE_HEALTH"] = "PASS"
@@ -1271,17 +1380,21 @@ def main(argv=None):
     qualification_ready = qualification and all(
         results.get(name) == "PASS" for name in qualification_ordered
     )
-    safe = (not qualification) and all(results.get(name) == "PASS" for name in ordered)
+    preservation_ready = preservation and all(results.get(name) == "PASS" for name in qualification_ordered)
+    safe = (not qualification and not preservation) and all(results.get(name) == "PASS" for name in ordered)
     print(f"STORAGE_ID={sid}")
     for name in ordered:
         print(f"{name}={results.get(name, 'UNKNOWN')}")
-    print(f"STATE={'HEALTHY' if safe else 'RECOVERY_REQUIRED'}")
+    state = "PACKAGE_PRESERVATION_READY" if preservation_ready else ("HEALTHY" if safe else "RECOVERY_REQUIRED")
+    print(f"STATE={state}")
     print(f"SAFE_FOR_MUTATION={'YES' if safe else 'NO'}")
     if qualification:
         print(f"RUNTIME_QUALIFICATION_READY={'YES' if qualification_ready else 'NO'}")
+    if preservation:
+        print(f"PACKAGE_PRESERVATION_READY={'YES' if preservation_ready else 'NO'}")
     for detail in details:
         print(f"DETAIL={detail}")
-    return 0 if (safe or qualification_ready) else 2
+    return 0 if (safe or qualification_ready or preservation_ready) else 2
 
 
 if __name__ == "__main__":

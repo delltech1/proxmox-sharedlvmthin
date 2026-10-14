@@ -118,10 +118,18 @@ probably do not need this project.
 
 ## Release status
 
-`RC5.89 TG53` (`0.9.0~rc5.89~tg53`) is the current experimental pre-release.
-It is intended exclusively for disposable Proxmox VE 9 labs with
-disposable storage and guest data. Both Thin and Thick Generations remain
-experimental, unsupported and without warranty.
+**RC5.97 TG53** (`0.9.0~rc5.97~tg53`) is the API 14–16 bridge release line.
+It adds exact package-family lifecycle checks, package preservation and
+boot-bound update settlement. See the [release notes](docs/RELEASE-NOTES-RC5.97-TG53.md)
+for test counts, exercised operations and exact platform versions.
+Runtime catalogue entries marked `RETEST_REQUIRED` remain conservative;
+installation or an API number alone does not authorize a storage mutation.
+
+[Release and packages](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.97-tg53):
+`pve-sharedlvmthin_0.9.0.rc5.97.tg53_all.deb` (DUAL) and
+`pve-sharedlvmthin-thick_0.9.0.rc5.97.tg53_all.deb` (Thick-only), with
+`SHA256SUMS`. Both profiles are experimental, unsupported and without warranty,
+for disposable Proxmox VE 9 cluster labs, shared storage and guest data only.
 
 This is a major hardening candidate. Existing materialized Thick v5 objects
 remain compatible; Lazy introduces persistent v6 transition state that requires

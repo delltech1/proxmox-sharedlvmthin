@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, contextmanager, ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -38,6 +38,111 @@ def load_apt_guard():
 
 
 class UpdatePolicyRuntimeTests(unittest.TestCase):
+    @contextmanager
+    def completed_boot_replay_fixture(self, receipt_delta=None, effect=None):
+        self.module.STATE.mkdir(parents=True, exist_ok=True)
+        self.module.STATE.chmod(0o700)
+        old_boot = "11111111-2222-3333-4444-555555555555"
+        state = {"boot": "99999999-2222-3333-4444-555555555555", "kernel": "7.0.0-new"}
+        receipt = {"schema": 1, "qualified": "QUALIFIED", "boot_id": state["boot"],
+                   "previous_boot_id": old_boot, "kernel_release": state["kernel"],
+                   "verdict": "POST_REBOOT_GATE", "qualification_txid": "e" * 32}
+        receipt.update(receipt_delta or {})
+        self.module.atomic_json(self.module.RUNTIME_RELEASE, receipt)
+        original_read = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if str(path) == "/proc/sys/kernel/random/boot_id":
+                return state["boot"] + "\n"
+            return original_read(path, *args, **kwargs)
+
+        def operational(argv, **kwargs):
+            if effect:
+                result = effect(state, receipt)
+                if result is not None:
+                    return result
+            return mock.Mock(returncode=0, stdout="UPGRADE_SAFE=YES\n")
+
+        with ExitStack() as stack:
+            for name in ("require_root", "assert_exact_installed_release", "assert_bound_runtime_tuple"):
+                stack.enter_context(mock.patch.object(self.module, name))
+            stack.enter_context(mock.patch.object(self.module, "manifest_and_lib", return_value=({}, mock.Mock())))
+            stack.enter_context(mock.patch.object(Path, "read_text", new=read))
+            stack.enter_context(mock.patch.object(self.module.os, "uname", side_effect=lambda: mock.Mock(release=state["kernel"])))
+            probe = stack.enter_context(mock.patch.object(self.module, "run", side_effect=operational))
+            for name in ("atomic_json", "create_json", "unlink_durable"):
+                stack.enter_context(mock.patch.object(self.module, name, side_effect=AssertionError("replay must not mutate receipts")))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            yield old_boot, receipt, state, probe
+
+    def test_completed_boot_replay_never_writes_receipts(self):
+        with self.completed_boot_replay_fixture() as (old, receipt, state, probe):
+            self.module.command_requalify_boot(mock.Mock(previous_boot_id=old))
+            self.assertEqual(self.module.read_json(self.module.RUNTIME_RELEASE), receipt)
+            probe.assert_called_once()
+
+    def test_completed_boot_replay_rejects_non_boot_receipt_and_bad_transaction(self):
+        for delta in ({"verdict": "PACKAGE_PROFILE_GATE"}, {"qualification_txid": ""},
+                      {"qualification_txid": "bad"}, {"kernel_release": "7.0.0-other"}):
+            with self.subTest(delta=delta), self.completed_boot_replay_fixture(delta) as (old, _, _, probe):
+                with self.assertRaises(RuntimeError):
+                    self.module.command_requalify_boot(mock.Mock(previous_boot_id=old))
+                probe.assert_not_called()
+
+    def test_completed_boot_replay_rejects_failed_operational_proof(self):
+        for rc, output in ((17, "UPGRADE_SAFE=YES\n"), (0, "no success marker\n")):
+            with self.subTest(rc=rc), self.completed_boot_replay_fixture(
+                    effect=lambda *_: mock.Mock(returncode=rc, stdout=output)) as (old, _, _, _):
+                with self.assertRaisesRegex(RuntimeError, "operational qualification"):
+                    self.module.command_requalify_boot(mock.Mock(previous_boot_id=old))
+
+    def test_completed_boot_replay_rejects_each_pending_created_during_probe(self):
+        for name in ("POST_GATE", "PACKAGE_TRANSITION", "FREEZE_MIGRATION", "RUNTIME_QUALIFICATION"):
+            path = getattr(self.module, name)
+            def effect(*_):
+                path.write_text("{}")
+            with self.subTest(pending=name), self.completed_boot_replay_fixture(effect=effect) as (old, _, _, _):
+                with self.assertRaisesRegex(RuntimeError, "pending state changed"):
+                    self.module.command_requalify_boot(mock.Mock(previous_boot_id=old))
+            path.unlink()
+
+    def test_completed_boot_replay_rejects_changed_boot_kernel_and_receipt(self):
+        for change in ("boot", "kernel", "receipt"):
+            def effect(state, receipt):
+                if change == "receipt":
+                    self.module.RUNTIME_RELEASE.write_text(json.dumps(dict(receipt, qualification_txid="f" * 32)))
+                else:
+                    state[change] = "changed"
+            with self.subTest(change=change), self.completed_boot_replay_fixture(effect=effect) as (old, _, _, _):
+                with self.assertRaisesRegex(RuntimeError, "identity or pending state changed"):
+                    self.module.command_requalify_boot(mock.Mock(previous_boot_id=old))
+
+    def test_completed_boot_replay_rejects_final_exact_identity_failure(self):
+        for name in ("assert_exact_installed_release", "assert_bound_runtime_tuple"):
+            with self.subTest(check=name), self.completed_boot_replay_fixture() as (old, _, _, _):
+                with mock.patch.object(self.module, name, side_effect=[None, RuntimeError("changed exact identity")]):
+                    with self.assertRaisesRegex(RuntimeError, "changed exact identity"):
+                        self.module.command_requalify_boot(mock.Mock(previous_boot_id=old))
+
+    def test_completed_boot_replay_second_cas_catches_changes_inside_final_identity_probe(self):
+        for change in ("pending", "receipt"):
+            with self.subTest(change=change), self.completed_boot_replay_fixture() as (old, receipt, _, _):
+                calls = 0
+                def final_identity(*args):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        if change == "pending":
+                            self.module.POST_GATE.write_text("{}")
+                        else:
+                            self.module.RUNTIME_RELEASE.write_text(json.dumps(dict(receipt, qualification_txid="f" * 32)))
+                with mock.patch.object(self.module, "assert_bound_runtime_tuple", side_effect=final_identity):
+                    with self.assertRaisesRegex(RuntimeError, "state changed during final identity probes"):
+                        self.module.command_requalify_boot(mock.Mock(previous_boot_id=old))
+                self.assertEqual(calls, 2)
+            if self.module.POST_GATE.exists():
+                self.module.POST_GATE.unlink()
+
     def test_new_binary_from_watched_source_family_is_not_unrelated(self):
         guard, core = load_apt_guard()
         manifest = {
@@ -376,6 +481,56 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         self.assertEqual(release["runtime_tuple_id"], "postcheck-fixture")
         self.assertEqual(release["runtime_manifest_sha256"], self.core.digest(manifest))
 
+    def test_cross_api_runtime_requires_a_fresh_exact_binding(self):
+        for source_api, target_api in ((14, 15), (15, 16)):
+            for profile, package in (("dual", "pve-sharedlvmthin"),
+                                     ("thick-only", "pve-sharedlvmthin-thick")):
+                with self.subTest(source=source_api, target=target_api, profile=profile):
+                    manifest = {"watched_packages": ["libpve-storage-perl"],
+                                "tuples": []}
+                    for api in (source_api, target_api):
+                        manifest["tuples"].append({
+                            "id": f"api{api}-{profile}", "api": api,
+                            "status": "RETEST_REQUIRED", "profiles": [profile],
+                            "plugin_versions": ["bridge"],
+                            "running_kernel": "test-kernel",
+                            "packages": {"libpve-storage-perl": f"test-{api}"},
+                        })
+                    observed = {"api": source_api}
+                    def version(name):
+                        return {package: "bridge", "libpve-storage-perl":
+                                f"test-{observed['api']}"}.get(name)
+                    def probe(*_args, **_kwargs):
+                        return mock.Mock(returncode=0, stdout=str(observed["api"]),
+                                         stderr="")
+                    with mock.patch.object(self.module.pathlib.Path, "read_text",
+                                           return_value=profile), \
+                            mock.patch.object(self.module, "package_version", side_effect=version), \
+                            mock.patch.object(self.module, "run", side_effect=probe), \
+                            mock.patch.object(self.module.os, "uname",
+                                              return_value=mock.Mock(release="test-kernel")):
+                        proof = self.module.assert_listed_runtime_tuple(
+                            manifest, self.core, package, "bridge")
+                        release = self.module.build_bound_runtime_release(
+                            qualified="QUALIFIED", runtime_build_id="a" * 64,
+                            plan_digest="b" * 64, boot_id="old-boot",
+                            kernel_release="test-kernel", plugin_package=package,
+                            plugin_version="bridge", verdict="ALLOW_QUALIFIED_EDGE",
+                            artifact_sha256="c" * 64, runtime_tuple=proof)
+                        observed["api"] = target_api
+                        with self.assertRaisesRegex(RuntimeError, "binding changed"):
+                            self.module.assert_bound_runtime_tuple(release, manifest, self.core)
+                        target = self.module.assert_listed_runtime_tuple(
+                            manifest, self.core, package, "bridge")
+                        successor = self.module.build_bound_runtime_release(
+                            qualified="QUALIFIED", runtime_build_id="a" * 64,
+                            plan_digest="b" * 64, boot_id="new-boot",
+                            kernel_release="test-kernel", plugin_package=package,
+                            plugin_version="bridge", verdict="ALLOW_QUALIFIED_EDGE",
+                            artifact_sha256="c" * 64, runtime_tuple=target)
+                        self.module.assert_bound_runtime_tuple(successor, manifest, self.core)
+                        self.assertEqual(successor["runtime_tuple_id"], f"api{target_api}-{profile}")
+
     def test_postcheck_rechecks_bound_tuple_before_removing_latch(self):
         source = SCRIPT.read_text(encoding="utf-8")
         start = source.index("def command_postcheck(")
@@ -447,6 +602,9 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
                 mock.patch.object(self.module.os, "uname",
                                   return_value=mock.Mock(release="7.0.0-new")), \
                 redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "predecessor request mismatch"):
+                self.module.command_requalify_boot(mock.Mock(previous_boot_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+            self.assertFalse(self.module.RUNTIME_QUALIFICATION.exists())
             self.module.command_requalify_boot(mock.Mock())
         successor = self.module.read_json(self.module.RUNTIME_RELEASE)
         self.assertEqual(successor["boot_id"], "99999999-2222-3333-4444-555555555555")
@@ -455,6 +613,25 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         self.assertEqual(successor["runtime_build_id"], previous["runtime_build_id"])
         self.assertEqual(successor["artifact_sha256"], previous["artifact_sha256"])
         self.assertFalse(self.module.RUNTIME_QUALIFICATION.exists())
+        with mock.patch.object(self.module, "require_root"), \
+                mock.patch.object(self.module, "package_version", side_effect=version), \
+                mock.patch.object(self.module, "manifest_and_lib", return_value=({}, mock.Mock())), \
+                mock.patch.object(self.module, "assert_bound_runtime_tuple"), \
+                mock.patch.object(self.module, "run", side_effect=boot_run_result) as probe, \
+                mock.patch.object(self.module.pathlib.Path, "read_text", new=read_text), \
+                mock.patch.object(self.module.os, "uname", return_value=mock.Mock(release="7.0.0-new")), \
+                redirect_stdout(io.StringIO()) as output:
+            self.module.command_requalify_boot(mock.Mock(previous_boot_id=previous["boot_id"]))
+            self.assertIn("RUNTIME_BOOT_REQUALIFICATION_ALREADY_COMPLETE=YES", output.getvalue())
+            self.assertEqual(self.module.read_json(self.module.RUNTIME_RELEASE), successor)
+            self.assertFalse(self.module.RUNTIME_QUALIFICATION.exists())
+            self.assertEqual(sum("--runtime-operational" in call.args[0]
+                                 for call in probe.call_args_list), 1)
+            for requested in (None, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", successor["boot_id"]):
+                with self.assertRaises(RuntimeError):
+                    self.module.command_requalify_boot(mock.Mock(previous_boot_id=requested))
+            self.assertEqual(sum("--runtime-operational" in call.args[0]
+                                 for call in probe.call_args_list), 1)
 
     def test_boot_requalification_replays_crash_before_successor_publication(self):
         self.module.STATE.mkdir(parents=True, exist_ok=True)
@@ -508,6 +685,9 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
                 mock.patch.object(self.module.os, "uname",
                                   return_value=mock.Mock(release="7.0.0-new")), \
                 redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "predecessor request mismatch"):
+                self.module.command_requalify_boot(mock.Mock(previous_boot_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+            self.assertEqual(self.module.read_json(self.module.RUNTIME_QUALIFICATION), pending)
             self.module.command_requalify_boot(mock.Mock())
         successor = self.module.read_json(self.module.RUNTIME_RELEASE)
         self.assertEqual(successor["boot_id"], new_boot)

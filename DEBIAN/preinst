@@ -248,6 +248,13 @@ audit_candidate_storages() {
         else
             candidate_args=
         fi
+        candidate_preservation=0
+        if [ -n "${SLT_PACKAGE_FENCE_FD:-}" ]; then
+            # Descriptor is only transport. Candidate checker validates sealed
+            # context and exact inherited executor ownership before any probe.
+            candidate_args="--package-preservation"
+            candidate_preservation=1
+        fi
         # candidate_args has only the fixed value above or is empty; deliberate
         # word splitting supplies the optional flag as one argument.
         # shellcheck disable=SC2086
@@ -263,6 +270,12 @@ audit_candidate_storages() {
         candidate_safe=$(grep -c '^SAFE_FOR_MUTATION=YES$' "$CANDIDATE_RESULT" || true)
         candidate_anchors=$(grep -c '^THICK_ANCHORS_HEALTHY=PASS$' "$CANDIDATE_RESULT" || true)
         candidate_intent=$(grep -c '^VG_INTENT_CLEAR=PASS$' "$CANDIDATE_RESULT" || true)
+        if [ "$candidate_preservation" -eq 1 ]; then
+            candidate_healthy=$(grep -c '^STATE=PACKAGE_PRESERVATION_READY$' "$CANDIDATE_RESULT" || true)
+            candidate_safe=$(grep -c '^PACKAGE_PRESERVATION_READY=YES$' "$CANDIDATE_RESULT" || true)
+            candidate_not_mutation=$(grep -c '^SAFE_FOR_MUTATION=NO$' "$CANDIDATE_RESULT" || true)
+            [ "$candidate_not_mutation" -eq 1 ] || candidate_safe=0
+        fi
         rm -f -- "$CANDIDATE_RESULT"
         CANDIDATE_RESULT=
         if [ "$candidate_rc" -ne 0 ] || [ "$candidate_healthy" -ne 1 ] || \

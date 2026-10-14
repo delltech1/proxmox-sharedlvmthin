@@ -62,7 +62,7 @@ def validate_registry(document, contracts):
                 or adapter_id in seen_ids:
             errors.append(f"invalid or duplicate lifecycle adapter id: {adapter_id}")
         seen_ids.add(adapter_id)
-        if type(adapter.get("api")) is not int or adapter["api"] not in (14, 15):
+        if type(adapter.get("api")) is not int or adapter["api"] not in (14, 15, 16):
             errors.append(f"{adapter_id}: invalid Storage API")
         if type(adapter.get("apiage")) is not int or adapter["apiage"] < 0:
             errors.append(f"{adapter_id}: invalid Storage API age")

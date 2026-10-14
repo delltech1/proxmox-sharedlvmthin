@@ -27,7 +27,7 @@ PACKAGES = (
     "findutils", "grep", "sed", "mawk", "diffutils", "hostname",
 )
 COMMANDS = (
-    "bash", "sh", "perl", "python3", "pvesm", "pvesh", "pvecm", "qm", "pct", "lvs", "vgs",
+    "bash", "sh", "perl", "python3", "pvesm", "pvesh", "pvecm", "corosync-quorumtool", "qm", "pct", "lvs", "vgs",
     "pvs", "lvcreate", "lvremove", "lvchange", "lvextend", "lvconvert",
     "lvrename", "vgchange", "vgcfgbackup", "dmsetup", "multipath", "multipathd",
     "iscsiadm", "qemu-img", "qemu-io", "timeout", "systemctl", "ssh",
@@ -58,6 +58,7 @@ CRITICAL_FILES = (
     "/usr/share/perl5/PVE/QemuServer/QemuImage.pm",
     "/usr/share/perl5/PVE/QemuServer/Drive.pm",
     "/usr/share/perl5/PVE/QemuServer/Network.pm",
+    "/usr/share/perl5/PVE/QemuServer/ImportDisk.pm",
     "/usr/share/perl5/PVE/Network/SDN/Vnets.pm",
     "/usr/share/perl5/PVE/ReplicationConfig.pm",
     "/usr/share/perl5/PVE/SSHInfo.pm",
@@ -88,6 +89,7 @@ LOADED_PVE_MODULES = (
     "PVE/Tools.pm", "PVE/AccessControl.pm", "PVE/Cluster.pm",
     "PVE/Firewall.pm", "PVE/HA/Config.pm", "PVE/INotify.pm",
     "PVE/Network/SDN/Vnets.pm", "PVE/QemuServer/Network.pm",
+    "PVE/QemuServer/ImportDisk.pm",
     "PVE/QemuConfig.pm", "PVE/QemuServer.pm", "PVE/ReplicationConfig.pm",
     "PVE/SSHInfo.pm", "PVE/Storage/Custom/SharedLvmThinPlugin.pm",
 )
@@ -116,6 +118,7 @@ REQUIRED_PVE_SYMBOLS = (
     "PVE::Network::SDN::Vnets::del_ips_from_mac",
     "PVE::QemuServer::Helpers::vm_running_locally", "PVE::Storage::parse_volume_id",
     "PVE::QemuServer::clone_disk",
+    "PVE::QemuServer::ImportDisk::do_import",
     "PVE::QemuServer::OVMF::create_efidisk",
     "PVE::SSHInfo::ssh_info_to_command", "PVE::Storage::APIAGE",
     "PVE::Storage::APIVER", "PVE::Storage::volume_has_feature",
@@ -296,6 +299,7 @@ def _pve_api():
         "use PVE::Storage::LVMPlugin; use PVE::Tools; use PVE::Cluster; use PVE::SSHInfo; "
         "use PVE::AccessControl; use PVE::Firewall; use PVE::HA::Config; use PVE::INotify; "
         "use PVE::QemuConfig; use PVE::QemuServer; use PVE::QemuServer::Network; "
+        "use PVE::QemuServer::ImportDisk; "
         "use PVE::Network::SDN::Vnets; use PVE::ReplicationConfig; "
         "use PVE::Storage::Custom::SharedLvmThinPlugin; "
         "my @h=qw(" + " ".join(REQUIRED_HOOKS) + "); "
@@ -566,7 +570,7 @@ def collect():
     api = _pve_api()
     if not api.get("ok"):
         errors.append("PVE Storage API inventory unavailable")
-    elif api.get("apiver") not in (14, 15) or api.get("plugin_api") != api.get("apiver"):
+    elif api.get("apiver") not in (14, 15, 16) or api.get("plugin_api") != api.get("apiver"):
         errors.append("PVE Storage API/plugin policy mismatch")
     elif not all(api.get("hooks", {}).get(hook) == 1 for hook in REQUIRED_HOOKS):
         errors.append("required PVE Storage hook missing")
