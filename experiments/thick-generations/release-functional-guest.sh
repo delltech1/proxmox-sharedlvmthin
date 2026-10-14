@@ -1,4 +1,5 @@
 #!/bin/busybox sh
+# shellcheck shell=dash
 # READ-ONLY disposable guest protocol foundation; not a boot/QMP/RAM test PASS.
 # Manifest: /etc/slt-functional-readonly.manifest, exact lines:
 #   vda 8388608 <64 lowercase hex SHA256 of exactly 4096 bytes>
