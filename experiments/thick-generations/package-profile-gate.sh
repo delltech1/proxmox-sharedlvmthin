@@ -27,6 +27,9 @@ direct_recovery_txid=
 recovery_code_package=
 recovery_code_hash=
 clean_env=(/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C)
+if [[ -n "${SLT_PACKAGE_FENCE_FD:-}" ]]; then
+    clean_env+=("SLT_PACKAGE_FENCE_FD=$SLT_PACKAGE_FENCE_FD")
+fi
 
 usage() {
     cat <<'EOF'

@@ -656,13 +656,14 @@ class ApiCompatibilityPolicyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.evaluate = staticmethod(load_function("evaluate_api_compatibility"))
 
-    def test_api14_and_api15_are_explicit_passes(self):
+    def test_api14_api15_and_api16_are_explicit_passes(self):
         self.assertEqual(self.evaluate(14, 1, 14)[0], "PASS")
         self.assertEqual(self.evaluate(15, 1, 14)[0], "PASS")
+        self.assertEqual(self.evaluate(16, 7, 16)[0], "PASS")
 
     def test_unknown_runtime_api_fails_closed(self):
         self.assertEqual(self.evaluate(13, 1, 14)[0], "FAIL")
-        self.assertEqual(self.evaluate(16, 2, 14)[0], "FAIL")
+        self.assertEqual(self.evaluate(17, 2, 14)[0], "FAIL")
 
     def test_missing_api_evidence_fails(self):
         status, message = self.evaluate(None, None, None)
@@ -1059,6 +1060,25 @@ class ThickAnchorReferenceTests(unittest.TestCase):
             namespace,
         )
         return namespace["evaluate_thick_anchor_references"]
+
+    def test_active_lazy_health_requires_explicit_proof_and_preserves_reference_failures(self):
+        evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})
+        anchor = {"name": "sltg-a-key", "volume": "vm-100-disk-0",
+                  "phase": "LAZY_ACTIVE", "transaction": "a" * 32}
+        self.assertEqual(evaluate("thick", [anchor])[0]["status"], "FAIL")
+        self.assertEqual(evaluate("thick", [anchor],
+                         active_package_proof=lambda *_: False)[0]["status"], "FAIL")
+        result = evaluate("thick", [anchor], active_package_proof=lambda *_: True)[0]
+        self.assertEqual(result["status"], "WARN")
+        self.assertEqual(result["materialization_state"], "LAZY_ACTIVE")
+        self.assertFalse(result["safe_for_mutation"])
+        self.assertEqual(result["remote_runtime"], "NOT_CERTIFIED")
+        failed = evaluate("thick", [anchor], active_package_proof=lambda *_: True,
+                          reference_evidence_errors=["unreadable config"])[0]
+        self.assertEqual(failed["status"], "FAIL")
+        duplicate = evaluate("thick", [anchor], active_package_proof=lambda *_: True,
+            reference_index={"thick:vm-100-disk-0": ["one", "two"]})[0]
+        self.assertEqual(duplicate["status"], "FAIL")
 
     def test_exactly_one_reference_passes(self):
         evaluate = self.evaluate_with_counts({"thick:vm-100-disk-0": 1})

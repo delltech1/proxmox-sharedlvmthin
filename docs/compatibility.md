@@ -1,5 +1,26 @@
 # Compatibility
 
+## RC5.97 API 14–16 bridge
+
+RC5.97 TG53 retains API 14 and API 15 registration and adds API 16 RAW
+format contracts. Candidate tuples and the exact API 15 to API 16 update
+edge retain conservative `RETEST_REQUIRED` admission. Read-only hook probes are not SAN or rolling
+migration qualification. The intended sequence is to deploy one bridge
+build to all nodes first, then evacuate, upgrade, reboot and qualify one
+node at a time. Existing guest I/O must not depend on restarting its disk
+mappers during plugin package replacement. A rebooted node is not ready
+for workload placement until fresh runtime, SSH and storage checks pass.
+
+The additional API 16 candidate uses libpve-storage-perl 9.1.13,
+qemu-server 9.2.11 and running kernel 7.0.14-23-pve. Its exact update from
+the 9.1.12 / 9.2.10 / 7.0.14-20-pve tuple is also `RETEST_REQUIRED`;
+neither catalogue entry grants mixed-version migration qualification.
+RC5.96 evidence remains bound to its original artifacts, not RC5.97.
+
+Current-build tested operations and exact versions are recorded in the
+[RC5.97 release notes](RELEASE-NOTES-RC5.97-TG53.md). The historical release
+scope below remains bound to its original artifacts.
+
 RC5.89 TG53 is intended exclusively for **Proxmox VE 9**. Its plugin hooks
 retain the Storage API 14 and 15 source contract. The exact RC5.85 DUAL
 artifact completed its recorded API 15 package, rolling-reboot, recovery and
@@ -83,11 +104,12 @@ Storage transports:
   it as unqualified until validated on the intended HBA, fabric, array,
   firmware and multipath profile.
 
-The explicit tested Storage API range is 14..15 on Proxmox VE 9. API 13 and
-API 16+ remain
-unsupported until their exact hook/semantic delta is audited and qualified;
-the plugin advertises the exact host API only inside this qualified range and
-does not claim an unknown API merely to suppress a PVE warning.
+For the published RC5.89 artifact, the Storage API source range is 14..15 on
+Proxmox VE 9; its exact qualification boundaries are the table above. The
+unreleased bridge source recognizes 14..16, but its candidate operation and
+rolling-edge qualifications remain separate. API 13 and API 17+ are refused.
+Never infer a newer artifact's support from an older release's evidence, or
+infer lifecycle qualification from API registration alone.
 
 ## Upstream source audit boundary
 
@@ -100,8 +122,10 @@ to `libpve-storage-perl 9.1.11`, `qemu-server 9.2.10`, `pve-manager 9.2.20`,
 - `qemu-server` `7b44050a7a66451954dc53b2d38e5834b01777ab`;
 - `pve-container` `3a26da6db5e949418b2ec4eb6b383450feb7064d`.
 
-The follow-up found no Storage API or directly used hook-signature change: the
-current API remains APIVER 15/APIAGE 6. It did find a wider behavioral delta:
+That September follow-up found no Storage API or directly used hook-signature
+change: those audited packages declared APIVER 15/APIAGE 6. This is a
+historical source-audit statement, not the API number of today's candidates.
+It did find a wider behavioral delta:
 
 - storage 9.1.11 and qemu-server 9.2.10 have a coupled decompressor/VMA
   contract and must not be rolled independently;

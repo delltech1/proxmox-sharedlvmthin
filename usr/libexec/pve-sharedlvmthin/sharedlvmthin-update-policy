@@ -170,8 +170,19 @@ def run(argv, *, input_text=None, env=None, timeout=60):
     child_env = {"PATH": SAFE_PATH, "LC_ALL": "C", "LANG": "C"}
     if env:
         child_env.update(env)
+    inherited_fds = ()
+    transport = os.environ.get("SLT_PACKAGE_FENCE_FD", "")
+    if transport:
+        from sharedlvmthin_package_executor_fence import read_sealed_context
+        if not transport.isdigit() or len(transport) > 10:
+            raise RuntimeError("invalid inherited package fence transport")
+        context = read_sealed_context(int(transport), pathlib.Path(
+            "/proc/sys/kernel/random/boot_id").read_text().strip())
+        inherited_fds = (*context["fds"], int(transport))
+        child_env["SLT_PACKAGE_FENCE_FD"] = transport
     return subprocess.run(argv, input=input_text, text=True, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, check=False, timeout=timeout, env=child_env)
+                          stderr=subprocess.PIPE, check=False, timeout=timeout, env=child_env,
+                          pass_fds=inherited_fds)
 
 
 def require_root():
@@ -2706,6 +2717,10 @@ def command_finalize_runtime(args):
 def command_requalify_boot(_args):
     """Rebind an unchanged qualified payload after a proven real reboot."""
     require_root()
+    requested_previous = vars(_args).get("previous_boot_id")
+    if requested_previous is not None and not re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", requested_previous):
+        raise RuntimeError("boot requalification requires a canonical previous boot identity")
     if POST_GATE.exists() or PACKAGE_TRANSITION.exists() or FREEZE_MIGRATION.exists():
         raise RuntimeError("boot requalification refused while an update transaction is pending")
     previous = read_json(RUNTIME_RELEASE)
@@ -2724,6 +2739,8 @@ def command_requalify_boot(_args):
                 or pending.get("kernel_release") != os.uname().release \
                 or pending.get("previous_boot_id") is None:
             raise RuntimeError("boot requalification found an ambiguous pending transaction")
+        if requested_previous is not None and requested_previous != pending.get("previous_boot_id"):
+            raise RuntimeError("boot requalification predecessor request mismatch")
         assert_exact_installed_release(previous)
         predecessor = previous.get("boot_id") == pending.get("previous_boot_id")
         successor = previous.get("boot_id") == current_boot \
@@ -2774,7 +2791,39 @@ def command_requalify_boot(_args):
         print(f"KERNEL_RELEASE={os.uname().release}")
         return
     if previous.get("boot_id") == current_boot:
-        raise RuntimeError("boot requalification requires a changed boot identity")
+        if requested_previous is None or requested_previous == current_boot \
+                or previous.get("previous_boot_id") != requested_previous \
+                or previous.get("verdict") != "POST_REBOOT_GATE" \
+                or not re.fullmatch(r"[0-9a-f]{32}", previous.get("qualification_txid", "")) \
+                or previous.get("kernel_release") != os.uname().release:
+            raise RuntimeError("boot requalification requires a changed boot identity or exact completed predecessor")
+        operational = run([
+            "/usr/bin/timeout", "--foreground", "--kill-after=10", "1800",
+            "/usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check",
+            "--runtime-operational",
+        ], timeout=1820)
+        if operational.returncode or "UPGRADE_SAFE=YES" not in operational.stdout:
+            raise RuntimeError("post-reboot replay operational qualification did not pass")
+        if read_json(RUNTIME_RELEASE) != previous \
+                or pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip() != current_boot \
+                or os.uname().release != previous.get("kernel_release") \
+                or any(path.exists() for path in (
+                    POST_GATE, PACKAGE_TRANSITION, FREEZE_MIGRATION, RUNTIME_QUALIFICATION)):
+            raise RuntimeError("boot replay identity or pending state changed during operational probes")
+        assert_exact_installed_release(previous)
+        assert_bound_runtime_tuple(previous, manifest, library)
+        if read_json(RUNTIME_RELEASE) != previous \
+                or pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip() != current_boot \
+                or os.uname().release != previous.get("kernel_release") \
+                or any(path.exists() for path in (
+                    POST_GATE, PACKAGE_TRANSITION, FREEZE_MIGRATION, RUNTIME_QUALIFICATION)):
+            raise RuntimeError("boot replay state changed during final identity probes")
+        print("RUNTIME_BOOT_REQUALIFICATION_ALREADY_COMPLETE=YES")
+        print(f"PREVIOUS_BOOT_ID={requested_previous}")
+        print(f"BOOT_ID={current_boot}")
+        return
+    if requested_previous is not None and requested_previous != previous.get("boot_id"):
+        raise RuntimeError("boot requalification predecessor request mismatch")
     package, version = assert_exact_installed_release(previous)
     runtime_build_id = previous["runtime_build_id"]
     artifact = previous["artifact_sha256"]
@@ -2943,6 +2992,7 @@ def main():
     finalize_runtime.add_argument("--transaction-id", required=True)
     finalize_runtime.set_defaults(func=command_finalize_runtime)
     requalify_boot = subs.add_parser("requalify-boot")
+    requalify_boot.add_argument("--previous-boot-id")
     requalify_boot.set_defaults(func=command_requalify_boot)
     recover = subs.add_parser("recover-zero-effect")
     recover.set_defaults(func=command_recover)

@@ -270,7 +270,7 @@ rm -f -- "$health_file"
 health_file=
 
 if ((settle_runtime == 1)); then
-    sharedlvmthin update-policy requalify-boot
+    sharedlvmthin update-policy requalify-boot --previous-boot-id "${previous_boot_id,,}"
     # The checks above describe the predecessor receipt.  Never turn that
     # evidence into a post-settlement PASS: rerun this complete gate in its
     # read-only mode against the successor receipt and current live state.

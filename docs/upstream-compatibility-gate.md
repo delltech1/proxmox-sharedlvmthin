@@ -44,7 +44,7 @@ The version record must include at least:
 Tests must cover each dependency instead of assuming a command still behaves
 because its name exists:
 
-- PVE Storage API 14–15 policy, hook presence, argument count/context and return
+- PVE Storage API 14–16 adapter policy, hook presence, argument count/context and return
   semantics used by allocation, path, activation, lifecycle and feature probes;
 - storage configuration parsing, node scope, pmxcfs quorum/read-only behavior,
   distributed locks and any future atomic admission primitive;

@@ -159,6 +159,7 @@ def resulting_versions(installed, actions):
 
 
 def exact_tuple(manifest, versions, *, profile, api, running_kernel, plugin_version, scope):
+    matches = []
     for item in manifest.get("tuples", []):
         if item.get("status") not in {"QUALIFIED", "EXACT_LAB_TESTED"}:
             continue
@@ -172,8 +173,29 @@ def exact_tuple(manifest, versions, *, profile, api, running_kernel, plugin_vers
             continue
         expected = item.get("packages", {})
         if expected and all(versions.get(name) == value for name, value in expected.items()):
-            return item
-    return None
+            matches.append(item)
+    if len(matches) > 1:
+        raise Refusal("runtime matches multiple qualified compatibility tuples")
+    return matches[0] if matches else None
+
+
+def planned_tuple(manifest, versions, *, profile, running_kernel, plugin_version, scope):
+    """Resolve candidate API from exact reviewed tuples, never from version guesses.
+
+    The currently loaded API describes the source, not the Storage package
+    that APT is about to unpack. Cross-API permission still requires an exact
+    qualified edge and a storage-package transition below.
+    """
+    matches = []
+    for api in (14, 15, 16):
+        row = exact_tuple(manifest, versions, profile=profile, api=api,
+                          running_kernel=running_kernel,
+                          plugin_version=plugin_version, scope=scope)
+        if row is not None:
+            matches.append(row)
+    if len(matches) > 1:
+        raise Refusal("candidate matches multiple qualified compatibility tuples")
+    return matches[0] if matches else None
 
 
 def observed_tuple(manifest, versions, *, profile, api, running_kernel, plugin_version):
@@ -236,7 +258,8 @@ def evaluate(plan, manifest, policy, context, compare_versions):
                   running_kernel=context["running_kernel"], plugin_version=context["plugin_version"],
                   scope=policy.get("required_scope", "san-dataplane"))
     current = exact_tuple(manifest, context["installed"], **common)
-    target = exact_tuple(manifest, target_versions, **common)
+    target_common = {key: value for key, value in common.items() if key != "api"}
+    target = planned_tuple(manifest, target_versions, **target_common)
     if not current or not target:
         return {"verdict": "REFUSE_UNQUALIFIED", "current_tuple": current and current["id"],
                 "target_tuple": target and target["id"], "relevant": related, "post_gate_required": False}
@@ -254,12 +277,36 @@ def evaluate(plan, manifest, policy, context, compare_versions):
                     "relevant": related, "post_gate_required": False}
         return {"verdict": "ALLOW_QUALIFIED", "current_tuple": current["id"],
                 "target_tuple": target["id"], "relevant": related, "post_gate_required": True}
-    edge = next((edge for edge in manifest.get("rolling_edges", [])
+    edges = [edge for edge in manifest.get("rolling_edges", [])
                  if edge.get("from") == current["id"] and edge.get("to") == target["id"]
-                 and edge.get("status") in {"QUALIFIED", "EXACT_LAB_TESTED"}), None)
+                 and edge.get("status") in {"QUALIFIED", "EXACT_LAB_TESTED"}
+                 and not edge.get("required_tests")]
+    if len(edges) > 1:
+        raise Refusal("multiple qualified upgrade edges match the transaction")
+    edge = edges[0] if edges else None
     if not edge:
         return {"verdict": "REFUSE_UNQUALIFIED_EDGE", "current_tuple": current["id"],
                 "target_tuple": target["id"], "relevant": related, "post_gate_required": False}
+    if target["api"] != current["api"]:
+        storage = "libpve-storage-perl"
+        expected_transition = {
+            "from": current["api"], "to": target["api"],
+            "package": storage,
+            "old_version": current.get("packages", {}).get(storage),
+            "new_version": target.get("packages", {}).get(storage),
+        }
+        storage_actions = [row for row in related if base_package(row["package"]) == storage]
+        valid = (target["api"] == current["api"] + 1
+                 and edge.get("api_transition") == expected_transition
+                 and expected_transition["old_version"] != expected_transition["new_version"]
+                 and len(storage_actions) == 1
+                 and storage_actions[0]["action"].startswith("/")
+                 and storage_actions[0]["old_version"] == expected_transition["old_version"]
+                 and storage_actions[0]["new_version"] == expected_transition["new_version"])
+        if not valid:
+            return {"verdict": "REFUSE_UNQUALIFIED_API_TRANSITION",
+                    "current_tuple": current["id"], "target_tuple": target["id"],
+                    "relevant": related, "post_gate_required": False}
     # Name-only allowances cannot prove an old/new version, architecture or
     # operation.  Refuse legacy entries rather than interpreting them as an
     # unbounded permission.  A future manifest schema may add exact transition
@@ -276,6 +323,7 @@ def evaluate(plan, manifest, policy, context, compare_versions):
                 "relevant": related, "post_gate_required": False}
     return {"verdict": "ALLOW_QUALIFIED_EDGE", "current_tuple": current["id"],
             "target_tuple": target["id"], "edge": edge.get("id"),
+            "source_api": current["api"], "target_api": target["api"],
             "relevant": related, "post_gate_required": True}
 
 

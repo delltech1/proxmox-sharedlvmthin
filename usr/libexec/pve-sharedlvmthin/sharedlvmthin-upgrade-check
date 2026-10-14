@@ -204,8 +204,10 @@ while IFS='|' read -r sid disabled mode nodes; do
             ;;
     esac
 
+    pve_active_required=1
     case "$disabled" in
         1|yes|on|true)
+            pve_active_required=0
             checked_disabled=$((checked_disabled + 1))
             echo "UPGRADE_STORAGE_DISABLED=YES"
             ;;
@@ -225,6 +227,11 @@ while IFS='|' read -r sid disabled mode nodes; do
     if [ "$runtime_qualification" -eq 1 ]; then
         recovery_args=(--runtime-qualification "$sid")
     fi
+    preservation_probe=0
+    if [ -n "${SLT_PACKAGE_FENCE_FD:-}" ]; then
+        recovery_args=(--package-preservation "$sid")
+        preservation_probe=1
+    fi
     if timeout --foreground --kill-after=10 "$PROBE_TIMEOUT" \
         "$RECOVERY_CHECK" "${recovery_args[@]}" >"$result" 2>&1; then
         rc=0
@@ -234,7 +241,27 @@ while IFS='|' read -r sid disabled mode nodes; do
 
     cat "$result"
 
-    if [ "$runtime_qualification" -eq 1 ]; then
+    if [ "$preservation_probe" -eq 1 ]; then
+        healthy=$(grep -c '^PACKAGE_PRESERVATION_READY=YES$' "$result" || true)
+        safe=$healthy
+        not_mutation=$(grep -c '^SAFE_FOR_MUTATION=NO$' "$result" || true)
+        [ "$not_mutation" -eq 1 ] || safe=0
+        # Graph preservation is not operational PVE qualification. After the
+        # new runtime is installed, prove assigned active storage separately.
+        if [ "$runtime_qualification" -eq 0 ] && [ "$pve_active_required" -eq 1 ]; then
+            pve_result=$(mktemp) || { safe=0; pve_result=; }
+            if [ -n "$pve_result" ]; then
+                if ! timeout --foreground --kill-after=10 "$PROBE_TIMEOUT" \
+                    pvesm status --storage "$sid" >"$pve_result" 2>&1; then
+                    safe=0
+                fi
+                cat "$pve_result"
+                awk -v wanted="$sid" '$1 == wanted && $3 == "active" {n++} END {exit(n == 1 ? 0 : 1)}' \
+                    "$pve_result" || safe=0
+                rm -f -- "$pve_result"
+            fi
+        fi
+    elif [ "$runtime_qualification" -eq 1 ]; then
         healthy=$(grep -c '^RUNTIME_QUALIFICATION_READY=YES$' "$result" || true)
         safe=$healthy
     else

@@ -72,7 +72,7 @@ echo "COMPATIBILITY_CHECK_VERSION=1"
 echo "HOST=$(hostname)"
 echo "KERNEL=$(uname -r)"
 
-SLT_REQUIRED_RUNTIME_COMMANDS='bash sh perl python3 pvesm pvesh pvecm qm pct lvs vgs pvs
+SLT_REQUIRED_RUNTIME_COMMANDS='bash sh perl python3 pvesm pvesh pvecm corosync-quorumtool qm pct lvs vgs pvs
 lvcreate lvremove lvchange lvextend lvconvert lvrename vgchange vgcfgbackup dmsetup
 multipath multipathd iscsiadm qemu-img qemu-io qemu-system-x86_64 vma timeout systemctl ssh systemd-run
 blockdev blkdiscard thin_check dd env stat sha256sum sharedlvmthin lsinitramfs
@@ -135,7 +135,7 @@ fi
 check perl-module-load perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e 1
 check api-and-hook-contract perl -MPVE::Storage -MPVE::Storage::Custom::SharedLvmThinPlugin -e '
     my $api = PVE::Storage::APIVER();
-    die "unsupported API $api\n" if $api < 14 || $api > 15;
+    die "unsupported API $api\n" if $api < 14 || $api > 16;
     die "plugin API mismatch\n" if PVE::Storage::Custom::SharedLvmThinPlugin->api() != $api;
     for my $hook (qw(type plugindata properties options status list_images alloc_image free_image
         activate_storage deactivate_storage activate_volume deactivate_volume volume_size_info
@@ -225,7 +225,15 @@ while IFS='|' read -r sid disabled nodes; do
     [ -n "$sid" ] || continue
     case "$disabled" in 1|yes|on|true) continue;; esac
     if [ -n "$nodes" ]; then case ",$nodes," in *",$(hostname),"*) ;; *) continue;; esac; fi
-    check "recovery:$sid" /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$sid"
+    if [ -n "${SLT_PACKAGE_FENCE_FD:-}" ]; then
+        # The installed checker validates immutable context and real inherited
+        # locks; this is observational package preservation, not mutation
+        # admission. Ordinary compatibility checks retain recovery semantics.
+        check "package-preservation:$sid" /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check \
+            --package-preservation "$sid"
+    else
+        check "recovery:$sid" /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$sid"
+    fi
 done < "${storage_inventory:-/dev/null}"
 
 # A package configure refresh can make the dashboard run `pvesm status` while

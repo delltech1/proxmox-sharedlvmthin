@@ -130,7 +130,7 @@ DEB="$PWD/pve-sharedlvmthin_<dotted-version>_all.deb"
 DEB="$PWD/pve-sharedlvmthin-thick_<dotted-version>_all.deb"
 
 HASH="$(sha256sum "$DEB" | awk '{print $1}')"
-sudo experiments/thick-generations/package-profile-gate.sh \
+sudo python3 usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-preservation \
   --package "$DEB" --sha256 "$HASH" \
   --expect-host "$(hostname)" --expect-current none \
   --select-update-policy freeze --execute
@@ -139,9 +139,25 @@ sudo experiments/thick-generations/package-profile-gate.sh \
 The release workflow converts Debian `~` separators to dots in GitHub asset
 filenames; use the exact downloaded name. Run the gate from the matching tagged
 source tree. It is intentionally dry-run without `--execute`. For an upgrade,
-set `--expect-current` to the installed profile (`dual` or `thick-only`) and
-run `sharedlvmthin upgrade-check` first. Do not replace this workflow with raw
-`apt install` while `FREEZE` is active.
+set `--expect-current` to the installed profile (`dual` or `thick-only`). The
+matching candidate source wrapper automatically inventories all locally
+applicable Thick definitions, including disabled storage and Eager/Lazy aliases,
+and holds both established executor locks for every existing Lazy volume.
+It repeats the inventory under those locks before invoking the ordinary gate.
+Once this entry point is installed, `sharedlvmthin package-upgrade` exposes
+the same arguments; use matching candidate source when upgrading an older
+installation that does not yet provide it. Do not replace this workflow with
+raw `apt install` while `FREEZE` is active.
+
+This is package-only preservation, not a storage mutation grant. Local active
+Lazy disks require a complete stable graph proof. For remote-owned active Lazy
+disks the updated node must prove no conflicting local frontend, clone, zero,
+data or metadata map, including renamed UUID identities, while holding its local
+alias executors. This does not certify the remote owner's runtime, clear its
+ownership or allow takeover. Missing descriptors, changing identity, stale
+local boot ownership, transitional state or ambiguous probes refuse the update.
+If installation has already dispatched, inspect and recover its exact durable
+transaction; do not blindly repeat installation or manually remove its receipts.
 
 Existing `/etc/pve-sharedlvmthin/web.conf` and TLS files are preserved during
 upgrade. Non-interactive installation never waits for the optional web
@@ -288,8 +304,9 @@ The package installs a marked dmeventd autogrow fragment in
 `/etc/lvm/lvmlocal.conf` only when no administrator-owned thin command or
 autoextend settings already exist. Existing policy is preserved and reported,
 never overwritten. Purge removes only the marked package fragment and private
-Python cache/state. PVE Storage APIs 14 and 15 are explicitly supported; other
-runtime API versions refuse mutation until separately qualified.
+Python cache/state. The RC5.97 lifecycle adapters recognize PVE Storage APIs
+14, 15 and 16; runtime authorization remains tied to the exact software tuple,
+boot and operation evidence, not registration alone.
 
 ## Rolling package upgrade
 
@@ -315,8 +332,12 @@ root-owned receipt matching the code identity actually loaded by the calling
 PVE process, the current boot ID, running kernel and qualified plan. A stale
 worker, manual payload replacement, reboot or different kernel therefore
 blocks mutation even when all services merely report `active`. After a
-qualified reboot use `package-post-reboot-gate.sh --settle-runtime`; the
-default invocation remains read-only.
+qualified unchanged-stack reboot use `package-post-reboot-gate.sh --settle-runtime`;
+the default invocation remains read-only. A concrete kernel APT update follows
+a different sequence: install, complete a new boot into the intended kernel,
+run `sharedlvmthin update-policy postcheck`, then complete the public runtime
+qualification workflow. The postcheck deliberately refuses a changed kernel
+package before the required new boot; never clear that guard manually.
 
 A package upgrade replaces the plugin and diagnostic files and refreshes only
 active PVE management consumers. It does not restart QEMU, deactivate an LVM

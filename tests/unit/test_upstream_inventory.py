@@ -187,6 +187,20 @@ class UpstreamInventoryEvaluationTests(unittest.TestCase):
                 "/usr/share/perl5/PVE/Storage/LVMPlugin.pm"):
             self.assertIn(path, self.module.CRITICAL_FILES)
 
+    def test_perl_loaded_path_probe_uses_exact_shared_module_registry(self):
+        # A historical probe emitted additional canonical modules that its
+        # collector did not expect, incorrectly classifying valid paths.
+        with mock.patch.object(self.module, "_run", return_value={
+                "ok": True, "stdout": "{}", "error": "", "rc": 0}) as run:
+            self.module._pve_api()
+        code = run.call_args.args[0][-1]
+        prefix = "loaded_paths=>{map {$_ => ($INC{$_}//q{})} qw("
+        self.assertIn(prefix, code)
+        emitted = code.split(prefix, 1)[1].split(")", 1)[0].split()
+        self.assertEqual(emitted, list(self.module.LOADED_PVE_MODULES))
+        collector = SCRIPT.read_text(encoding="utf-8").split("def collect():", 1)[1]
+        self.assertIn("for module in LOADED_PVE_MODULES", collector)
+
     def test_apt_candidate_drift_does_not_change_runtime_contract(self):
         package_data = {
             "libpve-storage-perl": {

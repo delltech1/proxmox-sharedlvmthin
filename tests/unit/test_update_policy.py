@@ -70,6 +70,74 @@ class UpdatePolicyTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "ALLOW_QUALIFIED_EDGE")
         self.assertTrue(result["post_gate_required"])
 
+    def api_bridge_manifest(self):
+        manifest = self.manifest()
+        manifest["tuples"][1]["api"] = 16
+        manifest["rolling_edges"][0]["api_transition"] = {
+            "from": 15, "to": 16, "package": "libpve-storage-perl",
+            "old_version": "1", "new_version": "2",
+        }
+        return manifest
+
+    def test_exact_api15_to_api16_edge_preserves_post_gate_and_freeze(self):
+        actions = [action("libpve-storage-perl"), action("qemu-server")]
+        for profile in ("dual", "thick-only"):
+            manifest = self.api_bridge_manifest()
+            for row in manifest["tuples"]:
+                row["profiles"] = [profile]
+            context = self.context()
+            context["profile"] = profile
+            with self.subTest(profile=profile):
+                result = self.evaluate(actions, manifest=manifest, context=context)
+                self.assertEqual(result["verdict"], "ALLOW_QUALIFIED_EDGE")
+                self.assertEqual((result["source_api"], result["target_api"]), (15, 16))
+                self.assertTrue(result["post_gate_required"])
+                self.assertEqual(self.evaluate(actions, mode="FREEZE", manifest=manifest,
+                                               context=context)["verdict"], "REFUSE_FREEZE")
+
+    def test_cross_api_edge_requires_exact_transition_not_api_guess(self):
+        actions = [action("libpve-storage-perl"), action("qemu-server")]
+        for corruption in ("missing", "wrong_api", "wrong_version", "extra", "pending"):
+            manifest = self.api_bridge_manifest()
+            edge = manifest["rolling_edges"][0]
+            if corruption == "missing":
+                del edge["api_transition"]
+            elif corruption == "wrong_api":
+                edge["api_transition"]["to"] = 17
+            elif corruption == "wrong_version":
+                edge["api_transition"]["old_version"] = "other"
+            elif corruption == "extra":
+                edge["api_transition"]["allow_any"] = True
+            else:
+                edge["required_tests"] = ["not-run"]
+            with self.subTest(corruption=corruption):
+                self.assertTrue(self.evaluate(actions, manifest=manifest)["verdict"].startswith("REFUSE_"))
+
+    def test_configure_only_or_duplicate_storage_actions_cannot_cross_api(self):
+        manifest = self.api_bridge_manifest()
+        for actions in (
+                [action("libpve-storage-perl", operation="**CONFIGURE**"), action("qemu-server")],
+                [action("libpve-storage-perl"), action("libpve-storage-perl"), action("qemu-server")],
+                [action("libpve-storage-perl", old="other"), action("qemu-server")]):
+            self.assertEqual(self.evaluate(actions, manifest=manifest)["verdict"],
+                             "REFUSE_UNQUALIFIED_API_TRANSITION")
+
+    def test_ambiguous_tuple_or_edge_is_never_first_match_wins(self):
+        import copy
+        actions = [action("libpve-storage-perl"), action("qemu-server")]
+        for variant in ("tuple", "cross_api_tuple", "edge"):
+            manifest = self.api_bridge_manifest()
+            if variant == "edge":
+                manifest["rolling_edges"].append(copy.deepcopy(manifest["rolling_edges"][0]))
+            else:
+                duplicate = copy.deepcopy(manifest["tuples"][1])
+                duplicate["id"] = "duplicate"
+                if variant == "cross_api_tuple":
+                    duplicate["api"] = 15
+                manifest["tuples"].append(duplicate)
+            with self.subTest(variant=variant), self.assertRaises(M.Refusal):
+                self.evaluate(actions, manifest=manifest)
+
     def test_advisory_operation_matrix_never_changes_package_admission(self):
         actions = [action("libpve-storage-perl"), action("qemu-server")]
         baseline = self.manifest()

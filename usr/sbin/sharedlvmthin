@@ -231,14 +231,14 @@ doctor() {
 
         info "PVE Storage API: current=$PVEAPI age=$APIAGE accepted-range=$MINAPI..$PVEAPI"
 
-        if [ "$PVEAPI" -lt 14 ] || [ "$PVEAPI" -gt 15 ]; then
-            fail "Running PVE Storage API $PVEAPI is outside tested SharedLvmThin range 14..15"
+        if [ "$PVEAPI" -lt 14 ] || [ "$PVEAPI" -gt 16 ]; then
+            fail "Running PVE Storage API $PVEAPI is outside tested SharedLvmThin range 14..16"
         elif [ "$PLUGINAPI" -gt "$PVEAPI" ]; then
             fail "Plugin API $PLUGINAPI is newer than running PVE API $PVEAPI"
         elif [ "$PLUGINAPI" -lt "$MINAPI" ]; then
             fail "Plugin API $PLUGINAPI is older than minimum supported API $MINAPI"
         else
-            pass "Running PVE Storage API $PVEAPI is explicitly supported (tested range 14..15)"
+            pass "Running PVE Storage API $PVEAPI is explicitly supported (tested range 14..16)"
         fi
     else
         fail "Unable to determine Storage API compatibility"
@@ -1431,6 +1431,14 @@ case "${1:-doctor}" in
         fi
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check "$2"
         ;;
+    package-upgrade)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-preservation "$@"
+        ;;
+    package-post-reboot)
+        shift
+        exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-preservation --post-reboot "$@"
+        ;;
     upgrade-check)
         case "${2:-}" in
             '')
@@ -1470,6 +1478,11 @@ case "${1:-doctor}" in
         ;;
     update-policy)
         shift
+        case "${1:-}" in
+            postcheck|requalify-boot)
+                exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-package-preservation --update-policy "$@"
+                ;;
+        esac
         exec /usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy "$@"
         ;;
     candidate-inspect)
@@ -1656,6 +1669,8 @@ case "${1:-doctor}" in
         echo "  sharedlvmthin doctor --deep"
         echo "  sharedlvmthin recovery-check <storage-id>"
         echo "  sharedlvmthin upgrade-check [--fail-fast]"
+        echo "  sharedlvmthin package-upgrade --package /absolute/candidate.deb --sha256 HEX --expect-host HOST --expect-current none|dual|thick-only [--execute]"
+        echo "  sharedlvmthin package-post-reboot --expect-host HOST --expect-profile dual|thick-only --expect-version VERSION --previous-boot-id UUID [--settle-runtime]"
         echo "  sharedlvmthin compat-check"
         echo "  sharedlvmthin upstream-inventory [--output FILE] [--compare QUALIFICATION.json]"
         echo "  sharedlvmthin update-plan [--json]"

@@ -1,0 +1,117 @@
+#!/usr/bin/python3
+# Copyright (C) 2026 BASTRIX Project Contributors
+# SPDX-License-Identifier: GPL-3.0-only
+"""Ordinary package gate with automatic complete local Lazy lock discovery."""
+import importlib.machinery
+import importlib.util
+import os
+from pathlib import Path
+import platform
+import re
+import subprocess
+import sys
+sys.dont_write_bytecode = True
+from sharedlvmthin_package_executor_fence import hold_executors, create_sealed_context, read_sealed_context
+from sharedlvmthin_package_preservation import collect_snapshot, require_unchanged
+
+
+def main(argv):
+    runtime = Path(__file__).resolve().parent
+    policy = None
+    reboot = False
+    if argv and argv[0] == "--post-reboot":
+        reboot = True
+        argv = argv[1:]
+        if argv not in (["--help"], ["-h"]):
+            values = {}
+            index = 0
+            while index < len(argv):
+                option = argv[index]
+                if option in values or option not in ("--expect-host", "--expect-profile",
+                        "--expect-version", "--previous-boot-id", "--settle-runtime"):
+                    raise RuntimeError("unknown or duplicate post-reboot option")
+                if option == "--settle-runtime":
+                    values[option] = True
+                    index += 1
+                    continue
+                if index + 1 >= len(argv) or argv[index + 1].startswith("--"):
+                    raise RuntimeError("missing post-reboot option value")
+                values[option] = argv[index + 1]
+                index += 2
+            patterns = {"--expect-host": r"[A-Za-z0-9][A-Za-z0-9_.-]*",
+                        "--expect-profile": r"dual|thick-only",
+                        "--expect-version": r"[0-9][A-Za-z0-9.+:~\-]*",
+                        "--previous-boot-id": r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"}
+            if any(not re.fullmatch(pattern, values.get(option, ""))
+                   for option, pattern in patterns.items()):
+                raise RuntimeError("invalid or missing exact post-reboot identity")
+    if argv and argv[0] == "--update-policy":
+        plain = len(argv) == 2 and argv[1] in ("postcheck", "requalify-boot")
+        exact_boot = len(argv) == 4 and argv[1:3] == ["requalify-boot", "--previous-boot-id"] \
+            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", argv[3])
+        if not (plain or exact_boot):
+            raise RuntimeError("only exact postcheck or requalify-boot policy dispatch is permitted")
+        policy = argv[1]
+        argv = argv[1:]
+    gate_name = "package-post-reboot-gate" if reboot else "package-profile-gate"
+    gate = runtime / ("sharedlvmthin-" + gate_name)
+    if not gate.is_file():
+        gate = runtime.parents[2] / ("experiments/thick-generations/" + gate_name + ".sh")
+    if not gate.is_file() or gate.is_symlink():
+        raise RuntimeError("exact package profile gate is unavailable")
+    command = ["/bin/bash", str(gate)]
+    if policy is not None:
+        target = runtime / "sharedlvmthin-update-policy"
+        if not target.is_file() or target.is_symlink():
+            raise RuntimeError("exact installed update policy is unavailable")
+        command = [str(target)]
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "LANG": "C"}
+    if argv in (["--help"], ["-h"]):
+        return subprocess.call(["/bin/bash", str(gate), *argv], env=env)
+    if os.geteuid() != 0:
+        raise RuntimeError("requires root")
+    loader = importlib.machinery.SourceFileLoader("package_inventory", str(runtime / "sharedlvmthin-recovery-check"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    checker = importlib.util.module_from_spec(spec)
+    loader.exec_module(checker)
+    node = platform.node()
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    before = collect_snapshot(checker, node, boot)
+
+    def invoke(descriptors=(), context=None):
+        require_unchanged(before, collect_snapshot(checker, node, boot))
+        if Path("/proc/sys/kernel/random/boot_id").read_text().strip() != boot:
+            raise RuntimeError("package scope boot changed; no dispatch")
+        if context is not None:
+            env["SLT_PACKAGE_FENCE_FD"] = str(context)
+        print("PACKAGE_EXECUTOR_SCOPES=" + str(len(before["scopes"])), flush=True)
+        # Children keep the OFDs if this wrapper disappears. Durable package
+        # receipts, not a timeout or wrapper exit, determine recovery authority.
+        return subprocess.call([*command, *argv], env=env,
+                               pass_fds=(*descriptors, *((context,) if context is not None else ())))
+
+    inherited = os.environ.get("SLT_PACKAGE_FENCE_FD")
+    if inherited is not None:
+        if not inherited.isdecimal():
+            raise RuntimeError("malformed inherited executor context")
+        context_fd = int(inherited)
+        context = read_sealed_context(context_fd, boot)
+        if not set(before["scopes"]).issubset({tuple(row) for row in context["scopes"]}):
+            raise RuntimeError("inherited context does not match complete current scope")
+        return invoke(context["fds"], context_fd)
+    if not before["scopes"]:
+        return invoke()
+    with hold_executors(before["scopes"]) as descriptors:
+        context = create_sealed_context(before["scopes"], descriptors, boot)
+        try:
+            return invoke(descriptors, context)
+        finally:
+            os.close(context)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except (RuntimeError, ValueError, OSError) as exc:
+        print("PACKAGE_PRESERVATION=REFUSED\nDETAIL=" + str(exc), file=sys.stderr)
+        raise SystemExit(2)

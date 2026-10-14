@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import _thread
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -127,7 +128,9 @@ class LinuxOFDProbeTests(unittest.TestCase):
         ready = threading.Event()
         finish = threading.Event()
         ended = threading.Event()
+        native_tid = []
         def native_worker():
+            native_tid.append(threading.get_native_id())
             ready.set()
             finish.wait()
             ended.set()
@@ -141,6 +144,13 @@ class LinuxOFDProbeTests(unittest.TestCase):
         finally:
             finish.set()
             self.assertTrue(ended.wait(2))
+            # Event publication precedes actual native task exit. Do not let
+            # a still-exiting raw thread contaminate the next single-task test.
+            deadline = time.monotonic() + 2
+            while str(native_tid[0]) in os.listdir('/proc/self/task'):
+                self.assertLess(time.monotonic(), deadline,
+                                'native test worker did not terminate')
+                time.sleep(0.001)
             os.close(anchor)
             os.close(read_fd)
             os.close(write_fd)

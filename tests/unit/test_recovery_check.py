@@ -27,6 +27,18 @@ def load_checker():
 
 
 class RecoveryCheckTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux inherited fence contract")
+    def test_package_preservation_rejects_missing_or_boolean_fence_before_storage_probe(self):
+        for descriptor in ("", "true", "1"):
+            with self.subTest(descriptor=descriptor), \
+                    mock.patch.dict(self.checker.os.environ, {"SLT_PACKAGE_FENCE_FD": descriptor}, clear=True), \
+                    mock.patch.object(self.checker, "storage_configs", side_effect=AssertionError("unsafe probe reached")), \
+                    redirect_stdout(StringIO()) as output:
+                result = self.checker.main(["--package-preservation", "test"])
+                self.assertEqual(result, 2)
+                self.assertIn("PACKAGE_PRESERVATION_READY=NO", output.getvalue())
+                self.assertIn("SAFE_FOR_MUTATION=NO", output.getvalue())
+
     @classmethod
     def setUpClass(cls):
         cls.checker = load_checker()
@@ -271,6 +283,32 @@ sharedlvmthin: two
         )
         self.assertFalse(ok)
         self.assertTrue(any("ownership does not match" in item for item in failures))
+
+        values.update(phase="LAZY_ACTIVE", owner_node="test-node",
+                      owner_boot="11111111-2222-3333-4444-555555555555",
+                      owner_epoch="2" * 32, publication="3")
+        canonical = "|".join(f"{field}={values[field]}" for field in order)
+        active_tags = ",".join([
+            *(f"slt_tg_{field}={values[field]}" for field in order),
+            "slt_tg_sha256=" + hashlib.sha256(canonical.encode()).hexdigest()[:32],
+        ])
+        active_output = output.replace(anchor_tags, active_tags)
+        common = (active_output, sid, "vg-uuid", lambda owner, name: ["ref"],
+                  lambda owner, name: [("ref", 2**30, "attached")], {sid})
+        ok, _, failures = self.checker.thick_anchor_health(*common)
+        self.assertFalse(ok, "default recovery must not accept an active Lazy graph")
+        for result in (False, None, "PASS"):
+            ok, _, failures = self.checker.thick_anchor_health(
+                *common, active_package_proof=lambda state, rows: result)
+            self.assertFalse(ok, failures)
+        observed = []
+        def exact_proof(state, rows):
+            observed.append(state)
+            self.assertIn(metadata, rows)
+            return True
+        ok, _, failures = self.checker.thick_anchor_health(*common, active_package_proof=exact_proof)
+        self.assertTrue(ok, failures)
+        self.assertEqual(observed[0]["owner_boot"], values["owner_boot"])
 
     def test_sibling_anchor_refuses_unknown_owner_head_drift_and_cross_reference(self):
         cases = []
