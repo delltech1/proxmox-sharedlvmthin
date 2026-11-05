@@ -56,7 +56,20 @@ Disposable lab checks included:
 - An offline Thick disk expansion retained the original 256 MiB SHA-256 and
   returned zeroes across the newly added 64 MiB.
 
-API15-to-API16 shared-SAN migration, the RC5.102 Thick-only SAN lifecycle, and
+On a separately scoped single-node SAN fixture, the exact RC5.102 Thick-only
+package created an Eager disk, performed snapshot and rollback with a changed
+data canary, and grew the disk while checking its original and newly added
+regions. A Lazy disk was created and activated, zero reads were checked, and
+explicit materialization was followed by a live disk-only snapshot and an
+offline rollback. An unmaterialized Lazy snapshot was refused. The two logical
+SAN paths used a common underlying network and do not prove physical redundancy.
+With those disposable volumes present and their guests stopped, a guarded
+Thick-only-to-DUAL profile replacement and subsequent host reboot also passed
+package, storage identity, path and peer-SSH checks. The test restarted each
+guest and checked a small host-side disk region; it did not exercise a guest
+filesystem workload during that profile replacement.
+
+API15-to-API16 shared-SAN migration, multi-node Thick-only SAN operation, and
 every possible SAN, guest configuration or failure sequence are not established
 by these checks. `RETEST_REQUIRED` remains the catalogue classification for
 the candidate tuples and rolling edge.
