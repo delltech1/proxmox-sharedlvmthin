@@ -1,0 +1,89 @@
+name: RC5.102 one-shot publisher
+
+on:
+  push:
+    branches:
+      - 'publish/rc5.102-tg53-verified'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Verify exact release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          target=6289a604f7570c31a09b00adeb915adca003895a
+          test "$(git rev-parse HEAD^)" = "$target"
+          test "$(git diff --name-only HEAD^ HEAD)" = '.github/workflows/publish-rc5102.yml'
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$target"
+
+      - name: Install build and test dependencies
+        run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
+
+      - name: Run qualification tests
+        run: |
+          sudo env SLT_PORTABLE_CI=1 python3 -m unittest discover -s tests/unit -v
+          sudo install -d -m 0755 /usr/share/pve-sharedlvmthin
+          printf 'dual\n' | sudo tee /usr/share/pve-sharedlvmthin/package-flavor >/dev/null
+          sudo prove -Itests/unit/lib -v tests/unit/*.t
+          bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/preinst DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
+          shellcheck -x scripts/*.sh experiments/thick-generations/*.sh \
+            DEBIAN/preinst DEBIAN/postinst DEBIAN/prerm DEBIAN/postrm \
+            usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure \
+            usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
+          sudo python3 -m py_compile \
+            usr/libexec/pve-sharedlvmthin/sharedlvmthin-web \
+            usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json \
+            usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
+
+      - name: Build and validate both package profiles
+        run: |
+          python3 scripts/public-source-privacy-scan.py
+          sh scripts/check-reproducible-packages.sh
+          sh scripts/build.sh dist/dual dual
+          sh scripts/build.sh dist/thick-only thick-only
+          dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
+          thick=$(find dist/thick-only -maxdepth 1 -name '*.deb' -print -quit)
+          sh scripts/check-release.sh "$dual"
+          sh scripts/check-release.sh "$thick"
+          sh scripts/compare-package-profiles.sh "$dual" "$thick"
+          cp "$dual" dist/
+          cp "$thick" dist/
+
+      - name: Prepare and verify GitHub-safe assets
+        run: |
+          for source in dist/*.deb; do
+            target="$(printf '%s' "$source" | tr '~' '.')"
+            if [ "$target" != "$source" ]; then
+              mv "$source" "$target"
+            fi
+          done
+          (cd dist && sha256sum ./*.deb > SHA256SUMS)
+          (cd dist && sha256sum --check SHA256SUMS)
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          target=6289a604f7570c31a09b00adeb915adca003895a
+          tag_name=v0.9.0-rc5.102-tg53
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$target"
+          printf '%s  %s\n' \
+            982d3aae439a7088183ffa4910cb913618b6231a36a08d16e7fd7cce4c836c67 dist/pve-sharedlvmthin_0.9.0.rc5.102.tg53_all.deb \
+            b511dc0b66234648b2bb1f951a017c6e9ae6669251657a72a1ff11f64c67c32d dist/pve-sharedlvmthin-thick_0.9.0.rc5.102.tg53_all.deb | sha256sum --check
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" > existing-releases.json
+          python3 scripts/assert-release-absent.py existing-releases.json "$tag_name"
+          gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/$tag_name" > existing-tags.json
+          python3 -c 'import json,sys; refs=json.load(open("existing-tags.json")); sys.exit(any(x.get("ref")==("refs/tags/"+sys.argv[1]) for x in refs))' "$tag_name"
+          gh release create "$tag_name" dist/*.deb dist/SHA256SUMS \
+            --target "$target" --prerelease \
+            --title "SharedLvmThin RC5.102-TG53" \
+            --notes-file docs/RELEASE-NOTES-RC5.102-TG53.md
