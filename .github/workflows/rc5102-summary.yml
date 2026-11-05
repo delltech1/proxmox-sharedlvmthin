@@ -1,0 +1,49 @@
+name: Update RC5.102 release summary
+on:
+  push:
+    branches:
+      - 'docs/rc5102-release-summary'
+permissions:
+  contents: write
+jobs:
+  update-description:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - name: Verify release and update description
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 6289a604f7570c31a09b00adeb915adca003895a
+          test "$(git diff --name-only HEAD^ HEAD)" = '.github/workflows/rc5102-summary.yml'
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v0.9.0-rc5.102-tg53" --jq .object.sha)" = 6289a604f7570c31a09b00adeb915adca003895a
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v0.9.0-rc5.102-tg53" > /tmp/rc5102-release-before.json
+          python3 - <<'PY'
+          import hashlib,json,pathlib,sys
+          obj=json.load(open('/tmp/rc5102-release-before.json'))
+          old=obj['body']
+          assert obj['id']==434858841 and not obj['draft'] and obj['prerelease']
+          assert hashlib.sha256(old.encode()).hexdigest()=='42e66c0e44f07d8d02df08dafb5591887c3b9ac4762442db140fdfc62923b805'
+          expected={'pve-sharedlvmthin_0.9.0.rc5.102.tg53_all.deb':'sha256:982d3aae439a7088183ffa4910cb913618b6231a36a08d16e7fd7cce4c836c67','pve-sharedlvmthin-thick_0.9.0.rc5.102.tg53_all.deb':'sha256:b511dc0b66234648b2bb1f951a017c6e9ae6669251657a72a1ff11f64c67c32d','SHA256SUMS':'sha256:d86392c39c08a1c5acf779086192b7ff780eb616277b96487bf5ff711e1e4b3e'}
+          assert {a['name']:a['digest'] for a in obj['assets']}==expected
+          start=old.index('Disposable lab checks included:')
+          end=old.index('## Recorded platform versions',start)
+          replacement="Disposable lab checks focused on the components changed since the previous\nrelease and covered:\n\n- Package installation, upgrades and profile replacement.\n- Proxmox component updates, reboots, storage reconnection and cluster checks.\n- Thin and Thick storage operations, snapshots, rollback and disk expansion.\n- Live migration and guest data checks during selected upgrade scenarios.\n- Eager and Lazy provisioning and recovery behavior.\n\nThe checks were bounded to the documented scenarios. Thin or unmaterialized\nLazy migration across API versions and multi-node Thick-only SAN operation\nremain unqualified. An unmaterialized Lazy snapshot is refused until the\nvolume is materialized. The SAN paths used in these tests do not establish\nphysical redundancy. `RETEST_REQUIRED` remains the catalogue classification\nfor the candidate tuples and rolling edge.\n\n"
+          new=old[:start]+replacement+old[end:]
+          pathlib.Path('/tmp/rc5102-release-new.md').write_text(new,encoding='utf-8')
+          PY
+          gh release edit v0.9.0-rc5.102-tg53 --notes-file /tmp/rc5102-release-new.md
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v0.9.0-rc5.102-tg53" > /tmp/rc5102-release-after.json
+          python3 - <<'PY'
+          import json,pathlib
+          before=json.load(open('/tmp/rc5102-release-before.json'))
+          after=json.load(open('/tmp/rc5102-release-after.json'))
+          assert after['body']==pathlib.Path('/tmp/rc5102-release-new.md').read_text(encoding='utf-8')
+          assert after['id']==before['id'] and after['tag_name']==before['tag_name']
+          assert after['prerelease']==before['prerelease'] and after['draft']==before['draft']
+          assert [(a['name'],a['digest']) for a in after['assets']]==[(a['name'],a['digest']) for a in before['assets']]
+          print('RELEASE_DESCRIPTION_UPDATED_ASSETS_UNCHANGED')
+          PY
