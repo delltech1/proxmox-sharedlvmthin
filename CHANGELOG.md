@@ -1,5 +1,17 @@
 # Changelog
 
+## RC5.101 TG53 — experimental compatibility and recovery update
+
+Package version: `0.9.0~rc5.101~tg53`.
+
+- Extend exact PVE package/kernel identities and lifecycle adapter checks.
+- Harden package preservation, recovery, health and Thick volume identity
+  checks without changing the existing RAW volume format.
+- Test kernel 7.0.14-28-pve, including reconnect, live migration and an
+  offline multi-disk snapshot/rollback cycle in a disposable lab.
+- Keep DUAL and Thick-only profiles experimental and preserve their shared
+  Thick implementation. See the release notes for the exact tested scope.
+
 ## RC5.31 TG52 — experimental major hardening candidate
 
 Package version: `0.9.0~rc5.31~tg52`.

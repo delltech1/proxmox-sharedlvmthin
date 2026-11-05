@@ -229,6 +229,14 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn("PVE::QemuConfig->load_config($vmid)", source)
         self.assertIn("PVE::QemuServer::foreach_volid", source)
         self.assertIn("$info->{is_attached}", source)
+        # PVE migration validates target availability for unused, pending,
+        # snapshot and VM-state volumes as well as attached disks.
+        callback = source.index("PVE::QemuServer::foreach_volid($conf")
+        target_check = source.index("PVE::Storage::storage_check_enabled($storecfg, $sid, $target)", callback)
+        attached_filter = source.index("return if !$info->{is_attached}", callback)
+        self.assertLess(target_check, attached_filter)
+        self.assertIn("PVE::Storage::parse_volname($storecfg, $volid)", source)
+        self.assertIn("push @blocked, \"$volid: $error\"", source)
         self.assertIn("direct Thin live migration is unsupported", source)
         self.assertIn("thick-lazy-materialize $storeid $volname", source)
         self.assertIn("offline handoff requires LAZY_DORMANT", source)
@@ -3450,7 +3458,8 @@ exec /usr/bin/python3 "$@"
         self.assertIn('[ "$DOCTOR_MODE" = "quick" ]', doctor)
         self.assertIn('per-volume and Thick anchor diagnostics require the full Doctor', doctor)
         self.assertIn('DOCTOR_MODE=quick doctor', doctor)
-        self.assertIn('timeout --foreground --kill-after=10 60', postinst)
+        self.assertIn('DOCTOR_TIMEOUT=${SLT_INSTALL_DOCTOR_TIMEOUT_SEC:-1800}', postinst)
+        self.assertIn('timeout --foreground --kill-after=10 "$DOCTOR_TIMEOUT"', postinst)
         self.assertIn('/usr/sbin/sharedlvmthin doctor --quick', postinst)
 
     def test_recovery_check_is_read_only_and_fail_closed(self):
@@ -3607,7 +3616,7 @@ exec /usr/bin/python3 "$@"
         self.assertIn("invalid thick-generations open-count command deadline", source)
         self.assertEqual(
             source.count("$class->_thick_frontend_open_count(\n"),
-            10,
+            14,
         )
         helper_end = source.index("sub _thick_schedule_materialization")
         thick_after_helper = source[helper_end:source.index("sub volume_snapshot_needs_fsfreeze")]
@@ -3974,7 +3983,7 @@ exec /usr/bin/python3 "$@"
         self.assertIn("no_hydration", family)
         self.assertIn("result is UNKNOWN", family)
         self.assertIn("no retry attempted", family)
-        self.assertIn("continuing without retry", family)
+        self.assertIn("command termination is unproven", family)
         self.assertIn("sub _thick_enable_background_hydration", family)
         self.assertIn("sub _thick_disable_background_hydration", family)
 
@@ -4269,7 +4278,7 @@ exec /usr/bin/python3 "$@"
             r"\$class->_thick_list_volumes_scoped\(\s*([^,]+),",
             source,
         )
-        self.assertEqual(len(calls), 53)
+        self.assertEqual(len(calls), 54)
         self.assertTrue(all(call.strip() == "$scfg" for call in calls))
 
     def test_thick_autoactivation_boundary_is_bounded_and_mode_isolated(self):

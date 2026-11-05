@@ -105,6 +105,51 @@ class ReleaseContractTests(unittest.TestCase):
             "dual-thick-dual-profile-cycle", candidate.get("required_tests", [])
         )
 
+    def test_rc598_lab_source_is_listed_but_never_auto_qualified(self):
+        spec = importlib.util.spec_from_file_location("rc598_policy", ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py")
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        row = next(row for row in self.catalogue["tuples"] if row["id"] == "rc598-lab2-api16-k23-source")
+        self.assertEqual(row["status"], "RETEST_REQUIRED")
+        for profile in ("dual", "thick-only"):
+            args = dict(profile=profile, api=16, running_kernel="7.0.14-23-pve", plugin_version="0.9.0~rc5.98~tg53~lab2")
+            self.assertEqual(policy.observed_tuple(self.catalogue, row["packages"], **args)["id"], row["id"])
+            self.assertIsNone(policy.exact_tuple(self.catalogue, row["packages"], scope="san-dataplane", **args))
+            changed = dict(row["packages"], **{"qemu-server": "9.2.14"})
+            self.assertIsNone(policy.observed_tuple(self.catalogue, changed, **args))
+
+    def test_rc598_lab3_k26_candidate_never_auto_qualifies(self):
+        spec = importlib.util.spec_from_file_location("rc598_target_policy", ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py")
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        row = next(row for row in self.catalogue["tuples"] if row["id"] == "rc598-lab3-api16-k26-target")
+        self.assertEqual(row["status"], "RETEST_REQUIRED")
+        for profile in ("dual", "thick-only"):
+            args = dict(profile=profile, api=16, running_kernel="7.0.14-26-pve", plugin_version="0.9.0~rc5.98~tg53~lab3")
+            self.assertEqual(policy.observed_tuple(self.catalogue, row["packages"], **args)["id"], row["id"])
+            self.assertIsNone(policy.exact_tuple(self.catalogue, row["packages"], scope="san-dataplane", **args))
+            args["running_kernel"] = "7.0.14-27-pve"
+            self.assertIsNone(policy.observed_tuple(self.catalogue, row["packages"], **args))
+
+    def test_lab5_rolling_source_tuples_never_auto_qualify(self):
+        spec = importlib.util.spec_from_file_location("lab5_policy", ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py")
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        ids = ("rc598-lab5-api16-k16-peer", "rc598-lab5-api16-k17-peer",
+               "rc598-lab5-api14-control", "rc598-lab5-api15-control")
+        for row_id in ids:
+            row = next(item for item in self.catalogue["tuples"] if item["id"] == row_id)
+            self.assertEqual(row["status"], "RETEST_REQUIRED")
+            for profile in ("dual", "thick-only"):
+                args = dict(profile=profile, api=row["api"], running_kernel=row["running_kernel"],
+                            plugin_version="0.9.0~rc5.98~tg53~lab5")
+                self.assertEqual(policy.observed_tuple(self.catalogue, row["packages"], **args)["id"], row_id)
+                self.assertIsNone(policy.exact_tuple(self.catalogue, row["packages"], scope="package-lifecycle", **args))
+                changed = dict(row["packages"], **{"qemu-server": "999.0"})
+                self.assertIsNone(policy.observed_tuple(self.catalogue, changed, **args))
+            if row["api"] == 14:
+                self.assertIn("san-dataplane", row["excluded_scopes"])
+
     def test_rc597_target_and_directed_update_are_exact_unqualified_candidates(self):
         rows = {item["id"]: item for item in self.catalogue["tuples"]}
         source = rows["rc597-api16-update-source"]
@@ -175,7 +220,7 @@ class ReleaseContractTests(unittest.TestCase):
             for kernel, expected in (("7.0.14-20-pve", "rc597-api16-k20-postupdate"),
                                      ("7.0.14-23-pve", "rc597-api16-k23-target"),
                                      ("7.0.14-21-pve", None)):
-                args = dict(profile=profile, running_kernel=kernel, plugin_version=self.version)
+                args = dict(profile=profile, running_kernel=kernel, plugin_version="0.9.0~rc5.97~tg53")
                 observed = policy.observed_tuple(self.catalogue, versions, api=16, **args)
                 self.assertEqual(observed["id"] if observed else None, expected)
                 self.assertIsNone(policy.planned_tuple(self.catalogue, versions, scope="san-dataplane", **args))

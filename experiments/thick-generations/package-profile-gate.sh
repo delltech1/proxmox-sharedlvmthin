@@ -26,6 +26,7 @@ direct_package_txid=
 direct_recovery_txid=
 recovery_code_package=
 recovery_code_hash=
+doctor_timeout_sec=1800
 clean_env=(/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C)
 if [[ -n "${SLT_PACKAGE_FENCE_FD:-}" ]]; then
     clean_env+=("SLT_PACKAGE_FENCE_FD=$SLT_PACKAGE_FENCE_FD")
@@ -36,6 +37,7 @@ usage() {
 usage: package-profile-gate.sh --package /absolute/candidate.deb \
        --sha256 HEX --expect-host EXACT-HOSTNAME \
        --expect-current none|dual|thick-only [--execute] \
+       [--doctor-timeout-sec 60..86400] \
        [--select-update-policy freeze|qualified-auto|warn] \
        [--settle-recovery [--transaction-id REPLACEMENT-32-HEX]
                           [--freeze-transaction-id FREEZE-32-HEX]
@@ -66,6 +68,7 @@ while (($#)); do
         --sha256) expected_hash=${2:-}; shift 2 ;;
         --expect-host) expected_host=${2:-}; shift 2 ;;
         --expect-current) expected_current=${2:-}; shift 2 ;;
+        --doctor-timeout-sec) doctor_timeout_sec=${2:-}; shift 2 ;;
         --execute) execute=1; shift ;;
         --select-update-policy) select_update_policy=${2:-}; shift 2 ;;
         --settle-recovery) execute=1; settle_recovery=1; shift ;;
@@ -78,6 +81,12 @@ while (($#)); do
         *) echo "unknown argument: $1" >&2; usage >&2; exit 64 ;;
     esac
 done
+
+[[ "$doctor_timeout_sec" =~ ^[1-9][0-9]{0,4}$ ]] \
+    && (( doctor_timeout_sec >= 60 && doctor_timeout_sec <= 86400 )) || {
+    echo "doctor timeout must be an integer between 60 and 86400 seconds" >&2; exit 64;
+}
+clean_env+=("SLT_INSTALL_DOCTOR_TIMEOUT_SEC=$doctor_timeout_sec")
 
 if ((settle_recovery == 1)); then
     if ! { [[ -n "$transaction_id" || -n "$freeze_package_txid" || -n "$direct_recovery_txid" ]] &&
@@ -699,14 +708,19 @@ else
 fi
 doctor_output="$temp/doctor.out"
 set +e
-"${clean_env[@]}" timeout --foreground --kill-after=10 300 sharedlvmthin doctor --quick \
-    > >(tee "$doctor_output") 2>&1
-doctor_rc=$?
+"${clean_env[@]}" timeout --foreground --kill-after=10 "$doctor_timeout_sec" sharedlvmthin doctor --quick 2>&1 \
+    | tee "$doctor_output"
+doctor_pipeline=("${PIPESTATUS[@]}")
+doctor_rc=${doctor_pipeline[0]}
+tee_rc=${doctor_pipeline[1]}
 set -e
-if [[ $doctor_rc -ne 0 && $doctor_rc -ne 1 ]] \
+if [[ $tee_rc -ne 0 ]] || [[ $doctor_rc -ne 0 && $doctor_rc -ne 1 ]] \
     || ! grep -q 'FAIL: 0' "$doctor_output" \
     || ! grep -Eq 'RESULT: PASS( WITH WARNINGS)?' "$doctor_output"; then
-    echo "installed Doctor did not prove a zero-failure result (rc=$doctor_rc)" >&2
+    if [[ $doctor_rc -eq 124 || $doctor_rc -eq 137 ]]; then
+        echo "installed Doctor deadline expired; result is UNKNOWN, not evidence of storage failure or health" >&2
+    fi
+    echo "installed Doctor did not prove a zero-failure result (doctor_rc=$doctor_rc, writer_rc=$tee_rc)" >&2
     exit 2
 fi
 

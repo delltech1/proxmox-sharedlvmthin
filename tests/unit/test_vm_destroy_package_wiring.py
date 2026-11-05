@@ -129,6 +129,14 @@ class VMDestroyBuiltPackageContractTests(unittest.TestCase):
                     digest = hashlib.md5((self.roots[profile] / relative).read_bytes()).hexdigest()
                     self.assertIn(f"{digest}  {relative}", md5_lines)
 
+    def test_neither_archive_contains_python_bytecode_or_cache(self):
+        for profile in ("dual", "thick-only"):
+            for archive in (self.roots[profile], self.controls[profile]):
+                with self.subTest(profile=profile, archive=archive.name):
+                    leaked = [str(path.relative_to(archive)) for path in archive.rglob("*")
+                              if path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}]
+                    self.assertEqual(leaked, [])
+
     def test_common_destroy_module_bytes_are_identical_between_profiles(self):
         helpers = ["usr/libexec/pve-sharedlvmthin/" + name for name in (
             "sharedlvmthin-vm-destroy-dispatch", "sharedlvmthin-vm-destroy-state-bootstrap",

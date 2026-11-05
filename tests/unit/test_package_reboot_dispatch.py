@@ -53,6 +53,9 @@ class CompleteRebootDispatchTests(unittest.TestCase):
                 '*pve-sharedlvmthin-thick*) exit 1;;\n*Status-Abbrev*) printf ii;;\n'
                 '*Version*) printf "0.9.0~rc5.93~tg53";;\nesac\n')
             script(commands / 'systemctl', '#!/bin/sh\nexit 0\n')
+            # The gate must wait for the output writer before inspecting the
+            # Doctor summary, even when stdout flush is delayed.
+            script(commands / 'tee', '#!/bin/sh\nsleep 0.2\nexec /usr/bin/tee "$@"\n')
             script(commands / 'sharedlvmthin', '#!/bin/bash\ncase "$1" in\n'
                 'help) echo "thick-recover-prepare <storage-id> <volume>"; '
                 'echo "thin-adopt-owner-model <storage-id> <volume> ALL-NODES-INACTIVE"; exit 64;;\n'
@@ -83,12 +86,34 @@ class CompleteRebootDispatchTests(unittest.TestCase):
             args = [sys.executable, str(helper), '--post-reboot', '--expect-host', 'fixture-node',
                     '--expect-profile', 'dual', '--expect-version', '0.9.0~rc5.93~tg53',
                     '--previous-boot-id', '11111111-1111-1111-1111-111111111111', '--settle-runtime']
+            for invalid in ('0', '59', '86401', '1.5', '000300'):
+                rejected = subprocess.run(args + ['--doctor-timeout-sec', invalid], capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertFalse(settlement.exists())
+            args += ['--doctor-timeout-sec', '7200']
             result = subprocess.run(args, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('POST_SETTLEMENT_RECHECK=PASS', result.stdout)
             self.assertEqual(health_count.read_text(), '2')
             self.assertTrue(settlement.exists())
-            settlement.unlink(); fail.touch()
+            # An output-write failure must never settle a runtime, even if
+            # Doctor itself reported a clean summary.
+            settlement.unlink()
+            script(commands / 'tee', '#!/bin/sh\ncat >/dev/null\nexit 1\n')
+            result = subprocess.run(args, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(settlement.exists())
+            self.assertNotIn('RESULT=POST_REBOOT_PASS', result.stdout)
+            script(commands / 'tee', '#!/bin/sh\nsleep 0.2\nexec /usr/bin/tee "$@"\n')
+            script(commands / 'timeout', '#!/bin/sh\ncase "$*" in\n'
+                "*'sharedlvmthin doctor --quick'*) exit 124;;\n"
+                '*) exec /usr/bin/timeout "$@";;\nesac\n')
+            result = subprocess.run(args, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('result is UNKNOWN', result.stderr)
+            self.assertFalse(settlement.exists())
+            (commands / 'timeout').unlink()
+            fail.touch()
             result = subprocess.run(args, capture_output=True, text=True, timeout=15)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(settlement.exists())

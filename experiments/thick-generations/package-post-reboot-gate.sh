@@ -9,6 +9,7 @@ previous_boot_id=
 health_file=
 doctor_file=
 settle_runtime=0
+doctor_timeout_sec=1800
 
 cleanup() {
     [[ -z "$health_file" ]] || rm -f -- "$health_file"
@@ -21,7 +22,7 @@ usage() {
     cat <<'EOF'
 usage: package-post-reboot-gate.sh --expect-host EXACT-HOSTNAME \
        --expect-profile dual|thick-only --expect-version DEBIAN-VERSION \
-       --previous-boot-id UUID [--settle-runtime]
+       --previous-boot-id UUID [--settle-runtime] [--doctor-timeout-sec 60..86400]
 
 By default this is read-only. --settle-runtime publishes only the new
 boot-bound runtime receipt after every check passes. It never installs,
@@ -35,6 +36,7 @@ while (($#)); do
         --expect-profile) expected_profile=${2:-}; shift 2 ;;
         --expect-version) expected_version=${2:-}; shift 2 ;;
         --previous-boot-id) previous_boot_id=${2:-}; shift 2 ;;
+        --doctor-timeout-sec) doctor_timeout_sec=${2:-}; shift 2 ;;
         --settle-runtime) settle_runtime=1; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 64 ;;
@@ -43,6 +45,10 @@ done
 
 [[ -n "$expected_host" && -n "$expected_profile" && \
    -n "$expected_version" && -n "$previous_boot_id" ]] || { usage >&2; exit 64; }
+[[ "$doctor_timeout_sec" =~ ^[1-9][0-9]{0,4}$ ]] \
+    && (( doctor_timeout_sec >= 60 && doctor_timeout_sec <= 86400 )) || {
+    echo "doctor timeout must be an integer between 60 and 86400 seconds" >&2; exit 64;
+}
 case "$expected_profile" in
     dual) expected_package=pve-sharedlvmthin ;;
     thick-only) expected_package=pve-sharedlvmthin-thick ;;
@@ -55,7 +61,7 @@ uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 [[ "$(hostname)" == "$expected_host" ]] || {
     echo "exact hostname confirmation failed" >&2; exit 2;
 }
-for command in grep dpkg dpkg-query mktemp python3 sed systemctl timeout; do
+for command in grep dpkg dpkg-query mktemp python3 sed systemctl tee timeout; do
     command -v "$command" >/dev/null 2>&1 || {
         echo "required command is unavailable: $command" >&2; exit 2;
     }
@@ -196,14 +202,19 @@ fi
 timeout --foreground --kill-after=10 300 sharedlvmthin compat-check
 doctor_file=$(mktemp)
 set +e
-timeout --foreground --kill-after=10 300 sharedlvmthin doctor --quick \
-    > >(tee "$doctor_file") 2>&1
-doctor_rc=$?
+timeout --foreground --kill-after=10 "$doctor_timeout_sec" sharedlvmthin doctor --quick 2>&1 \
+    | tee "$doctor_file"
+doctor_pipeline=("${PIPESTATUS[@]}")
+doctor_rc=${doctor_pipeline[0]}
+tee_rc=${doctor_pipeline[1]}
 set -e
-if [[ $doctor_rc -ne 0 && $doctor_rc -ne 1 ]] \
+if [[ $tee_rc -ne 0 ]] || [[ $doctor_rc -ne 0 && $doctor_rc -ne 1 ]] \
     || ! grep -q 'FAIL: 0' "$doctor_file" \
     || ! grep -Eq 'RESULT: PASS( WITH WARNINGS)?' "$doctor_file"; then
-    echo "post-reboot Doctor did not prove a zero-failure result (rc=$doctor_rc)" >&2
+    if [[ $doctor_rc -eq 124 || $doctor_rc -eq 137 ]]; then
+        echo "post-reboot Doctor deadline expired (rc=$doctor_rc); result is UNKNOWN, not evidence of storage failure or health" >&2
+    fi
+    echo "post-reboot Doctor did not prove a zero-failure result (doctor_rc=$doctor_rc, writer_rc=$tee_rc)" >&2
     exit 2
 fi
 rm -f -- "$doctor_file"

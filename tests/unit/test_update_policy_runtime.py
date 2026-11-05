@@ -1154,6 +1154,7 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
     def test_authorization_is_bound_to_proposal_digest_and_payloads(self):
         self.module.atomic_json(self.module.POLICY, {"schema": 1, "mode": "MANUAL_OVERRIDE"})
         proposal = {"schema": 1, "plan_digest": "a" * 64,
+                    "packages": ["libpve-storage-perl", "qemu-server"],
                     "payloads": [{"path": "/x", "sha256": "b" * 64, "size": 1}]}
         self.module.atomic_json(self.module.PROPOSAL, proposal)
         records = self.records()
@@ -1175,6 +1176,21 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         self.assertEqual(authorization["context"]["node"], "pve-test")
         self.assertEqual(authorization["context"]["watched_state"], records)
         self.assertRegex(authorization["authorization_id"], r"^[0-9a-f]{32}$")
+
+    def test_authorize_uses_promoted_source_family_for_guard_context(self):
+        self.module.atomic_json(self.module.POLICY, {"schema": 1, "mode": "WARN"})
+        proposal = {"schema": 1, "plan_digest": "a" * 64,
+                    "packages": ["libpve-notify-perl", "qemu-server"], "payloads": []}
+        self.module.atomic_json(self.module.PROPOSAL, proposal)
+        manifest = self.manifest()
+        expected = dict(manifest)
+        expected["watched_packages"] = sorted(set(manifest["watched_packages"]) | {"libpve-notify-perl"})
+        with mock.patch.object(self.module, "require_root"), \
+                mock.patch.object(self.module, "manifest_and_lib", return_value=(manifest, self.core)), \
+                mock.patch.object(self.module, "authorization_context", return_value={"context_sha256": "c" * 64}) as context:
+            self.module.command_authorize(mock.Mock())
+        self.assertEqual(context.call_args.args[0], expected)
+        self.assertNotIn("libpve-notify-perl", manifest["watched_packages"])
 
     def test_authorize_handler_does_not_recursively_acquire_policy_lock(self):
         source = SCRIPT.read_text(encoding="utf-8")

@@ -13,7 +13,7 @@ use PVE::QemuServer;
 use PVE::SSHInfo;
 use PVE::Storage;
 use PVE::Tools ();
-use PVE::SharedLvmThinGuardInventory qw(build_guard_inventory dm_mapper_name);
+use PVE::SharedLvmThinGuardInventory qw(build_guard_inventory dm_mapper_name storage_identity_matches);
 use PVE::SharedLvmThinPeerAudit qw(select_peer_nodes evaluate_peer_mapper_evidence);
 
 $ENV{LC_ALL} = 'C';
@@ -198,22 +198,10 @@ eval {
         my @scope = defined($device) ? ('--devices', $device) : ();
         my $vg_identity = capture('/usr/sbin/vgs', '--readonly', @scope,
             '--noheadings', '-o', 'vg_uuid', $scfg->{'slt-vgname'});
-        $vg_identity =~ s/^\s+|\s+$//g;
-        my $storage_identity = $vg_identity ne ''
-            && lc($vg_identity) eq lc($scfg->{'slt-expected-vg-uuid'} // $vg_identity);
         my $pv_identity = capture('/usr/sbin/pvs', '--readonly', @scope,
             '--noheadings', '--separator', '|', '-o', 'pv_uuid,pv_name',
             '--select', "vg_name=$scfg->{'slt-vgname'}");
-        my @pv_rows = grep { $_ ne '' } map { s/^\s+|\s+$//gr } split(/\n/, $pv_identity);
-        $storage_identity = 0 if @pv_rows != 1;
-        if (@pv_rows == 1) {
-            my ($pv_uuid, $pv_name, @extra) = split(/\|/, $pv_rows[0], -1);
-            for ($pv_uuid, $pv_name) { $_ //= ''; s/^\s+|\s+$//g; }
-            $storage_identity = 0 if @extra
-                || (defined($scfg->{'slt-expected-pv-uuid'})
-                    && lc($pv_uuid) ne lc($scfg->{'slt-expected-pv-uuid'}));
-            $storage_identity = 0 if $wwid ne '' && $pv_name ne "/dev/mapper/$wwid";
-        }
+        my $storage_identity = storage_identity_matches($scfg, $vg_identity, $pv_identity);
 
         PVE::Cluster::cfs_update();
         my $peers = select_peer_nodes(

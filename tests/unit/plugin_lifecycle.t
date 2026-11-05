@@ -836,6 +836,18 @@ subtest 'Thick frontend open-count proof is independently bounded' => sub {
     }
 };
 
+subtest 'Thick frontend open-count ambiguity never proves closure' => sub {
+    no warnings 'redefine';
+    for my $response ([], [''], ['unknown'], ['0', '0'], ['-1']) {
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { $response };
+        eval { $thick_frontend_open_count->($class, 'sltg-test', 30) };
+        like($@, qr/open count is ambiguous/, 'ambiguous response is rejected');
+    }
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { die "simulated observation failure\n" };
+    eval { $thick_frontend_open_count->($class, 'sltg-test', 30) };
+    like($@, qr/simulated observation failure/, 'observation failure propagates');
+};
+
 subtest 'PVE-native LeaseGuard accepts parsed PVE node-scope hashes' => sub {
     no warnings 'redefine';
     local *PVE::Cluster::cfs_update = sub { return 1 };
@@ -1730,6 +1742,32 @@ subtest 'storage identity gate fails closed before mutation' => sub {
     is(scalar(@commands), 0, 'no LVM mutation executed');
 };
 
+subtest 'bounded physical identity probes preserve exact matching' => sub {
+    my @responses = (['vg-uuid-expected'], ['pv-uuid-expected|/dev/mapper/3600aa']);
+    my @seen;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
+        push @seen, [ @{$_[0]} ]; return shift @responses;
+    };
+    my $identity = { %$scfg, 'slt-expected-vg-uuid' => 'vg-uuid-expected',
+        'slt-expected-pv-uuid' => 'pv-uuid-expected', 'slt-expected-wwid' => '3600aa' };
+    ok($class->_verify_storage_identity('test', $identity, '/dev/mapper/3600aa', 45), 'bounded identity accepted');
+    is_deeply([ @{$seen[0]}[0..4] ], ['/usr/bin/timeout', '--foreground', '--kill-after=5s', '45s', '/sbin/vgs'], 'VG probe deadline is explicit');
+    is_deeply([ @{$seen[1]}[0..4] ], ['/usr/bin/timeout', '--foreground', '--kill-after=5s', '45s', '/sbin/pvs'], 'PV probe deadline is explicit');
+    @seen = (); @responses = (['vg-uuid-expected'], ['pv-uuid-expected|/dev/mapper/3600aa']);
+    ok($class->_verify_storage_identity('test', $identity, '/dev/mapper/3600aa'), 'legacy identity caller remains accepted');
+    is($seen[0]->[0], '/sbin/vgs', 'legacy VG command remains unchanged');
+    is($seen[1]->[0], '/sbin/pvs', 'legacy PV command remains unchanged');
+    @seen = (); @responses = (['wrong-vg']);
+    my $ok = eval { $class->_verify_storage_identity('test', $identity, '/dev/mapper/3600aa', 45); 1 };
+    ok(!$ok, 'bounded VG mismatch is refused');
+    is(scalar(@seen), 1, 'VG mismatch prevents a second identity probe');
+    @seen = (); @responses = (['vg-uuid-expected'], ['wrong-pv|/dev/mapper/3600aa']);
+    $ok = eval { $class->_verify_storage_identity('test', $identity, '/dev/mapper/3600aa', 45); 1 };
+    ok(!$ok, 'bounded PV mismatch is refused');
+    is(scalar(@seen), 2, 'PV mismatch does not repeat either probe');
+};
+
 subtest 'storage identity gate rejects ambiguous or unstable PV presentation' => sub {
     my @responses = (
         ['vg-uuid-expected'],
@@ -1754,6 +1792,10 @@ subtest 'storage identity gate rejects ambiguous or unstable PV presentation' =>
 
 subtest 'identity failure matrix performs no mutating LVM command' => sub {
     my @cases = (
+        { name => 'VG UUID case mismatch', responses => [['Expected-vg']],
+          config => { 'slt-expected-vg-uuid' => 'expected-vg' }, error => qr/VG UUID mismatch/ },
+        { name => 'PV UUID case mismatch', responses => [['expected-vg'], ['Expected-pv|/dev/mapper/3600aa']],
+          config => { 'slt-expected-vg-uuid' => 'expected-vg', 'slt-expected-pv-uuid' => 'expected-pv' }, error => qr/PV UUID mismatch/ },
         {
             name => 'wrong VG UUID',
             responses => [['wrong-vg']],
@@ -4043,6 +4085,8 @@ subtest 'same-VG alias topology is explicit and fail-closed' => sub {
         'one Eager and one Lazy Thick alias may share the pinned Thick VG');
 
     my @invalid = (
+        ['VG UUID case mismatch', { %$lazy, 'slt-expected-vg-uuid' => 'VG-uuid' }, qr/conflicts.*persistent namespace/],
+        ['PV UUID case mismatch', { %$lazy, 'slt-expected-pv-uuid' => 'PV-uuid' }, qr/disagree on 'slt-expected-pv-uuid'/],
         ['duplicate allocation mode',
             { %$lazy, 'slt-allocation-mode' => 'thick-generations' },
             qr/duplicate 'thick-generations' allocation aliases/],
@@ -5689,8 +5733,9 @@ subtest 'stalled thick background scheduling is explicitly disabled and verified
             push @commands, [@$command];
             die "simulated disable acknowledgement failure\n";
         };
-        ok($class->_thick_disable_background_hydration($mapper, 30, 8192, 8),
-            'ambiguous disable with exact no_hydration status continues without retry');
+        eval { $class->_thick_disable_background_hydration($mapper, 30, 8192, 8) };
+        like($@, qr/result is UNKNOWN despite.*command termination is unproven.*no retry attempted/s,
+            'matching no_hydration cannot prove the failed command has terminated');
         is(scalar(@commands), 1, 'ambiguous disable is issued exactly once');
 
         reset_mocks();
@@ -5714,6 +5759,20 @@ subtest 'stalled thick background scheduling is explicitly disabled and verified
     like($@, qr/did not confirm enabled background hydration/,
         'successful enable without kernel postcondition fails closed');
     is(scalar(@commands), 1, 'unconfirmed enable is never retried');
+
+    reset_mocks();
+    @reads = (['0 8192 clone 8 70/5120 8 4/1024 0 1 no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 rw']);
+    {
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+            my ($command) = @_;
+            push @commands, [@$command];
+            die "simulated enable acknowledgement failure\n";
+        };
+        eval { $class->_thick_enable_background_hydration($mapper, 30, 8192, 8) };
+        like($@, qr/result is UNKNOWN despite.*command termination is unproven.*no retry attempted/s,
+            'matching enabled status cannot prove the failed command has terminated');
+        is(scalar(@commands), 1, 'ambiguous enable is issued exactly once');
+    }
 
     reset_mocks();
     @reads = (['0 8192 clone 8 70/5120 8 4/1024 0 2 no_hydration no_discard_passdown 4 hydration_threshold 32 hydration_batch_size 32 rw']);
@@ -5886,6 +5945,8 @@ subtest 'online materialization mode and worker scheduling are exact' => sub {
 
 subtest 'online snapshot returns after scheduling committed hydration' => sub {
     reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub { return $_[4]->() };
     my $tx = 'c' x 32;
     my $cfg = {
         shared => 1, 'slt-vgname' => 'testvg',
@@ -5986,6 +6047,7 @@ subtest 'thick deactivate removes kernel mapper even when its udev node vanished
     );
     my @node_policies;
     no warnings 'redefine';
+    local *PVE::Storage::config = sub { die "cluster configuration unavailable\n" };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_storage_identity = sub { 1 };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { return {} };
@@ -6018,6 +6080,20 @@ subtest 'thick deactivate removes kernel mapper even when its udev node vanished
             PVE::SharedLvmThinThick::object_key('vg-uuid', $volname),
         '/usr/bin/timeout --foreground --kill-after=5s 30s /sbin/lvchange --devices /dev/mapper/3600abcd -an testvg/anchor-lv testvg/head-lv',
     ], 'cleanup order removes the DM dependency before lvchange');
+
+    reset_mocks();
+    @answers = (["$uuid|Writeable|253|9|Active"], ['0 65536 linear 253:8 0']);
+    my $foreign_ok = eval { $class->deactivate_volume('thick-test', $cfg, $volname, undef, undef); 1 };
+    ok(!$foreign_ok, 'same frontend name pointing to a different backing devno is refused');
+    is(scalar(@commands), 0, 'foreign backing identity causes no remove or LV deactivation');
+
+    reset_mocks();
+    @answers = (["$uuid|Writeable|253|9|Active"], ['0 65536 linear 253:7 0'],
+        ['1 dependencies : (testvg-head--lv)'],
+        ["$uuid|Writeable|253|9|Active"], ['0 65536 linear 253:8 0']);
+    my $changed_ok = eval { $class->deactivate_volume('thick-test', $cfg, $volname, undef, undef); 1 };
+    ok(!$changed_ok, 'replacement of backing devno after close wait is refused');
+    is(scalar(@commands), 0, 'changed backing identity causes no remove or LV deactivation');
 };
 
 subtest 'transition deactivation discards every pre-executor observation' => sub {
@@ -7626,7 +7702,7 @@ subtest 'thick snapshot-delete recovery deterministically resumes prepared and f
     is_deeply([command_lines()], [], 'foreign object rejection performs no LVM mutation');
 };
 
-subtest 'thick rollback refuses an open frontend before mutation' => sub {
+subtest 'rollback resume close check refuses an open frontend' => sub {
     reset_mocks();
     my $cfg = {
         shared => 1, 'slt-vgname' => 'testvg',
@@ -7637,20 +7713,284 @@ subtest 'thick rollback refuses an open frontend before mutation' => sub {
         'slt-vg-reserve-gib' => 5,
     };
     no warnings 'redefine';
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_block_device_exists = sub { 1 };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { ['1'] };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 1 };
     eval {
-        $class->volume_snapshot_rollback(
-            $cfg, 'thick-test', 'vm-900001-disk-0', 'snap1',
+        $class->_thick_require_rollback_frontend_closed(
+            $cfg, 'thick-test', 'vm-900001-disk-0', 'sltg-test',
         );
     };
     like($@, qr/refusing thick-generations rollback while the frontend is open/,
         'open frontend is rejected');
+    like($@, qr/storage='thick-test' volume='vm-900001-disk-0' frontend='sltg-test' open_count=1/,
+        'refusal identifies exact storage, volume, mapper and observed open count');
     is_deeply([command_lines()], [], 'open frontend rejection performs no mutation');
+};
+
+subtest 'rollback mapper identity refuses ambiguous observations' => sub {
+    no warnings 'redefine';
+    my $cfg = { 'slt-tg-command-deadline-sec' => 30 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_namespace = sub { 'test' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { return [] };
+    eval { $class->_thick_rollback_mapper_identity($cfg, 'vm-900001-disk-0', 'head', 65536) };
+    like($@, qr/identity is ambiguous/, 'empty mapper observation is rejected');
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub { return ['wrong|1|2'] };
+    eval { $class->_thick_rollback_mapper_identity($cfg, 'vm-900001-disk-0', 'head', 65536) };
+    like($@, qr/identity mismatch/, 'unexpected mapper UUID is rejected');
+    eval { $class->_thick_rollback_mapper_identity($cfg, 'vm-900001-disk-0', 'head', 513) };
+    like($@, qr/sector-aligned size/, 'unaligned size is rejected');
+};
+
+subtest 'rollback mapper identity rejects replacement during verification' => sub {
+    no warnings 'redefine';
+    my @samples = ('253:1:42', '253:1:43');
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_mapper_sample = sub { shift @samples };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_frontend = sub { 1 };
+    eval { $class->_thick_rollback_mapper_identity({}, 'vm-900001-disk-0', 'head', 65536) };
+    like($@, qr/changed during identity verification/, 'changed diskseq refuses the identity');
+    @samples = ('253:1:42', '253:1:42');
+    is($class->_thick_rollback_mapper_identity({}, 'vm-900001-disk-0', 'head', 65536),
+        '253:1:42', 'matching observations preserve the identity');
+};
+
+subtest 'rollback identity receipt detects changed inventory' => sub {
+    my $state = { phase => 'MATERIALIZED', head => 'head', generation => 1 };
+    my $head = { lv_uuid => 'head-uuid', lv_size => 65536, tags => 'head-tags' };
+    my $anchor = { lv_uuid => 'anchor-uuid', tags => 'anchor-tags' };
+    my $snapshot = { lv_uuid => 'snapshot-uuid', lv_size => 65536, tags => 'snapshot-tags' };
+    my $receipt = $class->_thick_rollback_identity_receipt(
+        $state, $head, 'anchor', $anchor, 'snapshot', $snapshot);
+    like($receipt, qr/^[0-9a-f]{64}$/, 'valid inventory produces a receipt');
+    for my $target ($state, $head, $anchor, $snapshot) {
+        for my $key (keys %$target) {
+            my %changed = %$target;
+            $changed{$key} .= '-changed';
+            my @args = map { $_ == $target ? \%changed : $_ } ($state, $head, $anchor, $snapshot);
+            my $new = eval { $class->_thick_rollback_identity_receipt(
+                $args[0], $args[1], 'anchor', $args[2], 'snapshot', $args[3]) };
+            ok($@ || $new ne $receipt, "changed $key never matches original receipt");
+        }
+    }
+    my %missing = %$snapshot;
+    delete $missing{lv_uuid};
+    eval { $class->_thick_rollback_identity_receipt(
+        $state, $head, 'anchor', $anchor, 'snapshot', \%missing) };
+    like($@, qr/missing or ambiguous inventory/, 'missing UUID fails closed');
+    eval { $class->_thick_rollback_identity_receipt(
+        $state, $head, "anchor\0extra", $anchor, 'snapshot', $snapshot) };
+    like($@, qr/missing or ambiguous inventory/, 'embedded separator is rejected');
+    my $different_source = $class->_thick_rollback_identity_receipt(
+        $state, $head, 'anchor', $anchor, 'other-snapshot', $snapshot);
+    isnt($different_source, $receipt, 'a different source name changes the receipt');
+};
+
+subtest 'rollback close recheck observes a reopened frontend' => sub {
+    reset_mocks();
+    my $cfg = { 'slt-tg-command-deadline-sec' => 30 };
+    my @counts = (0, 1);
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { return shift @counts; };
+    ok($class->_thick_require_rollback_frontend_closed(
+        $cfg, 'thick-test', 'vm-900001-disk-0', 'sltg-test'), 'first observation is closed');
+    eval { $class->_thick_require_rollback_frontend_closed(
+        $cfg, 'thick-test', 'vm-900001-disk-0', 'sltg-test') };
+    like($@, qr/open_count=1/, 'second observation refuses reopened frontend');
+    is_deeply([command_lines()], [], 'close observations do not issue mutation commands');
+};
+
+subtest 'fresh rollback waits outside VG lock and times out without mutation' => sub {
+    reset_mocks();
+    my $cfg = { shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations', 'slt-expected-vg-uuid' => 'vg-uuid',
+        'slt-expected-pv-uuid' => 'pv-uuid', 'slt-expected-wwid' => '3600abcd',
+        'slt-tg-close-timeout' => 1, 'slt-vg-reserve-gib' => 5 };
+    my ($clock, $held, $locks, $intents) = (0, 0, 0, 0);
+    no warnings 'redefine';
+    my @warning_messages;
+    local $SIG{__WARN__} = sub { push @warning_messages, @_ };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_progress_clock = sub { $clock };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_observation_pause = sub {
+        die "pause held VG lock\n" if $held; $clock += 0.5;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        $held = 1; $locks++; my $result = $_[3]->(); $held = 0; return $result;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { undef };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { { testvg => { anchor => {} } } };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub { ({ head => 'old', generation => 1 }, { lv_size => 65536 }, 'anchor') };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_find_snapshot = sub { ('snapshot', 0, { lv_size => 65536 }) };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_autoactivation_disabled = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_identity_receipt = sub { 'receipt' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_mapper_identity = sub { '253:1:42' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_mapper_sample = sub { '253:1:42' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { $intents++ };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/timed out waiting for rollback frontend/, 'persistent open times out');
+    cmp_ok($locks, '>', 1, 'admission is re-entered after each pause');
+    is($intents, 0, 'no intent issued while frontend remains open');
+    is_deeply([command_lines()], [], 'no mutating command issued');
+    is(scalar(grep { /waiting for thick-generations rollback frontend to close/ } @warning_messages),
+        1, 'repeated wait observations emit one diagnostic per request');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    my @counts = (1, 1, 0, 0, 0, 0);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { shift @counts // die "unexpected open observation\n" };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_new_geometry = sub { { metadata_bytes => 4096 } };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_mapper_name_present = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_materialization_admission = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { 'a' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { 'b' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { $intents++; die "TEST_STOP_BEFORE_MUTATION\n" };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/TEST_STOP_BEFORE_MUTATION/, 'closure reaches the guarded intent boundary');
+    is($intents, 1, 'exactly one intent attempted after closure and re-admission');
+    cmp_ok($locks, '>', 1, 'closed observation follows a new VG lock acquisition');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 1, 0, 0);
+    my @receipts = ('original', 'changed');
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_identity_receipt = sub { shift @receipts };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/identity changed while waiting/, 'changed storage identity refuses continuation');
+    is($intents, 0, 'changed identity cannot reach intent');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 1, 0, 0, 0, 0);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_identity_receipt = sub { 'receipt' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { $clock = 2; 'b' x 32 };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/TEST_STOP_BEFORE_MUTATION/, 'slow admission after proven closure reaches intent boundary');
+    is($intents, 1, 'slow admission does not consume the close-wait budget');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 1, 0, 0);
+    my @mapper_samples = ('253:1:42', '253:1:42', '253:1:43', '253:1:43');
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_mapper_identity = sub { shift @mapper_samples };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_mapper_sample = sub { shift @mapper_samples };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/identity changed while waiting/, 'mapper replacement refuses continuation');
+    is($intents, 0, 'replaced mapper cannot reach intent');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 1);
+    @mapper_samples = ('253:1:42', '253:1:42');
+    my @intents_seen = (undef, { object => 'anchor', tx => 'c' x 32 });
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { shift @intents_seen };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/transition changed while waiting/, 'new intent after waiting is not resumed implicitly');
+    is($intents, 0, 'new intent cannot trigger another intent');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 1, 0, 0);
+    @mapper_samples = ('253:1:42', '253:1:42', '253:1:42', '253:1:42');
+    my @present = (1, 1, 0);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { undef };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { 'b' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { shift @present };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/frontend disappeared while waiting/, 'disappearance after digest is refused');
+    is($intents, 0, 'disappeared frontend cannot reach intent');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 1, 0, 0, 0, 0);
+    @present = (1, 1, 1);
+    @mapper_samples = ('253:1:42', '253:1:42', '253:1:42', '253:1:42', '253:1:43', '253:1:43');
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/identity changed while waiting/, 'replacement after digest is refused');
+    is($intents, 0, 'replacement after digest cannot reach intent');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 1, 0, 0, 1, 1);
+    @present = (1, 1, 1);
+    @mapper_samples = ('253:1:42') x 6;
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/timed out waiting for rollback frontend/, 'repeated opens consume a single cumulative budget');
+    is($intents, 0, 'flapping cannot reach intent after exhausting wait budget');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 0, 0, 0);
+    @present = (1, 1);
+    @mapper_samples = ('253:1:42', '253:1:42', '253:1:43', '253:1:43');
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/identity changed while waiting/, 'immediate close retains mapper identity until final check');
+    is($intents, 0, 'replaced mapper after immediate close cannot reach intent');
+
+    $clock = 0; $held = 0; $locks = 0; $intents = 0;
+    @counts = (1, 0, 0, 1, 0, 1);
+    @present = (1, 1, 1);
+    @mapper_samples = ('253:1:42') x 6;
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/timed out waiting for rollback frontend/, 'zero then open starts and consumes close budget');
+    is($intents, 0, 'repeated zero-to-open transitions never reach intent after budget');
+};
+
+subtest 'rollback refuses a frontend reopened during admission before intent' => sub {
+    reset_mocks();
+    my $cfg = { shared => 1, 'slt-vgname' => 'testvg',
+        'slt-allocation-mode' => 'thick-generations',
+        'slt-expected-vg-uuid' => 'vg-uuid', 'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd', 'slt-vg-reserve-gib' => 5 };
+    my @counts = (0, 1, 1);
+    my $intents = 0;
+    my @order;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_present = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_frontend_open_count = sub { push @order, 'open'; shift @counts };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub { $_[3]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_read_vg_intent = sub { undef };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_list_volumes_scoped = sub { { testvg => {} } };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_anchor = sub {
+        return ({ head => 'old', generation => 1 }, { lv_size => 65536 }, 'anchor');
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_find_snapshot = sub {
+        return ('snapshot', 0, { lv_size => 65536 });
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_snapshot_readonly = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_verify_autoactivation_disabled = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_new_geometry = sub { { metadata_bytes => 4096 } };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_mapper_name_present = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_materialization_admission = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_capacity_gate = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { 'a' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_vg_state_digest = sub { push @order, 'digest'; 'b' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub { $intents++ };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_identity_receipt = sub { 'receipt' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_mapper_identity = sub { '253:1:42' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_rollback_mapper_sample = sub { '253:1:42' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_observation_pause = sub { die "WAIT_OBSERVED\n" };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/WAIT_OBSERVED/, 'reopen inside admission waits before retry');
+    is($intents, 0, 'no VG intent is issued after reopening');
+    is_deeply(\@order, [qw(open digest open open)], 'final open checks follow potentially slow VG digest');
+    is_deeply([command_lines()], [], 'no mutation command is issued after reopening');
+
+    @counts = (0, 1, 1, 0, 0, 0, 0);
+    @order = (); $intents = 0;
+    my ($locks, $held) = (0, 0);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub {
+        $held = 1; $locks++; my $result = $_[3]->(); $held = 0; return $result;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_observation_pause = sub {
+        die "wait held VG lock\n" if $held;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_set_vg_intent = sub {
+        $intents++; die "TEST_POST_DIGEST_INTENT_BOUNDARY\n";
+    };
+    eval { $class->_thick_volume_snapshot($cfg, 'thick-test', 'vm-900001-disk-0', 'snap1', 'ROLLBACK') };
+    like($@, qr/TEST_POST_DIGEST_INTENT_BOUNDARY/, 'post-digest open then close reaches guarded intent boundary');
+    is($intents, 1, 'post-digest wait reaches exactly one intercepted intent');
+    is($locks, 2, 'post-digest wait reacquires VG lock and repeats admission');
 };
 
 subtest 'thick rollback dispatches to the generation materializer' => sub {
     reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub { return $_[4]->() };
     my $cfg = { 'slt-allocation-mode' => 'thick-generations' };
     my @received;
     no warnings 'redefine';
@@ -7930,6 +8270,8 @@ subtest 'C4 source mapper verification is exact and read-only' => sub {
 
 subtest 'thick snapshot follows the persisted transaction and linear-pivot order' => sub {
     reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub { return $_[4]->() };
     my $storeid = 'thick-test';
     my $volname = 'vm-900001-disk-0';
     my $cfg = {
@@ -8499,6 +8841,8 @@ subtest 'package maintenance hold blocks forward operations fail closed' => sub 
 
 subtest 'materialized Lazy volumes converge to the ordinary Thick lifecycle' => sub {
     reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub { return $_[4]->() };
     my $cfg = {
         shared => 1, 'slt-vgname' => 'testvg',
         'slt-allocation-mode' => 'thick-generations-lazy',
@@ -8927,6 +9271,140 @@ subtest 'resumed Lazy pivot refuses a foreign VG intent before every effect' => 
         'foreign intent rejection performs no DM, anchor, or intent mutation');
     is_deeply([command_lines()], [],
         'foreign intent rejection dispatches no external command');
+};
+
+subtest 'Thick add validates the uncommitted candidate against existing aliases' => sub {
+    no warnings 'redefine';
+    no warnings 'once';
+    my $base = { type => 'sharedlvmthin', shared => 1,
+        'slt-vgname' => 'vg-a', 'slt-vg-layout' => 'isolated',
+        'slt-expected-vg-uuid' => 'vg-uuid', 'slt-expected-pv-uuid' => 'pv-uuid',
+        'slt-expected-wwid' => '3600abcd', 'slt-vg-reserve-percent' => 5,
+        nodes => 'node-a,node-b' };
+    my $eager = { %$base, 'slt-allocation-mode' => 'thick-generations' };
+    my $lazy = { %$base, 'slt-allocation-mode' => 'thick-generations-lazy' };
+    my $config = { ids => { eager => $eager } };
+    my $reads = 0;
+    local *PVE::Storage::config = sub { $reads++; return $config };
+    local *PVE::Storage::Plugin::on_add_hook = sub { return 'parent-result' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_verify_same_vg_alias_configuration =
+        $verify_same_vg_alias_configuration;
+
+    is($class->on_add_hook('lazy', $lazy), 'parent-result',
+        'valid Eager/Lazy pair preserves the inherited PVE hook result');
+    is_deeply([sort keys %{$config->{ids}}], ['eager'],
+        'validating an uncommitted candidate does not mutate the cached config');
+
+    for my $case (
+        ['reserve', { %$lazy, disable => 1, 'slt-vg-reserve-percent' => 9 }, qr/identical protected VG reserve/],
+        ['UUID on another node', { %$lazy, nodes => 'node-a,node-b', 'slt-expected-pv-uuid' => 'other' }, qr/disagree on 'slt-expected-pv-uuid'/],
+        ['duplicate mode', { %$lazy, 'slt-allocation-mode' => 'thick-generations' }, qr/duplicate/],
+    ) {
+        my ($label, $candidate, $message) = @$case;
+        eval { $class->on_add_hook('lazy', $candidate) };
+        like($@, $message, "$label is refused before the candidate can commit");
+        is_deeply([sort keys %{$config->{ids}}], ['eager'],
+            "$label does not alter the saved config snapshot");
+    }
+    $config = { ids => { lazy => $lazy } };
+    is($class->on_add_hook('eager', $eager), 'parent-result',
+        'the opposite creation order also accepts a matching pair');
+    $config = { ids => { thin => { %$base, 'slt-allocation-mode' => 'thin' } } };
+    eval { $class->on_add_hook('eager', $eager) };
+    like($@, qr/VG_MODE_CONFLICT/, 'Thick add refuses an existing same-VG Thin alias');
+    $config = { ids => { native => { type => 'lvm', vgname => 'vg-a' } } };
+    eval { $class->on_add_hook('eager', $eager) };
+    like($@, qr/non-SharedLvmThin storage/, 'Thick add refuses a native alias of the same VG');
+    $config = { ids => {} };
+    my $unanchored = { %$eager };
+    delete $unanchored->{'slt-expected-wwid'};
+    eval { $class->on_add_hook('eager', $unanchored) };
+    like($@, qr/requires 'slt-expected-wwid'/, 'Thick add requires a pinned WWID');
+    $config = { ids => { eager => $eager } };
+    eval { $class->on_add_hook('eager', $eager) };
+    like($@, qr/already exists/, 'a colliding committed storage ID is refused');
+    $config = { ids => { eager => $eager, lazy => $lazy } };
+    eval { $class->on_add_hook('third', $lazy) };
+    like($@, qr/more than two/, 'a third alias is refused at creation');
+    $config = { ids => { eager => $eager } };
+    eval { $class->on_add_hook('lazy', { %$lazy, nodes => 'node-a' }) };
+    like($@, qr/same PVE node scope/, 'different node scopes are refused at creation');
+    $config = { ids => [] };
+    eval { $class->on_add_hook('lazy', $lazy) };
+    like($@, qr/configuration inventory is unavailable/, 'malformed inventory fails closed');
+    $config = { ids => { eager => $eager } };
+    eval { $class->on_add_hook('thin-same', { %$base, 'slt-allocation-mode' => 'thin' }) };
+    like($@, qr/VG_MODE_CONFLICT/, 'Thin candidate cannot introduce a conflict with existing Thick');
+    is_deeply([sort keys %{$config->{ids}}], ['eager'], 'Thin refusal does not modify saved config');
+    is($class->on_add_hook('thin-other', { %$base, 'slt-vgname' => 'other-vg',
+            'slt-expected-vg-uuid' => 'other-vg-uuid', 'slt-allocation-mode' => 'thin' }),
+        'parent-result', 'Thin on a separate VG remains delegated to the inherited hook');
+    my $without_mode = { %$base, 'slt-vgname' => 'other-vg', 'slt-expected-vg-uuid' => 'other-vg-uuid' };
+    is($class->on_add_hook('default-thin', $without_mode), 'parent-result',
+        'omitted mode in DUAL retains Thin behavior on a separate VG');
+    $config = { ids => { ambiguous => { %$base } } };
+    eval { $class->on_add_hook('thin-same', { %$base, 'slt-allocation-mode' => 'thin' }) };
+    like($@, qr/unknown allocation mode/, 'ambiguous same-VG legacy mode is not assumed safe');
+    $config = { ids => { eager => { %$eager, disable => 1 } } };
+    eval { $class->on_add_hook('thin-same', { %$base, 'slt-allocation-mode' => 'thin' }) };
+    like($@, qr/VG_MODE_CONFLICT/, 'disabled Thick alias still protects the VG');
+    {
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_package_flavor = sub { 'thick-only' };
+        $config = { ids => { lazy => $lazy } };
+        is($class->on_add_hook('default-thick', { %$base }), 'parent-result',
+            'omitted mode in Thick-only validates the default Eager alias');
+    }
+    ok($reads > 0, 'the check inspected the committed inventory');
+};
+
+subtest 'public Thick snapshot and rollback hold the transition executor latch' => sub {
+    no warnings 'redefine';
+    my ($locked, @calls) = (0);
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_assert_package_operations_released = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_is_lazy_mode = sub {
+        return $_[1]->{'test-lazy'};
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_materialized = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_mode = sub { 'thick-generations' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub {
+        my ($klass, $sid, $cfg, $vol, $code) = @_;
+        is($sid, 'store-a', 'latch binds the storage identity');
+        is($vol, 'vm-901-disk-0', 'latch binds the exact volume');
+        my $previous = $locked;
+        $locked = 1;
+        my $result = eval { $code->() };
+        my $error = $@;
+        $locked = $previous;
+        die $error if $error;
+        return $result;
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_volume_snapshot = sub {
+        ok($locked, 'snapshot transition is invoked inside the latch');
+        push @calls, $_[5] // 'SNAPSHOT';
+        return 'transition-result';
+    };
+    for my $lazy (0, 1) {
+        my $cfg = { 'test-lazy' => $lazy };
+        is($class->volume_snapshot($cfg, 'store-a', 'vm-901-disk-0', 'snap1'),
+            'transition-result', 'snapshot propagates the transition result');
+        is($class->volume_snapshot_rollback($cfg, 'store-a', 'vm-901-disk-0', 'snap1'),
+            'transition-result', 'rollback propagates the transition result');
+    }
+    is_deeply(\@calls, [qw(SNAPSHOT ROLLBACK SNAPSHOT ROLLBACK)],
+        'Eager and materialized Lazy each dispatch snapshot and rollback once');
+    {
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_transition_executor_lock = sub {
+            die "executor remains busy\n";
+        };
+        for my $lazy (0, 1) {
+            my $cfg = { 'test-lazy' => $lazy };
+            for my $method (qw(volume_snapshot volume_snapshot_rollback)) {
+                eval { $class->$method($cfg, 'store-a', 'vm-901-disk-0', 'snap1') };
+                like($@, qr/executor remains busy/, 'latch refusal reaches the caller');
+            }
+        }
+        is(scalar(@calls), 4, 'latch refusal dispatches no snapshot or rollback effect');
+    }
 };
 
 done_testing();

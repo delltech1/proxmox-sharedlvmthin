@@ -153,6 +153,7 @@
       "PVE::Storage::Plugin::parse_lvm_name": "pve.storage.api-hooks",
       "PVE::Storage::config": "pve.storage-config-parser",
       "PVE::Storage::parse_volume_id": "pve.migration-offline-live",
+      "PVE::Storage::parse_volname": "pve.migration-offline-live",
       "PVE::Storage::path": "pve.qemu-raw-lifecycle",
       "PVE::Storage::volume_has_feature": "pve.storage.api-hooks",
       "PVE::Storage::storage_config": "pve.storage-config-parser",

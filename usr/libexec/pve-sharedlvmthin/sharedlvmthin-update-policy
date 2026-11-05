@@ -2149,6 +2149,21 @@ def command_authorize(_args):
     if not proposal or not proposal.get("plan_digest"):
         raise SystemExit("no refused APT proposal is available")
     manifest, library = manifest_and_lib()
+    packages = proposal.get("packages")
+    if not isinstance(packages, list) or not packages or any(
+            not isinstance(name, str) or not library.PACKAGE_RE.fullmatch(name)
+            for name in packages) or packages != sorted(set(packages)):
+        raise RuntimeError("refused APT proposal has invalid package identities")
+    # The APT guard promotes binaries from watched source families before it
+    # hashes its authorization context. Reconstruct that same set from the
+    # guarded proposal; the guard still independently recomputes it from the
+    # actual APT plan and checks plan digest, payload identities and context.
+    discovered = {library.base_package(name) for name in packages
+                  if not library.watched({"package": name}, manifest)}
+    if discovered:
+        manifest = dict(manifest)
+        manifest["watched_packages"] = sorted(
+            set(manifest.get("watched_packages", [])) | discovered)
     context = authorization_context(manifest, library, policy)
     atomic_json(AUTH, {
         "schema": 2,

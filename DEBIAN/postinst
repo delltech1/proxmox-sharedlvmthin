@@ -385,8 +385,16 @@ if [ "$MAINTENANCE_CONFIGURE" -eq 1 ]; then
     echo "SharedLvmThin installation preflight: DEFERRED while operation hold is active."
     echo "This is not a PASS; finalize must run fresh Doctor and recovery checks."
 else
+DOCTOR_TIMEOUT=${SLT_INSTALL_DOCTOR_TIMEOUT_SEC:-1800}
+case "$DOCTOR_TIMEOUT" in
+    ''|*[!0-9]*|0*) DOCTOR_TIMEOUT=1800 ;;
+    *) if [ "${#DOCTOR_TIMEOUT}" -gt 5 ] || [ "$DOCTOR_TIMEOUT" -lt 60 ] || [ "$DOCTOR_TIMEOUT" -gt 86400 ]; then
+        echo "WARNING: invalid installation Doctor deadline; using 1800 seconds." >&2
+        DOCTOR_TIMEOUT=1800
+       fi ;;
+esac
 set +e
-timeout --foreground --kill-after=10 60 /usr/sbin/sharedlvmthin doctor --quick
+timeout --foreground --kill-after=10 "$DOCTOR_TIMEOUT" /usr/sbin/sharedlvmthin doctor --quick
 DOCTOR_RC=$?
 set -e
 if [ "$DOCTOR_RC" -eq 0 ]; then
@@ -396,7 +404,11 @@ elif [ "$DOCTOR_RC" -eq 1 ]; then
     HEALTH_OK=1
     echo "SharedLvmThin installation preflight passed with diagnostic warnings."
 else
-    echo "WARNING: SharedLvmThin installation preflight reported a problem."
+    if [ "$DOCTOR_RC" -eq 124 ] || [ "$DOCTOR_RC" -eq 137 ]; then
+        echo "WARNING: installation Doctor deadline expired; result is UNKNOWN, not proof of a storage failure."
+    else
+        echo "WARNING: SharedLvmThin installation preflight could not prove readiness (rc=$DOCTOR_RC)."
+    fi
     echo "SharedLvmThin is installed but must NOT be treated as operational."
     echo "Review the output above. The full Doctor was not run automatically."
 fi

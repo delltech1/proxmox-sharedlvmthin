@@ -333,8 +333,24 @@ PVE process, the current boot ID, running kernel and qualified plan. A stale
 worker, manual payload replacement, reboot or different kernel therefore
 blocks mutation even when all services merely report `active`. After a
 qualified unchanged-stack reboot use `package-post-reboot-gate.sh --settle-runtime`;
-the default invocation remains read-only. A concrete kernel APT update follows
-a different sequence: install, complete a new boot into the intended kernel,
+the default invocation remains read-only.
+
+The CLI commands `sharedlvmthin package-upgrade` and
+`sharedlvmthin package-post-reboot` accept `--doctor-timeout-sec` (60–86400
+seconds; default 1800) when a system needs a different Doctor deadline. For example,
+append `--doctor-timeout-sec 3600` to either command, together with its required
+host, package and identity arguments. The package-upgrade command also passes
+that value to the package's installation preflight. For direct `dpkg -i`, an
+administrator can set `SLT_INSTALL_DOCTOR_TIMEOUT_SEC=3600` in the installation
+environment; the direct-install default is also 1800 seconds. A check that
+finishes sooner continues immediately without waiting for the deadline.
+
+These deadlines limit waiting. Reaching one leaves the result unknown; it does
+not prove storage failure or health and never grants settlement. They do not
+change separate deadlines for compatibility or storage checks.
+
+A concrete kernel APT update follows a different sequence: install, complete a
+new boot into the intended kernel,
 run `sharedlvmthin update-policy postcheck`, then complete the public runtime
 qualification workflow. The postcheck deliberately refuses a changed kernel
 package before the required new boot; never clear that guard manually.

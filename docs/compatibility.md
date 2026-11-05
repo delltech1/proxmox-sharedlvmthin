@@ -1,5 +1,14 @@
 # Compatibility
 
+## RC5.101 TG53 experimental bridge
+
+The current build recognizes Storage API 14, 15 and 16. Its exact lab-tested
+package and kernel combinations and operation scope are listed in the
+[release notes](RELEASE-NOTES-RC5.101-TG53.md). Catalogue identities remain
+`RETEST_REQUIRED`; recognizing a tuple does not certify every storage operation
+or authorize an automatic platform upgrade. Install the same bridge profile
+and version on participating nodes before a planned rolling platform update.
+
 ## RC5.97 API 14–16 bridge
 
 RC5.97 TG53 retains API 14 and API 15 registration and adds API 16 RAW
