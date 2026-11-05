@@ -61,11 +61,13 @@ pve-ha-manager `5.2.5` and libpve-cluster-perl `9.1.8`.
 API14 and API15 interface checks used installed or extracted libraries; these
 checks do not by themselves qualify a live upgrade or SAN lifecycle.
 
-### RC5.102 previously recorded qualification
+### Platform compatibility baseline
 
-The following results were recorded for the preceding RC5.102 release and are
-included for compatibility history. They are not claims that every scenario was
-repeated on the RC5.103 build.
+RC5.103 builds on the RC5.102 compatibility baseline and retains the API14–16
+platform combinations listed below. This release adds the guided web helper and
+targeted package-upgrade and recovery improvements. The table records the
+previously exercised scenarios; RC5.103 candidate checks are listed separately
+above. The remaining qualification boundaries stated in this release still apply.
 
 | Exercised scope | API | Kernel | Manager | Storage | Common | QEMU server | QEMU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -92,3 +94,4 @@ VGs; Eager and Lazy may share a dedicated Thick VG. Select the update policy
 deliberately and review compatibility information before changing PVE packages.
 
 Feedback, code review and sanitized reproducible reports are welcome.
+
