@@ -12,7 +12,7 @@ SPEC.loader.exec_module(MODEL)
 
 
 def request():
-    nodes = [{"node": "pve0" + str(i),
+    nodes = [{"node": "node0" + str(i),
               "boot_id": str(i) * 8 + "-1111-4111-8111-" + str(i) * 12,
               "role": "CONTROL_ONLY" if i == 4 else "SAN_PARTICIPANT"}
              for i in range(1, 5)]
@@ -261,9 +261,9 @@ class ConfigCasModelTests(unittest.TestCase):
         variants = []
         value = copy.deepcopy(self.req); value["nodes"].reverse(); variants.append(value)
         value = copy.deepcopy(self.req); value["nodes"][3] = value["nodes"][0]; variants.append(value)
-        value = copy.deepcopy(self.req); value["preinst_sha256"]["pve04"] = "0" * 64; variants.append(value)
-        value = copy.deepcopy(self.req); del value["payload_sha256"]["pve04"]; variants.append(value)
-        value = copy.deepcopy(self.req); value["executor"]["node"] = "pve04"; variants.append(value)
+        value = copy.deepcopy(self.req); value["preinst_sha256"]["node04"] = "0" * 64; variants.append(value)
+        value = copy.deepcopy(self.req); del value["payload_sha256"]["node04"]; variants.append(value)
+        value = copy.deepcopy(self.req); value["executor"]["node"] = "node04"; variants.append(value)
         value = copy.deepcopy(self.req); value["executor"]["boot_id"] = value["nodes"][1]["boot_id"]; variants.append(value)
         value = copy.deepcopy(self.req); value["baseline"] = value["target"]; variants.append(value)
         value = copy.deepcopy(self.req); value["extra"] = True; variants.append(value)

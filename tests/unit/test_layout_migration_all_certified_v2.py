@@ -103,8 +103,8 @@ class AllCertifiedV2Tests(unittest.TestCase):
         self.assertEqual(out["authorization"], "NONE")
         self.assertFalse(out["hold_released"])
         self.assertFalse(out["mutation_performed"])
-        self.assertEqual(out["release_nodes"], ["pve01", "pve02", "pve03"])
-        self.assertEqual(out["verify_only_nodes"], ["pve04"])
+        self.assertEqual(out["release_nodes"], ["node01", "node02", "node03"])
+        self.assertEqual(out["verify_only_nodes"], ["node04"])
         self.assertEqual(sorted(out["hold_by_node"]), out["release_nodes"])
         self.assertEqual(out["certificate_sha256"], hashlib.sha256(args[9]).hexdigest())
         self.assertEqual(set(out), {"schema", "phase", "verdict", "authorization", "hold_released", "mutation_performed",
@@ -132,7 +132,7 @@ class AllCertifiedV2Tests(unittest.TestCase):
 
     def test_certificate_is_recomputed_not_just_self_hashed(self):
         args = self.fixture()
-        args[6]["node_roles"]["pve04"] = "SAN_PARTICIPANT"
+        args[6]["node_roles"]["node04"] = "SAN_PARTICIPANT"
         body = dict(args[6]); body.pop("plan_sha256")
         args[6]["plan_sha256"] = M.digest(body)
         args[7]["all_ready_plan_sha256"] = M.digest(args[6])
@@ -208,7 +208,7 @@ class AllCertifiedV2Tests(unittest.TestCase):
         mutations = (lambda a: a[11][0].update(boot_id_end="0" * 36),
                      lambda a: a[11][0].update(challenge="0" * 32),
                      lambda a: a[10].update(collection_id="0" * 32),
-                     lambda a: a[10]["challenges"].update(pve04=a[10]["challenges"]["pve01"]),
+                     lambda a: a[10]["challenges"].update(node04=a[10]["challenges"]["node01"]),
                      lambda a: a[10].update(expires_at=a[12]-1),
                      lambda a: a[11][0].update(verification_started_at=a[12]+1),
                      lambda a: a[11][0].update(verification_finished_at=a[12]+1),
@@ -258,7 +258,7 @@ class AllCertifiedV2Tests(unittest.TestCase):
         class EvilBytes(bytes):
             def __eq__(self, other): calls.append("bytes-eq"); return True
         variants = []
-        args = self.fixture(); args[11][0]["node"] = EvilStr("pve01"); variants.append(args)
+        args = self.fixture(); args[11][0]["node"] = EvilStr("node01"); variants.append(args)
         args = self.fixture(); args[10] = EvilDict(args[10]); variants.append(args)
         args = self.fixture(); args[11][0][EvilStr("extra")] = None; variants.append(args)
         args = self.fixture(); args[9] = EvilBytes(args[9]); variants.append(args)
@@ -269,9 +269,9 @@ class AllCertifiedV2Tests(unittest.TestCase):
     def test_inputs_and_returned_targets_are_independent(self):
         args = self.fixture(); original = copy.deepcopy(args)
         result = M.evaluate(*args)
-        result["hold_by_node"]["pve01"]["source_identity"]["ino"] = 0
+        result["hold_by_node"]["node01"]["source_identity"]["ino"] = 0
         self.assertEqual(args, original)
-        self.assertGreater(M.evaluate(*args)["hold_by_node"]["pve01"]["source_identity"]["ino"], 0)
+        self.assertGreater(M.evaluate(*args)["hold_by_node"]["node01"]["source_identity"]["ino"], 0)
 
     def test_output_is_accepted_by_archive_pure_request_derivation(self):
         adapter = load("certified_archive_contract", ROOT / "experiments/thick-generations/layout-migration-live-hold-archive.py")

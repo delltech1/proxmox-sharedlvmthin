@@ -16,7 +16,7 @@ class Tests(unittest.TestCase):
    records.append(common)
   return base,target,template,context,records,now
  def test_exact_four_node_barrier_is_non_authorizing(self):
-  b,t,tp,c,r,n=self.fixture();out=M.evaluate(c,tp,b,t,r,n);self.assertEqual(out["authorization"],"NONE");self.assertEqual(out["node_roles"]["pve04"],"CONTROL_ONLY")
+  b,t,tp,c,r,n=self.fixture();out=M.evaluate(c,tp,b,t,r,n);self.assertEqual(out["authorization"],"NONE");self.assertEqual(out["node_roles"]["node04"],"CONTROL_ONLY")
  def test_remote_audit_requires_inactive_guard_on_san_but_exact_vgs(self):
   b,t,tp,c,r,n=self.fixture("remote-audit");self.assertTrue(all(v is False for v in c["thinguard_required_by_node"].values()));self.assertEqual(M.evaluate(c,tp,b,t,r,n)["authorization"],"NONE");self.assertTrue(r[0]["vg_identities"])
  def test_missing_duplicate_or_rebooted_participant_refuses(self):
@@ -38,10 +38,10 @@ class Tests(unittest.TestCase):
    with self.assertRaises(M.Refusal):M.evaluate(c,tp,b,t,bad,n)
  def test_control_requires_verify_only_not_fake_package_receipt(self):
   b,t,tp,c,r,n=self.fixture();self.assertEqual(r[-1]["receipt"]["phase"],"CURRENT_PAYLOAD_VERIFIED")
-  fake=copy.deepcopy(r);fake[-1]["receipt"]={"schema":"slt-package-maintenance-receipt/v2","phase":"PACKAGE_CONFIGURED_DEFERRED","tx":c["tx"],"generation":1,"node":"pve04","boot_id":c["nodes"][-1]["boot_id"],"context_sha256":c["context_sha256"],"candidate":copy.deepcopy(c["candidate"]),"target_storage_cfg_sha256":c["target_storage_cfg_sha256"],"recorded_at":n-4}
+  fake=copy.deepcopy(r);fake[-1]["receipt"]={"schema":"slt-package-maintenance-receipt/v2","phase":"PACKAGE_CONFIGURED_DEFERRED","tx":c["tx"],"generation":1,"node":"node04","boot_id":c["nodes"][-1]["boot_id"],"context_sha256":c["context_sha256"],"candidate":copy.deepcopy(c["candidate"]),"target_storage_cfg_sha256":c["target_storage_cfg_sha256"],"recorded_at":n-4}
   with self.assertRaises(M.Refusal):M.evaluate(c,tp,b,t,fake,n)
  def test_san_cannot_use_control_verify_receipt(self):
-  b,t,tp,c,r,n=self.fixture();bad=copy.deepcopy(r);receipt=copy.deepcopy(bad[-1]["receipt"]);receipt.update(node="pve01",boot_id=c["nodes"][0]["boot_id"]);bad[0]["receipt"]=receipt
+  b,t,tp,c,r,n=self.fixture();bad=copy.deepcopy(r);receipt=copy.deepcopy(bad[-1]["receipt"]);receipt.update(node="node01",boot_id=c["nodes"][0]["boot_id"]);bad[0]["receipt"]=receipt
   with self.assertRaises(M.Refusal):M.evaluate(c,tp,b,t,bad,n)
  def test_receipt_candidate_context_and_worker_are_exact(self):
   b,t,tp,c,r,n=self.fixture()

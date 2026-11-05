@@ -138,34 +138,34 @@ class LayoutMigrationNodeEvidenceTests(unittest.TestCase):
         error = COLLECT.Refusal("gone")
         error.__cause__ = FileNotFoundError(2, "gone")
         pseudo.side_effect = error
-        self.assertEqual(COLLECT.worker_evidence(["pve01"])["storage_processes"], [])
+        self.assertEqual(COLLECT.worker_evidence(["node01"])["storage_processes"], [])
 
     @patch.object(COLLECT, "command")
     def test_active_tasks_use_supported_node_local_api(self, command):
         command.side_effect = [
-            json.dumps([{"node":"pve01","upid":"UPID:pve01:1:2:3:x::u:"}]).encode(),
+            json.dumps([{"node":"node01","upid":"UPID:node01:1:2:3:x::u:"}]).encode(),
             b"[]",
         ]
-        rows = COLLECT.active_cluster_tasks(["pve01", "pve02"])
+        rows = COLLECT.active_cluster_tasks(["node01", "node02"])
         self.assertEqual(len(rows), 1)
         self.assertEqual(command.call_args_list[0].args[0],
-                         ["pvesh","get","/nodes/pve01/tasks","--source",
+                         ["pvesh","get","/nodes/node01/tasks","--source",
                           "active","--start","0","--limit","500",
                           "--output-format","json"])
 
     @patch.object(COLLECT, "command")
     @patch.object(COLLECT, "regular_bytes")
-    @patch.object(COLLECT.socket, "gethostname", return_value="pve02")
+    @patch.object(COLLECT.socket, "gethostname", return_value="node02")
     def test_pmxcfs_membership_uses_real_id_field(self, hostname, reader, command):
         reader.return_value = json.dumps({"nodelist": {
-            "pve01": {"id": 1, "online": 1},
-            "pve02": {"id": 2, "online": 1},
-            "pve03": {"id": 3, "online": 1},
+            "node01": {"id": 1, "online": 1},
+            "node02": {"id": 2, "online": 1},
+            "node03": {"id": 3, "online": 1},
         }}).encode()
         command.return_value = b"Quorate:          Yes\n"
         self.assertEqual(
-            COLLECT.membership(["pve01", "pve02", "pve03"]),
-            ("pve02", 2, True, ["pve01", "pve02", "pve03"]),
+            COLLECT.membership(["node01", "node02", "node03"]),
+            ("node02", 2, True, ["node01", "node02", "node03"]),
         )
 
 

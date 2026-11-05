@@ -10,7 +10,7 @@ SPEC.loader.exec_module(M)
 
 
 def fixture():
-    participants = [{"node": f"pve0{i}", "boot_id": f"0000000{i}-0000-4000-8000-00000000000{i}",
+    participants = [{"node": f"node0{i}", "boot_id": f"0000000{i}-0000-4000-8000-00000000000{i}",
         "role": "SAN" if i < 4 else "CONTROL_ONLY", "before_package_sha256": "a" * 64,
         "after_package_sha256": ("b" if i < 4 else "a") * 64} for i in range(1, 5)]
     return {"schema": "slt-exact-restore-model/v1", "tx": "1" * 32, "participants": participants,
@@ -122,7 +122,7 @@ class Tests(unittest.TestCase):
                              ("quorate", False), ("boot_id", "changed"), ("package_sha256", "0" * 64),
                              ("storage_cfg_sha256", "0" * 64), ("workload_sha256", "0" * 64)):
             with self.subTest(field=field):
-                plan, backend = self.enrolled(); backend.records["pve04"][field] = value
+                plan, backend = self.enrolled(); backend.records["node04"][field] = value
                 with self.assertRaises(M.Refusal): M.Coordinator(plan, backend).restore()
                 self.assertEqual(backend.effects, [])
 
@@ -132,21 +132,21 @@ class Tests(unittest.TestCase):
         self.assertEqual(backend.effects, [])
         backend.unknown = False; original = backend.verify_release
         def invalid(*args):
-            result = original(*args); result["archive_sha256"]["pve04"] = "a" * 64; return result
+            result = original(*args); result["archive_sha256"]["node04"] = "a" * 64; return result
         backend.verify_release = invalid
         with self.assertRaises(M.Refusal): M.Coordinator(plan, backend).restore()
         self.assertEqual(backend.effects, [])
 
     def test_expiry_and_boot_drift_after_effect_stop_further_dispatch(self):
         for drift in (lambda b: setattr(b, "time", 2000),
-                      lambda b: b.records["pve04"].update(boot_id="changed")):
+                      lambda b: b.records["node04"].update(boot_id="changed")):
             plan, backend = self.enrolled(); backend.drift = drift
             with self.assertRaises(M.Refusal): M.Coordinator(plan, backend).restore()
             self.assertEqual(len(backend.effects), 1)
 
     def test_baseline_not_adopted_and_active_masked_unsupported_pre_effect(self):
         plan = fixture(); backend = Backend(plan)
-        backend.records["pve01"]["services"]["pvedaemon.service"]["masked"] = True
+        backend.records["node01"]["services"]["pvedaemon.service"]["masked"] = True
         with self.assertRaises(M.Refusal): M.Coordinator(plan, backend).baseline()
         self.assertEqual(backend.store, {})
         plan, backend = self.enrolled()
@@ -166,7 +166,7 @@ class Tests(unittest.TestCase):
                              ("pvescheduler.service", {"active": True, "substate": "running"})):
             with self.subTest(unit=unit):
                 plan, backend = self.enrolled()
-                backend.records["pve04"]["services"][unit].update(values)
+                backend.records["node04"]["services"][unit].update(values)
                 with self.assertRaises(M.Refusal): M.Coordinator(plan, backend).restore()
                 self.assertEqual(backend.effects, [])
 

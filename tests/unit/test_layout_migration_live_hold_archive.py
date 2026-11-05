@@ -22,7 +22,7 @@ class Tests(unittest.TestCase):
         for name in ("archive", "release-attempts", "release-certificates"):
             (root / name).mkdir(mode=0o700)
         now = int(time.time())
-        names = ["pve01", "pve02", "pve03", "pve04"]
+        names = ["node01", "node02", "node03", "node04"]
         boots = {n: f"{i:08d}-1111-4111-8111-111111111111" for i, n in enumerate(names, 1)}
         manifest = M.canonical({"schema": "slt-package-maintenance/v1", "phase": "CONFIG_COMMITTED", "tx": "a" * 32, "generation": 1})
         certificate = M.canonical({"schema": "slt-layout-release-commit/v2", "phase": "RELEASE_COMMITTED",
@@ -37,20 +37,20 @@ class Tests(unittest.TestCase):
                 "verdict": "READY_FOR_SAN_HOLD_RELEASE_AUTHORIZATION", "authorization": "NONE",
                 "hold_released": False, "mutation_performed": False, "tx": "a" * 32, "generation": 1,
                 "context_sha256": "b" * 64, "commit_id": "c" * 32, "certificate_sha256": M.digest(certificate),
-                "candidate": {}, "nodes": names, "node_roles": {n: "SAN_PARTICIPANT" if n != "pve04" else "CONTROL_ONLY" for n in names},
+                "candidate": {}, "nodes": names, "node_roles": {n: "SAN_PARTICIPANT" if n != "node04" else "CONTROL_ONLY" for n in names},
                 "participant_boots": boots, "release_nodes": names[:3], "verify_only_nodes": names[3:],
                 "node_ack_sha256": {n: str(i) * 64 for i, n in enumerate(names, 1)},
                 "latest_verification_finished_at": now - 2, "release_not_after": now + 300,
                 "hold_by_node": {n: copy.deepcopy(hold) for n in names[:3]}}
         plan["plan_sha256"] = M.digest(M.canonical(plan))
         auth = {"schema": "slt-live-hold-archive-authorization/v2", "tx": plan["tx"], "generation": 1,
-                "context_sha256": plan["context_sha256"], "commit_id": plan["commit_id"], "node": "pve01", "boot_id": boots["pve01"],
+                "context_sha256": plan["context_sha256"], "commit_id": plan["commit_id"], "node": "node01", "boot_id": boots["node01"],
                 "all_certified_plan_sha256": plan["plan_sha256"], "certificate_sha256": plan["certificate_sha256"],
                 "manifest_sha256": hold["manifest_sha256"], "source_identity_sha256": M.digest(M.canonical(hold["source_identity"])),
                 "certificate_identity_sha256": M.digest(M.canonical(hold["certificate_identity"])), "operation_id": "d" * 32,
                 "issued_at": now - 1, "expires_at": now + 120, "effect": "archive-exact-active-once"}
         kwargs = {"certified_inputs": {"now": 1}, "authorization": auth, "manifest_bytes": manifest,
-                  "certificate_bytes": certificate, "node": "pve01", "boot_id": boots["pve01"]}
+                  "certificate_bytes": certificate, "node": "node01", "boot_id": boots["node01"]}
         return root, plan, kwargs
 
     def run_adapter(self, root, plan, kwargs):
@@ -72,7 +72,7 @@ class Tests(unittest.TestCase):
 
     def test_control_only_refuses_before_primitive_or_local_fact_read(self):
         root, plan, kwargs = self.fixture()
-        kwargs["node"] = "pve04"; kwargs["boot_id"] = plan["participant_boots"]["pve04"]
+        kwargs["node"] = "node04"; kwargs["boot_id"] = plan["participant_boots"]["node04"]
         absent = root / "must-not-exist"
         with patch.object(M, "_evaluate_certified", return_value=plan), patch.object(M, "_local_identity") as local, patch.object(M.FILES, "LocalHoldReleaseLab") as primitive:
             with self.assertRaises(M.Refusal):
@@ -110,7 +110,7 @@ class Tests(unittest.TestCase):
 
     def test_live_boot_mismatch_has_no_effect(self):
         root, plan, kwargs = self.fixture()
-        with patch.object(M, "_evaluate_certified", return_value=plan), patch.object(M, "_local_identity", return_value=("pve01", "other")), patch.object(M.FILES, "LocalHoldReleaseLab") as primitive:
+        with patch.object(M, "_evaluate_certified", return_value=plan), patch.object(M, "_local_identity", return_value=("node01", "other")), patch.object(M.FILES, "LocalHoldReleaseLab") as primitive:
             with self.assertRaises(M.Refusal):
                 M.ArchiveAdapter(root).archive_once(**kwargs)
             primitive.assert_not_called()
@@ -118,7 +118,7 @@ class Tests(unittest.TestCase):
     def test_malformed_plan_and_bytes_refuse(self):
         for mutate in (lambda p, k: p.update(release_nodes=p["nodes"]),
                        lambda p, k: k.update(certificate_bytes=k["certificate_bytes"] + b" "),
-                       lambda p, k: p["hold_by_node"]["pve01"]["source_identity"].update(ino=1.0)):
+                       lambda p, k: p["hold_by_node"]["node01"]["source_identity"].update(ino=1.0)):
             root, plan, kwargs = self.fixture(); mutate(plan, kwargs)
             plan.pop("plan_sha256"); plan["plan_sha256"] = M.digest(M.canonical(plan))
             kwargs["authorization"]["all_certified_plan_sha256"] = plan["plan_sha256"]

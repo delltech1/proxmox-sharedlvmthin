@@ -17,7 +17,7 @@ class Fake:
  def submit_graceful_shutdown(self,g):
   self.effects.append(("submit",g["vmid"]));
   if self.fail=="submit-after":raise OSError("ambiguous")
-  g=self.p["guests"][0];return {"upid":"UPID:pve02:1:2:3:qmshutdown:100:root@pam:","node":g["node"],"vmid":g["vmid"],"type":g["type"],"task_type":"qmshutdown"}
+  g=self.p["guests"][0];return {"upid":"UPID:node02:1:2:3:qmshutdown:100:root@pam:","node":g["node"],"vmid":g["vmid"],"type":g["type"],"task_type":"qmshutdown"}
  def wait_task(self,u,t,d):
   if self.fail=="wait":raise TimeoutError("timeout")
   self.running=False;g=self.p["guests"][0];return {"upid":u,"node":g["node"],"vmid":g["vmid"],"type":g["type"],"task_type":"qmshutdown","terminal":True,"exitstatus":"OK"}
@@ -25,8 +25,8 @@ class Fake:
 
 class Tests(unittest.TestCase):
  def plan(self):return {"schema":"slt-supervised-shutdown-model/v1","tx":"a"*32,"barrier_plan_sha256":"b"*64,"barrier_evidence_sha256":"d"*64,"storage_cfg_sha256":"e"*64,"workload_snapshot_sha256":"f"*64,
-  "participants":[{"node":n,"boot_id":f"0000000{i}-0000-4000-8000-00000000000{i}"} for i,n in enumerate(("pve01","pve02","pve03","pve04"),1)],"issued_at":900,"deadline":1100,"per_task_timeout":60,"force_stop":False,
-  "guests":[{"vmid":100,"type":"qemu","node":"pve02","config_sha256":"c"*64,"managed_disks":["thin:vm-100-disk-0"],"ha_managed":False}]}
+  "participants":[{"node":n,"boot_id":f"0000000{i}-0000-4000-8000-00000000000{i}"} for i,n in enumerate(("node01","node02","node03","node04"),1)],"issued_at":900,"deadline":1100,"per_task_timeout":60,"force_stop":False,
+  "guests":[{"vmid":100,"type":"qemu","node":"node02","config_sha256":"c"*64,"managed_disks":["thin:vm-100-disk-0"],"ha_managed":False}]}
  def execute(self,p=None,b=None):p=p or self.plan();b=b or Fake(p);return M.Controller(p,b,1000).run(),b
  def test_success_uses_one_graceful_task_and_no_authority(self):
   r,b=self.execute();self.assertEqual(r["state"],"MODEL_ALLOWLIST_STOPPED");self.assertEqual(b.effects,[("submit",100)]);self.assertEqual([e["kind"] for e in b.events],["INTENT_DURABLE","ATTEMPTED","TASK_ACCEPTED","TASK_TERMINAL","OBSERVED_ABSENT"]);self.assertFalse(r["force_used"])
@@ -64,7 +64,7 @@ class Tests(unittest.TestCase):
   b.submit_graceful_shutdown=mutate
   with self.assertRaisesRegex(M.Refusal,"authority"):c.run()
  def test_duplicate_vmid_and_bool_aliases_refuse(self):
-  p=self.plan();other=copy.deepcopy(p["guests"][0]);other.update(node="pve03",type="lxc");p["guests"].append(other);p["guests"].sort(key=lambda g:(g["node"],g["type"],g["vmid"]));b=Fake(p)
+  p=self.plan();other=copy.deepcopy(p["guests"][0]);other.update(node="node03",type="lxc");p["guests"].append(other);p["guests"].sort(key=lambda g:(g["node"],g["type"],g["vmid"]));b=Fake(p)
   with self.assertRaisesRegex(M.Refusal,"duplicated"):M.Controller(p,b,1000)
   p=self.plan();b=Fake(p);old=b.observe_guest
   def alias(g):v=old(g);v["running"]=1;return v

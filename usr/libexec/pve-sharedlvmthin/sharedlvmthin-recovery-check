@@ -103,6 +103,10 @@ def storage_configs(path="/etc/pve/storage.cfg"):
             raise RuntimeError(f"malformed top-level line in {path}")
         if line and line[0].isspace():
             parts = line.split(None, 1)
+            # Proxmox writes a bare "disable" for a true boolean property.
+            # Treat it exactly like "disable 1" and retain duplicate checks.
+            if len(parts) == 1 and parts[0] == "disable":
+                parts.append("1")
             if len(parts) == 2:
                 if parts[0] in current:
                     raise RuntimeError(

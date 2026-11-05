@@ -697,8 +697,8 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_configured_peer_nodes = sub {
         return [
-            { node => 'pve02', ip => '203.0.113.2' },
-            { node => 'pve03', ip => '203.0.113.3' },
+            { node => 'node02', ip => '203.0.113.2' },
+            { node => 'node03', ip => '203.0.113.3' },
         ];
     };
     my @probe_invocations;
@@ -853,36 +853,36 @@ subtest 'PVE-native LeaseGuard accepts parsed PVE node-scope hashes' => sub {
     local *PVE::Cluster::cfs_update = sub { return 1 };
     local *PVE::Cluster::get_members = sub {
         return {
-            pve01 => { online => 1, ip => '192.0.2.1' },
-            pve02 => { online => 1, ip => '192.0.2.2' },
-            pve03 => { online => 1, ip => '192.0.2.3' },
+            node01 => { online => 1, ip => '192.0.2.1' },
+            node02 => { online => 1, ip => '192.0.2.2' },
+            node03 => { online => 1, ip => '192.0.2.3' },
         };
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'pve01' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'node01' };
 
     my $peers = $thin_configured_peer_nodes->($class, {
-        nodes => { pve01 => 1, pve02 => 1, pve03 => 1 },
+        nodes => { node01 => 1, node02 => 1, node03 => 1 },
     });
     is_deeply($peers, [
-        { node => 'pve02', ip => '192.0.2.2' },
-        { node => 'pve03', ip => '192.0.2.3' },
+        { node => 'node02', ip => '192.0.2.2' },
+        { node => 'node03', ip => '192.0.2.3' },
     ], 'parsed PVE node hash yields exact non-local peers');
 
     $peers = $thin_configured_peer_nodes->($class, {
-        nodes => 'pve01,pve03',
+        nodes => 'node01,node03',
     });
     is_deeply($peers, [
-        { node => 'pve03', ip => '192.0.2.3' },
+        { node => 'node03', ip => '192.0.2.3' },
     ], 'raw node list remains supported for direct callers');
 
     $peers = $thin_configured_peer_nodes->($class, {
-        nodes => { pve01 => 1, pve02 => 1, pve03 => 1 },
-    }, 'pve03');
+        nodes => { node01 => 1, node02 => 1, node03 => 1 },
+    }, 'node03');
     is_deeply($peers, [
-        { node => 'pve02', ip => '192.0.2.2' },
+        { node => 'node02', ip => '192.0.2.2' },
     ], 'positively fenced former owner is excluded while every online peer remains audited');
 
-    eval { $thin_configured_peer_nodes->($class, { nodes => ['pve01', 'pve02'] }) };
+    eval { $thin_configured_peer_nodes->($class, { nodes => ['node01', 'node02'] }) };
     like($@, qr/node scope is malformed/, 'unexpected node-scope reference fails closed');
 };
 
@@ -934,8 +934,8 @@ subtest 'migration bridge admission is exact, durable and transaction scoped' =>
     my $tx = 'a' x 32;
     my @state_lines = (
         [''],
-        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve01"],
-        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve01"],
+        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-node01"],
+        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-node01"],
         [''],
     );
     my @seen;
@@ -945,7 +945,7 @@ subtest 'migration bridge admission is exact, durable and transaction scoped' =>
         return $code->();
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1 };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'pve01' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'node01' };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
         return shift @state_lines;
     };
@@ -958,20 +958,20 @@ subtest 'migration bridge admission is exact, durable and transaction scoped' =>
         'slt-vgname' => 'testvg',
         'slt-expected-wwid' => 'wwid1',
     };
-    is($bridge_admission->($class, $cfg, 'thin-a', 'acquire', $tx, 'pve01'),
+    is($bridge_admission->($class, $cfg, 'thin-a', 'acquire', $tx, 'node01'),
         'BRIDGE_ADMISSION_ACQUIRED', 'exact bridge admission is acquired');
-    is($bridge_admission->($class, $cfg, 'thin-a', 'release', $tx, 'pve01'),
+    is($bridge_admission->($class, $cfg, 'thin-a', 'release', $tx, 'node01'),
         'BRIDGE_ADMISSION_RELEASED', 'exact bridge admission is released');
     is(scalar(@seen), 2, 'one VG tag mutation per transition');
     like(join(' ', @{$seen[0]}), qr/--addtag pve-slt-bridge-v1/, 'acquire publishes schema tag');
     like(join(' ', @{$seen[1]}), qr/--deltag pve-slt-bridge-tx-$tx/, 'release removes exact transaction');
 
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
-        return ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve02"];
+        return ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-node02"];
     };
     my $foreign = $bridge_admission_state->($class, 'testvg', '/dev/mapper/wwid1');
     ok($foreign->{active}, 'foreign admission is visible');
-    is($foreign->{node}, 'pve02', 'foreign owner is exact');
+    is($foreign->{node}, 'node02', 'foreign owner is exact');
 };
 
 subtest 'bridge admission gates every canonical VG lock and exact owner may proceed' => sub {
@@ -984,15 +984,15 @@ subtest 'bridge admission gates every canonical VG lock and exact owner may proc
     };
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission_state = sub {
-        return { active => 1, tx => $tx, node => 'pve01' };
+        return { active => 1, tx => $tx, node => 'node01' };
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'pve01' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node01' };
     local $ENV{PVE_SLT_BRIDGE_TX};
     local $ENV{PVE_SLT_BRIDGE_NODE};
     eval { $bridge_admission_compatible->($class, $cfg, 'testvg', '/dev/mapper/wwid1') };
     like($@, qr/unrelated mutation refused/, 'mutation without transaction context is refused');
     $ENV{PVE_SLT_BRIDGE_TX} = 'c' x 32;
-    $ENV{PVE_SLT_BRIDGE_NODE} = 'pve01';
+    $ENV{PVE_SLT_BRIDGE_NODE} = 'node01';
     eval { $bridge_admission_compatible->($class, $cfg, 'testvg', '/dev/mapper/wwid1') };
     like($@, qr/unrelated mutation refused/, 'foreign transaction cannot spoof admission');
     $ENV{PVE_SLT_BRIDGE_TX} = $tx;

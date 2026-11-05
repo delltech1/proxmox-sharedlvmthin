@@ -20,7 +20,7 @@ isnt($names->{source_alias}, $names->{target_alias}, 'transaction aliases are di
 
 my %fingerprint = (
     schema => 'v1', transaction => '0123456789abcdef0123456789abcdef',
-    vmid => '992700', disk => '0', source_node => 'pve01', target_node => 'pve02',
+    vmid => '992700', disk => '0', source_node => 'node01', target_node => 'node02',
     source_pool_uuid => 'pool-a', target_pool_uuid => 'pool-b',
     source_volume_uuid => 'vol-a', target_volume_uuid => 'vol-b',
     phase => 'MIRRORING', authority => 'source', config_volume => 'source-vol',

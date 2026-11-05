@@ -39,20 +39,20 @@ class Tests(unittest.TestCase):
         self.raw = M.canonical(self.manifest)
         self.write(self.root / "active.json", self.raw)
         self.now = self.manifest["expires_at"] + 1
-        self.facts = {"node": "pve01", "boot_id": self.manifest["nodes"][0]["boot_id"],
+        self.facts = {"node": "node01", "boot_id": self.manifest["nodes"][0]["boot_id"],
             "cluster_name": self.manifest["cluster_name"], "corosync_conf_sha256": self.manifest["corosync_conf_sha256"],
             "storage_cfg_sha256": self.manifest["baseline_storage_cfg_sha256"], "blocking_processes": [],
             "payload_verified": True,
             "package": {**{key: self.manifest["candidate"][key] for key in ("package", "version", "flavor", "artifact_sha256")},
                         "config_version": "0.9.0~rc5.12~tg33", "dpkg_state": "unpacked"}}
         self.receipt = {"schema": "slt-package-maintenance-receipt/v1", "tx": self.manifest["tx"],
-            "generation": self.manifest["generation"], "phase": "PREINST_ACCEPTED", "node": "pve01",
+            "generation": self.manifest["generation"], "phase": "PREINST_ACCEPTED", "node": "node01",
             "boot_id": self.facts["boot_id"], "manifest_sha256": M.digest(self.raw),
             "storage_cfg_sha256": self.facts["storage_cfg_sha256"], "recorded_at": self.manifest["issued_at"],
             **{key: self.manifest["candidate"][key] for key in ("package", "version", "flavor", "artifact_sha256")}}
         self.receipt_path = self.root / "receipts" / (self.manifest["tx"] + ".json")
         self.write(self.receipt_path, M.canonical(self.receipt) + b"\n")
-        stem = f"{self.manifest['tx']}-{self.manifest['generation']}-pve01-create-prepare-" + "e" * 32
+        stem = f"{self.manifest['tx']}-{self.manifest['generation']}-node01-create-prepare-" + "e" * 32
         self.write(self.root / "attempts" / (stem + "-intent.json"), b'{"preserved":"intent"}')
         self.write(self.root / "attempts" / (stem + "-complete.json"), b'{"preserved":"complete"}')
         self.write(self.root / "sidecars" / (stem + ".json"), b'{"preserved":"sidecar"}')

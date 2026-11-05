@@ -35,7 +35,7 @@ spec.loader.exec_module(M)
 Refusal, need = M.Refusal, M.need
 # Closed synthetic identities used only by this unshipped formal model. They
 # are not discovered hostnames and carry no addresses or access information.
-NODES = ('PVE01', 'PVE02', 'PVE03', 'PVE04')
+NODES = ('NODE01', 'NODE02', 'NODE03', 'NODE04')
 ROOT = Path('/var/lib/pve-sharedlvmthin/maintenance-transport')
 HELPER = '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-exact-restore-transport'
 SUBSYSTEM = 'sharedlvmthin-exact-restore-v1'

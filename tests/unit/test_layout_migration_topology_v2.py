@@ -4,15 +4,15 @@ P=Path(__file__).resolve().parents[2]/"experiments/thick-generations/layout-migr
 S=importlib.util.spec_from_file_location("topology",P);M=importlib.util.module_from_spec(S);S.loader.exec_module(M)
 class Tests(unittest.TestCase):
  def storage(self,global_storage=False,include_control=False):
-  nodes="pve01,pve02,pve03"+(",pve04" if include_control else "")
+  nodes="node01,node02,node03"+(",node04" if include_control else "")
   scope="" if global_storage else f"\tnodes {nodes}\n"
   return ("sharedlvmthin: thin\n\tslt-vgname vg\n\tslt-thin-leaseguard runtime-guard\n"+scope+"sharedlvmthin: thick\n\tslt-vgname vg\n\tslt-thin-leaseguard runtime-guard\n"+scope).encode()
  def topology(self,raw):
-  return {"schema":"slt-layout-topology/v2","cluster_name":"lab","storage_cfg_sha256":hashlib.sha256(raw).hexdigest(),"nodes":[{"name":f"pve0{i}","boot_id":f"0000000{i}-0000-4000-8000-00000000000{i}","san_role":"SAN_PARTICIPANT" if i<4 else "CONTROL_ONLY"} for i in range(1,5)]}
+  return {"schema":"slt-layout-topology/v2","cluster_name":"lab","storage_cfg_sha256":hashlib.sha256(raw).hexdigest(),"nodes":[{"name":f"node0{i}","boot_id":f"0000000{i}-0000-4000-8000-00000000000{i}","san_role":"SAN_PARTICIPANT" if i<4 else "CONTROL_ONLY"} for i in range(1,5)]}
  def test_three_san_one_control_binds_even_when_control_sorts_first(self):
-  raw=self.storage();t=self.topology(raw);t["nodes"][0]["name"]="aaa-control";t["nodes"][0]["san_role"]="CONTROL_ONLY";t["nodes"][3]["name"]="pve01";t["nodes"][3]["san_role"]="SAN_PARTICIPANT";t["nodes"].sort(key=lambda x:x["name"])
+  raw=self.storage();t=self.topology(raw);t["nodes"][0]["name"]="aaa-control";t["nodes"][0]["san_role"]="CONTROL_ONLY";t["nodes"][3]["name"]="node01";t["nodes"][3]["san_role"]="SAN_PARTICIPANT";t["nodes"].sort(key=lambda x:x["name"])
   # Storage must bind the resulting three SAN names, not positional records.
-  raw=b"sharedlvmthin: x\n\tnodes pve01,pve02,pve03\n";t["storage_cfg_sha256"]=hashlib.sha256(raw).hexdigest()
+  raw=b"sharedlvmthin: x\n\tnodes node01,node02,node03\n";t["storage_cfg_sha256"]=hashlib.sha256(raw).hexdigest()
   self.assertEqual(M.validate(t,raw)["verdict"],"TOPOLOGY_BOUND")
  def test_global_or_control_scoped_storage_refuses(self):
   for raw in (self.storage(global_storage=True),self.storage(include_control=True)):
@@ -50,7 +50,7 @@ class Tests(unittest.TestCase):
   raw=self.storage();t=self.topology(raw);e=M.validate(t,raw);original=copy.deepcopy(e)
   t["nodes"][0]["san_role"]="CONTROL_ONLY";self.assertEqual(e,original)
   bad=copy.deepcopy(e);bad["nodes"][0]["san_role"]="CONTROL_ONLY"
-  with self.assertRaises(M.Refusal):M.bind_node_evidence({"schema":"slt-layout-node-role-evidence/v2","node":"pve01","boot_id":e["nodes"][0]["boot_id"],"san_role":"CONTROL_ONLY","topology_sha256":e["topology_sha256"],"vg_identities":[],"thinguard":{"service_active_state":"inactive","main_pid":0,"jobs":[],"daemon_processes":[],"watchdog_registrations":[]}},bad)
+  with self.assertRaises(M.Refusal):M.bind_node_evidence({"schema":"slt-layout-node-role-evidence/v2","node":"node01","boot_id":e["nodes"][0]["boot_id"],"san_role":"CONTROL_ONLY","topology_sha256":e["topology_sha256"],"vg_identities":[],"thinguard":{"service_active_state":"inactive","main_pid":0,"jobs":[],"daemon_processes":[],"watchdog_registrations":[]}},bad)
  def test_rehashed_evidence_with_null_boot_is_rejected(self):
   raw=self.storage();e=M.validate(self.topology(raw),raw);bad=copy.deepcopy(e)
   bad["nodes"][0]["boot_id"]=None

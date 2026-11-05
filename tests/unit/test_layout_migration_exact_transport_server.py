@@ -37,7 +37,7 @@ class TransportServerTests(unittest.TestCase):
     def setUp(self):
         self.plan = local_fixture.fixture()
         self.backend = local_fixture.Backend(self.plan)
-        self.row = {'node': 'pve01', 'boot_id': self.plan['participants'][0]['boot_id'],
+        self.row = {'node': 'node01', 'boot_id': self.plan['participants'][0]['boot_id'],
                     'helper_sha256': 'f' * 64, 'source_package': {'fixture': 'measured', 'sources_sha256': 'c' * 64}}
         self.collection = mock.Mock(side_effect=self.collect)
         self.context = types.SimpleNamespace(plan=self.plan, row=self.row, transport=T, phase='BEFORE',
@@ -47,14 +47,14 @@ class TransportServerTests(unittest.TestCase):
                                        LocalJournal=mock.Mock(side_effect=AssertionError('unexpected journal'))))
         self.stack = contextlib.ExitStack(); self.addCleanup(self.stack.close)
         self.stack.enter_context(mock.patch.object(S, 'root_required'))
-        self.stack.enter_context(mock.patch.object(S.socket, 'gethostname', return_value='pve01'))
+        self.stack.enter_context(mock.patch.object(S.socket, 'gethostname', return_value='node01'))
         self.stack.enter_context(mock.patch.object(S.Path, 'read_text', return_value=self.row['boot_id']))
         self.stack.enter_context(mock.patch.object(S.time, 'time', return_value=200))
         self.stack.enter_context(mock.patch.object(S.subprocess, 'run', side_effect=AssertionError('live process forbidden')))
 
     def collect(self, plan, workload, timeout):
         self.assertEqual(timeout, 12)
-        value = copy.deepcopy(self.backend.records['pve01'])
+        value = copy.deepcopy(self.backend.records['node01'])
         if self.context.phase == 'AFTER':
             value['package_sha256'] = self.plan['candidate_sha256']
             value['storage_cfg_sha256'] = self.plan['target_storage_cfg_sha256']
@@ -62,7 +62,7 @@ class TransportServerTests(unittest.TestCase):
 
     def request(self, kind='READ_OBSERVATION', payload=None):
         return {'schema': 'slt-exact-transport-request/v1', 'authority': 'NONE', 'kind': kind,
-                'tx': self.plan['tx'], 'plan_sha256': T.M.digest(self.plan), 'node': 'pve01',
+                'tx': self.plan['tx'], 'plan_sha256': T.M.digest(self.plan), 'node': 'node01',
                 'boot_id': self.row['boot_id'], 'challenge': 'a' * 64, 'payload': {} if payload is None else payload}
 
     def test_read_before_and_after_projection_preserve_original_plan_binding(self):
@@ -94,7 +94,7 @@ class TransportServerTests(unittest.TestCase):
         self.collection.assert_not_called()
 
     def test_boot_node_digest_kind_payload_and_reuse_refuse(self):
-        for field, value in (('node', 'pve04'), ('boot_id', 'foreign'), ('plan_sha256', '0' * 64),
+        for field, value in (('node', 'node04'), ('boot_id', 'foreign'), ('plan_sha256', '0' * 64),
                              ('kind', 'SHELL'), ('payload', {'unit': 'anything'}), ('challenge', 'bad')):
             with self.subTest(field=field), self.assertRaises((S.Refusal, T.Refusal)):
                 S.Engine(self.context).handle(dict(self.request(), **{field: value}))

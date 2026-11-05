@@ -73,7 +73,7 @@ class ExactTransportTests(unittest.TestCase):
         return T.Transport(files=self.files, runner=self.exchange, require_root=lambda: None,
                            clock=lambda: self.now, nonce=self.nonce, **kwargs)
 
-    def request(self, node='PVE04', operation='UNMASK', unit='pvedaemon.service'):
+    def request(self, node='NODE04', operation='UNMASK', unit='pvedaemon.service'):
         return {'tx': self.plan['tx'], 'plan_sha256': T.M.digest(self.plan), 'node': node,
                 'boot_id': next(r['boot_id'] for r in self.plan['participants'] if r['node'] == node),
                 'unit': unit, 'operation': operation, 'baseline_sha256': 'a' * 64, 'release_sha256': 'b' * 64}
@@ -111,11 +111,11 @@ class ExactTransportTests(unittest.TestCase):
         self.assertTrue(all(T.strict(raw)['kind'] == 'READ_OBSERVATION' for _, raw, _ in self.calls))
 
     def test_fixed_subsystem_pinned_keys_no_shell_or_generic_command(self):
-        self.create().observe('PVE04')
+        self.create().observe('NODE04')
         argv, _, timeout = self.calls[0]
         self.assertEqual(argv[:4], ['/usr/bin/ssh', '-F', '/dev/null', '-T'])
         self.assertEqual(argv[-4:], ['-s', '--', '192.0.2.4', T.SUBSYSTEM])
-        for option in ('StrictHostKeyChecking=yes', 'HostKeyAlias=PVE04', 'ProxyCommand=none',
+        for option in ('StrictHostKeyChecking=yes', 'HostKeyAlias=NODE04', 'ProxyCommand=none',
                        'IdentityAgent=none', 'ConnectionAttempts=1', 'ControlMaster=no',
                        'UserKnownHostsFile=' + self.files.known_hosts_path):
             self.assertIn(option, argv)
@@ -128,7 +128,7 @@ class ExactTransportTests(unittest.TestCase):
             self.pins.clear(); self.pins.update(copy.deepcopy(original))
             row = self.pins['participants'][3]
             if kind == 'partial': self.pins['participants'].pop()
-            elif kind == 'alias': row['host'] = 'pve04.example.invalid'
+            elif kind == 'alias': row['host'] = 'node04.example.invalid'
             elif kind == 'key': row.update(ssh_host_key=original['participants'][0]['ssh_host_key'],
                                           ssh_host_fingerprint=original['participants'][0]['ssh_host_fingerprint'])
             elif kind == 'fingerprint': row['ssh_host_fingerprint'] = 'SHA256:foreign'
@@ -142,17 +142,17 @@ class ExactTransportTests(unittest.TestCase):
     def test_host_key_mismatch_exit_is_fatal_without_retry(self):
         transport = self.create()
         transport.runner = mock.Mock(return_value=(255, b'', b'Host key verification failed.'))
-        with self.assertRaises(T.Refusal): transport.observe('PVE01')
-        with self.assertRaises(T.Refusal): transport.observe('PVE01')
+        with self.assertRaises(T.Refusal): transport.observe('NODE01')
+        with self.assertRaises(T.Refusal): transport.observe('NODE01')
         self.assertEqual(transport.runner.call_count, 1)
 
     def test_response_node_boot_nonce_request_helper_and_package_are_exact(self):
-        for field, value in (('node', 'pve01'), ('boot_id', 'foreign'), ('challenge', 'f' * 64),
+        for field, value in (('node', 'node01'), ('boot_id', 'foreign'), ('challenge', 'f' * 64),
                              ('request_sha256', 'f' * 64), ('helper_path', '/bin/sh'),
                              ('helper_sha256', '0' * 64), ('authority', 'ALLOW'),
                              ('source_package', {})):
             self.response_change = lambda response, f=field, v=value: dict(response, **{f: v})
-            with self.subTest(field=field), self.assertRaises(T.Refusal): self.create().observe('PVE01')
+            with self.subTest(field=field), self.assertRaises(T.Refusal): self.create().observe('NODE01')
 
     def test_noncanonical_duplicate_unknown_trailing_and_oversize_outputs_refused(self):
         transforms = (lambda raw: raw + b'\n', lambda raw: b' ' + raw,
@@ -160,14 +160,14 @@ class ExactTransportTests(unittest.TestCase):
                       lambda _: b'x' * (T.MAX_WIRE + 1), lambda _: b'{"value":NaN}\n')
         for transform in transforms:
             self.wire_change = transform
-            with self.subTest(transform=transform), self.assertRaises(T.Refusal): self.create().observe('PVE01')
+            with self.subTest(transform=transform), self.assertRaises(T.Refusal): self.create().observe('NODE01')
         self.wire_change = lambda raw: raw
         self.response_change = lambda response: dict(response, extra='unknown')
-        with self.assertRaises(T.Refusal): self.create().observe('PVE01')
+        with self.assertRaises(T.Refusal): self.create().observe('NODE01')
 
     def test_partial_cohort_never_returns_success(self):
         def change(response):
-            if response['node'] == 'PVE04': response['payload']['membership'].pop()
+            if response['node'] == 'NODE04': response['payload']['membership'].pop()
             return response
         self.response_change = change
         transport = self.create()
@@ -195,8 +195,8 @@ class ExactTransportTests(unittest.TestCase):
         self.failure = TimeoutError('deadline')
         transport = self.create(dispatch_guard=lambda *_: True)
         with self.assertRaises(TimeoutError): transport.dispatch_typed(self.request())
-        with self.assertRaises(T.Refusal): transport.dispatch_typed(self.request('PVE01'))
-        with self.assertRaises(T.Refusal): transport.observe('PVE04')
+        with self.assertRaises(T.Refusal): transport.dispatch_typed(self.request('NODE01'))
+        with self.assertRaises(T.Refusal): transport.observe('NODE04')
         self.assertEqual(len(self.calls), 1)
 
     def test_full_receipt_is_persisted_before_return_and_fresh_process_never_retries(self):
@@ -251,19 +251,19 @@ class ExactTransportTests(unittest.TestCase):
             return old[0]
         self.wire_change = wire
         transport = self.create()
-        transport.observe('PVE01')
-        with self.assertRaises(T.Refusal): transport.observe('PVE01')
+        transport.observe('NODE01')
+        with self.assertRaises(T.Refusal): transport.observe('NODE01')
 
     def test_nonce_reuse_refused_before_second_network_call(self):
         transport = self.create(); transport.nonce = lambda: 'a' * 64
-        transport.observe('PVE01')
-        with self.assertRaises(T.Refusal): transport.observe('PVE04')
+        transport.observe('NODE01')
+        with self.assertRaises(T.Refusal): transport.observe('NODE04')
         self.assertEqual(len(self.calls), 1)
 
     def test_shell_args_unknown_units_and_preserved_service_start_refused(self):
         for changes in ({'argv': ['sh', '-c', 'anything']}, {'operation': 'STOP'},
                         {'unit': 'pve-guests.service', 'operation': 'START'},
-                        {'unit': 'corosync.service'}, {'node': 'PVE04;anything'}):
+                        {'unit': 'corosync.service'}, {'node': 'NODE04;anything'}):
             with self.subTest(changes=changes), self.assertRaises(T.Refusal):
                 self.create(dispatch_guard=lambda *_: True).dispatch_typed(dict(self.request(), **changes))
         self.assertEqual(self.calls, [])
@@ -282,13 +282,13 @@ class ExactTransportTests(unittest.TestCase):
     def test_root_bootstrap_drift_plan_expiry_and_fork_refuse(self):
         transport = self.create()
         self.files.drift = True
-        with self.assertRaises(T.Refusal): transport.observe('PVE01')
+        with self.assertRaises(T.Refusal): transport.observe('NODE01')
         self.files.drift = False
         self.now = 1801
-        with self.assertRaises(T.Refusal): transport.observe('PVE01')
+        with self.assertRaises(T.Refusal): transport.observe('NODE01')
         self.now = 200
         with mock.patch.object(T.os, 'getpid', return_value=-1):
-            with self.assertRaises(T.Refusal): transport.observe('PVE01')
+            with self.assertRaises(T.Refusal): transport.observe('NODE01')
         self.assertEqual(self.calls, [])
 
     def test_fixed_files_reject_owner_mode_links_before_reading_content(self):
@@ -338,10 +338,10 @@ class ExactTransportTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(T.selectors, 'DefaultSelector', Selector))
             stack.enter_context(mock.patch.object(T.time, 'monotonic', side_effect=lambda: next(times)))
             if scenario == 'success':
-                self.assertEqual(T.bounded_process(T.ssh_argv('PVE01', '192.0.2.1'), b'{}\n', 20), (0, b'ok', b''))
+                self.assertEqual(T.bounded_process(T.ssh_argv('NODE01', '192.0.2.1'), b'{}\n', 20), (0, b'ok', b''))
             else:
                 with self.assertRaises(T.Refusal):
-                    T.bounded_process(T.ssh_argv('PVE01', '192.0.2.1'), b'{}\n', 20)
+                    T.bounded_process(T.ssh_argv('NODE01', '192.0.2.1'), b'{}\n', 20)
                 kill.assert_called_once()
             self.assertFalse(popen.call_args.kwargs['shell'])
             self.assertEqual(popen.call_args.kwargs['env'], T.ENV)
@@ -354,7 +354,7 @@ class ExactTransportTests(unittest.TestCase):
     def test_process_runner_refuses_generic_argv_before_popen(self):
         with mock.patch.object(T, 'root_required'):
             for argv in (['/bin/sh', '-c', 'anything'],
-                         T.ssh_argv('PVE01', '192.0.2.1') + ['extra'],
+                         T.ssh_argv('NODE01', '192.0.2.1') + ['extra'],
                          ['/usr/bin/ssh', 'some-alias', T.SUBSYSTEM]):
                 with self.subTest(argv=argv), self.assertRaises(T.Refusal):
                     T.bounded_process(argv, b'{}\n', 20)

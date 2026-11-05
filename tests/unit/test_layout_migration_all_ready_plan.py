@@ -15,7 +15,7 @@ SPEC.loader.exec_module(PLAN)
 
 class LayoutMigrationAllReadyPlanTests(unittest.TestCase):
     now = 2_000_000_000
-    names = ["pve01", "pve02", "pve03"]
+    names = ["node01", "node02", "node03"]
     units = [
         "pve-sharedlvmthin-thin-guard.service", "pvedaemon.service",
         "pvestatd.service", "pveproxy.service", "pve-ha-lrm.service",

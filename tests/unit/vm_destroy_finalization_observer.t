@@ -18,7 +18,7 @@ sub fixture {
         get_vmlist => sub {
             push @calls, 'vmlist';
             return $opts{vmlist} if exists($opts{vmlist});
-            return { ids => { 101 => { type => 'qemu', node => 'pve01' } } };
+            return { ids => { 101 => { type => 'qemu', node => 'node01' } } };
         },
         load_config => sub {
             push @calls, "config:$_[0]:$_[1]";
@@ -48,7 +48,7 @@ subtest 'present QEMU config has exact node and canonical digest' => sub {
     my ($observer, $calls, $conf) = fixture();
     my $state = $observer->observe(101);
     is($state->{config}, 'PRESENT', 'present');
-    is($state->{config_node}, 'pve01', 'cluster owner bound');
+    is($state->{config_node}, 'node01', 'cluster owner bound');
     is($state->{config_sha256}, sha256_hex(JSON::PP->new->canonical->encode($conf)),
         'exact parsed config digest');
     is($state->{acl}, 'ABSENT', 'ACL absent');
@@ -76,7 +76,7 @@ for my $case (
 for my $case (
     ['quorum/cache refresh', { update_fail => 1 }],
     ['malformed vmlist', { vmlist => {} }],
-    ['foreign LXC identity', { vmlist => { ids => { 101 => { type => 'lxc', node => 'pve01' } } } }],
+    ['foreign LXC identity', { vmlist => { ids => { 101 => { type => 'lxc', node => 'node01' } } } }],
     ['config parser/read', { config_fail => 1 }],
     ['firewall symlink/lstat', { path_fail => 1 }],
     ['ACL lock', { lock_fail => 1 }],

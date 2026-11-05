@@ -5,6 +5,8 @@ use strict;
 use warnings;
 use FindBin;
 BEGIN {
+    die "SLT_TEST_PLUGIN_ROOT is not supported; run this script from the candidate tree\n"
+        if exists $ENV{SLT_TEST_PLUGIN_ROOT};
     my $source = "$FindBin::Bin/../usr/share/perl5";
     for my $variable (qw(SLT_TEST_STORAGE_ROOT SLT_TEST_COMMON_ROOT)) {
         next if !defined($ENV{$variable});
@@ -36,6 +38,11 @@ if (defined($ENV{SLT_TEST_STORAGE_ROOT})) {
            abs_path("$ENV{SLT_TEST_STORAGE_ROOT}/usr/share/perl5/$module"),
            "exact extracted source loaded: $module");
     }
+}
+if (defined($ENV{SLT_TEST_COMMON_ROOT})) {
+    is(abs_path($INC{'PVE/Tools.pm'}),
+       abs_path("$ENV{SLT_TEST_COMMON_ROOT}/usr/share/perl5/PVE/Tools.pm"),
+       'exact extracted Common module loaded: PVE/Tools.pm');
 }
 for my $hook (qw(type plugindata properties options status list_images alloc_image free_image
     activate_storage deactivate_storage activate_volume deactivate_volume volume_size_info

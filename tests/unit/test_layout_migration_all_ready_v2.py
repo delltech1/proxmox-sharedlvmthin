@@ -62,7 +62,7 @@ class Tests(unittest.TestCase):
    with self.assertRaises(M.Refusal):M.evaluate(c,tp,b,t,ac,a,bad,n)
  def test_authorization_expiry_alias_generation_and_plan_tamper_refuse(self):
   b,t,tp,c,ac,a,r,n=self.fixture();variants=[]
-  aa=copy.deepcopy(a);aa["expires_at"]=n-1;variants.append((ac,aa,r));aa=copy.deepcopy(a);aa["generation"]=True;variants.append((ac,aa,r));badac=copy.deepcopy(ac);badac["node_roles"]["pve04"]="SAN_PARTICIPANT";body=copy.deepcopy(badac);body.pop("plan_sha256");badac["plan_sha256"]=M.digest(body);variants.append((badac,a,r))
+  aa=copy.deepcopy(a);aa["expires_at"]=n-1;variants.append((ac,aa,r));aa=copy.deepcopy(a);aa["generation"]=True;variants.append((ac,aa,r));badac=copy.deepcopy(ac);badac["node_roles"]["node04"]="SAN_PARTICIPANT";body=copy.deepcopy(badac);body.pop("plan_sha256");badac["plan_sha256"]=M.digest(body);variants.append((badac,a,r))
   for cp,auth,records in variants:
    with self.assertRaises(M.Refusal):M.evaluate(c,tp,b,t,cp,auth,records,n)
 if __name__=="__main__":unittest.main()

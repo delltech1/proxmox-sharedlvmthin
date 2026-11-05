@@ -79,6 +79,49 @@ class ClosedSettlementTests(unittest.TestCase):
             self.m.command_finalize_runtime(types.SimpleNamespace(transaction_id=self.args.txid))
         self.assert_closed()
 
+    def test_closed_successor_after_reboot_is_refused_and_remains_closed(self):
+        self.command()
+        before = copy.deepcopy(self.store)
+        self.effects.clear()
+        with mock.patch.object(self.m.pathlib.Path, 'read_text', return_value='new-boot'):
+            with self.assertRaisesRegex(RuntimeError, 'previous boot'):
+                self.m.prepare_freeze_package(
+                    self.target, '1', self.target, '2', 'all', 'c' * 64,
+                    'candidate.json', self.manifest, self.core)
+        self.assertEqual(self.store, before)
+        self.assertEqual(self.effects, [])
+        self.assert_closed()
+
+    def test_previous_boot_latch_also_refuses_existing_successor_replay(self):
+        self.command()
+        old = self.store.pop(self.m.RUNTIME_QUALIFICATION)
+        with mock.patch.object(self.m.pathlib.Path, 'read_text', return_value='new-boot'):
+            receipt = self.m.prepare_freeze_package(
+                self.target, '1', self.target, '2', 'all', 'c' * 64,
+                'candidate.json', self.manifest, self.core)
+            self.store[self.m.RUNTIME_QUALIFICATION] = old
+            before = copy.deepcopy(self.store)
+            with self.assertRaisesRegex(RuntimeError, 'previous boot'):
+                self.m.prepare_freeze_package(
+                    self.target, '1', self.target, '2', 'all', 'c' * 64,
+                    'candidate.json', self.manifest, self.core)
+        self.assertEqual(self.store, before)
+        self.assertEqual(self.store[self.m.PACKAGE_TRANSITION], receipt)
+        self.assert_closed()
+
+    def test_closed_predecessor_without_boot_identity_cannot_prepare_successor(self):
+        self.command()
+        del self.store[self.m.RUNTIME_QUALIFICATION]['boot_id']
+        before = copy.deepcopy(self.store)
+        self.effects.clear()
+        with self.assertRaisesRegex(RuntimeError, 'previous boot'):
+            self.m.prepare_freeze_package(
+                self.target, '1', self.target, '2', 'all', 'c' * 64,
+                'candidate.json', self.manifest, self.core)
+        self.assertEqual(self.store, before)
+        self.assertEqual(self.effects, [])
+        self.assert_closed()
+
     def test_every_publication_and_unlink_lost_ack_prefix_stays_closed_and_replays(self):
         # Each cut persists the selected write/unlink, then loses its ACK.
         initial_store, initial_holds = copy.deepcopy(self.store), set(self.holds)

@@ -21,7 +21,7 @@ class Tests(unittest.TestCase):
     def topology(self, role):
         return {"cluster_name": "oke-dev", "storage_cfg_sha256": "s" * 64,
                 "topology_sha256": "t" * 64,
-                "nodes": [{"name": "pve01", "boot_id": "boot", "san_role": role}]}
+                "nodes": [{"name": "node01", "boot_id": "boot", "san_role": role}]}
 
     def common(self, role, installed=None):
         installed = installed or {"version": "old", "artifact_sha256": "1" * 64}
@@ -30,7 +30,7 @@ class Tests(unittest.TestCase):
             patch.object(M.TOPO, "validate_topology_evidence", return_value=self.topology(role)),
             patch.object(M.TOPO, "validate", return_value=self.topology(role)),
             patch.object(M.hashlib, "sha256", return_value=SimpleNamespace(hexdigest=lambda: "s" * 64)),
-            patch.object(M.V1, "membership", side_effect=[("pve01", 1, True, ["pve01"]), ("pve01", 1, True, ["pve01"])]),
+            patch.object(M.V1, "membership", side_effect=[("node01", 1, True, ["node01"]), ("node01", 1, True, ["node01"])]),
             patch.object(M.V1, "pseudo_bytes", return_value=b"boot"),
             patch.object(M, "candidate_identity", return_value={"package": "pve-sharedlvmthin", "version": "new", "architecture": "all", "flavor": "dual", "deb_sha256": "3" * 64, "artifact_sha256": "2" * 64}),
             patch.object(M.V1, "installed_identity", return_value=installed),

@@ -23,10 +23,10 @@ CREDENTIAL = re.compile(
     rb"\s*[:=]\s*['\"]?([^\s'\"]{4,})"
 )
 FORBIDDEN_BYTES = (
-    b"-----begin private key-----", b"-----begin openssh private key-----",
-    b"-----begin rsa private key-----", b"-----begin ec private key-----",
+    b"-----begin " + b"private key-----", b"-----begin openssh " + b"private key-----",
+    b"-----begin rsa " + b"private key-----", b"-----begin ec " + b"private key-----",
     b"ssh-rsa ", b"ssh-ed25519 ", b".codex", b"codex-remote-attachments",
-    b"corosync-cluster-pg", b"dev-prx", b"oke-dev",
+    b"corosync-cluster-pg", b"dev-" + b"prx", b"oke-dev",
 )
 LOCAL_PATHS = (
     re.compile(rb"(?i)[a-z]:[\\/]+users[\\/]+"),

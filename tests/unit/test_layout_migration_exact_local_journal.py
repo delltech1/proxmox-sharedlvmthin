@@ -46,9 +46,9 @@ class FilesystemTests(unittest.TestCase):
         self.assertFalse(hasattr(fresh, "verify_release"))
 
     def test_direct_journal_accepts_complete_bounded_protocol_without_subclass(self):
-        effect = 'pve01:qmeventd.service:UNMASK'
+        effect = 'node01:qmeventd.service:UNMASK'
         keys = (effect + ':grant', 'flow:started', 'flow:held', 'flow:release', 'flow:complete',
-                'barrier:11:OBSERVED_COMPLETE', 'archive:pve03:done', 'receipt:' + effect,
+                'barrier:11:OBSERVED_COMPLETE', 'archive:node03:done', 'receipt:' + effect,
                 'transport:' + effect + ':intent', 'transport:' + effect + ':done')
         for key in keys:
             value = {'authority': 'NONE', 'key': key}
@@ -123,7 +123,7 @@ class FilesystemTests(unittest.TestCase):
         self.assertFalse(self.path("baseline").exists())
 
     def test_tx_key_size_and_plan_swaps_cannot_escape(self):
-        for key in ("../outside", "pve01:pve-guests.service:STOP:intent", "shell:rm -rf /"):
+        for key in ("../outside", "node01:pve-guests.service:STOP:intent", "shell:rm -rf /"):
             with self.assertRaises(J.Refusal): self.journal.create_once(self.tx, key, {})
         with self.assertRaises(J.Refusal): self.journal.create_once("f" * 32, "baseline", {})
         with self.assertRaises(J.Refusal): self.journal.create_once(self.tx, "baseline", "x" * J.LIMIT)
@@ -156,13 +156,13 @@ class FilesystemTests(unittest.TestCase):
 class PureTests(unittest.TestCase):
     def test_protocol_keys_are_bound_to_plan_cohort_san_role_and_fixed_services(self):
         journal = object.__new__(J.Journal); journal.plan = fixture(); journal.tx = journal.plan['tx']
-        accepted = ('pve01:qmeventd.service:UNMASK:grant', 'receipt:pve04:pve-guests.service:UNMASK',
-                    'flow:release', 'barrier:11:ATTEMPTED', 'archive:pve03:intent',
-                    'transport:pve04:pvedaemon.service:START:done')
+        accepted = ('node01:qmeventd.service:UNMASK:grant', 'receipt:node04:pve-guests.service:UNMASK',
+                    'flow:release', 'barrier:11:ATTEMPTED', 'archive:node03:intent',
+                    'transport:node04:pvedaemon.service:START:done')
         for key in accepted: self.assertRegex(journal._name(journal.tx, key), r'^[a-f0-9]{64}\.json$')
-        for key in ('PVE01:qmeventd.service:UNMASK:grant', 'archive:pve04:done', 'archive:pve05:done',
-                    'barrier:12:ATTEMPTED', 'flow:resume', 'receipt:pve01:foreign.service:START',
-                    'node-baseline:pve05', 'transport:pve01:pvedaemon.service:STOP:intent'):
+        for key in ('NODE01:qmeventd.service:UNMASK:grant', 'archive:node04:done', 'archive:node05:done',
+                    'barrier:12:ATTEMPTED', 'flow:resume', 'receipt:node01:foreign.service:START',
+                    'node-baseline:node05', 'transport:node01:pvedaemon.service:STOP:intent'):
             with self.subTest(key=key), self.assertRaises(J.Refusal): journal._name(journal.tx, key)
 
     def test_closed_decode_rejects_duplicate_nonfinite_and_noncanonical(self):

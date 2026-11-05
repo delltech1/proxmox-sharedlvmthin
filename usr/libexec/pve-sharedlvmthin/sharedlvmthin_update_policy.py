@@ -216,6 +216,47 @@ def observed_tuple(manifest, versions, *, profile, api, running_kernel, plugin_v
     return matches[0] if matches else None
 
 
+def validate_candidate_catalogue(manifest):
+    """Reject catalogues whose tuple requirements cannot be observed later."""
+    if not isinstance(manifest, dict) or manifest.get("schema") != 1 \
+            or manifest.get("catalogue") != "pve-qualified-tuples-v1":
+        raise Refusal("invalid candidate tuple catalogue")
+    watched = manifest.get("watched_packages")
+    rows = manifest.get("tuples")
+    if not isinstance(watched, list) or not watched or any(
+            not isinstance(name, str) or not PACKAGE_RE.fullmatch(name) or ':' in name for name in watched) \
+            or len(watched) != len(set(watched)) or not isinstance(rows, list) or not rows:
+        raise Refusal("incomplete candidate tuple catalogue")
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"] \
+                or not isinstance(row.get("api"), int) or isinstance(row.get("api"), bool) \
+                or not isinstance(row.get("running_kernel"), str) or not row["running_kernel"] \
+                or not isinstance(row.get("status"), str) or not row["status"] \
+                or not isinstance(row.get("profiles"), list) or not row["profiles"] \
+                or any(p not in {"dual", "thick-only"} for p in row["profiles"]) \
+                or not isinstance(row.get("plugin_versions"), list) or not row["plugin_versions"] \
+                or any(not isinstance(v, str) or not VERSION_RE.fullmatch(v) for v in row["plugin_versions"]) \
+                or not isinstance(row.get("packages"), dict) or not row["packages"] \
+                or any(not isinstance(k, str) or not PACKAGE_RE.fullmatch(k)
+                       or not isinstance(v, str) or not VERSION_RE.fullmatch(v)
+                       for k, v in row["packages"].items()):
+            raise Refusal("malformed candidate tuple catalogue row")
+        if not set(row["packages"]).issubset(watched):
+            raise Refusal("candidate tuple requires an unwatched package")
+
+
+def candidate_runtime_tuple(manifest, versions, *, profile, api, running_kernel, plugin_version):
+    """Check prospective package identity without qualifying or mutating runtime."""
+    validate_candidate_catalogue(manifest)
+    observed = observed_tuple(manifest, versions, profile=profile, api=api,
+                              running_kernel=running_kernel, plugin_version=plugin_version)
+    if not isinstance(observed, dict):
+        return None
+    if observed.get("status") not in {"EXACT_LAB_TESTED", "RETEST_REQUIRED"}:
+        return None
+    return observed
+
+
 def known_incompatible(manifest, versions, compare_versions):
     storage = versions.get("libpve-storage-perl")
     qemu = versions.get("qemu-server")

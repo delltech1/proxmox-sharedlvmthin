@@ -118,17 +118,17 @@ probably do not need this project.
 
 ## Release status
 
-**RC5.102 TG53** (`0.9.0~rc5.102~tg53`) is an experimental API 14–16 bridge.
+**RC5.103 TG53** (`0.9.0~rc5.103~tg53`) is an experimental API 14–16 bridge.
 It extends package preservation, recovery and compatibility checks, including
 testing on kernel 7.0.14-28-pve. See the
-[release notes](docs/RELEASE-NOTES-RC5.102-TG53.md) for test scope and exact
+[release notes](docs/RELEASE-NOTES-RC5.103-TG53.md) for test scope and exact
 platform versions.
 Runtime catalogue entries marked `RETEST_REQUIRED` remain conservative;
 installation or an API number alone does not authorize a storage mutation.
 
-[Release and packages](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.102-tg53):
-`pve-sharedlvmthin_0.9.0.rc5.102.tg53_all.deb` (DUAL) and
-`pve-sharedlvmthin-thick_0.9.0.rc5.102.tg53_all.deb` (Thick-only), with
+[Release and packages](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.103-tg53):
+`pve-sharedlvmthin_0.9.0.rc5.103.tg53_all.deb` (DUAL) and
+`pve-sharedlvmthin-thick_0.9.0.rc5.103.tg53_all.deb` (Thick-only), with
 `SHA256SUMS`. Both profiles are experimental, unsupported and without warranty,
 for disposable Proxmox VE 9 cluster labs, shared storage and guest data only.
 

@@ -12,7 +12,7 @@ SPEC.loader.exec_module(M)
 
 
 def request():
-    nodes = [{"node": "pve0" + str(i), "boot_id": str(i) * 8 + "-1111-4111-8111-" + str(i) * 12,
+    nodes = [{"node": "node0" + str(i), "boot_id": str(i) * 8 + "-1111-4111-8111-" + str(i) * 12,
               "role": "CONTROL_ONLY" if i == 4 else "SAN_PARTICIPANT"} for i in range(1, 5)]
     modules = ["PVE/Storage.pm", "PVE/Storage/Plugin.pm", "PVE/SectionConfig.pm", "PVE/Cluster.pm",
                "PVE/Tools.pm", "PVE/JSONSchema.pm", "PVE/Storage/Custom/SharedLvmThinPlugin.pm"]
@@ -337,7 +337,7 @@ class ControllerTests(unittest.TestCase):
         req = copy.deepcopy(self.req); req["authorization"]["action"] = "ONE_STORAGE_CONFIG_CAS"; variants.append(req)
         req = copy.deepcopy(self.req); req["candidate"]["version"] = "drift"; variants.append(req)
         req = copy.deepcopy(self.req); req["serializer"]["modules"] = []; variants.append(req)
-        req = copy.deepcopy(self.req); req["evidence"]["preinst_sha256"]["pve04"] = "0" * 64; variants.append(req)
+        req = copy.deepcopy(self.req); req["evidence"]["preinst_sha256"]["node04"] = "0" * 64; variants.append(req)
         req = copy.deepcopy(self.req); req["changes"][0]["property"] = "slt-vgname"; variants.append(req)
         for req in variants:
             with self.subTest(req=req), self.assertRaises(M.Refusal):

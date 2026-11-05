@@ -18,14 +18,14 @@ class Tests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(self.patch.stop)
-        self.names = ["pve01", "pve02", "pve03", "pve04"]
+        self.names = ["node01", "node02", "node03", "node04"]
         self.cfg = "sharedlvmthin: lab\n\tvgname vg\n"
         self.guest_cfg = "scsi0: lab:vm-100-disk-0\n"
         self.workload = {"schema": "slt-workload-prepare/v1", "observed_at": 1000,
                          "managed_storages": ["lab"], "running_consumers": [],
                          "storage_cfg_sha256": B.digest(self.cfg.encode()),
                          "resources_sha256": "f" * 64,
-                         "consumers": [{"vmid": 100, "node": "pve01", "type": "qemu", "name": "lab", "status": "stopped",
+                         "consumers": [{"vmid": 100, "node": "node01", "type": "qemu", "name": "lab", "status": "stopped",
                                         "disks": [{"key": "scsi0", "storage": "lab", "volume": "vm-100-disk-0"}]}],
                          "config_sha256": {"100": B.digest(self.guest_cfg.encode())},
                          "verdict": "SNAPSHOT_READY", "authorization": "NONE", "mutation_performed": False,
@@ -48,13 +48,13 @@ class Tests(unittest.TestCase):
                "storage_cfg_sha256": self.plan["storage_cfg_sha256"],
                "workload_snapshot_sha256": self.plan["workload_snapshot_sha256"],
                "quorate": True, "ha_state": "EMPTY_IDLE", "tasks": [], "workers": [], "pending_jobs": []}
-        guests = [{"vmid": 100, "type": "qemu", "node": node, "status": "stopped", "config": self.guest_cfg}] if node == "pve01" else []
-        if node == "pve02":
+        guests = [{"vmid": 100, "type": "qemu", "node": node, "status": "stopped", "config": self.guest_cfg}] if node == "node01" else []
+        if node == "node02":
             guests = [{"vmid": 103, "type": "qemu", "node": node, "status": "running", "config": "scsi0: local-lvm:vm-103-disk-0\n"}]
         services = []
         for unit in B.WATCHED:
             oneshot = unit == "pve-guests.service"
-            inactive = unit == "pve-sharedlvmthin-thin-guard.service" or (unit == "multipathd.service" and node == "pve04")
+            inactive = unit == "pve-sharedlvmthin-thin-guard.service" or (unit == "multipathd.service" and node == "node04")
             services.append({"unit": unit, "active_state": "inactive" if inactive else "active",
                              "sub_state": "dead" if inactive else ("exited" if oneshot else "running"),
                              "main_pid": 0 if inactive or oneshot else 999,
@@ -96,18 +96,18 @@ class Tests(unittest.TestCase):
         self.assertFalse(result["rollout_authorized"])
         self.assertEqual(len(self.commands), 16)
         self.assertEqual([n for n, _ in self.commands[:8]], [n for n in self.names for _ in range(2)])
-        self.assertEqual(self.states["pve02"]["guests"][0]["status"], "running")
+        self.assertEqual(self.states["node02"]["guests"][0]["status"], "running")
         history = B.JOURNAL.inspect(backend.journal.artifact_path(), self.plan)
         self.assertEqual(history["state"], "MODEL_COMPLETED_HISTORICAL")
         self.assertEqual(len(history["events"]), 36)
 
     def test_effect_then_error_cannot_retry_or_replay(self):
         backend = self.backend()
-        original = self.agents["pve01"].execute
+        original = self.agents["node01"].execute
         def failure(argv):
             original(argv)
             raise TimeoutError("SSH result unknown after service effect")
-        self.agents["pve01"].execute = failure
+        self.agents["node01"].execute = failure
         with self.assertRaises(TimeoutError): B.MODEL.Controller(self.plan, backend, 1000).run()
         self.assertEqual(len(self.commands), 1)
         self.assertEqual(B.JOURNAL.inspect(backend.journal.artifact_path(), self.plan)["state"], "RECOVERY_REQUIRED")
@@ -129,58 +129,58 @@ class Tests(unittest.TestCase):
                 lambda r: r["services"].pop(),
                 lambda r: r["services"][0].update(job="pending"),
                 lambda r: r["services"][0].update(mask_target="/run/systemd/system:/dev/null")):
-            raw = copy.deepcopy(self.states["pve01"])
+            raw = copy.deepcopy(self.states["node01"])
             mutation(raw)
             with self.assertRaises((B.Refusal, B.WORKLOAD.Refusal)):
-                B.scoped_observation(raw, self.plan, "pve01")
+                B.scoped_observation(raw, self.plan, "node01")
         self.assertEqual(self.commands, [])
 
     def test_new_managed_guest_is_not_misclassified_unrelated(self):
-        raw = copy.deepcopy(self.states["pve02"])
+        raw = copy.deepcopy(self.states["node02"])
         raw["guests"][0]["config"] = "scsi0: lab:vm-103-disk-0\n"
         with self.assertRaisesRegex(B.Refusal, "differs"):
-            B.scoped_observation(raw, self.plan, "pve02")
+            B.scoped_observation(raw, self.plan, "node02")
 
     def test_pve_guests_active_executor_refuses(self):
-        raw = copy.deepcopy(self.states["pve01"])
+        raw = copy.deepcopy(self.states["node01"])
         row = next(s for s in raw["services"] if s["unit"] == "pve-guests.service")
         row.update(main_pid=500, cgroup_empty=False, sub_state="running")
         with self.assertRaisesRegex(B.Refusal, "active executor"):
-            B.scoped_observation(raw, self.plan, "pve01")
+            B.scoped_observation(raw, self.plan, "node01")
 
     def test_inactive_service_with_orphan_refuses(self):
-        raw = copy.deepcopy(self.states["pve01"])
+        raw = copy.deepcopy(self.states["node01"])
         raw["services"][0].update(active_state="inactive", sub_state="dead", main_pid=0, cgroup_empty=False)
         with self.assertRaisesRegex(B.Refusal, "surviving executor"):
-            B.scoped_observation(raw, self.plan, "pve01")
+            B.scoped_observation(raw, self.plan, "node01")
 
     def test_direct_dispatch_without_durable_intent_refuses(self):
         backend = self.backend()
         with self.assertRaisesRegex(B.Refusal, "durable matching"):
-            backend.mask_persistent("pve01", B.MODEL.ENTRY_UNITS)
+            backend.mask_persistent("node01", B.MODEL.ENTRY_UNITS)
         self.assertEqual(self.commands, [])
 
     def test_generic_or_foreign_request_refuses(self):
         for operation in ("RELEASE", "START", "REBOOT", "rm -rf /"):
-            agent = B.NodeAgent(self.plan, "pve01", lambda: self.states["pve01"], lambda argv: self.fail("must not execute"), lambda: 1000)
+            agent = B.NodeAgent(self.plan, "node01", lambda: self.states["node01"], lambda argv: self.fail("must not execute"), lambda: 1000)
             with self.assertRaises(B.Refusal):
-                agent.request({"tx": self.plan["tx"], "node": "pve01", "plan_sha256": B.MODEL.frozen_hash(self.plan), "operation": operation})
+                agent.request({"tx": self.plan["tx"], "node": "node01", "plan_sha256": B.MODEL.frozen_hash(self.plan), "operation": operation})
 
     def test_drain_before_entry_refuses(self):
         with self.assertRaisesRegex(B.Refusal, "entry barrier"):
-            self.agents["pve01"].request({"tx": self.plan["tx"], "node": "pve01", "plan_sha256": B.MODEL.frozen_hash(self.plan), "operation": "SERVICE_DRAIN"})
+            self.agents["node01"].request({"tx": self.plan["tx"], "node": "node01", "plan_sha256": B.MODEL.frozen_hash(self.plan), "operation": "SERVICE_DRAIN"})
         self.assertEqual(self.commands, [])
 
     def test_workload_digest_and_config_change_refuse(self):
         for field in ("workload", "storage_config"):
-            raw = copy.deepcopy(self.states["pve01"])
+            raw = copy.deepcopy(self.states["node01"])
             if field == "workload": raw[field]["consumers"][0]["status"] = "running"
             else: raw[field] += "\n"
-            with self.assertRaises(B.Refusal): B.scoped_observation(raw, self.plan, "pve01")
+            with self.assertRaises(B.Refusal): B.scoped_observation(raw, self.plan, "node01")
 
     def test_deadline_between_mask_and_stop_never_dispatches_stop(self):
         backend = self.backend()
-        agent = self.agents["pve01"]
+        agent = self.agents["node01"]
         original = agent.execute
         def late(argv):
             original(argv)
@@ -206,16 +206,16 @@ class Tests(unittest.TestCase):
 
     def test_success_without_service_effect_refuses(self):
         backend = self.backend()
-        self.agents["pve01"].execute = lambda argv: True
+        self.agents["node01"].execute = lambda argv: True
         with self.assertRaisesRegex(B.Refusal, "postcondition"):
             B.MODEL.Controller(self.plan, backend, 1000).run()
         self.assertEqual(B.JOURNAL.inspect(backend.journal.artifact_path(), self.plan)["state"], "RECOVERY_REQUIRED")
 
     def test_caught_reentry_poison_prevents_next_command(self):
         backend = self.backend()
-        agent = self.agents["pve01"]
+        agent = self.agents["node01"]
         original = agent.execute
-        request = {"tx": self.plan["tx"], "node": "pve01", "plan_sha256": B.MODEL.frozen_hash(self.plan), "operation": "OBSERVE"}
+        request = {"tx": self.plan["tx"], "node": "node01", "plan_sha256": B.MODEL.frozen_hash(self.plan), "operation": "OBSERVE"}
         def reenter(argv):
             original(argv)
             try: agent.request(request)

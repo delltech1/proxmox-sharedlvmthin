@@ -33,16 +33,16 @@ class CompositionTests(unittest.TestCase):
             transport=T, wire=W, phase='AFTER', check=m.check, check_package=m.check,
             baseline=lambda: copy.deepcopy(m.baseline), release_verifier=m.verifier)
         def executor(plan, supplied, **kwargs):
-            self.assertIs(supplied, m.journals['PVE01'])
-            return m.E.Executor(plan, supplied, **kwargs, clock=m.now, node_reader=lambda: 'PVE01',
+            self.assertIs(supplied, m.journals['NODE01'])
+            return m.E.Executor(plan, supplied, **kwargs, clock=m.now, node_reader=lambda: 'NODE01',
                 boot_reader=lambda: f.request['boot_id'], process_reader=lambda: {'pid': 101, 'starttime': 1000},
-                unit_reader=lambda unit: m.unit('PVE01', unit), command=lambda op, unit: m.command('PVE01', op, unit))
-        self.context.local = types.SimpleNamespace(LocalJournal=lambda *_a, **_k: contextlib.nullcontext(m.journals['PVE01']),
-            installed_identity=lambda: m.source_identity('PVE01'), Executor=executor)
+                unit_reader=lambda unit: m.unit('NODE01', unit), command=lambda op, unit: m.command('NODE01', op, unit))
+        self.context.local = types.SimpleNamespace(LocalJournal=lambda *_a, **_k: contextlib.nullcontext(m.journals['NODE01']),
+            installed_identity=lambda: m.source_identity('NODE01'), Executor=executor)
         stack = contextlib.ExitStack(); self.addCleanup(stack.close)
         for module, field, value in ((S, 'root_required', lambda: None),
                 (S, 'INSTALLED', PurePosixPath('/usr/libexec/pve-sharedlvmthin')),
-                (S.socket, 'gethostname', lambda: 'PVE01'), (S.Path, 'read_text', lambda *_a, **_k: f.request['boot_id']),
+                (S.socket, 'gethostname', lambda: 'NODE01'), (S.Path, 'read_text', lambda *_a, **_k: f.request['boot_id']),
                 (S.time, 'time', lambda: m.time), (m.E.os, 'getuid', lambda: 0), (m.E.os, 'geteuid', lambda: 0)):
             stack.enter_context(mock.patch.object(module, field, value, create=True))
         self.calls = []
@@ -62,12 +62,12 @@ class CompositionTests(unittest.TestCase):
     def test_real_provider_server_executor_transport_preserves_phase_grant_and_full_receipt(self):
         receipt = self.transport.dispatch_restore_once(self.f.request, release_evidence=self.f.raw)
         key = T.effect_key(self.f.request)
-        issued = self.m.journals['PVE01'].read(self.m.plan['tx'], key + ':grant')
-        intent = self.m.journals['PVE01'].read(self.m.plan['tx'], key + ':intent')
+        issued = self.m.journals['NODE01'].read(self.m.plan['tx'], key + ':grant')
+        intent = self.m.journals['NODE01'].read(self.m.plan['tx'], key + ':intent')
         self.assertNotEqual(issued['server_grant']['authorization_sha256'], issued['grant']['authorization_sha256'])
         self.assertEqual(intent['grant'], issued['grant'])
         self.assertEqual(receipt, self.m.read(self.m.plan['tx'], 'receipt:' + key))
-        self.assertEqual(receipt, self.m.journals['PVE01'].read(self.m.plan['tx'], key + ':done'))
+        self.assertEqual(receipt, self.m.journals['NODE01'].read(self.m.plan['tx'], key + ':done'))
         self.assertEqual(len(self.m.effects), 1)
 
     def test_remote_lost_ack_inspects_full_receipt_without_authorizer_effect_or_write(self):
@@ -125,7 +125,7 @@ class CompositionTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises((S.Refusal, T.Refusal)):
                 S.Engine(self.context, authorizer=changed).handle(envelope)
             self.assertEqual(self.m.effects, [])
-            self.assertIsNone(self.m.journals['PVE01'].read(self.m.plan['tx'], T.effect_key(self.f.request) + ':intent'))
+            self.assertIsNone(self.m.journals['NODE01'].read(self.m.plan['tx'], T.effect_key(self.f.request) + ':intent'))
 
 
 if __name__ == '__main__': unittest.main()

@@ -101,6 +101,21 @@ class ClosedRuntimeQualificationRecoveryTests(unittest.TestCase):
         self.assertEqual(self.store[self.m.RUNTIME_QUALIFICATION]['state'], 'PACKAGE_SETTLED_RUNTIME_CLOSED')
         self.assertEqual(self.store[self.m.RUNTIME_RELEASE]['qualified'], 'UNQUALIFIED')
 
+    def test_closed_transaction_from_previous_boot_cannot_qualify_directly(self):
+        before = copy.deepcopy(self.store)
+        original_read_text = self.m.pathlib.Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if str(path).replace('\\', '/') == '/proc/sys/kernel/random/boot_id':
+                return 'ffffffff-ffff-ffff-ffff-ffffffffffff\n'
+            return original_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(self.m.pathlib.Path, 'read_text', read_text):
+            with self.assertRaisesRegex(RuntimeError, 'transition does not match'):
+                self.qualify()
+        self.assertEqual(self.store, before)
+        self.assertEqual(self.store[self.m.RUNTIME_RELEASE]['qualified'], 'UNQUALIFIED')
+
 
 if __name__ == '__main__':
     unittest.main()

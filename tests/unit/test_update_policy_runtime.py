@@ -1,6 +1,8 @@
 import importlib.machinery
 import importlib.util
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 import io
@@ -38,6 +40,165 @@ def load_apt_guard():
 
 
 class UpdatePolicyRuntimeTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('dpkg-query'), 'requires dpkg-query')
+    def test_candidate_inventory_with_isolated_real_dpkg_database(self):
+        _, core = load_script()
+        with tempfile.TemporaryDirectory() as directory:
+            status = Path(directory) / 'status'
+            status.write_text('Package: sample-a\nStatus: install ok installed\n'
+                'Architecture: amd64\nVersion: 1.2\nMaintainer: Test <test@example.com>\nDescription: test\n\n'
+                'Package: sample-removed\nStatus: deinstall ok config-files\n'
+                'Architecture: amd64\nVersion: 1\nMaintainer: Test <test@example.com>\nDescription: test\n\n')
+            result = subprocess.run(['dpkg-query', '--admindir', directory, '-W',
+                '-f=${Package}|${Version}|${db:Status-Status}\n'],
+                text=True, capture_output=True, check=True)
+            with mock.patch.object(self.module, 'run', return_value=result):
+                self.assertEqual(self.module.candidate_package_inventory(
+                    ['sample-a', 'sample-removed', 'sample-absent'], core),
+                    {'sample-a': '1.2', 'sample-removed': None, 'sample-absent': None})
+
+    @unittest.skipUnless(shutil.which('dpkg-query'), 'requires dpkg-query')
+    def test_candidate_inventory_real_dpkg_half_installed_states(self):
+        _, core = load_script()
+        with tempfile.TemporaryDirectory() as directory:
+            status = Path(directory) / 'status'
+            status.write_text(
+                'Package: pve-sharedlvmthin\nStatus: install ok half-installed\n'
+                'Architecture: all\nVersion: 1\nMaintainer: Test <test@example.com>\nDescription: test\n\n'
+                'Package: pve-sharedlvmthin-thick\nStatus: install ok half-installed\n'
+                'Architecture: all\nVersion: 1\nMaintainer: Test <test@example.com>\nDescription: test\n\n'
+                'Package: pve-manager\nStatus: install ok installed\n'
+                'Architecture: amd64\nVersion: 9\nMaintainer: Test <test@example.com>\nDescription: test\n\n')
+            result = subprocess.run(['dpkg-query', '--admindir', directory, '-W',
+                '-f=${Package}|${Version}|${db:Status-Status}\n'],
+                text=True, capture_output=True, check=True)
+            watched = ['pve-sharedlvmthin', 'pve-sharedlvmthin-thick', 'pve-manager']
+            with mock.patch.object(self.module, 'run', return_value=result):
+                with self.assertRaises(RuntimeError):
+                    self.module.candidate_package_inventory(watched, core)
+                values = self.module.candidate_package_inventory(
+                    watched, core, 'pve-sharedlvmthin', 'pve-sharedlvmthin-thick')
+                self.assertEqual(values, {'pve-sharedlvmthin': '1',
+                    'pve-sharedlvmthin-thick': '1', 'pve-manager': '9'})
+                with self.assertRaises(RuntimeError):
+                    self.module.candidate_package_inventory(watched, core, None, 'pve-sharedlvmthin-thick')
+
+    def test_candidate_preflight_requires_target_watched_before_inventory(self):
+        _, core = load_script()
+        manifest = {'schema': 1, 'catalogue': 'pve-qualified-tuples-v1',
+            'watched_packages': ['pve-manager'], 'tuples': [
+                {'id': 'expected', 'api': 16, 'running_kernel': 'kernel',
+                 'status': 'RETEST_REQUIRED', 'profiles': ['dual'],
+                 'plugin_versions': ['1'], 'packages': {'pve-manager': '9'}}]}
+        with mock.patch.object(self.module, 'load_library', return_value=core), \
+             mock.patch.object(core, 'strict_json', return_value=manifest), \
+             mock.patch.object(self.module, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'not watched'):
+                self.module.command_candidate_runtime_preflight(
+                    mock.Mock(package='pve-sharedlvmthin', version='1', manifest='unused', preinst_source=None))
+            run.assert_not_called()
+
+    def test_candidate_preflight_query_failure_is_not_unlisted(self):
+        _, core = load_script()
+        manifest = {'schema': 1, 'catalogue': 'pve-qualified-tuples-v1',
+            'watched_packages': ['pve-manager', 'pve-sharedlvmthin'], 'tuples': [
+                {'id': 'expected', 'api': 16, 'running_kernel': 'kernel',
+                 'status': 'RETEST_REQUIRED', 'profiles': ['dual'],
+                 'plugin_versions': ['1'], 'packages': {'pve-manager': '9'}}]}
+        def execute(argv, **kwargs):
+            if argv[0] == 'perl':
+                return mock.Mock(returncode=0, stdout='16', stderr='')
+            return mock.Mock(returncode=1, stdout='', stderr='inventory error')
+        with mock.patch.object(self.module, 'load_library', return_value=core), \
+             mock.patch.object(core, 'strict_json', return_value=manifest), \
+             mock.patch.object(self.module, 'run', side_effect=execute), \
+             redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(RuntimeError, 'inventory is unavailable'):
+                self.module.command_candidate_runtime_preflight(
+                    mock.Mock(package='pve-sharedlvmthin', version='1', manifest='unused', preinst_source=None))
+            self.assertNotIn('CANDIDATE_RUNTIME_TUPLE=UNLISTED', output.getvalue())
+
+    def test_candidate_inventory_distinguishes_failure_from_absence(self):
+        _, core = load_script()
+        for result in (mock.Mock(returncode=1, stdout='', stderr='query failed'),
+                       mock.Mock(returncode=0, stdout='', stderr=''),
+                       mock.Mock(returncode=0, stdout='bad row\n', stderr=''),
+                       mock.Mock(returncode=0, stdout='pve-manager|1|installed\npve-manager|2|installed\n', stderr='')):
+            with self.subTest(result=result), mock.patch.object(self.module, 'run', return_value=result):
+                with self.assertRaises(RuntimeError):
+                    self.module.candidate_package_inventory(['pve-manager'], core)
+        result = mock.Mock(returncode=0, stdout='pve-manager|1|installed\n', stderr='')
+        with mock.patch.object(self.module, 'run', return_value=result):
+            self.assertEqual(self.module.candidate_package_inventory(
+                ['pve-manager', 'pve-sharedlvmthin-thick'], core),
+                {'pve-manager': '1', 'pve-sharedlvmthin-thick': None})
+
+    def test_candidate_inventory_allows_only_exact_preinst_source(self):
+        _, core = load_script()
+        watched = ['pve-sharedlvmthin', 'pve-manager']
+        state = mock.Mock(returncode=0, stderr='',
+                          stdout='pve-sharedlvmthin|1|half-installed\npve-manager|9|installed\n')
+        with mock.patch.object(self.module, 'run', return_value=state):
+            with self.assertRaises(RuntimeError):
+                self.module.candidate_package_inventory(watched, core)
+            self.assertEqual(self.module.candidate_package_inventory(
+                watched, core, 'pve-sharedlvmthin')['pve-sharedlvmthin'], '1')
+            self.assertEqual(self.module.candidate_package_inventory(
+                watched, core, None, 'pve-sharedlvmthin')['pve-sharedlvmthin'], '1')
+        state.stdout = 'pve-sharedlvmthin|1|half-installed\npve-manager|9|half-installed\n'
+        with mock.patch.object(self.module, 'run', return_value=state):
+            with self.assertRaises(RuntimeError):
+                self.module.candidate_package_inventory(watched, core, 'pve-sharedlvmthin')
+        state.stdout = ('pve-sharedlvmthin|1|half-installed\n'
+                        'pve-sharedlvmthin-thick|1|half-installed\npve-manager|9|installed\n')
+        with mock.patch.object(self.module, 'run', return_value=state):
+            values = self.module.candidate_package_inventory(
+                ['pve-sharedlvmthin', 'pve-sharedlvmthin-thick', 'pve-manager'], core,
+                'pve-sharedlvmthin', 'pve-sharedlvmthin-thick')
+            self.assertEqual(values['pve-sharedlvmthin'], '1')
+            self.assertEqual(values['pve-sharedlvmthin-thick'], '1')
+
+    def test_candidate_preflight_models_opposite_profile_as_removed(self):
+        library = mock.Mock()
+        library.strict_json.return_value = {"watched_packages": ["pve-sharedlvmthin", "pve-sharedlvmthin-thick"]}
+        library.candidate_runtime_tuple.return_value = {"id": "reviewed", "status": "EXACT_LAB_TESTED"}
+        for target, opposite in (("pve-sharedlvmthin", "pve-sharedlvmthin-thick"),
+                                 ("pve-sharedlvmthin-thick", "pve-sharedlvmthin")):
+            with self.subTest(target=target), \
+                 mock.patch.object(self.module, "load_library", return_value=library), \
+                 mock.patch.object(self.module, "run", return_value=mock.Mock(returncode=0, stdout="16")), \
+                 mock.patch.object(self.module, "package_version", return_value="installed"), \
+                 mock.patch.object(self.module, "candidate_package_inventory", return_value={"pve-sharedlvmthin": "installed", "pve-sharedlvmthin-thick": "installed"}), \
+                 mock.patch.object(self.module.os, "uname", return_value=mock.Mock(release="kernel"), create=True), \
+                 redirect_stdout(io.StringIO()):
+                args = mock.Mock(package=target, version="candidate", manifest="candidate.json", preinst_source=None)
+                self.assertEqual(self.module.command_candidate_runtime_preflight(args), 0)
+                observed = library.candidate_runtime_tuple.call_args.args[1]
+                self.assertEqual(observed[target], "candidate")
+                self.assertIsNone(observed[opposite])
+
+    def test_candidate_runtime_preflight_observes_target_without_mutating(self):
+        args = mock.Mock(package="pve-sharedlvmthin", version="candidate", manifest="candidate.json", preinst_source=None)
+        library = mock.Mock()
+        library.strict_json.return_value = {"watched_packages": ["pve-sharedlvmthin", "lvm2"]}
+        library.candidate_runtime_tuple.return_value = {"id": "reviewed", "status": "RETEST_REQUIRED"}
+        with mock.patch.object(self.module, "load_library", return_value=library), \
+             mock.patch.object(self.module, "run", return_value=mock.Mock(returncode=0, stdout="16")), \
+             mock.patch.object(self.module, "package_version", return_value="installed"), \
+             mock.patch.object(self.module, "candidate_package_inventory", return_value={"pve-sharedlvmthin": "installed", "lvm2": "installed"}), \
+             mock.patch.object(self.module.os, "uname", return_value=mock.Mock(release="kernel"), create=True), \
+             redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(self.module.command_candidate_runtime_preflight(args), 0)
+            self.assertIn("CANDIDATE_RUNTIME_STATUS=RETEST_REQUIRED", output.getvalue())
+            self.assertEqual(library.candidate_runtime_tuple.call_args.args[1]["pve-sharedlvmthin"], "candidate")
+            library.candidate_runtime_tuple.return_value = None
+            library.observed_tuple.return_value = None
+            self.assertEqual(self.module.command_candidate_runtime_preflight(args), 78)
+            self.assertIn("CANDIDATE_RUNTIME_TUPLE=UNLISTED", output.getvalue())
+            library.observed_tuple.return_value = {"id": "blocked", "status": "BLOCKED"}
+            self.assertEqual(self.module.command_candidate_runtime_preflight(args), 79)
+            self.assertIn("CANDIDATE_RUNTIME_TUPLE=BLOCKED_OR_UNSUPPORTED", output.getvalue())
+
     @contextmanager
     def completed_boot_replay_fixture(self, receipt_delta=None, effect=None):
         self.module.STATE.mkdir(parents=True, exist_ok=True)
@@ -1376,15 +1537,52 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         with mock.patch.object(self.module, "require_root"), \
                 mock.patch.object(self.module, "manifest_and_lib",
                                   return_value=(manifest, self.core)), \
+                mock.patch.object(self.module, "freeze_integrity",
+                                  return_value={"result": "PASS"}), \
                 redirect_stdout(output):
             self.assertEqual(self.module.command_verify_prepared_freeze_package(args), 0)
         self.assertIn("FREEZE_PREPARED=PASS", output.getvalue())
+        for result in ("FAIL_MISSING_HOLD", "FAIL_PACKAGE_BASELINE_DRIFT", "FAIL_LEDGER"):
+            with self.subTest(result=result), mock.patch.object(self.module, "require_root"), \
+                    mock.patch.object(self.module, "manifest_and_lib", return_value=(manifest, self.core)), \
+                    mock.patch.object(self.module, "freeze_integrity", return_value={"result": result}):
+                with self.assertRaisesRegex(RuntimeError, "baseline or holds changed"):
+                    self.module.command_verify_prepared_freeze_package(args)
+        preinst_rows = [dict(row) for row in baseline]
+        preinst_rows[0]["status"] = "half-installed"
+        with mock.patch.object(self.module, "require_root"), \
+                mock.patch.object(self.module, "manifest_and_lib", return_value=(manifest, self.core)), \
+                mock.patch.object(self.module, "installed_packages", return_value=["qemu-server"]), \
+                mock.patch.object(self.module, "package_state_records", side_effect=lambda _: [dict(row) for row in preinst_rows]), \
+                mock.patch.object(self.module, "held_packages", return_value={"pve-sharedlvmthin", "qemu-server"}):
+            self.assertEqual(self.module.command_verify_prepared_freeze_package(args), 0)
+        with mock.patch.object(self.module, "require_root"), \
+                mock.patch.object(self.module, "manifest_and_lib", return_value=(manifest, self.core)), \
+                mock.patch.object(self.module, "installed_packages", return_value=["qemu-server"]), \
+                mock.patch.object(self.module, "package_state_records", side_effect=lambda _: [dict(row) for row in preinst_rows]), \
+                mock.patch.object(self.module, "held_packages", return_value={"pve-sharedlvmthin"}):
+            with self.assertRaisesRegex(RuntimeError, "baseline or holds changed"):
+                self.module.command_verify_prepared_freeze_package(args)
         args.artifact_sha256 = "d" * 64
         with mock.patch.object(self.module, "require_root"), \
                 mock.patch.object(self.module, "manifest_and_lib",
                                   return_value=(manifest, self.core)):
             with self.assertRaisesRegex(RuntimeError, "does not match"):
                 self.module.command_verify_prepared_freeze_package(args)
+
+    def test_preinst_observation_normalizes_only_exact_source_transition(self):
+        rows = [
+            {"package": "pve-sharedlvmthin", "binary": "pve-sharedlvmthin", "version": "1", "architecture": "all", "status": "half-installed"},
+            {"package": "qemu-server", "binary": "qemu-server", "version": "2", "architecture": "amd64", "status": "half-installed"},
+        ]
+        with mock.patch.object(self.module, "package_state_records", return_value=rows), \
+                mock.patch.object(self.module, "watched_installed", return_value=[]):
+            targets, current = self.module.freeze_preinst_observation(
+                ["pve-sharedlvmthin", "qemu-server"], {}, self.core, "pve-sharedlvmthin")
+        self.assertEqual(targets, ["pve-sharedlvmthin"])
+        self.assertEqual(current[0]["status"], "installed")
+        self.assertEqual(current[0]["version"], "1")
+        self.assertEqual(current[1]["status"], "half-installed")
 
     def test_preinst_verifier_is_not_applicable_without_freeze(self):
         args = mock.Mock()

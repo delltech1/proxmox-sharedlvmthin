@@ -17,8 +17,55 @@ def action(package, old="1", new="2", operation="/var/cache/apt/pkg.deb"):
 
 
 class UpdatePolicyTests(unittest.TestCase):
+    def test_candidate_runtime_tuple_refuses_unlisted_and_blocked_versions(self):
+        manifest = self.manifest()
+        versions = {"libpve-storage-perl": "1", "qemu-server": "1"}
+        args = dict(profile="dual", api=15, running_kernel="k1")
+        self.assertIsNone(M.candidate_runtime_tuple(manifest, versions, plugin_version="lab", **args))
+        self.assertEqual(M.candidate_runtime_tuple(manifest, versions, plugin_version="p1", **args)["id"], "old")
+        manifest["tuples"][0]["status"] = "BLOCKED"
+        self.assertIsNone(M.candidate_runtime_tuple(manifest, versions, plugin_version="p1", **args))
+
+    def test_candidate_runtime_tuple_keeps_retest_boundary_and_rejects_duplicates(self):
+        manifest = self.manifest()
+        manifest["tuples"][0]["status"] = "RETEST_REQUIRED"
+        versions = {"libpve-storage-perl": "1", "qemu-server": "1"}
+        args = dict(profile="dual", api=15, running_kernel="k1", plugin_version="p1")
+        self.assertEqual(M.candidate_runtime_tuple(manifest, versions, **args)["status"], "RETEST_REQUIRED")
+        manifest["tuples"].append(dict(manifest["tuples"][0]))
+        with self.assertRaises(M.Refusal):
+            M.candidate_runtime_tuple(manifest, versions, **args)
+
+    def test_candidate_runtime_tuple_rejects_incomplete_catalogue(self):
+        args = dict(profile="dual", api=15, running_kernel="k1", plugin_version="p1")
+        for manifest in ({}, {"schema": 1, "catalogue": "pve-qualified-tuples-v1", "tuples": []},
+                         dict(self.manifest(), tuples=[{"id": "incomplete"}])):
+            with self.subTest(manifest=manifest), self.assertRaises(M.Refusal):
+                M.candidate_runtime_tuple(manifest, {}, **args)
+
+    def test_candidate_refuses_tuple_package_missing_from_watched_set(self):
+        # Candidate admission adds the target version explicitly, but final
+        # admission reads only watched packages. Never allow those observations
+        # to classify the same tuple differently.
+        for profile, target in (("dual", "pve-sharedlvmthin"),
+                                ("thick-only", "pve-sharedlvmthin-thick")):
+            manifest = self.manifest()
+            manifest["tuples"] = [dict(manifest["tuples"][0], profiles=[profile],
+                packages={target: "p1"}, plugin_versions=["p1"])]
+            with self.subTest(profile=profile), self.assertRaises(M.Refusal):
+                M.candidate_runtime_tuple(manifest, {target: "p1"}, profile=profile,
+                    api=15, running_kernel="k1", plugin_version="p1")
+
+    def test_candidate_refuses_arch_qualified_watched_names(self):
+        manifest = self.manifest()
+        manifest['watched_packages'].append('pve-manager:amd64')
+        with self.assertRaises(M.Refusal):
+            M.candidate_runtime_tuple(manifest, {}, profile='dual', api=15,
+                                      running_kernel='k1', plugin_version='p1')
+
     def manifest(self):
         return {
+            "schema": 1, "catalogue": "pve-qualified-tuples-v1",
             "watched_packages": ["libpve-storage-perl", "qemu-server", "lvm2"],
             "watched_package_patterns": [r"(?:proxmox|pve)-kernel-.*"],
             "known_incompatible": [{"storage_min": "3", "qemu_max_exclusive": "3", "reason": "bad pair"}],

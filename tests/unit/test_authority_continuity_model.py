@@ -17,7 +17,7 @@ class AuthorityContinuityModelTests(unittest.TestCase):
             "cluster_id": "pve-lab", "storage_id": "thick-a",
             "vg_uuid": "ABCDEF-1234-5678-9abc-def0-1234-ABCDEF",
             "storage_set": "1" * 64, "authority_id": "2" * 32,
-            "authority_node": "pve01",
+            "authority_node": "node01",
             "authority_boot_id": "12345678-1234-1234-1234-123456789abc",
             "enrollment_epoch": "3" * 64,
             "backend": "LOCAL_PERSISTENT_NO_FAILOVER",
@@ -29,7 +29,7 @@ class AuthorityContinuityModelTests(unittest.TestCase):
     def observation(self, **changes):
         value = {
             "schema": 1, "kind": "AUTHORITY_HEAD_OBSERVATION", "status": "AVAILABLE",
-            "authority_id": "2" * 32, "authority_node": "pve01",
+            "authority_id": "2" * 32, "authority_node": "node01",
             "authority_boot_id": "12345678-1234-1234-1234-123456789abc",
             "enrollment_epoch": "3" * 64,
             "enrollment_sha256": MODEL.enrollment_digest(self.enrollment()),
@@ -43,7 +43,7 @@ class AuthorityContinuityModelTests(unittest.TestCase):
         value = {
             "schema": 1, "kind": "INDEPENDENT_AUTHORITY_HEAD_V1",
             "trust_domain": "ROLLBACK_INDEPENDENT", "authority_id": "2" * 32,
-            "authority_node": "pve01",
+            "authority_node": "node01",
             "authority_boot_id": "12345678-1234-1234-1234-123456789abc",
             "enrollment_epoch": "3" * 64,
             "enrollment_sha256": MODEL.enrollment_digest(self.enrollment()),
@@ -114,7 +114,7 @@ class AuthorityContinuityModelTests(unittest.TestCase):
         for changed in (
             {"enrollment_epoch": "a" * 64},
             {"authority_id": "b" * 32},
-            {"authority_node": "pve02"},
+            {"authority_node": "node02"},
             {"authority_boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
         ):
             self.assertEqual(MODEL.evaluate_continuity(

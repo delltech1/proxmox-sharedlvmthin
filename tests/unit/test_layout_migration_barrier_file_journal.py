@@ -9,13 +9,13 @@ J=importlib.util.module_from_spec(S); S.loader.exec_module(J)
 class Tests(unittest.TestCase):
  def setUp(self):
   self.t=tempfile.TemporaryDirectory(); self.p=mock.patch.object(J.BASE,"PARENT",self.t.name); self.p.start()
-  names=("pve01","pve02","pve03","pve04")
+  names=("node01","node02","node03","node04")
   actions=[{"step":s,"node":n} for s in ("ENTRY_BLOCK","SERVICE_DRAIN","FINAL_AUDIT") for n in names]
   parts=[{"node":n,"boot_id":f"0000000{i}-0000-4000-8000-00000000000{i}","san_role":i<4} for i,n in enumerate(names,1)]
   self.plan={"schema":"slt-maintenance-barrier-model/v1","tx":"a"*32,"participants":parts,
    "workload_snapshot_sha256":"1"*64,"storage_cfg_sha256":"2"*64,"candidate_sha256":"3"*64,
    "issued_at":900,"deadline":1100,"actions":actions}
-  self.coord={"node":"pve01","boot_id":"00000001-0000-4000-8000-000000000001"}; self.backends=[]
+  self.coord={"node":"node01","boot_id":"00000001-0000-4000-8000-000000000001"}; self.backends=[]
  def tearDown(self):
   for b in self.backends:
    if b.backend.root_fd is not None:
@@ -25,7 +25,7 @@ class Tests(unittest.TestCase):
  def journal(self,nonce="1"*32):
   b=J.BarrierFileJournal(nonce,self.plan,self.coord); self.backends.append(b); return b
  def event(self,kind="INTENT_DURABLE",receipt=False):
-  e={"tx":"a"*32,"plan_sha256":J.digest(J.canonical(self.plan)),"kind":kind,"index":0,"step":"ENTRY_BLOCK","node":"pve01"}
+  e={"tx":"a"*32,"plan_sha256":J.digest(J.canonical(self.plan)),"kind":kind,"index":0,"step":"ENTRY_BLOCK","node":"node01"}
   if receipt:e["receipt"]={"persistent_masks":sorted(J.MODEL.ENTRY_UNITS),"terminal_ingress":J.MODEL.TERMINAL_INGRESS}
   return e
  def test_empty_and_partial_are_inspection_only(self):

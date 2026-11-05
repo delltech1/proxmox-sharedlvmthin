@@ -17,8 +17,8 @@ class Tests(unittest.TestCase):
  def project(self,f):return M.project(f[3],f[2],f[0],f[1],f[4],f[5],f[6],f[7])
  def test_exact_projection_has_one_verify_only_and_v1_candidate_shape(self):
   out=self.project(self.fixture());self.assertEqual(sum(x["action"]=="VERIFY_CURRENT_ONLY" for x in out["sidecar"]["actions"]),1);self.assertEqual(set(out["manifest"]["candidate"]),{"package","version","flavor","artifact_sha256","deb_sha256"});self.assertFalse(out["sidecar"]["mutation_performed"])
- def test_pve04_never_receives_package_action(self):
-  out=self.project(self.fixture());self.assertEqual(next(x for x in out["sidecar"]["actions"] if x["node"]=="pve04"),{"node":"pve04","role":"CONTROL_ONLY","action":"VERIFY_CURRENT_ONLY"})
+ def test_node04_never_receives_package_action(self):
+  out=self.project(self.fixture());self.assertEqual(next(x for x in out["sidecar"]["actions"] if x["node"]=="node04"),{"node":"node04","role":"CONTROL_ONLY","action":"VERIFY_CURRENT_ONLY"})
  def test_control_payload_mismatch_refuses(self):
   f=list(self.fixture());f[4]=copy.deepcopy(f[4]);f[4][-1]["installed"]["artifact_sha256"]="0"*64
   with self.assertRaises(M.Refusal):self.project(f)
@@ -35,7 +35,7 @@ class Tests(unittest.TestCase):
    f=list(self.fixture());f[4]=copy.deepcopy(f[4]);mutate(f[4])
    with self.assertRaises(M.Refusal):self.project(f)
  def test_incomplete_workers_inner_identity_or_guard_refuses(self):
-  for mutate in (lambda r:r[0]["workers"].update(proc_inventory_complete=False),lambda r:r[0]["workers"].update(systemd_inventory_complete=False),lambda r:r[0]["role_evidence"].update(node="pve02"),lambda r:r[0]["role_evidence"]["thinguard"]["daemon_processes"].append({"pid":9}),lambda r:r[0]["role_evidence"]["thinguard"]["watchdog_registrations"].append("unknown")):
+  for mutate in (lambda r:r[0]["workers"].update(proc_inventory_complete=False),lambda r:r[0]["workers"].update(systemd_inventory_complete=False),lambda r:r[0]["role_evidence"].update(node="node02"),lambda r:r[0]["role_evidence"]["thinguard"]["daemon_processes"].append({"pid":9}),lambda r:r[0]["role_evidence"]["thinguard"]["watchdog_registrations"].append("unknown")):
    f=list(self.fixture());f[4]=copy.deepcopy(f[4]);mutate(f[4])
    with self.assertRaises(M.Refusal):self.project(f)
  def test_installed_state_profile_or_identity_refuses(self):

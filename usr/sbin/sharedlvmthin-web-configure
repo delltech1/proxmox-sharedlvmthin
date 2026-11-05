@@ -15,6 +15,7 @@ reset='\033[0m'
 echo
 echo "SharedLvmThin Web Configuration"
 echo "==============================="
+echo "The dashboard includes a read-only guided storage setup helper (English / Deutsch)."
 echo
 
 mapfile -t NETS < <(

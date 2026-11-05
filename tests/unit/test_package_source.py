@@ -486,6 +486,11 @@ class PackageSourceTests(unittest.TestCase):
         }
         for name, value in values.items():
             (root / name).write_text(value + "\n", encoding="utf-8")
+        # Unrelated preinst tests use an explicitly successful candidate
+        # admission fixture; rejection cases are exercised separately.
+        (root / "sharedlvmthin-candidate-update-policy").write_text("raise SystemExit(0)\n", encoding="utf-8")
+        (root / "sharedlvmthin_update_policy.py").write_text("# fixture\n", encoding="utf-8")
+        (root / "sharedlvmthin-candidate-qualified-tuples.json").write_text("{}\n", encoding="utf-8")
         installed = root / "installed-package-artifact-sha256"
         installed.write_text(digest + "\n", encoding="utf-8")
         return installed
@@ -511,6 +516,7 @@ class PackageSourceTests(unittest.TestCase):
             verifier.write_text(
                 "import os, sys\n"
                 "from pathlib import Path\n"
+                "if sys.argv[1] == 'candidate-runtime-preflight': raise SystemExit(0)\n"
                 "Path(os.environ['FREEZE_CALL_LOG']).write_text('\\n'.join(sys.argv[1:]) + '\\n')\n"
                 "raise SystemExit(int(os.environ['FREEZE_VERIFIER_RC']))\n",
                 encoding="utf-8",
@@ -521,6 +527,8 @@ class PackageSourceTests(unittest.TestCase):
             (root / "sharedlvmthin_update_policy.py").write_text(
                 "# isolated candidate policy fixture\n", encoding="utf-8",
             )
+        else:
+            (root / "sharedlvmthin-candidate-update-policy").unlink()
         source = (ROOT / "DEBIAN/preinst").read_text(encoding="utf-8")
         source = source.replace(
             "/usr/share/pve-sharedlvmthin/package-flavor", str(root / "absent-flavor")
@@ -582,7 +590,8 @@ class PackageSourceTests(unittest.TestCase):
         result, call_log = self._run_preinst_freeze_admission(
             architecture=False, payload=False, preflight=True,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("runtime admission payload is missing or unsafe", result.stderr)
         self.assertFalse(call_log.exists())
 
     def test_postinst_python_validation_leaves_no_unowned_bytecode(self):
@@ -1044,7 +1053,9 @@ class PackageSourceTests(unittest.TestCase):
         self, *, active_units="", expected_current="none", preinst_source=None,
         execute=False, terminate_during_preinst=False, installed_name="",
         installed_version="0.9.0~rc5.10~tg31",
-        installed_status="ii", select_policy="",
+        installed_status="ii", select_policy="", candidate_tuple_rc=0,
+        prior_policy="WARN", freeze_integrity="NOT_APPLICABLE", status_rc=0,
+        payload_mismatch=False, candidate_drift=False,
     ):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -1059,6 +1070,7 @@ class PackageSourceTests(unittest.TestCase):
             "sharedlvmthin-package-maintenance-check",
             "sharedlvmthin-candidate-update-policy",
             "sharedlvmthin_update_policy.py",
+            "sharedlvmthin_package_executor_fence.py",
             "sharedlvmthin-candidate-qualified-tuples.json",
             "sharedlvmthin_pve_inventory.py",
             "sharedlvmthin-candidate-package",
@@ -1070,6 +1082,10 @@ class PackageSourceTests(unittest.TestCase):
             value = "a" * 64 if name == "sharedlvmthin-candidate-artifact-sha256" \
                 else "fixture"
             path.write_text(value + "\n", encoding="utf-8")
+        (control_source / "sharedlvmthin-candidate-update-policy").write_text(
+            "import pathlib,sys\nmarker=pathlib.Path(" + repr(str(temp_path / "tuple-seen")) + ")\n"
+            + ("print('changed' if marker.exists() else 'initial')\nmarker.touch()\n" if candidate_drift else "")
+            + "sys.exit(" + str(candidate_tuple_rc) + ")\n", encoding="utf-8")
         for name in (
             "sharedlvmthin-candidate-recovery-check",
             "sharedlvmthin-package-maintenance-check",
@@ -1094,8 +1110,16 @@ if [ "$1" = --control ]; then
 fi
 if [ "$1" = --extract ]; then
     mkdir -p "$3/usr/libexec/pve-sharedlvmthin" "$3/usr/share/pve-sharedlvmthin"
-    : >"$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy"
-    printf '{}\n' >"$3/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json"
+    cp "$CANDIDATE_CONTROL_SOURCE/sharedlvmthin-candidate-update-policy" "$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy"
+    cp "$CANDIDATE_CONTROL_SOURCE/sharedlvmthin_update_policy.py" "$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py"
+    cp "$CANDIDATE_CONTROL_SOURCE/sharedlvmthin_package_executor_fence.py" "$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin_package_executor_fence.py"
+    cp "$CANDIDATE_CONTROL_SOURCE/sharedlvmthin-candidate-qualified-tuples.json" "$3/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json"
+    case "$PAYLOAD_MISMATCH" in
+        manifest) printf 'changed\n' >>"$3/usr/share/pve-sharedlvmthin/pve-qualified-tuples.json" ;;
+        helper) printf 'changed\n' >>"$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy" ;;
+        core) printf 'changed\n' >>"$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py" ;;
+        fence) printf 'changed\n' >>"$3/usr/libexec/pve-sharedlvmthin/sharedlvmthin_package_executor_fence.py" ;;
+    esac
     printf '%064d\n' 0 >"$3/usr/share/pve-sharedlvmthin/package-artifact-sha256"
     exit 0
 fi
@@ -1141,13 +1165,23 @@ if [ "$2" = prepare-direct-package ]; then
 fi
 exec /usr/bin/python3 "$@"
 """,
+            "sharedlvmthin": """#!/bin/sh
+if [ "$1" = update-policy ] && [ "$2" = status ]; then
+    printf 'UPDATE_POLICY=%s\\nFREEZE_INTEGRITY=%s\\n' "$FIXTURE_POLICY" "$FIXTURE_INTEGRITY"
+    exit "$FIXTURE_STATUS_RC"
+fi
+exit 2
+""",
         }
         fixture_values = {
-            "dpkg-deb": {"CANDIDATE_CONTROL_SOURCE": str(control_source)},
+            "dpkg-deb": {"CANDIDATE_CONTROL_SOURCE": str(control_source),
+                         "PAYLOAD_MISMATCH": payload_mismatch or "no"},
             "dpkg-query": {"INSTALLED_NAME": installed_name,
                            "INSTALLED_VERSION": installed_version,
                            "INSTALLED_STATUS": installed_status},
             "systemctl": {"ACTIVE_UNITS": active_units},
+            "sharedlvmthin": {"FIXTURE_POLICY": prior_policy, "FIXTURE_INTEGRITY": freeze_integrity,
+                               "FIXTURE_STATUS_RC": str(status_rc)},
         }
         for name, source in commands.items():
             # Fixture values live in mock executables, not inherited env: the
@@ -1227,6 +1261,50 @@ exec /usr/bin/python3 "$@"
         calls = log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0].startswith("--no-act -i "))
+
+    @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    def test_package_profile_gate_rejects_unlisted_before_dpkg(self):
+        result, log = self._run_package_profile_gate(candidate_tuple_rc=78)
+        self.assertEqual(result.returncode, 78)
+        self.assertIn("package dispatch refused", result.stderr)
+        self.assertNotIn("RESULT=DRY_RUN_PASS", result.stdout)
+        self.assertFalse(log.exists())
+
+    @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    def test_package_profile_gate_rejects_divergent_payload(self):
+        for mismatch in ("manifest", "helper", "core", "fence"):
+            with self.subTest(mismatch=mismatch):
+                result, log = self._run_package_profile_gate(payload_mismatch=mismatch)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("qualification components differ", result.stderr)
+                self.assertFalse(log.exists())
+
+    @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    def test_package_profile_gate_stops_before_dispatch_on_tuple_drift(self):
+        result, log = self._run_package_profile_gate(execute=True, select_policy="warn", candidate_drift=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("runtime context changed before package dispatch", result.stderr)
+        self.assertNotIn("\n-i ", "\n" + (log.read_text(encoding="utf-8") if log.exists() else ""))
+
+    @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
+    def test_package_profile_gate_unlisted_only_allows_intact_existing_freeze(self):
+        common = dict(candidate_tuple_rc=78, installed_name="pve-sharedlvmthin-thick",
+                      installed_version="0.9.0~rc5.10~tg31", expected_current="thick-only",
+                      select_policy="freeze", prior_policy="FREEZE")
+        rejected, log = self._run_package_profile_gate(freeze_integrity="FAIL_LEDGER", **common)
+        self.assertEqual(rejected.returncode, 78)
+        self.assertNotIn("--no-act -i", log.read_text(encoding="utf-8") if log.exists() else "")
+        accepted, _ = self._run_package_profile_gate(freeze_integrity="PASS", **common)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("CANDIDATE_RUNTIME=UNLISTED_FREEZE_CLOSED_ONLY", accepted.stdout)
+        ambiguous = dict(common, prior_policy="FREEZE\nUPDATE_POLICY=WARN")
+        rejected, _ = self._run_package_profile_gate(freeze_integrity="PASS", **ambiguous)
+        self.assertEqual(rejected.returncode, 78)
+        blocked = dict(common, candidate_tuple_rc=79)
+        rejected, _ = self._run_package_profile_gate(freeze_integrity="PASS", **blocked)
+        self.assertEqual(rejected.returncode, 79)
+        failed_status, _ = self._run_package_profile_gate(freeze_integrity="PASS", status_rc=1, **common)
+        self.assertEqual(failed_status.returncode, 78)
 
     @unittest.skipUnless(os.name == "posix", "qualification gate requires Linux")
     def test_package_profile_gate_refuses_active_thick_unit_before_dpkg(self):

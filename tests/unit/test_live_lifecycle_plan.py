@@ -14,7 +14,7 @@ spec.loader.exec_module(planner)
 class LiveLifecycleDryRunPlanTests(unittest.TestCase):
     def plan(self):
         return planner.build(SimpleNamespace(
-            nodes="PVE01,PVE02,PVE03", thin="slt-thin", eager="slt-eager",
+            nodes="NODE01,NODE02,NODE03", thin="slt-thin", eager="slt-eager",
             lazy="slt-lazy", backup="backup", template_vmid=9000, vmid_base=995100,
         ))
 
@@ -58,7 +58,7 @@ class LiveLifecycleDryRunPlanTests(unittest.TestCase):
             self.assertTrue(item["command"].startswith("MANUAL_APPROVAL_REQUIRED:"))
 
     def test_unsafe_identifiers_are_refused(self):
-        args = SimpleNamespace(nodes="PVE01,PVE02;rm,PVE03", thin="thin", eager="eager",
+        args = SimpleNamespace(nodes="NODE01,NODE02;rm,NODE03", thin="thin", eager="eager",
                                lazy="lazy", backup="backup", template_vmid=9000, vmid_base=995100)
         with self.assertRaises(SystemExit):
             planner.build(args)

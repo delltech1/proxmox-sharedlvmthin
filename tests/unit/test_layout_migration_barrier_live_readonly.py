@@ -29,8 +29,8 @@ class Tests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.latch_root = Path(self.tmp.name) / "attempts"
-        self.agent = self.fixture.agents["pve01"]
-        self.request = {"tx": self.fixture.plan["tx"], "node": "pve01",
+        self.agent = self.fixture.agents["node01"]
+        self.request = {"tx": self.fixture.plan["tx"], "node": "node01",
                         "plan_sha256": F.B.MODEL.frozen_hash(self.fixture.plan), "operation": "ENTRY_BLOCK"}
 
     def test_success_has_durable_request_and_exact_raw_receipt(self):
@@ -50,7 +50,7 @@ class Tests(unittest.TestCase):
         self.agent.execute = failed
         with self.assertRaises(TimeoutError): L.DurableNodeAgent(self.agent, self.latch_root).request(self.request)
         self.assertEqual(L.inspect(self.request, self.latch_root)["state"], "RECOVERY_REQUIRED")
-        fresh = F.B.NodeAgent(self.fixture.plan, "pve01", self.agent.collect, original, lambda: 1000)
+        fresh = F.B.NodeAgent(self.fixture.plan, "node01", self.agent.collect, original, lambda: 1000)
         with self.assertRaises((FileExistsError, L.Refusal)):
             L.DurableNodeAgent(fresh, self.latch_root).request(self.request)
         self.assertEqual(len(self.fixture.commands), 1)
@@ -85,25 +85,25 @@ class Tests(unittest.TestCase):
         self.assertEqual(C.read(root / "regular"), b"abc")
 
     def test_ha_active_idle_is_only_initial_empty_idle(self):
-        rows = self.fixture.states["pve01"]["services"]
+        rows = self.fixture.states["node01"]["services"]
         with mock.patch.object(C, "read", side_effect=[b"", b'{"timestamp":1000,"state":"wait_for_agent_lock","mode":"active","results":{}}', b""]), mock.patch.object(C.time, "time", return_value=1001):
-            self.assertEqual(C.ha_state("pve01", rows), "EMPTY_IDLE")
+            self.assertEqual(C.ha_state("node01", rows), "EMPTY_IDLE")
 
     def test_ha_disarm_fresh_is_only_initial_empty_idle(self):
-        rows = self.fixture.states["pve01"]["services"]
+        rows = self.fixture.states["node01"]["services"]
         with mock.patch.object(C, "read", side_effect=[b"", b'{"timestamp":1000,"state":"wait_for_agent_lock","mode":"disarm","results":{}}', b""]), mock.patch.object(C.time, "time", return_value=1001):
-            self.assertEqual(C.ha_state("pve01", rows), "EMPTY_IDLE")
+            self.assertEqual(C.ha_state("node01", rows), "EMPTY_IDLE")
         with mock.patch.object(C, "read", return_value=b"vm: 100\n"):
-            with self.assertRaises(C.Refusal): C.ha_state("pve01", rows)
+            with self.assertRaises(C.Refusal): C.ha_state("node01", rows)
 
     def test_stale_ha_and_inactive_orphan_refuse(self):
-        rows = copy.deepcopy(self.fixture.states["pve01"]["services"])
+        rows = copy.deepcopy(self.fixture.states["node01"]["services"])
         with mock.patch.object(C, "read", side_effect=[b"", b'{"timestamp":1,"state":"wait_for_agent_lock","mode":"disarm","results":{}}']):
-            with self.assertRaises(C.Refusal): C.ha_state("pve01", rows)
+            with self.assertRaises(C.Refusal): C.ha_state("node01", rows)
         row = next(r for r in rows if r["unit"] == "pve-ha-lrm.service")
         row.update(active_state="inactive", cgroup_empty=False)
         with mock.patch.object(C, "read", return_value=b""):
-            with self.assertRaises(C.Refusal): C.ha_state("pve01", rows)
+            with self.assertRaises(C.Refusal): C.ha_state("node01", rows)
 
     def test_unknown_systemd_schema_refuses(self):
         with mock.patch.object(C, "command", return_value=b"ActiveState=active\nActiveState=inactive\n"):

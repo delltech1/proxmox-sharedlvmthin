@@ -18,9 +18,9 @@ class LayoutMigrationFinalizePlanTests(unittest.TestCase):
 
     def manifest(self):
         nodes = [
-            {"name": "pve01", "boot_id": "11111111-1111-4111-8111-111111111111"},
-            {"name": "pve02", "boot_id": "22222222-2222-4222-8222-222222222222"},
-            {"name": "pve03", "boot_id": "33333333-3333-4333-8333-333333333333"},
+            {"name": "node01", "boot_id": "11111111-1111-4111-8111-111111111111"},
+            {"name": "node02", "boot_id": "22222222-2222-4222-8222-222222222222"},
+            {"name": "node03", "boot_id": "33333333-3333-4333-8333-333333333333"},
         ]
         return {
             "schema": "slt-package-maintenance/v1", "tx": "a" * 32,
@@ -93,7 +93,7 @@ class LayoutMigrationFinalizePlanTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
         manifest_sha = PLAN.digest(manifest_path.read_bytes())
         evidence_paths = []
-        for index, node in enumerate(("pve01", "pve02", "pve03"), 1):
+        for index, node in enumerate(("node01", "node02", "node03"), 1):
             path = root / f"{node}.json"
             path.write_text(json.dumps(self.evidence(
                 manifest, node, index, manifest_sha), sort_keys=True) + "\n")
@@ -111,7 +111,7 @@ class LayoutMigrationFinalizePlanTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "READY_FOR_REFRESH_PLAN")
         self.assertEqual(result["authorization"], "NONE")
         self.assertFalse(result["mutation_performed"])
-        self.assertEqual(result["nodes"], ["pve01", "pve02", "pve03"])
+        self.assertEqual(result["nodes"], ["node01", "node02", "node03"])
 
     def test_missing_node_or_duplicate_challenge_refuses(self):
         temp, args, _, paths = self.fixture()

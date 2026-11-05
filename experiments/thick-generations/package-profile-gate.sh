@@ -176,6 +176,7 @@ for control_file in \
     sharedlvmthin_pve_inventory.py \
     sharedlvmthin-candidate-update-policy \
     sharedlvmthin_update_policy.py \
+    sharedlvmthin_package_executor_fence.py \
     sharedlvmthin-candidate-qualified-tuples.json \
     sharedlvmthin-candidate-package \
     sharedlvmthin-candidate-version \
@@ -319,6 +320,55 @@ fi
     DPKG_MAINTSCRIPT_PACKAGE="$target_name" \
     timeout --foreground --kill-after=10 1800 \
     "$candidate_control/preinst" preflight "${preinst_action[@]}"
+
+# Fail before dispatch when final runtime qualification would reject the exact
+# package/PVE/kernel identity. FREEZE's separately protected closed-runtime
+# settlement remains available only for an already selected intact FREEZE.
+if ((settle_recovery == 0)); then
+    candidate_root="$temp/candidate-root"
+    mkdir -p "$candidate_root"
+    dpkg-deb --extract "$candidate_deb" "$candidate_root"
+    for pair in \
+        'sharedlvmthin-candidate-qualified-tuples.json:usr/share/pve-sharedlvmthin/pve-qualified-tuples.json' \
+        'sharedlvmthin-candidate-update-policy:usr/libexec/pve-sharedlvmthin/sharedlvmthin-update-policy' \
+        'sharedlvmthin_update_policy.py:usr/libexec/pve-sharedlvmthin/sharedlvmthin_update_policy.py' \
+        'sharedlvmthin_package_executor_fence.py:usr/libexec/pve-sharedlvmthin/sharedlvmthin_package_executor_fence.py'; do
+        control_file=${pair%%:*}
+        payload_file=${pair#*:}
+        [[ -f "$candidate_root/$payload_file" && ! -L "$candidate_root/$payload_file" ]] && \
+            cmp -s -- "$candidate_control/$control_file" "$candidate_root/$payload_file" || {
+                echo "candidate control/payload qualification components differ or are unsafe" >&2
+                exit 2
+            }
+    done
+    set +e
+    candidate_tuple_output=$("${clean_env[@]}" /usr/bin/python3 -I "$candidate_control/sharedlvmthin-candidate-update-policy" \
+        candidate-runtime-preflight --manifest "$candidate_control/sharedlvmthin-candidate-qualified-tuples.json" \
+        --package "$target_name" --version "$target_version")
+    candidate_tuple_rc=$?
+    set -e
+    printf '%s\n' "$candidate_tuple_output"
+    candidate_observed_rc=$candidate_tuple_rc
+    if [[ "$candidate_tuple_rc" -eq 78 && ( -z "$select_update_policy" || "$select_update_policy" == freeze ) \
+          && -n "$installed_name" ]] && command -v sharedlvmthin >/dev/null 2>&1; then
+        set +e
+        frozen_status=$("${clean_env[@]}" sharedlvmthin update-policy status 2>/dev/null)
+        frozen_status_rc=$?
+        set -e
+        if [[ "$frozen_status_rc" -eq 0 \
+              && $(grep -c '^UPDATE_POLICY=' <<<"$frozen_status") -eq 1 \
+              && $(grep -c '^UPDATE_POLICY=FREEZE$' <<<"$frozen_status") -eq 1 \
+              && $(grep -c '^FREEZE_INTEGRITY=' <<<"$frozen_status") -eq 1 \
+              && $(grep -c '^FREEZE_INTEGRITY=PASS$' <<<"$frozen_status") -eq 1 ]]; then
+            echo "CANDIDATE_RUNTIME=UNLISTED_FREEZE_CLOSED_ONLY"
+            candidate_tuple_rc=0
+        fi
+    fi
+    if [[ "$candidate_tuple_rc" -ne 0 ]]; then
+        echo "candidate runtime tuple is unlisted, blocked or unavailable; package dispatch refused" >&2
+        exit "$candidate_tuple_rc"
+    fi
+fi
 
 if ! thick_units=$(systemctl list-units --all --no-legend \
     --state=active,activating,deactivating,failed \
@@ -478,6 +528,18 @@ if ((settle_recovery == 0)) && [[ "$prior_update_policy" != FREEZE ]]; then
 fi
 
 profile_replacement=0
+if ((settle_recovery == 0)); then
+    set +e
+    recheck_output=$("${clean_env[@]}" /usr/bin/python3 -I "$candidate_control/sharedlvmthin-candidate-update-policy" \
+        candidate-runtime-preflight --manifest "$candidate_control/sharedlvmthin-candidate-qualified-tuples.json" \
+        --package "$target_name" --version "$target_version")
+    recheck_rc=$?
+    set -e
+    if [[ "$recheck_rc" -ne "$candidate_observed_rc" || "$recheck_output" != "$candidate_tuple_output" ]]; then
+        echo "candidate runtime context changed before package dispatch; prepared transaction remains closed" >&2
+        exit 2
+    fi
+fi
 if ((settle_recovery == 1)); then
     [[ "$installed_name" == "$target_name" ]] || {
         echo "recovery settlement requires the exact target profile installed" >&2

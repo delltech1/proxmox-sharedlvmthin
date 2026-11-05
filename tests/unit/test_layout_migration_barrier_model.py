@@ -28,7 +28,7 @@ class Fake:
 
 class Tests(unittest.TestCase):
  def plan(self):
-  names=["pve01","pve02","pve03","pve04"]
+  names=["node01","node02","node03","node04"]
   parts=[{"node":n,"boot_id":f"0000000{i}-0000-4000-8000-00000000000{i}","san_role":i<4} for i,n in enumerate(names,1)]
   actions=([{"step":"ENTRY_BLOCK","node":n} for n in names]+[{"step":"SERVICE_DRAIN","node":n} for n in names]+[{"step":"FINAL_AUDIT","node":n} for n in names])
   return {"schema":"slt-maintenance-barrier-model/v1","tx":"1"*32,"participants":parts,
@@ -54,11 +54,11 @@ class Tests(unittest.TestCase):
   with self.assertRaises(OSError): self.execute(p,b)
   self.assertEqual(b.effects,[])
  def test_effect_then_error_is_never_retried(self):
-  p=self.plan(); b=Fake(p); b.fail=("mask","pve01","after")
+  p=self.plan(); b=Fake(p); b.fail=("mask","node01","after")
   with self.assertRaises(OSError): self.execute(p,b)
-  self.assertEqual(b.effects,[("mask","pve01")]); b.fail=None
+  self.assertEqual(b.effects,[("mask","node01")]); b.fail=None
   with self.assertRaisesRegex(M.Refusal,"pending"): self.execute(p,b)
-  self.assertEqual(b.effects,[("mask","pve01")])
+  self.assertEqual(b.effects,[("mask","node01")])
  def test_result_journal_failure_is_ambiguous(self):
   p=self.plan(); b=Fake(p); b.fail=("persist","OBSERVED_COMPLETE",0)
   with self.assertRaises(OSError): self.execute(p,b)
@@ -66,7 +66,7 @@ class Tests(unittest.TestCase):
   with self.assertRaisesRegex(M.Refusal,"pending"): self.execute(p,b)
   self.assertEqual(len(b.effects),1)
  def test_boot_config_and_membership_drift_refuse(self):
-  for field,value in (("boot_id","00000009-0000-4000-8000-000000000009"),("storage_cfg_sha256","d"*64),("membership",["pve01"])):
+  for field,value in (("boot_id","00000009-0000-4000-8000-000000000009"),("storage_cfg_sha256","d"*64),("membership",["node01"])):
    p=self.plan(); b=Fake(p); old=b.obs
    def obs(n,field=field,value=value): v=old(n); v[field]=value; return v
    b.obs=obs

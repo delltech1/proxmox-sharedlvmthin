@@ -56,6 +56,10 @@ class RecoveryCarrierArchiveTests(unittest.TestCase):
     def test_exact_members_are_read_without_filesystem_extraction(self):
         self.assertEqual(self.inspect(self.archive()), dict(self.members))
 
+    def test_optional_fence_member_is_returned_for_identity_binding(self):
+        members = self.members + [('sharedlvmthin_package_executor_fence.py', b'fence code')]
+        self.assertEqual(self.inspect(self.archive(members)), dict(members))
+
     def test_missing_and_duplicate_code_members_are_refused(self):
         for members in (self.members[:-1], self.members + [self.members[1]]):
             with self.subTest(members=members), self.assertRaises(RuntimeError):
