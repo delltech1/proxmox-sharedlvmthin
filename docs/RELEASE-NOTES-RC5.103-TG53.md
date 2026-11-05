@@ -1,5 +1,10 @@
 # RC5.103 TG53 — experimental guided storage helper
 
+> [!CAUTION]
+> Thin and Thick, including Eager and Lazy, are experimental. Use only disposable
+> Proxmox VE hosts, shared storage and guest data. This release is not
+> production-ready, certified, supported or warranted.
+
 ## Guided storage connection wizard
 
 The existing web dashboard now includes an English/German guided helper for
@@ -22,9 +27,8 @@ step. Instructions can vary with the storage vendor and Proxmox VE version.
   admission closed until separately qualified.
 - Improved checks that the package control helper matches the packaged payload.
 
-These improvements were tested in the release candidate. Recovery of a closed, unqualified runtime whose
-receipt belongs to a previous boot is not implemented by these fixes; do not
-describe that scenario as resolved.
+These improvements were tested in the release candidate. Automatic recovery of a closed, unqualified runtime whose receipt belongs to
+a previous boot is not implemented.
 
 Both Thin and Thick Generations remain experimental. Use only disposable hosts,
 shared storage and guest data. Consult the project documentation and release
