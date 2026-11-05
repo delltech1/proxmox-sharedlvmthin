@@ -18,9 +18,9 @@ EAGER_MOVE_NODE="${EAGER_MOVE_NODE:-pve-lab-c}"
 EAGER_MOVE_VMID="${EAGER_MOVE_VMID:-994373}"
 LAZY_MOVE_NODE="${LAZY_MOVE_NODE:-pve-lab-a}"
 LAZY_MOVE_VMID="${LAZY_MOVE_VMID:-994374}"
-THIN_STORAGE="${THIN_STORAGE:-slt-tg-thin}"
-EAGER_STORAGE="${EAGER_STORAGE:-slt-lab-thick-a}"
-LAZY_STORAGE="${LAZY_STORAGE:-slt-lab-lazy-a}"
+THIN_STORAGE="${THIN_STORAGE:-example-thin-storage}"
+EAGER_STORAGE="${EAGER_STORAGE:-example-thick-storage}"
+LAZY_STORAGE="${LAZY_STORAGE:-example-lazy-storage}"
 
 exec > >(tee -a "$EVIDENCE") 2>&1
 echo "TEST=tg53-fiveway-mixed-wave"

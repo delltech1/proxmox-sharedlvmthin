@@ -36,7 +36,7 @@ if lvs --noheadings -o lv_name pve-slt-tg-lab-a pve-slt-tg-qual 2>/dev/null \
 fi
 echo "OBJECTS_ABSENT=PASS"
 
-for sid in slt-lab-thick-a slt-tg-thin; do
+for sid in example-thick-storage example-thin-storage; do
     result="$(/usr/sbin/sharedlvmthin recovery-check "$sid")"
     printf '%s\n' "$result" | grep -E '^(STATE|SAFE_FOR_MUTATION|THICK_ANCHORS_HEALTHY)='
     grep -q '^STATE=HEALTHY$' <<<"$result"

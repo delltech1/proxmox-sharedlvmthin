@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/tg53-async-dispatch.sh"
 
 VMID="${1:?usage: CONFIRM_DISPOSABLE_VM=YES $0 VMID}"
-STATE_STORAGE=${STATE_STORAGE:-slt-lab-thick-a}
+STATE_STORAGE=${STATE_STORAGE:-example-thick-storage}
 [[ "${CONFIRM_DISPOSABLE_VM:-NO}" == YES ]] || {
     echo "refusing to modify VM $VMID without CONFIRM_DISPOSABLE_VM=YES" >&2
     exit 64
