@@ -5,7 +5,7 @@
 set -euo pipefail
 
 manifest=${1:-}
-vg=${2:-pve-slt-scale-20260913}
+vg=${2:-example-vg-01}
 [[ -f $manifest ]] || { echo "manifest missing" >&2; exit 64; }
 [[ $vg =~ ^[A-Za-z0-9_.+-]+$ ]] || exit 64
 

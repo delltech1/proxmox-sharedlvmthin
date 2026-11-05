@@ -29,7 +29,7 @@ assert x.get("status")=="OK", x.get("status")
 ' "$vmid"
 done
 
-if lvs --noheadings -o lv_name pve-slt-tg-lab-a pve-slt-tg-qual 2>/dev/null \
+if lvs --noheadings -o lv_name example-vg-02 example-vg-03 2>/dev/null \
     | grep -E '994370|994371|994372|994373|994374'; then
     echo "OBJECTS_REMAIN"
     exit 3

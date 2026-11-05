@@ -11,7 +11,7 @@ source_node=${3:-}
 target_node=${4:-}
 parallel=${5:-8}
 storage=${6:-example-storage-03}
-vg=${7:-pve-slt-scale-20260913}
+vg=${7:-example-vg-01}
 
 [[ $phase =~ ^(stop|migrate|start|audit)$ ]] || {
     echo "Usage: $0 <stop|migrate|start|audit> <manifest> <source-node> <target-node> [parallel] [storage] [vg]" >&2

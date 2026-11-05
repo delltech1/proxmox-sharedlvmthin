@@ -14,7 +14,7 @@ LAB = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(LAB)
 
 
-VALID_UUID = "eIz27I-qlJ3-ZlZI-B8GE-l862-ntHO-1Ip15L"
+VALID_UUID = "Test01-T001-T001-T001-T001-T001-Test01"
 
 
 def receipt(argv, output=VALID_UUID, **changes):
