@@ -335,11 +335,11 @@ if ((settle_recovery == 0)); then
         'sharedlvmthin_package_executor_fence.py:usr/libexec/pve-sharedlvmthin/sharedlvmthin_package_executor_fence.py'; do
         control_file=${pair%%:*}
         payload_file=${pair#*:}
-        [[ -f "$candidate_root/$payload_file" && ! -L "$candidate_root/$payload_file" ]] && \
-            cmp -s -- "$candidate_control/$control_file" "$candidate_root/$payload_file" || {
-                echo "candidate control/payload qualification components differ or are unsafe" >&2
-                exit 2
-            }
+        if [[ ! -f "$candidate_root/$payload_file" || -L "$candidate_root/$payload_file" ]] || \
+                ! cmp -s -- "$candidate_control/$control_file" "$candidate_root/$payload_file"; then
+            echo "candidate control/payload qualification components differ or are unsafe" >&2
+            exit 2
+        fi
     done
     set +e
     candidate_tuple_output=$("${clean_env[@]}" /usr/bin/python3 -I "$candidate_control/sharedlvmthin-candidate-update-policy" \
