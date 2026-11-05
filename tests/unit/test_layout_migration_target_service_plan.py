@@ -99,10 +99,10 @@ class TargetServicePlanTests(unittest.TestCase):
         self.assertEqual(result["phase_order"], ["BACKEND", "API", "HA", "SCHEDULER"])
         self.assertEqual(result["targets"], args[3])
         self.assertEqual(len(result["targets"]), 4)
-        self.assertEqual(set(result["archive_receipt_sha256"]), {"pve01", "pve02", "pve03"})
-        self.assertIn("pve04", result["observed_before_sha256"])
-        self.assertEqual(result["archive_receipt_sha256"]["pve01"], raw_receipt_sha(args[1][0]))
-        self.assertNotEqual(result["archive_receipt_sha256"]["pve01"], M.digest(args[1][0]))
+        self.assertEqual(set(result["archive_receipt_sha256"]), {"node01", "node02", "node03"})
+        self.assertIn("node04", result["observed_before_sha256"])
+        self.assertEqual(result["archive_receipt_sha256"]["node01"], raw_receipt_sha(args[1][0]))
+        self.assertNotEqual(result["archive_receipt_sha256"]["node01"], M.digest(args[1][0]))
         body = dict(result); claimed = body.pop("plan_sha256")
         self.assertEqual(claimed, M.digest(body))
         self.assertTrue(all(p["require_all_nodes_previous_phase"] is True for p in result["phases"]))
@@ -113,14 +113,14 @@ class TargetServicePlanTests(unittest.TestCase):
             first = M.evaluate(*args); second = M.evaluate(*args)
         self.assertEqual(first, second); self.assertEqual(args, saved)
         first["targets"][0]["units"].clear()
-        first["preserved_states"]["pve01"].clear()
+        first["preserved_states"]["node01"].clear()
         self.assertEqual(args, saved)
 
     def test_receipt_required_fields_and_exact_values(self):
         for field in M.RECEIPT_FIELDS:
             with self.subTest(missing=field): self.reject(lambda a, f=field: a[1][0].pop(f))
         variants = {"schema": "foreign", "tx": "0" * 32, "generation": True, "commit_id": "0" * 32,
-            "node": "pve04", "boot_id": "foreign", "authorization_sha256": "bad", "attempt_sha256": "bad",
+            "node": "node04", "boot_id": "foreign", "authorization_sha256": "bad", "attempt_sha256": "bad",
             "all_certified_plan_sha256": "0" * 64, "certificate_sha256": "0" * 64, "manifest_sha256": "0" * 64,
             "archive_name": "../escape", "rename_outcome": "UNKNOWN", "directory_sync_complete": 1,
             "started_at": 0, "finished_at": True, "classification": "UNKNOWN_RETAIN", "cluster_released": True}
@@ -158,7 +158,7 @@ class TargetServicePlanTests(unittest.TestCase):
 
     def test_control_only_has_no_archive_and_no_hold_but_explicit_service_targets(self):
         result = M.evaluate(*self.fixture())
-        self.assertEqual(result["node_roles"]["pve04"], "CONTROL_ONLY")
+        self.assertEqual(result["node_roles"]["node04"], "CONTROL_ONLY")
         self.assertEqual(len(result["targets"][3]["units"]), 8)
         self.reject(lambda a: a[2][3].update(archive_receipt_sha256="0" * 64))
         self.reject(lambda a: a[2][3]["hold"].update(active=True))
@@ -179,7 +179,7 @@ class TargetServicePlanTests(unittest.TestCase):
 
     def test_control_plane_candidate_payload_workers_and_workload(self):
         cases = [("control_plane", "quorate", 1), ("control_plane", "target_storage_cfg_sha256", "0" * 64),
-            ("control_plane", "cluster_nodes", ["pve01"]), ("installed", "dpkg_state", "unpacked"),
+            ("control_plane", "cluster_nodes", ["node01"]), ("installed", "dpkg_state", "unpacked"),
             ("installed", "artifact_sha256", "0" * 64), ("payload", "dpkg_verify_clean", False),
             ("payload", "dpkg_verify_complete", 1), ("payload", "package_file_list_sha256", "0" * 64),
             ("workers", "inventory_complete", False), ("workers", "storage_processes", [1]),

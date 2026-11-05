@@ -53,7 +53,7 @@ class Tests(unittest.TestCase):
         managed = sorted(line.split(":", 1)[1].strip() for line in args[2].decode().splitlines() if line.startswith("sharedlvmthin:"))
         self.vmconfig = f"scsi0: {managed[0]}:vm-100-disk-0\n"
         workload = {"schema": "slt-workload-prepare/v1", "observed_at": self.now - 100,
-            "managed_storages": managed, "consumers": [{"vmid": 100, "type": "qemu", "name": "test", "node": "pve01", "status": "stopped",
+            "managed_storages": managed, "consumers": [{"vmid": 100, "type": "qemu", "name": "test", "node": "node01", "status": "stopped",
                 "disks": [{"key": "scsi0", "storage": managed[0], "volume": "vm-100-disk-0"}]}],
             "running_consumers": [], "storage_cfg_sha256": context["baseline_storage_cfg_sha256"], "resources_sha256": "a" * 64,
             "config_sha256": {"100": hashlib.sha256(self.vmconfig.encode()).hexdigest()}, "mutation_performed": False,
@@ -82,7 +82,7 @@ class Tests(unittest.TestCase):
                 "source_evidence_sha256": ["a" * 64, "b" * 64]}
             self.e["current"][node] = {"cohort_id": self.e["cohort_id"], "observed_at": self.now,
                 "observation": record, "service_namespace": namespace(record["services"]),
-                "runtime": runtime(record["services"], [{"vmid": 100, "type": "qemu", "node": node, "status": "stopped", "config": self.vmconfig}] if node == "pve01" else [])}
+                "runtime": runtime(record["services"], [{"vmid": 100, "type": "qemu", "node": node, "status": "stopped", "config": self.vmconfig}] if node == "node01" else [])}
         for i, node in enumerate(certified["release_nodes"]):
             hold = certified["hold_by_node"][node]
             common = {"tx": certified["tx"], "generation": certified["generation"], "commit_id": certified["commit_id"],
@@ -105,7 +105,7 @@ class Tests(unittest.TestCase):
             self.e["archives"][node] = copy.deepcopy({"authorization": auth, "attempt": attempt, "receipt": receipt, "current": current})
         release = {"plan_sha256": V.digest(self.plan), "authority": "NONE", "all_certified_sha256": V.digest(certified),
                    "archive_sha256": {n: V.digest(a["receipt"]) for n, a in self.e["archives"].items()}}
-        self.request = {"tx": self.plan["tx"], "plan_sha256": V.digest(self.plan), "node": "pve01",
+        self.request = {"tx": self.plan["tx"], "plan_sha256": V.digest(self.plan), "node": "node01",
             "boot_id": self.plan["participants"][0]["boot_id"], "unit": "pvedaemon.service", "operation": "UNMASK",
             "baseline_sha256": V.digest(baseline), "release_sha256": V.digest(release)}
         self.identity = {"schema": "slt-local-restore-source/v1", "authority": "NONE",
@@ -148,13 +148,13 @@ class Tests(unittest.TestCase):
         self.refuse()
 
     def test_stale_mixed_or_nonzero_cohort_refuses(self):
-        changes = [lambda e: e["current"]["pve02"].update(cohort_id="8" * 32),
-            lambda e: e["current"]["pve02"].update(observed_at=self.now - 1),
-            lambda e: e["current"]["pve02"]["observation"].update(boot_id=self.plan["participants"][0]["boot_id"]),
-            lambda e: e["current"]["pve02"]["observation"].update(consumers=["vm"]),
-            lambda e: e["current"]["pve02"]["observation"].update(workers=["worker"]),
-            lambda e: e["current"]["pve02"]["observation"].update(quorate=False),
-            lambda e: e.update(expires_at=self.now - 1), lambda e: e["current"].pop("pve04")]
+        changes = [lambda e: e["current"]["node02"].update(cohort_id="8" * 32),
+            lambda e: e["current"]["node02"].update(observed_at=self.now - 1),
+            lambda e: e["current"]["node02"]["observation"].update(boot_id=self.plan["participants"][0]["boot_id"]),
+            lambda e: e["current"]["node02"]["observation"].update(consumers=["vm"]),
+            lambda e: e["current"]["node02"]["observation"].update(workers=["worker"]),
+            lambda e: e["current"]["node02"]["observation"].update(quorate=False),
+            lambda e: e.update(expires_at=self.now - 1), lambda e: e["current"].pop("node04")]
         original = copy.deepcopy(self.e)
         for change in changes:
             self.e = copy.deepcopy(original); change(self.e); self.refuse()
@@ -170,13 +170,13 @@ class Tests(unittest.TestCase):
             lambda a: a["receipt"].update(cluster_released=True)]
         original = copy.deepcopy(self.e)
         for change in changes:
-            self.e = copy.deepcopy(original); change(self.e["archives"]["pve02"]); self.refuse()
-        self.e = original; self.e["archives"]["pve04"] = copy.deepcopy(self.e["archives"]["pve01"]); self.refuse()
+            self.e = copy.deepcopy(original); change(self.e["archives"]["node02"]); self.refuse()
+        self.e = original; self.e["archives"]["node04"] = copy.deepcopy(self.e["archives"]["node01"]); self.refuse()
 
     def test_plan_config_package_workload_request_drift_refuses(self):
         original = copy.deepcopy(self.e)
         for field in ("package_sha256", "storage_cfg_sha256", "workload_sha256"):
-            self.e = copy.deepcopy(original); self.e["current"]["pve02"]["observation"][field] = "0" * 64; self.refuse()
+            self.e = copy.deepcopy(original); self.e["current"]["node02"]["observation"][field] = "0" * 64; self.refuse()
         self.e = original
         for field in ("baseline_sha256", "release_sha256", "plan_sha256"):
             old = self.request[field]; self.request[field] = "0" * 64; self.refuse(); self.request[field] = old
@@ -184,17 +184,17 @@ class Tests(unittest.TestCase):
 
     def test_source_drift_dropins_and_preexisting_mask_refuse(self):
         original = copy.deepcopy(self.e)
-        for node in ("pve01", "pve04"):
+        for node in ("node01", "node04"):
             self.e = copy.deepcopy(original)
             self.e["current"][node]["service_namespace"]["/usr/lib/systemd/system/pvedaemon.service"]["sha256"] = "b" * 64
             self.refuse()
         self.e = copy.deepcopy(original)
-        self.e["current"]["pve01"]["service_namespace"]["effective:pvedaemon.service"]["properties"]["DropInPaths"] = "/etc/evil"
+        self.e["current"]["node01"]["service_namespace"]["effective:pvedaemon.service"]["properties"]["DropInPaths"] = "/etc/evil"
         self.refuse()
         self.e = original; self.request["unit"] = "spiceproxy.service"; self.refuse()
 
     def test_control_only_same_bound_request_and_start_baseline(self):
-        self.request.update(node="pve04", boot_id=self.plan["participants"][3]["boot_id"])
+        self.request.update(node="node04", boot_id=self.plan["participants"][3]["boot_id"])
         self.assertEqual(self.run_value()["allowed_effect"], "UNMASK")
         node, unit = self.request["node"], self.request["unit"]
         self.e["current"][node]["observation"]["services"][unit]["masked"] = False
@@ -234,13 +234,13 @@ class Tests(unittest.TestCase):
                        lambda r: r["guests"][0].update(config=self.vmconfig + "name: changed\n"),
                        lambda r: r.update(inventory_complete=False), lambda r: r.update(managed_mappers=["dm-1"]),
                        lambda r: r["services"][0].update(control_pid=42)):
-            self.e = copy.deepcopy(original); change(self.e["current"]["pve01"]["runtime"]); self.refuse()
+            self.e = copy.deepcopy(original); change(self.e["current"]["node01"]["runtime"]); self.refuse()
 
     def test_baseline_capture_inode_and_workload_digest_refuse(self):
         original = copy.deepcopy(self.e)
-        self.e["baseline_captures"]["pve02"]["observation"]["services"]["pvedaemon.service"]["active"] = False
+        self.e["baseline_captures"]["node02"]["observation"]["services"]["pvedaemon.service"]["active"] = False
         self.refuse(); self.e = copy.deepcopy(original)
-        self.e["baseline_captures"]["pve02"]["artifact_identity"][3] = 1000
+        self.e["baseline_captures"]["node02"]["artifact_identity"][3] = 1000
         self.refuse(); self.e = copy.deepcopy(original)
         self.e["workload"]["consumers"][0]["status"] = "running"; self.refuse()
 
@@ -249,10 +249,10 @@ class Tests(unittest.TestCase):
 
     def test_identity_type_confusion_and_durable_receipt_unknown_fields_refuse(self):
         original = copy.deepcopy(self.e)
-        for change in (lambda e: e["baseline_captures"]["pve01"]["artifact_identity"].__setitem__(1, True),
-                       lambda e: e["current"]["pve01"]["service_namespace"]["/usr/lib/systemd/system/pvedaemon.service"]["identity"].__setitem__(3, 1000),
-                       lambda e: e["archives"]["pve01"]["receipt"].update(retry=True),
-                       lambda e: e["archives"]["pve01"]["receipt"].update(finished_at=self.now + 1)):
+        for change in (lambda e: e["baseline_captures"]["node01"]["artifact_identity"].__setitem__(1, True),
+                       lambda e: e["current"]["node01"]["service_namespace"]["/usr/lib/systemd/system/pvedaemon.service"]["identity"].__setitem__(3, 1000),
+                       lambda e: e["archives"]["node01"]["receipt"].update(retry=True),
+                       lambda e: e["archives"]["node01"]["receipt"].update(finished_at=self.now + 1)):
             self.e = copy.deepcopy(original); change(self.e); self.refuse()
 
 

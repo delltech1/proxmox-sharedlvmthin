@@ -101,7 +101,7 @@ UUID is ambiguous and fails closed.
 | Expected UUID under alternate name | strict `PRESENT` record | PASS, private mount namespace |
 | Canonical name with wrong UUID | exit 73/UNKNOWN | PASS, private mount namespace |
 | Thick activation regression | Thin owner/barrier not entered | PASS: explicit unit dispatch trap plus installed 1 GiB start/stop; Thin maps 29→29 |
-| Thin-to-Thick-to-Thin bridge | no new refusal or residue | PASS: installed 1 GiB VM 992700, node 2→3, returned running on `slt-tg-thin`; Doctor 0 FAIL |
+| Thin-to-Thick-to-Thin bridge | no new refusal or residue | PASS: installed 1 GiB VM 992700, node 2→3, returned running on `example-storage-04`; Doctor 0 FAIL |
 | Native Thin live migration | second kernel remains blocked | PASS: VM 990110 refused on destination, source remained running on node 2, destination mapper absent |
 
 ## Installed-candidate rolling evidence

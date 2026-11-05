@@ -60,11 +60,11 @@ class RawWireTests(unittest.TestCase):
         with self.assertRaises(W.Refusal): W.unpack(self.payload, self.envelope, pins)
 
     def test_partial_cohort_alias_boot_package_and_reduced_labels_refuse(self):
-        changes = [lambda e: e['current'].pop('PVE04'), lambda e: e['archives'].pop('PVE03'),
-            lambda e: e['current']['PVE04']['observation'].update(node='pve04'),
-            lambda e: e['current']['PVE04']['observation'].update(boot_id='foreign'),
-            lambda e: e['current']['PVE04']['observation'].update(package_sha256='0' * 64),
-            lambda e: e['current']['PVE04'].update(cohort_id='0' * 32)]
+        changes = [lambda e: e['current'].pop('NODE04'), lambda e: e['archives'].pop('NODE03'),
+            lambda e: e['current']['NODE04']['observation'].update(node='node04'),
+            lambda e: e['current']['NODE04']['observation'].update(boot_id='foreign'),
+            lambda e: e['current']['NODE04']['observation'].update(package_sha256='0' * 64),
+            lambda e: e['current']['NODE04'].update(cohort_id='0' * 32)]
         for change in changes:
             value = copy.deepcopy(self.f.e); change(value)
             with self.subTest(change=change), self.assertRaises(W.Refusal):
@@ -87,12 +87,12 @@ class RawWireTests(unittest.TestCase):
             self.assertEqual((operation, unit), ('UNMASK', f.request['unit']))
             self.effects.append((operation, unit)); self.unit['masked'] = False
             self.unit['source']['/etc/systemd/system/' + unit] = None
-            self.unit['source']['effective:' + unit] = copy.deepcopy(f.e['baseline_sources']['PVE01']['effective:' + unit])
+            self.unit['source']['effective:' + unit] = copy.deepcopy(f.e['baseline_sources']['NODE01']['effective:' + unit])
             return {'exit_code': 0, 'stdout_sha256': 'a' * 64, 'stderr_sha256': 'b' * 64}
         def executor(plan, received, **kwargs):
             self.assertIs(received, journal)
             return E.Executor(plan, journal, **kwargs, unit_reader=lambda _: copy.deepcopy(self.unit), command=command,
-                clock=lambda: f.now, node_reader=lambda: 'PVE01', boot_reader=lambda: f.request['boot_id'],
+                clock=lambda: f.now, node_reader=lambda: 'NODE01', boot_reader=lambda: f.request['boot_id'],
                 process_reader=lambda: {'pid': 100, 'starttime': 100})
         self.c = types.SimpleNamespace(plan=f.plan, row=self.pins['participants'][0], pins=self.pins, transport=T,
             wire=W, phase='AFTER', check=mock.Mock(), check_package=mock.Mock(),
@@ -102,7 +102,7 @@ class RawWireTests(unittest.TestCase):
                                        Executor=executor, installed_identity=lambda: copy.deepcopy(f.identity)))
         self.stack = contextlib.ExitStack(); self.addCleanup(self.stack.close)
         self.stack.enter_context(mock.patch.object(S, 'INSTALLED', PurePosixPath('/usr/libexec/pve-sharedlvmthin')))
-        for module, field, value in ((S, 'root_required', lambda: None), (S.socket, 'gethostname', lambda: 'PVE01'),
+        for module, field, value in ((S, 'root_required', lambda: None), (S.socket, 'gethostname', lambda: 'NODE01'),
             (S.Path, 'read_text', lambda *_a, **_k: f.request['boot_id']), (S.time, 'time', lambda: f.now)):
             self.stack.enter_context(mock.patch.object(module, field, value))
         self.stack.enter_context(mock.patch.object(E.os, 'getuid', return_value=0, create=True))
@@ -161,7 +161,7 @@ class RawWireTests(unittest.TestCase):
         files = SF.transport_fixture.Files(self.f.plan, self.pins)
         def runner(argv, raw, timeout):
             calls.append(raw); request = T.strict(raw, T.MAX_REQUEST)
-            self.assertEqual(argv, T.ssh_argv('PVE01', self.pins['participants'][0]['host']))
+            self.assertEqual(argv, T.ssh_argv('NODE01', self.pins['participants'][0]['host']))
             return 0, S.canonical(S.Engine(self.c, authorizer=grant).handle(request)), b''
         transport = T.Transport(files=files, runner=runner, dispatch_guard=lambda *_: True,
             receipt_journal=SF.transport_fixture.Journal(),
@@ -187,7 +187,7 @@ class EntryWireTests(unittest.TestCase):
         for row, original in zip(plan['participants'], f.plan['participants']):
             row['node'] = original['node']; row['boot_id'] = original['boot_id']
             row['after_package_sha256'] = plan['candidate_sha256'] if row['role'] == 'SAN' else row['before_package_sha256']
-        self.c = types.SimpleNamespace(plan=plan, row={'node': 'pve01', 'boot_id': plan['participants'][0]['boot_id'],
+        self.c = types.SimpleNamespace(plan=plan, row={'node': 'node01', 'boot_id': plan['participants'][0]['boot_id'],
             'helper_sha256': 'a' * 64, 'source_package': {'sources_sha256': 'b' * 64}}, pins={'test': 'fixed'}, transport=T,
             phase='BEFORE', workload=f.workload, check_package=mock.Mock(), node_runner=self.r,
             local=types.SimpleNamespace(C=types.SimpleNamespace(legacy_plan=lambda _: copy.deepcopy(f.plan))))
@@ -206,20 +206,20 @@ class EntryWireTests(unittest.TestCase):
             side_effect=lambda agent: types.SimpleNamespace(request=lambda value: request(agent, value))))
         self.stack.enter_context(mock.patch.object(self.r.L, 'inspect', return_value={
             'state': 'COMPLETED_HISTORICAL', 'records': [], 'retry_authorized': False, 'release_authorized': False}))
-        self.stack.enter_context(mock.patch.object(self.r.C, 'collect', side_effect=lambda *_: copy.deepcopy(f.states['pve01'])))
-        self.stack.enter_context(mock.patch.object(self.r, 'execute', side_effect=lambda argv: f.execute('pve01', argv)))
+        self.stack.enter_context(mock.patch.object(self.r.C, 'collect', side_effect=lambda *_: copy.deepcopy(f.states['node01'])))
+        self.stack.enter_context(mock.patch.object(self.r, 'execute', side_effect=lambda argv: f.execute('node01', argv)))
         self.stack.enter_context(mock.patch.object(S, 'root_required'))
-        self.stack.enter_context(mock.patch.object(S.socket, 'gethostname', return_value='pve01'))
+        self.stack.enter_context(mock.patch.object(S.socket, 'gethostname', return_value='node01'))
         self.stack.enter_context(mock.patch.object(S.Path, 'read_text', return_value=self.c.row['boot_id']))
         self.stack.enter_context(mock.patch.object(S.time, 'time', return_value=1000))
         self.stack.enter_context(mock.patch.object(S.subprocess, 'run', side_effect=AssertionError('live command forbidden')))
 
     def envelope(self, operation):
         return {'schema': 'slt-exact-transport-request/v1', 'authority': 'NONE', 'kind': operation,
-            'tx': self.c.plan['tx'], 'plan_sha256': T.M.digest(self.c.plan), 'node': 'pve01',
+            'tx': self.c.plan['tx'], 'plan_sha256': T.M.digest(self.c.plan), 'node': 'node01',
             'boot_id': self.c.row['boot_id'], 'challenge': 'd' * 64,
             'payload': {'tx': self.f.plan['tx'], 'plan_sha256': self.r.B.MODEL.frozen_hash(self.f.plan),
-                        'node': 'pve01', 'operation': operation}}
+                        'node': 'node01', 'operation': operation}}
 
     def grant(self, envelope, pins):
         return {'schema': 'slt-exact-entry-grant/v1', 'authority': 'NONE', 'wire_sha256': T.M.digest(envelope),
@@ -334,7 +334,7 @@ class EntryWireTests(unittest.TestCase):
 class EntryClientTests(unittest.TestCase):
     def setUp(self):
         self.f = SF.transport_fixture.ExactTransportTests(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
-        self.request = {'tx': self.f.plan['tx'], 'plan_sha256': 'a' * 64, 'node': 'PVE04', 'operation': 'ENTRY_BLOCK'}
+        self.request = {'tx': self.f.plan['tx'], 'plan_sha256': 'a' * 64, 'node': 'NODE04', 'operation': 'ENTRY_BLOCK'}
         self.calls = []
         self.change = lambda value: value
         self.failure = None
@@ -380,7 +380,7 @@ class EntryClientTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
 
     def test_entry_cannot_route_restore_shell_arguments_or_unknown_peer(self):
-        for field, value in (('operation', 'UNMASK'), ('operation', '/bin/sh'), ('node', 'pve04'), ('argv', ['true'])):
+        for field, value in (('operation', 'UNMASK'), ('operation', '/bin/sh'), ('node', 'node04'), ('argv', ['true'])):
             with self.assertRaises(T.Refusal): self.transport().dispatch_entry(dict(self.request, **{field: value}))
         self.assertEqual(self.calls, [])
 

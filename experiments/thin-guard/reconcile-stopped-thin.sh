@@ -5,7 +5,7 @@
 set -euo pipefail
 
 manifest=${1:-}
-storage=${2:-slt-scale-thin}
+storage=${2:-example-storage-03}
 [[ -f $manifest ]] || { echo "manifest missing" >&2; exit 64; }
 [[ $storage =~ ^[A-Za-z0-9_.-]+$ ]] || exit 64
 

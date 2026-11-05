@@ -20,12 +20,12 @@ FIXED = (
     ("private key", re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.I)),
     ("SSH public key", re.compile(rb"ssh-(?:rsa|ed25519)\s+[A-Za-z0-9+/]{40,}", re.I)),
     ("Windows user path", re.compile(rb"[A-Za-z]:\\Users\\[^\\\r\n]+", re.I)),
-    ("Unix user home path", re.compile(rb"/home/[^/\s]+/", re.I)),
+    ("Unix user home path", re.compile(rb"/ho" rb"me/[^/\s]+/", re.I)),
     ("private email", re.compile(rb"[A-Z0-9._%+-]+@(?!(?:example\.(?:com|org|net)|users\.noreply\.github\.com)\b)[A-Z0-9.-]+\.[A-Z]{2,}", re.I)),
     ("literal credential assignment", re.compile(rb"\b(?:password|passwd|secret|token)\s*[:=]\s*['\"][^'\"\r\n]{4,}['\"]", re.I)),
 )
 IPV4 = re.compile(rb"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])")
-LAB_HOST = re.compile(rb"\b(?:PVE0[1-9]|DEV-PRX[A-Z0-9._-]*)\b", re.I)
+LAB_HOST = re.compile(rb"\b(?:PVE0[1-9]|DEV-" rb"PRX[A-Z0-9._-]*)\b", re.I)
 
 
 def tracked_files() -> list[pathlib.Path]:
@@ -54,23 +54,31 @@ def main() -> int:
     findings: list[str] = []
     for path in tracked_files():
         rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith("tests/") or rel == "scripts/package-privacy-scan.py" or rel == "scripts/public-source-privacy-scan.py":
+        if path.is_symlink():
+            findings.append(f"{rel}: symbolic link requires review")
             continue
-        if not path.is_file() or path.stat().st_size > TEXT_LIMIT:
+        if not path.is_file():
+            findings.append(f"{rel}: tracked file is missing or not regular")
+            continue
+        if path.stat().st_size > TEXT_LIMIT:
+            findings.append(f"{rel}: file exceeds privacy scan limit")
             continue
         data = path.read_bytes()
         if b"\0" in data[:4096]:
+            findings.append(f"{rel}: binary file requires review")
             continue
+        # Remove only exact synthetic markers intentionally used by the
+        # binary-package scanner's own test, not arbitrary fixture content.
+        scanner_fixture = rel == "tests/unit/test_package_privacy_scan.py"
+        checked_data = data
+        if scanner_fixture:
+            checked_data = checked_data.replace(b"-----BEGIN OPENSSH " + b"PRIVATE KEY-----", b"synthetic-key-marker")
+            checked_data = checked_data.replace(b"DEV-" + b"PRX-LAB", b"synthetic-host-marker")
+            checked_data = checked_data.replace(b"dev-" + b"prx-secret", b"synthetic-host-name")
         for label, pattern in FIXED:
-            if pattern.search(data):
+            if pattern.search(checked_data):
                 findings.append(f"{rel}: {label}")
-        # These two unshipped formal models deliberately use the closed,
-        # synthetic PVE01..PVE04 vocabulary asserted by their unit fixtures.
-        synthetic_fixture = rel in {
-            "experiments/thick-generations/layout-migration-exact-integration-model.py",
-            "experiments/thick-generations/layout-migration-exact-transport.py",
-        }
-        if not rel.startswith("tests/") and not synthetic_fixture and LAB_HOST.search(data):
+        if LAB_HOST.search(checked_data):
             findings.append(f"{rel}: lab hostname")
         for match in IPV4.finditer(data):
             value = match.group().decode("ascii")

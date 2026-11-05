@@ -62,7 +62,7 @@ my $before_modules = modules(); my $before_registry = registry();
 my %method_refs = map { $_ => refaddr(PVE::Storage::Plugin->can($_)) } qw(parse_config write_config lookup lookup_types);
 my $baseline_digest = $cfg->{digest};
 my $copy = dclone($cfg);
-for my $id (qw(slt-scale-thick slt-scale-thin slt-tg-thick slt-tg-thin)) {
+for my $id (qw(slt-scale-thick example-storage-03 slt-tg-thick example-storage-04)) {
     my $section = $copy->{ids}->{$id};
     need(ref($section) eq 'HASH' && ($section->{type} // '') eq 'sharedlvmthin'
          && !exists($section->{'slt-vg-layout'}), 'delta precondition differs');

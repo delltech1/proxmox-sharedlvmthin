@@ -94,7 +94,7 @@ class Tests(unittest.TestCase):
         topology = {**f[1], "storage_cfg_sha256": M.B.digest(f[2])}
         evidence = M.A.CTX.TOPO.validate(topology, f[2])
         result = M.C.compose({"tx": f[0]["tx"], "generation": f[0]["generation"]},
-            topology, evidence, f[6], f[2], f[3], "pve01", f[8], barrier=barrier,
+            topology, evidence, f[6], f[2], f[3], "node01", f[8], barrier=barrier,
             adapter_auth_fields={key: f[7][key] for key in ("authorization_id", "issued_at", "expires_at")})
         self.assertIsNotNone(result["prepare"])
         self.assertEqual(result["native_cas_request"]["evidence"]["barrier_sha256"], M.A.digest(barrier))
@@ -178,7 +178,7 @@ class Tests(unittest.TestCase):
 
     def test_runner_inspects_two_latches_before_new_observation(self):
         f = self.fixture(); receipt = f[5][0]; events = []
-        agent = mock.Mock(plan=f[4], node="pve01")
+        agent = mock.Mock(plan=f[4], node="node01")
         def inspect(request):
             events.append(request["operation"])
             return copy.deepcopy(receipt["attempts"][request["operation"]])
@@ -192,14 +192,14 @@ class Tests(unittest.TestCase):
         self.assertEqual(events, ["ENTRY_BLOCK", "SERVICE_DRAIN", "OBSERVE"])
 
     def test_runner_v2_never_dispatches_effect(self):
-        f = self.fixture(); agent = mock.Mock(plan=f[4], node="pve01")
+        f = self.fixture(); agent = mock.Mock(plan=f[4], node="node01")
         for operation in ("ENTRY_BLOCK", "SERVICE_DRAIN", "RELEASE"):
             with self.assertRaises(R.Refusal):
                 R.observe_receipt(agent, {**f[5][0]["response"]["request"], "operation": operation})
         agent.request.assert_not_called()
 
     def test_runner_incomplete_latch_prevents_observe(self):
-        f = self.fixture(); agent = mock.Mock(plan=f[4], node="pve01")
+        f = self.fixture(); agent = mock.Mock(plan=f[4], node="node01")
         with self.assertRaises(R.Refusal):
             R.observe_receipt(agent, f[5][0]["response"]["request"],
                               inspect=lambda request: {"state": "RECOVERY_REQUIRED"}, clock=lambda: f[-1])
@@ -208,7 +208,7 @@ class Tests(unittest.TestCase):
     def test_runner_clock_regression_and_deadline_overrun_refuse(self):
         for times in ([2_000_000_000, 1_999_999_999], [2_000_000_000, 2_000_000_101]):
             f = self.fixture(); receipt = f[5][0]
-            agent = mock.Mock(plan=f[4], node="pve01")
+            agent = mock.Mock(plan=f[4], node="node01")
             agent.request.return_value = receipt["response"]
             with self.assertRaises(R.Refusal):
                 R.observe_receipt(agent, receipt["response"]["request"],

@@ -75,6 +75,8 @@ sharedlvmthin: two
         for bad in (
             "sharedlvmthin: x\n\tslt-vgname a\nsharedlvmthin: x\n\tslt-vgname b\n",
             "sharedlvmthin: x\n\tslt-vgname a\n\tslt-vgname b\n",
+            "sharedlvmthin: x\n\tdisable\n\tdisable 0\n",
+            "sharedlvmthin: x\n\tdisable 1\n\tdisable\n",
         ):
             with tempfile.NamedTemporaryFile("w", delete=False) as handle:
                 handle.write(bad)
@@ -84,6 +86,16 @@ sharedlvmthin: two
                     self.checker.storage_configs(path)
             finally:
                 Path(path).unlink()
+
+    def test_storage_inventory_parses_pve_bare_disable(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as handle:
+            handle.write("sharedlvmthin: eager\n\tdisable\n\tslt-vgname vg\n")
+            path = handle.name
+        try:
+            cfg = self.checker.storage_config("eager", path)
+            self.assertTrue(self.checker.config_boolean(cfg.get("disable"), "disable"))
+        finally:
+            Path(path).unlink()
 
     def test_storage_inventory_keeps_block_across_comments_and_blank_lines(self):
         text = ("sharedlvmthin:eager\n"

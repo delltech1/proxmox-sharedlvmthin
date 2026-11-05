@@ -33,19 +33,19 @@ class LayoutMigrationPlanTests(unittest.TestCase):
         self.deb = self.root / "candidate.deb"
         self.deb.write_bytes(b"candidate")
         self.now = 2_000_000_000
-        self.nodes = ["pve01", "pve02", "pve03"]
+        self.nodes = ["node01", "node02", "node03"]
 
     def evidence(self, node, **changes):
         record = {
             "schema": 1,
-            "challenge": {"pve01": "1" * 32, "pve02": "2" * 32,
-                          "pve03": "3" * 32}[node],
+            "challenge": {"node01": "1" * 32, "node02": "2" * 32,
+                          "node03": "3" * 32}[node],
             "cluster_name": "cluster-a",
             "node": node,
-            "nodeid": {"pve01": 1, "pve02": 2, "pve03": 3}[node],
-            "boot_id": {"pve01": "11111111-1111-4111-8111-111111111111",
-                        "pve02": "22222222-2222-4222-8222-222222222222",
-                        "pve03": "33333333-3333-4333-8333-333333333333"}[node],
+            "nodeid": {"node01": 1, "node02": 2, "node03": 3}[node],
+            "boot_id": {"node01": "11111111-1111-4111-8111-111111111111",
+                        "node02": "22222222-2222-4222-8222-222222222222",
+                        "node03": "33333333-3333-4333-8333-333333333333"}[node],
             "cluster_nodes": self.nodes,
             "quorate": True,
             "observed_at": self.now - 10,
@@ -158,22 +158,22 @@ class LayoutMigrationPlanTests(unittest.TestCase):
     def test_renderer_known_set_order_only_is_accepted(self):
         baseline = self.config.read_bytes().replace(
             b"\tpath /var/lib/vz\n",
-            b"\tpath /var/lib/vz\n\tcontent vztmpl,import,backup,iso\n\tnodes PVE01,pve02\n")
+            b"\tpath /var/lib/vz\n\tcontent vztmpl,import,backup,iso\n\tnodes NODE01,node02\n")
         target, _ = PLAN.target_layout(baseline)
         rendered = target.replace(b"vztmpl,import,backup,iso", b"backup,vztmpl,iso,import").replace(
-            b"PVE01,pve02", b"pve02,PVE01")
+            b"NODE01,node02", b"node02,NODE01")
         self.assertEqual(len(PLAN.validate_target_layout(baseline, rendered)), 2)
         self.assertNotEqual(PLAN.sha256_bytes(target), PLAN.sha256_bytes(rendered))
         for old, new in ((b"backup,vztmpl,iso,import", b"backup,vztmpl,iso"),
                          (b"backup,vztmpl,iso,import", b"backup,vztmpl,iso,images"),
-                         (b"pve02,PVE01", b"pve02,pve01"),
-                         (b"pve02,PVE01", b"pve02,PVE03"),
+                         (b"node02,NODE01", b"node02,node01"),
+                         (b"node02,NODE01", b"node02,NODE03"),
                          (b"\tpath /var/lib/vz", b"\tpath /var/lib/other")):
             with self.subTest(new=new), self.assertRaises(PLAN.Refusal):
                 PLAN.validate_target_layout(baseline, rendered.replace(old, new))
 
     def test_renderer_malformed_sets_refuse_even_when_unchanged(self):
-        for key, values in (("nodes", ("", "pve01,", ",pve01", "pve01,,pve02", "pve01,pve01", "pve01, pve02")),
+        for key, values in (("nodes", ("", "node01,", ",node01", "node01,,node02", "node01,node01", "node01, node02")),
                             ("content", ("", "iso,", ",iso", "iso,,backup", "iso,iso", "iso,unknown", "ISO", "iso, backup"))):
             for value in values:
                 baseline = self.config.read_bytes().replace(b"\tpath /var/lib/vz\n",
@@ -231,12 +231,12 @@ class LayoutMigrationPlanTests(unittest.TestCase):
                                  "version": "0.9.0~rc5.13~tg34",
                                  "architecture": "all", "deb_sha256": "a" * 64,
                                  "artifact_sha256": "b" * 64}
-        evidence = [self.evidence("pve01"), self.evidence(
-            "pve02", workers={"proc_inventory_complete": True,
+        evidence = [self.evidence("node01"), self.evidence(
+            "node02", workers={"proc_inventory_complete": True,
                                "systemd_inventory_complete": True,
                                "storage_processes": ["worker"],
                                "blocking_transient_units": [],
-                               "active_pve_tasks": []}), self.evidence("pve03")]
+                               "active_pve_tasks": []}), self.evidence("node03")]
         with self.assertRaisesRegex(PLAN.Refusal, "worker processes exist"):
             PLAN.plan(self.arguments(evidence))
 
@@ -246,8 +246,8 @@ class LayoutMigrationPlanTests(unittest.TestCase):
                                  "version": "0.9.0~rc5.13~tg34",
                                  "architecture": "all", "deb_sha256": "a" * 64,
                                  "artifact_sha256": "b" * 64}
-        bad = self.evidence("pve02", storage_config_sha256_after="0" * 64)
-        evidence = [self.evidence("pve01"), bad, self.evidence("pve03")]
+        bad = self.evidence("node02", storage_config_sha256_after="0" * 64)
+        evidence = [self.evidence("node01"), bad, self.evidence("node03")]
         with self.assertRaisesRegex(PLAN.Refusal, "different or changing storage"):
             PLAN.plan(self.arguments(evidence))
 
@@ -272,9 +272,9 @@ class LayoutMigrationPlanTests(unittest.TestCase):
                  "response_sha256": "f" * 64},
             ],
         }
-        evidence = [self.evidence("pve01"),
-                    self.evidence("pve02", thinguard=guard),
-                    self.evidence("pve03")]
+        evidence = [self.evidence("node01"),
+                    self.evidence("node02", thinguard=guard),
+                    self.evidence("node03")]
         with self.assertRaisesRegex(PLAN.Refusal, "cached request"):
             PLAN.plan(self.arguments(evidence))
 

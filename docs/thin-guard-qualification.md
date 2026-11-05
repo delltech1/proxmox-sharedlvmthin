@@ -41,7 +41,7 @@ Postconditions:
 - all relevant iSCSI maps reported two healthy paths;
 - D-state task count was zero;
 - no Thin mapper autoactivated;
-- `recovery-check slt-tg-thin` returned `HEALTHY` and
+- `recovery-check example-storage-04` returned `HEALTHY` and
   `SAFE_FOR_MUTATION=YES`;
 - bounded Doctor returned 78 PASS, 7 expected informational policy warnings
   and 0 FAIL;

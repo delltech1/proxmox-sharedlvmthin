@@ -29,14 +29,14 @@ assert x.get("status")=="OK", x.get("status")
 ' "$vmid"
 done
 
-if lvs --noheadings -o lv_name pve-slt-tg-lab-a pve-slt-tg-qual 2>/dev/null \
+if lvs --noheadings -o lv_name example-vg-02 example-vg-03 2>/dev/null \
     | grep -E '994370|994371|994372|994373|994374'; then
     echo "OBJECTS_REMAIN"
     exit 3
 fi
 echo "OBJECTS_ABSENT=PASS"
 
-for sid in slt-lab-thick-a slt-tg-thin; do
+for sid in example-thick-storage example-thin-storage; do
     result="$(/usr/sbin/sharedlvmthin recovery-check "$sid")"
     printf '%s\n' "$result" | grep -E '^(STATE|SAFE_FOR_MUTATION|THICK_ANCHORS_HEALTHY)='
     grep -q '^STATE=HEALTHY$' <<<"$result"

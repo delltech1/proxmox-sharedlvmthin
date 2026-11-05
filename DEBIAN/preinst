@@ -175,6 +175,65 @@ if [ "$PREFLIGHT_ONLY" -eq 0 ] && [ -e "$UPDATE_POLICY_FILE" ]; then
     esac
 fi
 
+# Candidate-side admission is needed even when an older installed executor is
+# used: that executor cannot know about a newly introduced tuple check.
+if ! { [ -f "$CANDIDATE_UPDATE_POLICY" ] && [ ! -L "$CANDIDATE_UPDATE_POLICY" ] \
+    && [ -f "$CANDIDATE_UPDATE_POLICY_LIB" ] && [ ! -L "$CANDIDATE_UPDATE_POLICY_LIB" ] \
+    && [ -f "$CANDIDATE_QUALIFIED_TUPLES" ] && [ ! -L "$CANDIDATE_QUALIFIED_TUPLES" ]; }; then
+    echo "ERROR: candidate runtime admission payload is missing or unsafe." >&2
+    exit 1
+fi
+candidate_package=$(read_identity_line "$CANDIDATE_PACKAGE_FILE") || exit 1
+candidate_version=$(read_identity_line "$CANDIDATE_VERSION_FILE") || exit 1
+set +e
+candidate_preinst_source=
+if [ "$PREFLIGHT_ONLY" -eq 0 ]; then
+    case "$INSTALLED_FLAVOR" in
+        dual) candidate_preinst_source=pve-sharedlvmthin ;;
+        thick-only) candidate_preinst_source=pve-sharedlvmthin-thick ;;
+    esac
+fi
+if [ -n "$candidate_preinst_source" ]; then
+    /usr/bin/python3 -I "$CANDIDATE_UPDATE_POLICY" candidate-runtime-preflight \
+        --manifest "$CANDIDATE_QUALIFIED_TUPLES" --package "$candidate_package" \
+        --version "$candidate_version" --preinst-source "$candidate_preinst_source" --in-preinst
+else
+    if [ "$PREFLIGHT_ONLY" -eq 0 ]; then
+        /usr/bin/python3 -I "$CANDIDATE_UPDATE_POLICY" candidate-runtime-preflight \
+            --manifest "$CANDIDATE_QUALIFIED_TUPLES" --package "$candidate_package" \
+            --version "$candidate_version" --in-preinst
+    else
+        /usr/bin/python3 -I "$CANDIDATE_UPDATE_POLICY" candidate-runtime-preflight \
+            --manifest "$CANDIDATE_QUALIFIED_TUPLES" --package "$candidate_package" \
+            --version "$candidate_version"
+    fi
+fi
+candidate_tuple_rc=$?
+set -e
+if [ "$candidate_tuple_rc" -ne 0 ]; then
+    # FREEZE may inspect an unlisted candidate before preparing the exact
+    # transaction, but an actual unpack requires a verified PREPARED receipt.
+    freeze_closed=0
+    if [ "$candidate_tuple_rc" -eq 78 ] && [ "$PREFLIGHT_ONLY" -eq 1 ] \
+        && command -v sharedlvmthin >/dev/null 2>&1; then
+        if freeze_status=$(sharedlvmthin update-policy status 2>/dev/null); then
+            if [ "$(printf '%s\n' "$freeze_status" | grep -c '^UPDATE_POLICY=')" -eq 1 ] \
+                && [ "$(printf '%s\n' "$freeze_status" | grep -c '^UPDATE_POLICY=FREEZE$')" -eq 1 ] \
+                && [ "$(printf '%s\n' "$freeze_status" | grep -c '^FREEZE_INTEGRITY=')" -eq 1 ] \
+                && [ "$(printf '%s\n' "$freeze_status" | grep -c '^FREEZE_INTEGRITY=PASS$')" -eq 1 ]; then
+                freeze_closed=1
+            fi
+        fi
+    elif [ "$candidate_tuple_rc" -eq 78 ] && [ "$FREEZE_PACKAGE_PREPARED" -eq 1 ]; then
+        freeze_closed=1
+    fi
+    if [ "$freeze_closed" -ne 1 ]; then
+        echo "ERROR: candidate runtime tuple is unlisted, blocked or unavailable; package unpack refused." >&2
+        exit 1
+    fi
+    echo "CANDIDATE_RUNTIME=UNLISTED_FREEZE_CLOSED_ONLY"
+fi
+
 # dpkg has not unpacked the candidate payload yet. Published TG32's installed
 # helper skipped disabled storage and did not yet expose the signed VG-intent
 # proof for enabled storage either. The candidate therefore carries an

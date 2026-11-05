@@ -15,30 +15,30 @@ ok(!storage_identity_matches($pin, 'Vg-123', 'pv-123|/dev/mapper/3600ab'), 'case
 ok(!storage_identity_matches($pin, 'Vg-123', "Pv-123|/dev/mapper/3600ab\nPv-123|/dev/sda"), 'ambiguous PV evidence refused');
 ok(!storage_identity_matches($pin, 'Vg-123', 'Pv-123|/dev/sda'), 'incorrect backing device refused');
 
-my $vg_uuid = 'teu3K2-pT0R-vUtR-S2vc-KfxJ-Tzy2-4NJgaP';
-my $lv_uuid = 'hiPlfx-4ifc-lEyH-DzCt-f1gV-s2gl-MYxeod';
-my $mapper = dm_mapper_name('pve-slt-tg-qual', 'sltp-992700');
+my $vg_uuid = 'Test02-T002-T002-T002-T002-T002-Test02';
+my $lv_uuid = 'Fake01-F001-F001-F001-F001-F001-Fake01';
+my $mapper = dm_mapper_name('example-vg-03', 'sltp-992700');
 my $dm_uuid = dm_pool_uuid($vg_uuid, $lv_uuid);
 
-is($mapper, 'pve--slt--tg--qual-sltp--992700-tpool', 'DM hyphen escaping is exact');
-is($dm_uuid, 'LVM-teu3K2pT0RvUtRS2vcKfxJTzy24NJgaPhiPlfx4ifclEyHDzCtf1gVs2glMYxeod-tpool',
+is($mapper, 'example--vg--03-sltp--992700-tpool', 'DM hyphen escaping is exact');
+is($dm_uuid, 'LVM-Test02T002T002T002T002T002Test02Fake01F001F001F001F001F001Fake01-tpool',
     'DM UUID is derived from exact LVM UUIDs');
 
 sub evidence {
     return (
         local_node => 'node-b', quorum => 1,
         storages => {
-            'slt-tg-thin' => {
-                allocation_mode => 'thin', vg_name => 'pve-slt-tg-qual', vg_uuid => $vg_uuid,
+            'example-storage-04' => {
+                allocation_mode => 'thin', vg_name => 'example-vg-03', vg_uuid => $vg_uuid,
             },
         },
         lvs => [{
-            vg_name => 'pve-slt-tg-qual', lv_name => 'sltp-992700', lv_attr => 'twi-aotz--',
-            lv_tags => 'pve-slt-owner-v1,pve-slt-sid-slt-tg-thin,pve-slt-owner-node-node-b,pve-slt-owner-epoch-40596e5c394d4b8796d196154eec9ec2',
+            vg_name => 'example-vg-03', lv_name => 'sltp-992700', lv_attr => 'twi-aotz--',
+            lv_tags => 'pve-slt-owner-v1,pve-slt-sid-example-storage-04,pve-slt-owner-node-node-b,pve-slt-owner-epoch-40596e5c394d4b8796d196154eec9ec2',
             lv_uuid => $lv_uuid, vg_uuid => $vg_uuid,
         }],
         dm => {$mapper => $dm_uuid},
-        qemu_refs => {992700 => ['slt-tg-thin:vm-992700-disk-0']},
+        qemu_refs => {992700 => ['example-storage-04:vm-992700-disk-0']},
     );
 }
 
@@ -54,7 +54,7 @@ my @bad = (
     ['wrong DM UUID', sub { my %e = evidence(); $e{dm}->{$mapper} = 'LVM-wrong-tpool'; build_guard_inventory(%e) }],
     ['wrong owner', sub { my %e = evidence(); $e{lvs}->[0]->{lv_tags} =~ s/node-b/node-a/; build_guard_inventory(%e) }],
     ['no QEMU reference', sub { my %e = evidence(); $e{qemu_refs} = {}; build_guard_inventory(%e) }],
-    ['wrong VG UUID', sub { my %e = evidence(); $e{storages}->{'slt-tg-thin'}->{vg_uuid} = 'other'; build_guard_inventory(%e) }],
+    ['wrong VG UUID', sub { my %e = evidence(); $e{storages}->{'example-storage-04'}->{vg_uuid} = 'other'; build_guard_inventory(%e) }],
     ['unknown storage', sub { my %e = evidence(); $e{storages} = {}; build_guard_inventory(%e) }],
     ['duplicate pool', sub { my %e = evidence(); push $e{lvs}->@*, {%{$e{lvs}->[0]}}; build_guard_inventory(%e) }],
 );

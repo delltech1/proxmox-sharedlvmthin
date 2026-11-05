@@ -24,9 +24,9 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
     def manifest(self, phase="PREPARE_READY"):
         now = 2_000_000_000
         nodes = [
-            {"name": "pve01", "boot_id": "11111111-1111-4111-8111-111111111111"},
-            {"name": "pve02", "boot_id": "22222222-2222-4222-8222-222222222222"},
-            {"name": "pve03", "boot_id": "33333333-3333-4333-8333-333333333333"},
+            {"name": "node01", "boot_id": "11111111-1111-4111-8111-111111111111"},
+            {"name": "node02", "boot_id": "22222222-2222-4222-8222-222222222222"},
+            {"name": "node03", "boot_id": "33333333-3333-4333-8333-333333333333"},
         ]
         evidence = [{"node": node["name"], "challenge": str(index) * 32,
                      "evidence_sha256": "e" * 64, "barrier": True,
@@ -53,7 +53,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
             version="0.9.0~rc5.13~tg34", flavor="dual",
             artifact_sha256="a" * 64,
             storage_sha256="b" * 64 if phase == "PREPARE_READY" else "9" * 64,
-            hostname="pve02", boot_id="22222222-2222-4222-8222-222222222222",
+            hostname="node02", boot_id="22222222-2222-4222-8222-222222222222",
             cluster_name="cluster-a", corosync_sha256="c" * 64,
             now=2_000_000_000,
         )
@@ -98,7 +98,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
     def receipt(self, phase, recorded_at=2_000_000_000):
         return {
             "schema": "slt-package-maintenance-receipt/v1", "tx": "a" * 32,
-            "generation": 1, "phase": phase, "node": "pve02",
+            "generation": 1, "phase": phase, "node": "node02",
             "boot_id": "22222222-2222-4222-8222-222222222222",
             "package": "pve-sharedlvmthin", "version": "0.9.0~rc5.13~tg34",
             "flavor": "dual", "artifact_sha256": "a" * 64,
@@ -154,7 +154,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
                 common = dict(
                     package="pve-sharedlvmthin", version="0.9.0~rc5.13~tg34",
                     flavor="dual", artifact_sha256="a" * 64,
-                    hostname="pve02",
+                    hostname="node02",
                     boot_id="22222222-2222-4222-8222-222222222222",
                     now=2_000_000_000,
                 )
@@ -230,7 +230,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
                         package="pve-sharedlvmthin",
                         version="0.9.0~rc5.13~tg34", flavor="dual",
                         artifact_sha256="a" * 64,
-                        storage_sha256="b" * 64, hostname="pve02",
+                        storage_sha256="b" * 64, hostname="node02",
                         boot_id="22222222-2222-4222-8222-222222222222",
                         now=2_000_000_000)
                 self.assertEqual(result, "RECORDED")
@@ -271,7 +271,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
                             package="pve-sharedlvmthin",
                             version="0.9.0~rc5.13~tg34", flavor="dual",
                             artifact_sha256="a" * 64,
-                            storage_sha256="b" * 64, hostname="pve02",
+                            storage_sha256="b" * 64, hostname="node02",
                             boot_id="22222222-2222-4222-8222-222222222222",
                             now=2_000_000_000)
                 self.assertEqual(list(receipts.iterdir()), [])
@@ -303,7 +303,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
                     package="pve-sharedlvmthin",
                     version="0.9.0~rc5.13~tg34", flavor="dual",
                     artifact_sha256="a" * 64,
-                    storage_sha256="b" * 64, hostname="pve02",
+                    storage_sha256="b" * 64, hostname="node02",
                     boot_id="22222222-2222-4222-8222-222222222222",
                     now=2_000_000_000)
                 with CHECK.MaintenanceContext() as context:
@@ -381,7 +381,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
                                     package="pve-sharedlvmthin",
                                     version="0.9.0~rc5.13~tg34",
                                     flavor="dual", artifact_sha256="a" * 64,
-                                    storage_sha256="b" * 64, hostname="pve02",
+                                    storage_sha256="b" * 64, hostname="node02",
                                     boot_id=("22222222-2222-4222-8222-"
                                              "222222222222"),
                                     now=2_000_000_000)
@@ -466,7 +466,7 @@ class PackageMaintenanceCheckTests(unittest.TestCase):
                                 package="pve-sharedlvmthin",
                                 version="0.9.0~rc5.13~tg34", flavor="dual",
                                 artifact_sha256="a" * 64,
-                                storage_sha256="b" * 64, hostname="pve02",
+                                storage_sha256="b" * 64, hostname="node02",
                                 boot_id=("22222222-2222-4222-8222-"
                                          "222222222222"),
                                 now=2_000_000_000)

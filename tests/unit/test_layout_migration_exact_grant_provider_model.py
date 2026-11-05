@@ -26,13 +26,13 @@ class Tests(unittest.TestCase):
         self.addCleanup(self.m.close)
         hit = self.m.trace.hit
         def stop(name, payload=None):
-            if name == "journal-before:coordinator:transport:PVE01:qmeventd.service:UNMASK:intent": raise F.I.Cut("test checkpoint")
+            if name == "journal-before:coordinator:transport:NODE01:qmeventd.service:UNMASK:intent": raise F.I.Cut("test checkpoint")
             hit(name, payload)
         with mock.patch.object(self.m.trace, "hit", side_effect=stop):
             with self.assertRaises(F.I.Cut): self.m.run()
-        self.request = self.m.read(self.m.plan["tx"], "PVE01:qmeventd.service:UNMASK:intent")
-        self.identity = self.m.source_identity("PVE01")
-        self.before = self.m.unit("PVE01", "qmeventd.service")
+        self.request = self.m.read(self.m.plan["tx"], "NODE01:qmeventd.service:UNMASK:intent")
+        self.identity = self.m.source_identity("NODE01")
+        self.before = self.m.unit("NODE01", "qmeventd.service")
         self.raw = self.m.V.canonical(self.m.current_evidence())
         self.now = self.m.time
 
@@ -44,7 +44,7 @@ class Tests(unittest.TestCase):
         return (provider or self.provider()).authorize(self.request, self.identity, self.before, now=self.now if now is None else now)
 
     def stored(self):
-        return self.m.journals["PVE01"].read(self.m.plan["tx"], "PVE01:qmeventd.service:UNMASK:grant")
+        return self.m.journals["NODE01"].read(self.m.plan["tx"], "NODE01:qmeventd.service:UNMASK:grant")
 
     def assert_refusal(self, call):
         with self.assertRaises(Exception) as caught: call()
@@ -63,7 +63,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.authorize(self.provider(), self.now + 2), grant)
         self.assertEqual(self.stored(), stored)
         self.assertEqual(self.m.effects, [])
-        self.assertEqual(sum(x.startswith("journal-stored:PVE01:PVE01:qmeventd.service:UNMASK:grant") for x in self.m.trace.trace), 1)
+        self.assertEqual(sum(x.startswith("journal-stored:NODE01:NODE01:qmeventd.service:UNMASK:grant") for x in self.m.trace.trace), 1)
 
     def test_lost_ack_reopens_only_exact_stored_grant_and_expiry_is_inspection_only(self):
         provider = self.provider()
@@ -81,7 +81,7 @@ class Tests(unittest.TestCase):
 
     def test_caller_authority_labels_and_partial_server_proofs_cannot_issue(self):
         original = self.m.V.strict_json(self.raw)
-        for change in (lambda e: e.update(authority="GRANTED"), lambda e: e["archives"].pop("PVE03"),
+        for change in (lambda e: e.update(authority="GRANTED"), lambda e: e["archives"].pop("NODE03"),
                        lambda e: e["certified_inputs"]["records"][0]["payload"].update(dpkg_verify_clean=False)):
             e = copy.deepcopy(original); change(e)
             self.assert_refusal(lambda: self.authorize(self.provider(self.m.V.canonical(e))))
@@ -89,7 +89,7 @@ class Tests(unittest.TestCase):
 
     def test_held_label_without_complete_barrier_and_archive_journal_is_not_authority(self):
         records = self.m.journals["coordinator"].journal.records
-        for missing in ("barrier:11:OBSERVED_COMPLETE", "archive:PVE03:done", "flow:release", "baseline"):
+        for missing in ("barrier:11:OBSERVED_COMPLETE", "archive:NODE03:done", "flow:release", "baseline"):
             value = records.pop(missing)
             self.assert_refusal(lambda: self.authorize())
             records[missing] = value
@@ -98,17 +98,17 @@ class Tests(unittest.TestCase):
     def test_future_phase_attempt_and_swapped_pending_intent_refuse(self):
         records = self.m.journals["coordinator"].journal.records
         future = dict(self.request, operation="START")
-        records["PVE01:qmeventd.service:START:intent"] = future
-        self.assert_refusal(lambda: self.authorize()); records.pop("PVE01:qmeventd.service:START:intent")
-        pending = records["PVE01:qmeventd.service:UNMASK:intent"]
-        records["PVE01:qmeventd.service:UNMASK:intent"] = dict(pending, node="PVE02")
+        records["NODE01:qmeventd.service:START:intent"] = future
+        self.assert_refusal(lambda: self.authorize()); records.pop("NODE01:qmeventd.service:START:intent")
+        pending = records["NODE01:qmeventd.service:UNMASK:intent"]
+        records["NODE01:qmeventd.service:UNMASK:intent"] = dict(pending, node="NODE02")
         self.assert_refusal(lambda: self.authorize())
         self.assertIsNone(self.stored())
 
     def test_preexisting_mask_or_inactive_forbidden_step_cannot_hide_outside_phase_list(self):
         records = self.m.journals["coordinator"].journal.records
-        for name in ("PVE04:spiceproxy.service:UNMASK:intent", "PVE03:pvescheduler.service:START:intent",
-                     "PVE02:pve-guests.service:START:intent"):
+        for name in ("NODE04:spiceproxy.service:UNMASK:intent", "NODE03:pvescheduler.service:START:intent",
+                     "NODE02:pve-guests.service:START:intent"):
             records[name] = {"unexpected": "old writer"}
             self.assert_refusal(lambda: self.authorize())
             records.pop(name)
@@ -116,11 +116,11 @@ class Tests(unittest.TestCase):
 
     def test_same_phase_start_cannot_overtake_unmask_without_receipt(self):
         self.request["operation"] = "START"
-        self.m.create_once(self.m.plan["tx"], "PVE01:qmeventd.service:START:intent", self.request)
-        self.m.records["PVE01"]["services"]["qmeventd.service"]["masked"] = False
-        self.m.namespaces["PVE01"]["/etc/systemd/system/qmeventd.service"] = None
-        self.m.namespaces["PVE01"]["effective:qmeventd.service"] = copy.deepcopy(self.e["baseline_sources"]["PVE01"]["effective:qmeventd.service"])
-        self.before = self.m.unit("PVE01", "qmeventd.service")
+        self.m.create_once(self.m.plan["tx"], "NODE01:qmeventd.service:START:intent", self.request)
+        self.m.records["NODE01"]["services"]["qmeventd.service"]["masked"] = False
+        self.m.namespaces["NODE01"]["/etc/systemd/system/qmeventd.service"] = None
+        self.m.namespaces["NODE01"]["effective:qmeventd.service"] = copy.deepcopy(self.e["baseline_sources"]["NODE01"]["effective:qmeventd.service"])
+        self.before = self.m.unit("NODE01", "qmeventd.service")
         self.raw = self.m.V.canonical(self.m.current_evidence())
         self.assert_refusal(lambda: self.authorize())
 
@@ -136,8 +136,8 @@ class Tests(unittest.TestCase):
 
     def test_grant_tamper_self_hash_rewrite_and_extra_fields_refuse(self):
         self.authorize(); original = self.stored()
-        records = self.m.journals["PVE01"].journal.records
-        name = "PVE01:qmeventd.service:UNMASK:grant"
+        records = self.m.journals["NODE01"].journal.records
+        name = "NODE01:qmeventd.service:UNMASK:grant"
         for change in (lambda v: v["grant"].update(expires_at=v["grant"]["expires_at"] + 1),
                        lambda v: v.update(phase_index=True), lambda v: v.update(authority="GRANTED"),
                        lambda v: v.update(retry_allowed=True)):
@@ -152,17 +152,17 @@ class Tests(unittest.TestCase):
         # executor writes its intent and completion; no systemctl is called.
         self.m.poisoned = False; self.m.pending = copy.deepcopy(self.request)
         receipt = self.m.local_effect(self.request)
-        name = "PVE01:qmeventd.service:UNMASK"
+        name = "NODE01:qmeventd.service:UNMASK"
         self.m.create_once(self.m.plan["tx"], "receipt:" + name, receipt)
         self.m.create_once(self.m.plan["tx"], name + ":done", {"request_sha256": F.I.digest(self.request), "result": "CONFIRMED"})
         self.m.pending = None
         self.request = dict(self.request, operation="START")
-        self.m.create_once(self.m.plan["tx"], "PVE01:qmeventd.service:START:intent", self.request)
-        self.before = self.m.unit("PVE01", "qmeventd.service")
+        self.m.create_once(self.m.plan["tx"], "NODE01:qmeventd.service:START:intent", self.request)
+        self.before = self.m.unit("NODE01", "qmeventd.service")
         self.raw = self.m.V.canonical(self.m.current_evidence())
         result = self.authorize()
         self.assertEqual(result["issued_grant"]["allowed_effect"], "START")
-        stored = self.m.journals["PVE01"].read(self.m.plan["tx"], "PVE01:qmeventd.service:START:grant")
+        stored = self.m.journals["NODE01"].read(self.m.plan["tx"], "NODE01:qmeventd.service:START:grant")
         self.assertEqual(stored["phase_index"], 1)
         self.assertEqual(len(self.m.effects), 1, "grant issuance itself must never run START")
 
@@ -174,7 +174,7 @@ class Tests(unittest.TestCase):
         self.m.G.__frozen_source_sha256__ = original
 
     def test_concurrent_exact_creator_is_not_blindly_adopted_in_same_attempt(self):
-        journal = self.m.journals["PVE01"]; create = journal.create_once
+        journal = self.m.journals["NODE01"]; create = journal.create_once
         def competitor(tx, name, value):
             create(tx, name, value)
             return create(tx, name, value)
@@ -187,10 +187,10 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.m.effects, [])
 
     def test_phase_change_after_grant_write_refuses_without_effect(self):
-        journal = self.m.journals["PVE01"]; create = journal.create_once
+        journal = self.m.journals["NODE01"]; create = journal.create_once
         def changed(tx, name, value):
             ack = create(tx, name, value)
-            self.m.journals["coordinator"].journal.records["PVE01:qmeventd.service:UNMASK:done"] = {
+            self.m.journals["coordinator"].journal.records["NODE01:qmeventd.service:UNMASK:done"] = {
                 "request_sha256": F.I.digest(self.request), "result": "CONFIRMED"}
             return ack
         with mock.patch.object(journal, "create_once", side_effect=changed):
@@ -218,7 +218,7 @@ class Tests(unittest.TestCase):
                 self.m.trace.cut = None
                 self.assertEqual(self.authorize(self.provider())["issued_grant"], stored["grant"])
                 with self.assertRaises(FileExistsError):
-                    ports["PVE01"].journal.create_once(self.m.plan["tx"], "PVE01:qmeventd.service:UNMASK:grant", stored)
+                    ports["NODE01"].journal.create_once(self.m.plan["tx"], "NODE01:qmeventd.service:UNMASK:grant", stored)
                 self.assertEqual(self.m.effects, [])
             finally:
                 for port in ports.values(): port.journal.close()

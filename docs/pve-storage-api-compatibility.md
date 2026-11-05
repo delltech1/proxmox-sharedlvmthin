@@ -41,3 +41,18 @@ be established; compatible API numbers alone are insufficient. Plugin package
 replacement and platform/kernel maintenance are separate operations. Neither
 an APT guard nor a passing bounded I/O witness guarantees zero latency or
 eliminates the need for a tested recovery plan.
+
+## Closed runtime after an unqualified package update
+
+A package-only settlement can complete while the runtime remains closed for an
+unlisted package/kernel tuple. A successful package install, a clean `dpkg`
+audit or a reboot does not qualify that tuple or authorize storage operations.
+Do not remove or edit the runtime qualification latch to resume workloads.
+
+The normal post-reboot requalification path requires a previously qualified
+runtime receipt; it does not qualify an unlisted closed runtime. In current
+development code a closed transaction from an earlier boot also prevents a new
+package successor from being prepared. Preserve the package and transaction
+evidence and investigate the exact recovery procedure for the installed
+version before proceeding. This restriction favors data safety over automatic
+availability; a post-reboot recovery path for this state is not yet qualified.

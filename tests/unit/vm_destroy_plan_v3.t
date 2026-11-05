@@ -28,7 +28,7 @@ sub make_v2 {
     }
     my $runtime_id = "$p{sid}-runtime";
     my $inventory = { schema => 'sharedlvmthin-destroy-inventory/v1', complete => 1,
-        scope => { node => 'pve01', boot_id => '11111111-1111-1111-1111-111111111111',
+        scope => { node => 'node01', boot_id => '11111111-1111-1111-1111-111111111111',
             vg_uuid => $p{vg_uuid}, pv_uuid => $p{pv_uuid}, wwid => $p{wwid},
             storage_ids => [$p{sid}], config_sha256 => sha256_hex($JSON->encode($p{storecfg})) },
         roots => [{ id => $root_id, mode => $p{mode},

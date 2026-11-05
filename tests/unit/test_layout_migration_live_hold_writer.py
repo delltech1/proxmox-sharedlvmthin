@@ -8,12 +8,12 @@ M=module("writer",ROOT/"experiments/thick-generations/layout-migration-live-hold
 A=module("adapter_test",ROOT/"tests/unit/test_layout_migration_v2_v1_adapter.py")
 @unittest.skipIf(os.environ.get("SLT_PORTABLE_CI") == "1", "requires qualified inode replacement semantics")
 class Tests(unittest.TestCase):
- def fixture(self,node="pve01"):
+ def fixture(self,node="node01"):
   af=A.Tests().fixture();projection=A.Tests().project(af);manifest=projection["manifest"];sidecar=projection["sidecar"];now=af[7];boot=next(x["boot_id"] for x in af[3]["nodes"] if x["name"]==node)
   facts={"node":node,"boot_id":boot,"cluster_name":af[3]["cluster_name"],"corosync_conf_sha256":"d"*64,"storage_cfg_sha256":af[3]["baseline_storage_cfg_sha256"]}
   auth={"schema":"slt-live-hold-write-authorization/v1","tx":af[3]["tx"],"generation":af[3]["generation"],"context_sha256":af[3]["context_sha256"],"manifest_sha256":sidecar["manifest_sha256"],"node":node,"boot_id":boot,"action":"create-prepare-once","operation_id":"9"*32,"issued_at":now-10,"expires_at":now+300}
   return manifest,sidecar,auth,facts,now
- def transition_fixture(self,root,node="pve01"):
+ def transition_fixture(self,root,node="node01"):
   manifest,sidecar,prepare,facts,now=self.fixture(node);w=M.Writer(root);w.create_prepare_once(manifest,sidecar,prepare,facts,now)
   successor=copy.deepcopy(manifest);successor["phase"]="CONFIG_COMMITTED";old_sha=M.digest(M.canonical(manifest));new_sha=M.digest(M.canonical(successor))
   facts=copy.deepcopy(facts);facts["storage_cfg_sha256"]=manifest["target_storage_cfg_sha256"]
@@ -29,7 +29,7 @@ class Tests(unittest.TestCase):
    with self.assertRaises(M.Refusal):w.create_prepare_once(*f)
  def test_control_only_refuses_before_first_filesystem_write(self):
   with tempfile.TemporaryDirectory() as temp:
-   root=Path(temp)/"maintenance";f=list(self.fixture("pve04"))
+   root=Path(temp)/"maintenance";f=list(self.fixture("node04"))
    with self.assertRaisesRegex(M.Refusal,"authorized SAN"):
     M.Writer(root).create_prepare_once(*f)
    self.assertFalse(root.exists())
@@ -176,8 +176,8 @@ class Tests(unittest.TestCase):
    with self.assertRaises(M.Refusal):f[0].transition_config_committed_once(*f[1:8])
    self.assertEqual((root/"active.json").read_bytes(),M.canonical(f[1]))
   with tempfile.TemporaryDirectory() as temp:
-   root=Path(temp)/"maintenance";manifest,sidecar,prepare,facts,now=self.fixture("pve04");successor=copy.deepcopy(manifest);successor["phase"]="CONFIG_COMMITTED"
-   auth={"schema":"slt-live-hold-transition-authorization/v1","tx":manifest["tx"],"generation":manifest["generation"],"context_sha256":sidecar["context_sha256"],"old_manifest_sha256":M.digest(M.canonical(manifest)),"new_manifest_sha256":M.digest(M.canonical(successor)),"node":"pve04","boot_id":facts["boot_id"],"action":"transition-config-committed-once","operation_id":"8"*32,"prepare_operation_id":prepare["operation_id"],"proof_sha256":"7"*64,"preinst_sha256":"6"*64,"issued_at":now-10,"expires_at":now+300}
+   root=Path(temp)/"maintenance";manifest,sidecar,prepare,facts,now=self.fixture("node04");successor=copy.deepcopy(manifest);successor["phase"]="CONFIG_COMMITTED"
+   auth={"schema":"slt-live-hold-transition-authorization/v1","tx":manifest["tx"],"generation":manifest["generation"],"context_sha256":sidecar["context_sha256"],"old_manifest_sha256":M.digest(M.canonical(manifest)),"new_manifest_sha256":M.digest(M.canonical(successor)),"node":"node04","boot_id":facts["boot_id"],"action":"transition-config-committed-once","operation_id":"8"*32,"prepare_operation_id":prepare["operation_id"],"proof_sha256":"7"*64,"preinst_sha256":"6"*64,"issued_at":now-10,"expires_at":now+300}
    with self.assertRaises(M.Refusal):M.Writer(root).transition_config_committed_once(manifest,sidecar,auth,facts,{}, {},now)
    self.assertFalse(root.exists())
  def test_transition_refuses_forged_prepare_predecessor(self):

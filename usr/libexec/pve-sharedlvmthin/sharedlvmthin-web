@@ -250,7 +250,7 @@ button{width:100%;margin-top:18px;padding:11px;background:#1768c4;color:white;bo
 """
 
 def page(title,body):
-    return "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>"+html.escape(title)+"</title><style>"+CSS+"</style></head><body><div class='w'><div class='brand'>SharedLvmThin <span>Health</span></div>"+body+"<div class='note' style='text-align:center;margin-top:14px'>Authentication handled by Proxmox VE · <span class='ro'>READ ONLY</span></div></div></body></html>"
+    return "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>"+html.escape(title)+"</title><style>"+CSS+"</style><script src='/login-i18n.js' defer></script></head><body><div class='w'><label for='login-language'>Language / Sprache</label><select id='login-language'><option value='en'>English</option><option value='de'>Deutsch</option></select><div class='brand'>SharedLvmThin <span>Health</span></div>"+body+"<div class='note' style='text-align:center;margin-top:14px'>Authentication handled by Proxmox VE · <span class='ro'>READ ONLY</span></div></div></body></html>"
 
 def login(error="",user=""):
     e="<div class='err'>"+html.escape(error)+"</div>" if error else ""

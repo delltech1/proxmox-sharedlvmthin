@@ -30,7 +30,7 @@ class Tests(unittest.TestCase):
             "effective:" + self.unit: {"FragmentPath": "/dev/null"}}}
         self.source = {"schema": "slt-local-restore-source/v1", "authority": "NONE",
                        "package": {"package-artifact-sha256": {"sha256": "b" * 64}}, "self_hash": "c" * 64}
-        self.request = {"tx": self.plan["tx"], "plan_sha256": M.digest(self.plan), "node": "pve01",
+        self.request = {"tx": self.plan["tx"], "plan_sha256": M.digest(self.plan), "node": "node01",
             "boot_id": self.plan["participants"][0]["boot_id"], "unit": self.unit, "operation": "UNMASK",
             "baseline_sha256": M.digest(self.baseline), "release_sha256": "f" * 64}
         self.effects, self.records = [], {}
@@ -73,7 +73,7 @@ class Tests(unittest.TestCase):
         journal = journal or types.SimpleNamespace(read=lambda tx, key: copy.deepcopy(self.records.get(key)), create_once=self.create)
         args = dict(authorize=self.grant, baseline_reader=lambda: copy.deepcopy(self.baseline),
             identity_reader=lambda: copy.deepcopy(self.source), unit_reader=lambda _: copy.deepcopy(self.state),
-            command=self.command, clock=lambda: self.time, node_reader=lambda: "pve01",
+            command=self.command, clock=lambda: self.time, node_reader=lambda: "node01",
             boot_reader=lambda: self.request["boot_id"], process_reader=lambda: {"pid": 123, "starttime": 456})
         args.update(overrides)
         return E.Executor(self.plan, journal, **args)
@@ -104,9 +104,9 @@ class Tests(unittest.TestCase):
         self.assertEqual(result["state"], "LOCAL_EFFECT_CONFIRMED")
         self.assertEqual(self.effects, [("START", self.unit)])
         self.records.clear(); self.effects.clear(); self.state.update(active=False, substate="dead")
-        self.request.update(node="pve04", boot_id=self.plan["participants"][-1]["boot_id"])
+        self.request.update(node="node04", boot_id=self.plan["participants"][-1]["boot_id"])
         self.source["package"]["package-artifact-sha256"]["sha256"] = "a" * 64
-        result = self.executor(node_reader=lambda: "pve04").execute(self.request)
+        result = self.executor(node_reader=lambda: "node04").execute(self.request)
         self.assertEqual(result["state"], "LOCAL_EFFECT_CONFIRMED")
         self.assertEqual(self.effects, [("START", self.unit)])
 
@@ -143,7 +143,7 @@ class Tests(unittest.TestCase):
 
     def test_absent_authorizer_bad_request_and_package_identity_have_zero_effects(self):
         with self.assertRaises(E.Refusal): self.executor(authorize=None).execute(self.request)
-        for field, value in (("operation", "STOP"), ("unit", "evil.service"), ("node", "pve04"),
+        for field, value in (("operation", "STOP"), ("unit", "evil.service"), ("node", "node04"),
                              ("plan_sha256", "0" * 64), ("baseline_sha256", "0" * 64)):
             request = dict(self.request); request[field] = value
             with self.subTest(field=field), self.assertRaises(E.Refusal): self.executor().execute(request)
@@ -186,7 +186,7 @@ class Tests(unittest.TestCase):
 
     def test_start_never_applies_to_previously_inactive_or_pve_guests(self):
         self.request["operation"] = "START"; self.state["masked"] = False
-        self.baseline["records"]["pve01"]["services"][self.unit].update(active=False, substate="dead")
+        self.baseline["records"]["node01"]["services"][self.unit].update(active=False, substate="dead")
         self.request["baseline_sha256"] = M.digest(self.baseline)
         with self.assertRaisesRegex(E.Refusal, "baseline forbids"):
             self.executor().execute(self.request)

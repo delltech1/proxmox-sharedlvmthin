@@ -364,11 +364,12 @@ refresh.
 
 Upgrade one node at a time:
 
-1. Run `sharedlvmthin upgrade-check`. It inventories every enabled
+1. Run `sharedlvmthin upgrade-check`. It inventories every locally applicable
    SharedLvmThin storage, runs its bounded read-only recovery gate and requires
    one exact `STATE=HEALTHY`, `SAFE_FOR_MUTATION=YES` and
    `THICK_ANCHORS_HEALTHY=PASS` result. Explicitly disabled storage is reported
-   and skipped; a duplicate storage ID, timeout, unavailable probe or ambiguous
+   and checked too; it is not automatically skipped. Definitions outside the
+   node scope are skipped. A duplicate storage ID, timeout, unavailable probe or ambiguous
    output fails closed. Continue only when the final line is
    `UPGRADE_SAFE=YES`.
 2. Require every Thick Generations anchor to be `MATERIALIZED`. Do not upgrade

@@ -316,7 +316,23 @@ def prepare(args, dpkg_pid, dpkg_start):
     return record
 
 
+def inherited_package_fence():
+    """Validate optional inherited fence; its absence retains legacy behavior."""
+    transport = os.environ.get("SLT_PACKAGE_FENCE_FD")
+    if transport is None:
+        return None
+    require(transport.isascii() and transport.isdecimal() and len(transport) <= 10,
+            "invalid inherited package fence transport")
+    try:
+        from sharedlvmthin_package_executor_fence import read_sealed_context
+        context = read_sealed_context(int(transport), read_boot_id())
+    except (ImportError, ValueError, RuntimeError, OSError) as error:
+        raise Refusal(f"invalid inherited package fence: {error}") from error
+    return transport, context
+
+
 def execute(args):
+    fence = inherited_package_fence()
     read_fd, write_fd = os.pipe2(os.O_CLOEXEC)
     child = os.fork()
     if child == 0:
@@ -327,9 +343,16 @@ def execute(args):
             if signal != b"1":
                 os._exit(125)
             pinned = str(ROOT / "candidate.deb")
+            child_env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+            if fence is not None:
+                require(inherited_package_fence() == fence, "inherited package fence changed")
+                transport, context = fence
+                for fd in (*context["fds"], int(transport)):
+                    os.set_inheritable(fd, True)
+                child_env["SLT_PACKAGE_FENCE_FD"] = transport
             os.execve("/usr/bin/dpkg",
                       ["/usr/bin/dpkg", "--force-hold", "-i", pinned],
-                      {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+                      child_env)
         except BaseException:
             os._exit(126)
     os.close(read_fd)
@@ -337,6 +360,7 @@ def execute(args):
         start = proc_start(child)
         with Locked():
             prepared = prepare(args, child, start)
+        require(inherited_package_fence() == fence, "inherited package fence changed before dispatch")
         os.write(write_fd, b"1")
     except BaseException:
         os.close(write_fd)

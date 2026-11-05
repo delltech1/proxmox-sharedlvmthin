@@ -41,7 +41,7 @@ class LocalHoldReleaseFileLabTests(unittest.TestCase):
         info = active.stat()
         request = {
             "tx": tx, "generation": generation, "commit_id": "b" * 32,
-            "node": "pve01",
+            "node": "node01",
             "boot_id": "11111111-1111-4111-8111-111111111111",
             "authorization_sha256": "1" * 64,
             "all_certified_plan_sha256": "2" * 64,

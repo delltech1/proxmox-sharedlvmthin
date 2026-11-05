@@ -225,7 +225,7 @@ class AllCertifiedPlanTests(unittest.TestCase):
         temp, args, _, _, _, collection, collection_path, paths = self.fixture()
         self.addCleanup(temp.cleanup)
         collection["collection_id"] = "e" * 32
-        collection["challenges"]["pve01"] = "f" * 32
+        collection["challenges"]["node01"] = "f" * 32
         collection_path.write_text(json.dumps(collection, sort_keys=True) + "\n")
         with self.assertRaisesRegex(PLAN.Refusal, "identity, challenge"):
             PLAN.evaluate(args)

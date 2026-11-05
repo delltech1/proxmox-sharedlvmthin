@@ -22,7 +22,7 @@ I = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(I)
 
 
 def uppercase_fixtures():
-    """Clone fixture factories only: production transport requires exact PVE01.
+    """Clone fixture factories only: production transport requires exact NODE01.
 
     Re-running every builder regenerates all hashes/certificates correctly; we
     never rename an already-issued node/receipt or rewrite production source.
@@ -38,13 +38,13 @@ def uppercase_fixtures():
             if hasattr(result, "H"): scope["H"] = result.H
             for name, value in vars(cls).items():
                 if inspect.isfunction(value):
-                    body = textwrap.dedent(inspect.getsource(value)).replace("pve0", "PVE0")
+                    body = textwrap.dedent(inspect.getsource(value)).replace("node0", "NODE0")
                     exec(compile(body, str(Path(module.__file__)), "exec"), scope)
                     methods[name] = scope[name]
             setattr(result, clsname, type(clsname, (unittest.TestCase,), methods))
         return result
     fixture_globals = dict(vars(F)); fixture_globals["fixtures"] = clone(F.fixtures)
-    body = textwrap.dedent(inspect.getsource(F.Tests.setUp)).replace("pve0", "PVE0")
+    body = textwrap.dedent(inspect.getsource(F.Tests.setUp)).replace("node0", "NODE0")
     exec(compile(body, str(Path(F.__file__)), "exec"), fixture_globals)
     fixture_class = type("UppercaseReleaseFixture", (unittest.TestCase,), {"setUp": fixture_globals["setUp"]})
     case = fixture_class(); case.setUp()
@@ -77,10 +77,10 @@ class Tests(unittest.TestCase):
         # The certificate's CONTROL_ONLY guard is positively inactive. Unlike
         # the generic restore fixture, bind the exact same current lifecycle.
         e = cls.fixture.e; guard = "pve-sharedlvmthin-thin-guard.service"
-        for record in (e["baseline"]["records"]["PVE04"], e["baseline_captures"]["PVE04"]["observation"],
-                       e["current"]["PVE04"]["observation"]):
+        for record in (e["baseline"]["records"]["NODE04"], e["baseline_captures"]["NODE04"]["observation"],
+                       e["current"]["NODE04"]["observation"]):
             record["services"][guard].update(active=False, substate="dead")
-        row = next(r for r in e["current"]["PVE04"]["runtime"]["services"] if r["unit"] == guard)
+        row = next(r for r in e["current"]["NODE04"]["runtime"]["services"] if r["unit"] == guard)
         row.update(active_state="inactive", sub_state="dead", main_pid=0, cgroup_empty=True)
 
     @classmethod
@@ -115,7 +115,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(out["receipt_count"], len(model.effects))
         for node in model.T.NODES:
             self.assertEqual(model.records[node]["services"], self.e["baseline"]["records"][node]["services"])
-        self.assertEqual(model.records["PVE04"]["package_sha256"], self.e["baseline"]["records"]["PVE04"]["package_sha256"])
+        self.assertEqual(model.records["NODE04"]["package_sha256"], self.e["baseline"]["records"]["NODE04"]["package_sha256"])
         self.assertFalse(any(unit == "spiceproxy.service" or (op == "START" and unit in ("pvescheduler.service", "pve-guests.service")) for _, unit, op in model.effects))
         self.assertFalse(any(out[k] for k in ("runtime_authorized", "rollout_authorized", "release_authorized", "mutation_performed")))
         count = len(model.effects)
@@ -162,11 +162,11 @@ class Tests(unittest.TestCase):
     def test_actual_lost_ack_before_after_first_local_effect_and_journal(self):
         golden = self.golden()
         names = ["journal-before:coordinator:flow:started", "journal-stored:coordinator:flow:started",
-                 "transport-before:PVE01:READ_OBSERVATION", "transport-result:PVE01:READ_OBSERVATION",
-                 "effect-before:PVE01:qmeventd.service:UNMASK", "effect-applied:PVE01:qmeventd.service:UNMASK",
-                 "journal-stored:PVE01:PVE01:qmeventd.service:UNMASK:done",
-                 "transport-result:PVE01:RESTORE_EFFECT:qmeventd.service:UNMASK",
-                 "journal-stored:coordinator:receipt:PVE01:qmeventd.service:UNMASK"]
+                 "transport-before:NODE01:READ_OBSERVATION", "transport-result:NODE01:READ_OBSERVATION",
+                 "effect-before:NODE01:qmeventd.service:UNMASK", "effect-applied:NODE01:qmeventd.service:UNMASK",
+                 "journal-stored:NODE01:NODE01:qmeventd.service:UNMASK:done",
+                 "transport-result:NODE01:RESTORE_EFFECT:qmeventd.service:UNMASK",
+                 "journal-stored:coordinator:receipt:NODE01:qmeventd.service:UNMASK"]
         for name in names:
             with self.subTest(prefix=name):
                 cut = golden.trace.trace.index(name)
@@ -195,13 +195,13 @@ class Tests(unittest.TestCase):
             with self.subTest(kind=kind):
                 model = self.model(); hit = model.trace.hit; injected = []
                 def changed(name, payload=None):
-                    if name == "transport-before:PVE01:RESTORE_EFFECT:qmeventd.service:UNMASK" and not injected:
+                    if name == "transport-before:NODE01:RESTORE_EFFECT:qmeventd.service:UNMASK" and not injected:
                         injected.append(True)
-                        if kind == "source": model.namespaces["PVE02"]["/usr/lib/systemd/system/pvedaemon.service"]["sha256"] = "0" * 64
+                        if kind == "source": model.namespaces["NODE02"]["/usr/lib/systemd/system/pvedaemon.service"]["sha256"] = "0" * 64
                         elif kind == "expiry": model.time = model.plan["expires_at"] + 1
-                        elif kind == "consumers": model.records["PVE02"]["consumers"] = [999]
-                        elif kind == "quorum": model.records["PVE02"]["quorate"] = False
-                        else: model.records["PVE02"][kind] = "0" * 64
+                        elif kind == "consumers": model.records["NODE02"]["consumers"] = [999]
+                        elif kind == "quorum": model.records["NODE02"]["quorate"] = False
+                        else: model.records["NODE02"][kind] = "0" * 64
                     hit(name, payload)
                 with mock.patch.object(model.trace, "hit", side_effect=changed):
                     with self.assertRaises(Exception) as caught: model.run()
@@ -212,10 +212,10 @@ class Tests(unittest.TestCase):
 
     def test_certified_control_guard_cannot_disagree_with_current_or_baseline(self):
         guard = "pve-sharedlvmthin-thin-guard.service"
-        for record in (self.e["baseline"]["records"]["PVE04"], self.e["baseline_captures"]["PVE04"]["observation"],
-                       self.e["current"]["PVE04"]["observation"]):
+        for record in (self.e["baseline"]["records"]["NODE04"], self.e["baseline_captures"]["NODE04"]["observation"],
+                       self.e["current"]["NODE04"]["observation"]):
             record["services"][guard].update(active=True, substate="running")
-        row = next(r for r in self.e["current"]["PVE04"]["runtime"]["services"] if r["unit"] == guard)
+        row = next(r for r in self.e["current"]["NODE04"]["runtime"]["services"] if r["unit"] == guard)
         row.update(active_state="active", sub_state="running", main_pid=101, cgroup_empty=False)
         model = self.model()
         with self.assertRaisesRegex(I.Refusal, "current/certified Thin guard lifecycle"):

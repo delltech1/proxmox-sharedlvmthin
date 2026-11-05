@@ -6,11 +6,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/tg53-async-dispatch.sh"
 
 usage() {
-    echo "usage: $0 [--execute] [--skip-snapshots] [--only=all|thin|thick] [--thin-destination=sharedthin-test|sharedthin-fcoe]" >&2
+    echo "usage: $0 [--execute] [--skip-snapshots] [--only=all|thin|thick] [--thin-destination=example-storage-02|example-storage-01]" >&2
 }
 
 execute=0
-thin_destination=sharedthin-test
+thin_destination=example-storage-02
 skip_snapshots=0
 only=all
 for argument in "$@"; do
@@ -18,7 +18,7 @@ for argument in "$@"; do
         --execute) execute=1 ;;
         --skip-snapshots) skip_snapshots=1 ;;
         --only=all|--only=thin|--only=thick) only=${argument#*=} ;;
-        --thin-destination=sharedthin-test|--thin-destination=sharedthin-fcoe)
+        --thin-destination=example-storage-02|--thin-destination=example-storage-01)
             thin_destination=${argument#*=}
             ;;
         *) usage; exit 64 ;;
@@ -33,13 +33,13 @@ exec 9>/run/lock/slt-mixed-vg-evacuation.lock
 flock -n 9 || { echo "REFUSED: another evacuation worker owns the lock" >&2; exit 75; }
 
 declare -A target=(
-    [slt-scale-thin]="$thin_destination"
-    [slt-tg-thin]="$thin_destination"
-    [slt-scale-thick]=slt-lab-thick-a
-    [slt-tg-thick]=slt-lab-thick-a
+    [example-storage-03]="$thin_destination"
+    [example-thin-storage]="$thin_destination"
+    [example-thick-source]=example-thick-storage
+    [example-thick-target]=example-thick-storage
 )
 
-for destination in "$thin_destination" slt-lab-thick-a; do
+for destination in "$thin_destination" example-thick-storage; do
     status=$(pvesm status --storage "$destination" --content images 2>/dev/null |
         awk -v id="$destination" '$1 == id { print $3 }')
     [[ "$status" == active ]] || {
@@ -49,7 +49,7 @@ for destination in "$thin_destination" slt-lab-thick-a; do
 done
 
 mapfile -t entries < <(
-    grep -RHE '^(scsi|sata|virtio|ide)[0-9]+: (slt-scale-thin|slt-scale-thick|slt-tg-thin|slt-tg-thick):' \
+    grep -RHE '^(scsi|sata|virtio|ide)[0-9]+: (example-storage-03|example-thick-source|example-thin-storage|example-thick-target):' \
         /etc/pve/qemu-server 2>/dev/null | sort
 )
 
@@ -65,7 +65,7 @@ for entry in "${entries[@]}"; do
     destination=${target[$source]:-}
 
     case "$source:$only" in
-        slt-scale-thin:thick|slt-tg-thin:thick|slt-scale-thick:thin|slt-tg-thick:thin)
+        example-storage-03:thick|example-thin-storage:thick|example-thick-source:thin|example-thick-target:thin)
             continue
             ;;
     esac
@@ -128,9 +128,9 @@ for entry in "${entries[@]}"; do
     echo "EVAC_PASS vmid=$vmid slot=$slot destination=$destination"
 done
 
-remaining_pattern='slt-scale-thin|slt-scale-thick|slt-tg-thin|slt-tg-thick'
-[[ "$only" == thin ]] && remaining_pattern='slt-scale-thin|slt-tg-thin'
-[[ "$only" == thick ]] && remaining_pattern='slt-scale-thick|slt-tg-thick'
+remaining_pattern='example-storage-03|example-thick-source|example-thin-storage|example-thick-target'
+[[ "$only" == thin ]] && remaining_pattern='example-storage-03|example-thin-storage'
+[[ "$only" == thick ]] && remaining_pattern='example-thick-source|example-thick-target'
 remaining=$(
     { grep -RHEc "^(scsi|sata|virtio|ide)[0-9]+: ($remaining_pattern):" \
         /etc/pve/qemu-server 2>/dev/null || true; } |

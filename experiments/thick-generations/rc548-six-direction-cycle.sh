@@ -8,9 +8,9 @@ source "$SCRIPT_DIR/tg53-async-dispatch.sh"
 vmid=994340
 slot=scsi0
 node=$(hostname)
-thin=slt-tg-thin
-eager=slt-lab-thick-a
-lazy=slt-lab-lazy-a
+thin=example-thin-storage
+eager=example-thick-storage
+lazy=example-lazy-storage
 expected=
 readonly sample_bytes=1048576
 readonly sample_offsets=(8388608 536870912 1048576000)

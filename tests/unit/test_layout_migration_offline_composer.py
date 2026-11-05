@@ -27,7 +27,7 @@ class ComposerTests(unittest.TestCase):
         baseline, target, template, context, rows, barrier, auth, now = H.Tests().fixture()
         topology, evidence = M.CTX.topology_for(template, baseline)
         args = [{"tx": context["tx"], "generation": context["generation"]}, topology, evidence,
-                rows, baseline, target, "pve01", now]
+                rows, baseline, target, "node01", now]
         fields = {key: auth[key] for key in ("authorization_id", "issued_at", "expires_at")}
         return args, barrier, fields
 
@@ -67,7 +67,7 @@ class ComposerTests(unittest.TestCase):
         self.assertEqual(prepare["manifest_bytes_sha256"], M.raw_sha(bytes.fromhex(prepare["manifest_bytes_hex"])))
         self.assertEqual(result["native_cas_request"]["evidence"]["prepare_manifest_sha256"], prepare["manifest_bytes_sha256"])
         self.assertEqual(prepare["sidecar"]["actions"][-1],
-                         {"node": "pve04", "role": "CONTROL_ONLY", "action": "VERIFY_CURRENT_ONLY"})
+                         {"node": "node04", "role": "CONTROL_ONLY", "action": "VERIFY_CURRENT_ONLY"})
         self.assertEqual(result["authorization"], "NONE")
 
     def test_complete_collector_fields_match_current_cas_schema(self):
@@ -79,8 +79,8 @@ class ComposerTests(unittest.TestCase):
         self.assertTrue(result["native_cas_schema_complete"])
         self.assertEqual(cas["serializer"]["perl_hash_seed"], "0")
         self.assertEqual(cas["serializer"]["perl_perturb_keys"], "0")
-        self.assertEqual(set(cas["evidence"]["preinst_sha256"]), {"pve01", "pve02", "pve03"})
-        self.assertEqual(set(cas["evidence"]["payload_sha256"]), {"pve01", "pve02", "pve03", "pve04"})
+        self.assertEqual(set(cas["evidence"]["preinst_sha256"]), {"node01", "node02", "node03"})
+        self.assertEqual(set(cas["evidence"]["payload_sha256"]), {"node01", "node02", "node03", "node04"})
         self.assertEqual(result["authorization"], "NONE")
         self.assertFalse(result["execution_authorized"])
 
@@ -123,8 +123,8 @@ class ComposerTests(unittest.TestCase):
 
     def test_exact_rendered_target_is_imported_not_regenerated(self):
         args, _, _ = self.fixture()
-        rendered = args[5].replace(b"\tslt-vgname vg-a\n\tnodes pve01,pve02,pve03\n",
-                                   b"\tnodes pve01,pve02,pve03\n\tslt-vgname vg-a\n", 1)
+        rendered = args[5].replace(b"\tslt-vgname vg-a\n\tnodes node01,node02,node03\n",
+                                   b"\tnodes node01,node02,node03\n\tslt-vgname vg-a\n", 1)
         self.assertNotEqual(rendered, args[5])
         args[5] = rendered
         result = M.compose(*args)
@@ -136,17 +136,17 @@ class ComposerTests(unittest.TestCase):
     def test_baseline_target_topology_and_role_drift_refuse(self):
         for mutation in (lambda a: a.__setitem__(4, a[4]+b"# drift\n"),
                          lambda a: a.__setitem__(5, a[5].replace(b"vg-a", b"vg-z")),
-                         lambda a: a.__setitem__(6, "pve04"),
+                         lambda a: a.__setitem__(6, "node04"),
                          lambda a: a[1]["nodes"][0].update(boot_id="0"*36),
                          lambda a: a[3][3].update(action="UNPACK_CONFIGURE"),
-                         lambda a: a[3][0]["role_evidence"].update(node="pve02")):
+                         lambda a: a[3][0]["role_evidence"].update(node="node02")):
             args, _, _ = self.fixture(); mutation(args)
             with self.assertRaises(M.Refusal): M.compose(*args)
 
     def test_cas_filling_wrong_maps_serializer_and_time_refuse(self):
         args, barrier, fields = self.fixture()
-        for mutation in (lambda f: f["preinst_sha256"].update(pve04="0"*64),
-                         lambda f: f["payload_sha256"].pop("pve04"),
+        for mutation in (lambda f: f["preinst_sha256"].update(node04="0"*64),
+                         lambda f: f["payload_sha256"].pop("node04"),
                          lambda f: f["serializer"].update(perl_hash_seed="random"),
                          lambda f: f.update(expires_wall_ns=str((args[7]-1)*10**9)),
                          lambda f: f.update(attempt_id=None)):
@@ -158,7 +158,7 @@ class ComposerTests(unittest.TestCase):
         class EvilStr(str):
             def __eq__(self, other): calls.append("eq"); return True
             __hash__ = str.__hash__
-        args, _, _ = self.fixture(); args[3][0]["node"] = EvilStr("pve01")
+        args, _, _ = self.fixture(); args[3][0]["node"] = EvilStr("node01")
         with self.assertRaises(M.Refusal): M.compose(*args)
         args, _, _ = self.fixture(); args[0]["generation"] = True
         with self.assertRaises(M.Refusal): M.compose(*args)
@@ -169,13 +169,13 @@ class ComposerTests(unittest.TestCase):
     def test_inputs_and_drafts_have_no_shared_mutable_state(self):
         args, barrier, fields = self.fixture(); original = copy.deepcopy([args, barrier, fields])
         result = M.compose(*args, barrier=barrier, adapter_auth_fields=fields)
-        result["context"]["node_roles"]["pve04"] = "SAN_PARTICIPANT"
+        result["context"]["node_roles"]["node04"] = "SAN_PARTICIPANT"
         result["native_cas_request"]["participants"][0]["node"] = "foreign"
         self.assertEqual([args, barrier, fields], original)
 
     def test_saved_tg36_artifacts_validate_as_historical_inputs_when_present(self):
         directory = ROOT / "outputs/tg35-live"
-        paths = [directory / f"tg36-preflight-pve0{i}.json" for i in range(1, 5)]
+        paths = [directory / f"tg36-preflight-node0{i}.json" for i in range(1, 5)]
         if not all(path.is_file() for path in paths):
             self.skipTest("untracked TG36 lab artifacts unavailable")
         topology = M.read_json(directory / "topology-template-tg36.json")

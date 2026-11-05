@@ -99,6 +99,58 @@ class RecoveryCarrierIdentityTests(unittest.TestCase):
                     self.m.recovery_executor_identity(self.args)
                 self.members[member] = original
 
+    def test_fenced_carrier_binds_fence_bytes_and_rechecks_drift(self):
+        name = 'sharedlvmthin_package_executor_fence.py'
+        path = self.m.pathlib.Path(self.m.__file__).resolve().with_name(name)
+        self.members[name] = b'fence fixture'
+        self.digests[str(path)] = hashlib.sha256(self.members[name]).hexdigest()
+        with mock.patch.dict(self.m.os.environ, {'SLT_PACKAGE_FENCE_FD': '7'}):
+            identity = self.m.recovery_executor_identity(self.args)
+            self.assertNotIn('fence_sha256', identity)  # preserve receipt schema
+            self.members[name] = b'other fence'
+            with self.assertRaisesRegex(RuntimeError, 'fence helper differs'):
+                self.m.recovery_executor_identity(self.args)
+            self.members[name] = b'fence fixture'
+            del self.members[name]
+            with self.assertRaisesRegex(RuntimeError, 'lacks package fence'):
+                self.m.recovery_executor_identity(self.args)
+            self.members[name] = b'fence fixture'
+            count = 0
+            def drift(value, **_):
+                nonlocal count
+                if str(value) == str(path):
+                    count += 1
+                    return self.digests[str(path)] if count == 1 else 'e' * 64
+                return self.digests[str(value)]
+            with mock.patch.object(self.m, 'recovery_file_digest', side_effect=drift):
+                with self.assertRaisesRegex(RuntimeError, 'changed during identity inspection'):
+                    self.m.recovery_executor_identity(self.args)
+
+    def test_fenced_carrier_identity_failure_precedes_any_helper_or_state_change(self):
+        original = copy.deepcopy(self.store)
+        with mock.patch.dict(self.m.os.environ, {'SLT_PACKAGE_FENCE_FD': '7'}), \
+                mock.patch.object(self.m, 'load_package_executor_fence', side_effect=AssertionError('loaded')) as loaded:
+            with self.assertRaisesRegex(RuntimeError, 'lacks package fence'):
+                self.command()
+        loaded.assert_not_called()
+        self.assertEqual(self.store, original)
+
+    def test_fenced_carrier_settlement_replays_with_unchanged_receipt_schema(self):
+        name = 'sharedlvmthin_package_executor_fence.py'
+        path = self.m.pathlib.Path(self.m.__file__).resolve().with_name(name)
+        self.members[name] = b'fence fixture'
+        self.digests[str(path)] = hashlib.sha256(self.members[name]).hexdigest()
+        with mock.patch.dict(self.m.os.environ, {'SLT_PACKAGE_FENCE_FD': '7'}):
+            self.command()
+            settled = copy.deepcopy(self.store)
+            self.effects.clear()
+            self.command()
+        self.assertEqual(self.store, settled)
+        self.assertEqual(self.effects, [])
+        self.assertEqual(set(self.store[self.m.RUNTIME_QUALIFICATION]['recovery_executor']),
+                         {'schema', 'carrier_sha256', 'carrier_package', 'carrier_version',
+                          'carrier_architecture', 'helper_sha256', 'core_sha256'})
+
     def test_wrong_profile_architecture_or_duplicate_control_refused(self):
         for control in (
             b'Package: pve-sharedlvmthin\nVersion: 99\nArchitecture: all\n',

@@ -11,7 +11,7 @@ sub evidence {
     return (
         pool_uuid => 'pool-uuid-1', metadata_uuid => 'metadata-uuid-1',
         data_uuid => 'data-uuid-1', transaction_id => 42,
-        owner_node => 'pve01', owner_epoch => ('a' x 32),
+        owner_node => 'node01', owner_epoch => ('a' x 32),
         live_table_hash => ('b' x 64), dependency_hash => ('c' x 64),
         metadata_mode => 'rw',
         @_,
@@ -35,7 +35,7 @@ subtest 'every safety identity field participates in the digest' => sub {
     my %changes = (
         pool_uuid => 'pool-uuid-2', metadata_uuid => 'metadata-uuid-2',
         data_uuid => 'data-uuid-2', transaction_id => 43,
-        owner_node => 'pve02', owner_epoch => ('d' x 32),
+        owner_node => 'node02', owner_epoch => ('d' x 32),
         live_table_hash => ('e' x 64), dependency_hash => ('f' x 64),
         metadata_mode => 'ro',
     );
@@ -134,8 +134,8 @@ subtest 'PVE-native LeaseGuard requires positive absence from every peer kernel'
         enabled => 1, quorum => 1, storage_identity => 1,
         local_runtime_absent => 1,
         remote_nodes => [
-            { node => 'pve02', state => 'ABSENT' },
-            { node => 'pve03', state => 'ABSENT' },
+            { node => 'node02', state => 'ABSENT' },
+            { node => 'node03', state => 'ABSENT' },
         ],
     );
     my $pass = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(%base);
@@ -145,8 +145,8 @@ subtest 'PVE-native LeaseGuard requires positive absence from every peer kernel'
     for my $state (qw(PRESENT UNKNOWN)) {
         my %candidate = %base;
         $candidate{remote_nodes} = [
-            { node => 'pve02', state => $state },
-            { node => 'pve03', state => 'ABSENT' },
+            { node => 'node02', state => $state },
+            { node => 'node03', state => 'ABSENT' },
         ];
         my $result = PVE::SharedLvmThinSafety::evaluate_pve_native_leaseguard(%candidate);
         is($result->{status}, $state eq 'PRESENT' ? 'REFUSED' : 'UNKNOWN',

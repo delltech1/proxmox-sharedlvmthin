@@ -697,8 +697,8 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_configured_peer_nodes = sub {
         return [
-            { node => 'pve02', ip => '203.0.113.2' },
-            { node => 'pve03', ip => '203.0.113.3' },
+            { node => 'node02', ip => '203.0.113.2' },
+            { node => 'node03', ip => '203.0.113.3' },
         ];
     };
     my @probe_invocations;
@@ -853,36 +853,36 @@ subtest 'PVE-native LeaseGuard accepts parsed PVE node-scope hashes' => sub {
     local *PVE::Cluster::cfs_update = sub { return 1 };
     local *PVE::Cluster::get_members = sub {
         return {
-            pve01 => { online => 1, ip => '192.0.2.1' },
-            pve02 => { online => 1, ip => '192.0.2.2' },
-            pve03 => { online => 1, ip => '192.0.2.3' },
+            node01 => { online => 1, ip => '192.0.2.1' },
+            node02 => { online => 1, ip => '192.0.2.2' },
+            node03 => { online => 1, ip => '192.0.2.3' },
         };
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'pve01' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'node01' };
 
     my $peers = $thin_configured_peer_nodes->($class, {
-        nodes => { pve01 => 1, pve02 => 1, pve03 => 1 },
+        nodes => { node01 => 1, node02 => 1, node03 => 1 },
     });
     is_deeply($peers, [
-        { node => 'pve02', ip => '192.0.2.2' },
-        { node => 'pve03', ip => '192.0.2.3' },
+        { node => 'node02', ip => '192.0.2.2' },
+        { node => 'node03', ip => '192.0.2.3' },
     ], 'parsed PVE node hash yields exact non-local peers');
 
     $peers = $thin_configured_peer_nodes->($class, {
-        nodes => 'pve01,pve03',
+        nodes => 'node01,node03',
     });
     is_deeply($peers, [
-        { node => 'pve03', ip => '192.0.2.3' },
+        { node => 'node03', ip => '192.0.2.3' },
     ], 'raw node list remains supported for direct callers');
 
     $peers = $thin_configured_peer_nodes->($class, {
-        nodes => { pve01 => 1, pve02 => 1, pve03 => 1 },
-    }, 'pve03');
+        nodes => { node01 => 1, node02 => 1, node03 => 1 },
+    }, 'node03');
     is_deeply($peers, [
-        { node => 'pve02', ip => '192.0.2.2' },
+        { node => 'node02', ip => '192.0.2.2' },
     ], 'positively fenced former owner is excluded while every online peer remains audited');
 
-    eval { $thin_configured_peer_nodes->($class, { nodes => ['pve01', 'pve02'] }) };
+    eval { $thin_configured_peer_nodes->($class, { nodes => ['node01', 'node02'] }) };
     like($@, qr/node scope is malformed/, 'unexpected node-scope reference fails closed');
 };
 
@@ -934,8 +934,8 @@ subtest 'migration bridge admission is exact, durable and transaction scoped' =>
     my $tx = 'a' x 32;
     my @state_lines = (
         [''],
-        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve01"],
-        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve01"],
+        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-node01"],
+        ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-node01"],
         [''],
     );
     my @seen;
@@ -945,7 +945,7 @@ subtest 'migration bridge admission is exact, durable and transaction scoped' =>
         return $code->();
     };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { return 1 };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'pve01' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { return 'node01' };
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
         return shift @state_lines;
     };
@@ -958,20 +958,20 @@ subtest 'migration bridge admission is exact, durable and transaction scoped' =>
         'slt-vgname' => 'testvg',
         'slt-expected-wwid' => 'wwid1',
     };
-    is($bridge_admission->($class, $cfg, 'thin-a', 'acquire', $tx, 'pve01'),
+    is($bridge_admission->($class, $cfg, 'thin-a', 'acquire', $tx, 'node01'),
         'BRIDGE_ADMISSION_ACQUIRED', 'exact bridge admission is acquired');
-    is($bridge_admission->($class, $cfg, 'thin-a', 'release', $tx, 'pve01'),
+    is($bridge_admission->($class, $cfg, 'thin-a', 'release', $tx, 'node01'),
         'BRIDGE_ADMISSION_RELEASED', 'exact bridge admission is released');
     is(scalar(@seen), 2, 'one VG tag mutation per transition');
     like(join(' ', @{$seen[0]}), qr/--addtag pve-slt-bridge-v1/, 'acquire publishes schema tag');
     like(join(' ', @{$seen[1]}), qr/--deltag pve-slt-bridge-tx-$tx/, 'release removes exact transaction');
 
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_command_lines = sub {
-        return ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-pve02"];
+        return ["pve-slt-bridge-v1,pve-slt-bridge-tx-$tx,pve-slt-bridge-node-node02"];
     };
     my $foreign = $bridge_admission_state->($class, 'testvg', '/dev/mapper/wwid1');
     ok($foreign->{active}, 'foreign admission is visible');
-    is($foreign->{node}, 'pve02', 'foreign owner is exact');
+    is($foreign->{node}, 'node02', 'foreign owner is exact');
 };
 
 subtest 'bridge admission gates every canonical VG lock and exact owner may proceed' => sub {
@@ -984,15 +984,15 @@ subtest 'bridge admission gates every canonical VG lock and exact owner may proc
     };
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_bridge_admission_state = sub {
-        return { active => 1, tx => $tx, node => 'pve01' };
+        return { active => 1, tx => $tx, node => 'node01' };
     };
-    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'pve01' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node01' };
     local $ENV{PVE_SLT_BRIDGE_TX};
     local $ENV{PVE_SLT_BRIDGE_NODE};
     eval { $bridge_admission_compatible->($class, $cfg, 'testvg', '/dev/mapper/wwid1') };
     like($@, qr/unrelated mutation refused/, 'mutation without transaction context is refused');
     $ENV{PVE_SLT_BRIDGE_TX} = 'c' x 32;
-    $ENV{PVE_SLT_BRIDGE_NODE} = 'pve01';
+    $ENV{PVE_SLT_BRIDGE_NODE} = 'node01';
     eval { $bridge_admission_compatible->($class, $cfg, 'testvg', '/dev/mapper/wwid1') };
     like($@, qr/unrelated mutation refused/, 'foreign transaction cannot spoof admission');
     $ENV{PVE_SLT_BRIDGE_TX} = $tx;
@@ -1042,7 +1042,7 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
     require PVE::Storage;
     no warnings 'redefine';
     local *PVE::Storage::config = sub {
-        return { ids => { 'sharedthin-test' => {
+        return { ids => { 'example-storage-02' => {
             type => 'sharedlvmthin',
             shared => 1,
             'slt-lock-timeout' => 180,
@@ -1064,16 +1064,16 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
         push @yields, $milliseconds;
     };
 
-    is($cluster_lock_storage->($class, 'sharedthin-test', 1, undef, sub { 42 }), 42,
+    is($cluster_lock_storage->($class, 'example-storage-02', 1, undef, sub { 42 }), 42,
         'outer PVE wrapper callback result is preserved');
-    is_deeply($seen[-1], ['sharedthin-test', 1, 180],
+    is_deeply($seen[-1], ['example-storage-02', 1, 180],
         'undefined PVE wrapper timeout resolves to the storage policy');
     is_deeply(\@yields, [1250],
         'outer wrapper yields once only after the callback returns');
 
-    is($cluster_lock_storage->($class, 'sharedthin-test', 1, 17, sub { 43 }), 43,
+    is($cluster_lock_storage->($class, 'example-storage-02', 1, 17, sub { 43 }), 43,
         'explicit internal lock callback result is preserved');
-    is_deeply($seen[-1], ['sharedthin-test', 1, 17],
+    is_deeply($seen[-1], ['example-storage-02', 1, 17],
         'an explicit caller timeout is never overridden');
     is_deeply(\@yields, [1250], 'internal explicit locks never add a yield');
 
@@ -1085,7 +1085,7 @@ subtest 'PVE outer wrapper uses the configured bounded storage lock timeout' => 
 
     my $calls_before_failure = scalar(@seen);
     eval {
-        $cluster_lock_storage->($class, 'sharedthin-test', 1, undef,
+        $cluster_lock_storage->($class, 'example-storage-02', 1, undef,
             sub { die "simulated ambiguous callback failure\n" });
     };
     like($@, qr/simulated ambiguous callback failure/,
@@ -1588,11 +1588,11 @@ subtest 'volume_resize accepts API14 and API15 call signatures' => sub {
         return;
     };
 
-    $class->volume_resize($scfg, 'sharedthin-test', 'vm-100-disk-0', 1024, 0);
+    $class->volume_resize($scfg, 'example-storage-02', 'vm-100-disk-0', 1024, 0);
     is(scalar(@received), 7, 'API14 call is normalized with an undefined snapshot argument');
     ok(!defined($received[6]), 'API14 has no snapshot target');
 
-    $class->volume_resize($scfg, 'sharedthin-test', 'vm-100-disk-0', 1024, 0, 'snap1');
+    $class->volume_resize($scfg, 'example-storage-02', 'vm-100-disk-0', 1024, 0, 'snap1');
     is($received[6], 'snap1', 'API15 snapshot argument is received explicitly');
 };
 
@@ -1606,19 +1606,19 @@ subtest 'delayed SAN discovery recovers without initialization or repair' => sub
     };
 
     my $ok = eval {
-        $class->activate_storage('sharedthin-test', $scfg, undef);
+        $class->activate_storage('example-storage-02', $scfg, undef);
         1;
     };
     ok(!$ok, 'activation fails while SAN/VG is unavailable');
     like($@, qr/VG 'testvg' not found/, 'unavailable state is explicit');
     is(scalar(@commands), 0, 'no initialize, repair, or mutation attempted');
 
-    my @missing_status = $class->status('sharedthin-test', $scfg, undef);
+    my @missing_status = $class->status('example-storage-02', $scfg, undef);
     is(scalar(@missing_status), 0, 'status remains unavailable while VG is absent');
 
     $visible = 1;
-    ok($class->activate_storage('sharedthin-test', $scfg, undef), 'later activation succeeds after discovery');
-    my @recovered = $class->status('sharedthin-test', $scfg, undef);
+    ok($class->activate_storage('example-storage-02', $scfg, undef), 'later activation succeeds after discovery');
+    my @recovered = $class->status('example-storage-02', $scfg, undef);
     is_deeply(\@recovered, [1000, 600, 400, 1], 'existing VG is rediscovered without recreation');
     is(scalar(@commands), 0, 'recovery performed no initialization or repair');
 };
@@ -1718,7 +1718,7 @@ subtest 'storage identity gate accepts an exact single-PV multipath identity' =>
         'slt-expected-pv-uuid' => 'pv-uuid-expected',
         'slt-expected-wwid' => '3600deadbeef00000000000000000001',
     };
-    ok($class->_verify_storage_identity('sharedthin-test', $identity), 'identity accepted');
+    ok($class->_verify_storage_identity('example-storage-02', $identity), 'identity accepted');
 };
 
 subtest 'storage identity gate fails closed before mutation' => sub {
@@ -1734,7 +1734,7 @@ subtest 'storage identity gate fails closed before mutation' => sub {
         'slt-expected-vg-uuid' => 'vg-uuid-expected',
     };
     my $ok = eval {
-        $class->_verify_storage_identity('sharedthin-test', $identity);
+        $class->_verify_storage_identity('example-storage-02', $identity);
         1;
     };
     ok(!$ok, 'mismatch rejected');
@@ -1783,7 +1783,7 @@ subtest 'storage identity gate rejects ambiguous or unstable PV presentation' =>
         'slt-expected-pv-uuid' => 'pv-one',
     };
     my $ok = eval {
-        $class->_verify_storage_identity('sharedthin-test', $identity);
+        $class->_verify_storage_identity('example-storage-02', $identity);
         1;
     };
     ok(!$ok, 'multiple PVs rejected');
@@ -1865,7 +1865,7 @@ subtest 'identity failure matrix performs no mutating LVM command' => sub {
         };
         my $identity = { %$scfg, %{$case->{config}} };
         my $ok = eval {
-            $class->_verify_storage_identity('sharedthin-test', $identity);
+            $class->_verify_storage_identity('example-storage-02', $identity);
             1;
         };
         ok(!$ok, "$case->{name}: rejected");
@@ -1881,7 +1881,7 @@ subtest 'unavailable VG blocks activation without mutation' => sub {
         return { state => 'ABSENT' };
     };
     my $ok = eval {
-        $class->activate_storage('sharedthin-test', $scfg, undef);
+        $class->activate_storage('example-storage-02', $scfg, undef);
         1;
     };
     ok(!$ok, 'unavailable VG rejected');
@@ -1902,7 +1902,7 @@ subtest 'identity mismatch blocks alloc before first mutation' => sub {
     };
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $identity, 900001, 'raw',
+            'example-storage-02', $identity, 900001, 'raw',
             'vm-900001-disk-0', 1024,
         );
         1;
@@ -1923,7 +1923,7 @@ subtest 'legacy and foreign ownership are read-only' => sub {
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         } });
         my $ok = eval {
-            $verify_owned_volume->($class, 'sharedthin-test', $scfg, 'vm-900001-disk-0');
+            $verify_owned_volume->($class, 'example-storage-02', $scfg, 'vm-900001-disk-0');
             1;
         };
         ok(!$ok, "$case->[0] object rejected");
@@ -1938,7 +1938,7 @@ subtest 'quorum loss blocks shared mutation before any LVM command' => sub {
     local *PVE::Cluster::check_cfs_quorum = sub { die "cluster not ready - no quorum\n"; };
     my $shared_cfg = { %$scfg, shared => 1 };
     my $ok = eval {
-        $verify_mutation_quorum->($class, 'sharedthin-test', $shared_cfg);
+        $verify_mutation_quorum->($class, 'example-storage-02', $shared_cfg);
         1;
     };
     ok(!$ok, 'quorum loss rejected');
@@ -1950,7 +1950,7 @@ subtest 'standalone non-shared mutation does not require cluster quorum' => sub 
     reset_mocks();
     no warnings 'redefine';
     local *PVE::Cluster::check_cfs_quorum = sub { die "must not be called\n"; };
-    ok($verify_mutation_quorum->($class, 'sharedthin-test', { %$scfg, shared => 0 }), 'non-shared allowed');
+    ok($verify_mutation_quorum->($class, 'example-storage-02', { %$scfg, shared => 0 }), 'non-shared allowed');
     is(scalar(@commands), 0, 'non-shared preflight is read-only');
 };
 
@@ -2008,7 +2008,7 @@ subtest 'forced quorum gate blocks shared mutation after native quorum check' =>
         die "CRITICAL: forced single-node quorum detected\n";
     };
     my $ok = eval {
-        $verify_mutation_quorum->($class, 'sharedthin-test', { %$scfg, shared => 1 });
+        $verify_mutation_quorum->($class, 'example-storage-02', { %$scfg, shared => 1 });
         1;
     };
     ok(!$ok, 'forced quorum rejected despite native quorate result');
@@ -2019,10 +2019,10 @@ subtest 'forced quorum gate blocks shared mutation after native quorum check' =>
 
 subtest 'lock rejection blocks direct mutating hooks before LVM' => sub {
     my @operations = (
-        ['resize', sub { $class->volume_resize($scfg, 'sharedthin-test', 'vm-900001-disk-0', 2048, 0, undef) }],
-        ['snapshot create', sub { $class->volume_snapshot($scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before') }],
-        ['snapshot delete', sub { $class->volume_snapshot_delete($scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before') }],
-        ['rollback', sub { $class->volume_snapshot_rollback($scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before') }],
+        ['resize', sub { $class->volume_resize($scfg, 'example-storage-02', 'vm-900001-disk-0', 2048, 0, undef) }],
+        ['snapshot create', sub { $class->volume_snapshot($scfg, 'example-storage-02', 'vm-900001-disk-0', 'before') }],
+        ['snapshot delete', sub { $class->volume_snapshot_delete($scfg, 'example-storage-02', 'vm-900001-disk-0', 'before') }],
+        ['rollback', sub { $class->volume_snapshot_rollback($scfg, 'example-storage-02', 'vm-900001-disk-0', 'before') }],
     );
     for my $operation (@operations) {
         reset_mocks();
@@ -2048,7 +2048,7 @@ subtest 'quorum loss at mutation boundary fails inside the held lock' => sub {
     };
     my $ok = eval {
         $class->volume_resize(
-            { %$scfg, shared => 1 }, 'sharedthin-test',
+            { %$scfg, shared => 1 }, 'example-storage-02',
             'vm-900001-disk-0', 2048, 0, undef,
         );
         1;
@@ -2068,7 +2068,7 @@ subtest 'known quorum loss fails before waiting for a storage lock' => sub {
     };
     my $ok = eval {
         $class->volume_resize(
-            { %$scfg, shared => 1 }, 'sharedthin-test',
+            { %$scfg, shared => 1 }, 'example-storage-02',
             'vm-900001-disk-0', 2048, 0, undef,
         );
         1;
@@ -2087,7 +2087,7 @@ subtest 'ownership ambiguity at mutation boundary fails closed' => sub {
     };
     my $ok = eval {
         $class->volume_snapshot_delete(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -2107,7 +2107,7 @@ subtest 'VG loss during snapshot creation has no destructive fallback' => sub {
     };
     my $ok = eval {
         $class->volume_snapshot(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -2204,7 +2204,7 @@ subtest 'snapshot acknowledgement uncertainty preserves the created snapshot' =>
     };
     my $ok = eval {
         $class->volume_snapshot(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -2226,7 +2226,7 @@ subtest 'snapshot create ambiguity requires prior absence and exact new object' 
     };
     my $ok = eval {
         $class->volume_snapshot(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -2248,7 +2248,7 @@ subtest 'snapshot delete timeout is never blindly retried' => sub {
     };
     my $ok = eval {
         $class->volume_snapshot_delete(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -2269,7 +2269,7 @@ subtest 'snapshot delete ambiguity accepts exact absence without retry' => sub {
     };
     my $ok = eval {
         $class->volume_snapshot_delete(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -2294,7 +2294,7 @@ subtest 'snapshot delete proves snapshot ownership before lvremove' => sub {
 
         my $ok = eval {
             $class->volume_snapshot_delete(
-                $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+                $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
             );
             1;
         };
@@ -2322,18 +2322,18 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } }, { testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } });
     my $name = $class->alloc_image(
-        'sharedthin-test', $scfg, 900001, 'raw',
+        'example-storage-02', $scfg, 900001, 'raw',
         'vm-900001-state-S1', 262144,
     );
     is($name, 'vm-900001-state-S1', 'exact PVE vmstate name accepted');
@@ -2348,19 +2348,19 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } }, { testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } });
     is(
         $class->alloc_image(
-            'sharedthin-test', $scfg, 900001, 'raw',
+            'example-storage-02', $scfg, 900001, 'raw',
             'vm-900001-fleece-0', 262144,
         ),
         'vm-900001-fleece-0',
@@ -2377,19 +2377,19 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } }, { testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
     } });
     is(
         $class->alloc_image(
-            'sharedthin-test', $scfg, 900001, 'raw',
+            'example-storage-02', $scfg, 900001, 'raw',
             'vm-900001-cloudinit', 4096,
         ),
         'vm-900001-cloudinit',
@@ -2409,7 +2409,7 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     ) {
         reset_mocks();
         my $ok = eval {
-            $class->alloc_image('sharedthin-test', $scfg, 900001, 'raw', $bad, 1);
+            $class->alloc_image('example-storage-02', $scfg, 900001, 'raw', $bad, 1);
             1;
         };
         ok(!$ok, "rejected non-canonical vmstate name $bad");
@@ -2420,7 +2420,7 @@ subtest 'vmstate, fleecing and cloud-init allocations require an active owned VM
     @lvm_results = ({ testvg => {} });
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $scfg, 900001, 'raw',
+            'example-storage-02', $scfg, 900001, 'raw',
             'vm-900001-state-S1', 262144,
         );
         1;
@@ -2437,19 +2437,19 @@ subtest 'new VM allocation creates, converts, tags and uses one pool' => sub {
         { testvg => {
             'sltp-900001' => {
                 lv_type => 't',
-                tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
         } },
     );
     my $name = $class->alloc_image(
-        'sharedthin-test', $scfg, 900001, 'raw',
+        'example-storage-02', $scfg, 900001, 'raw',
         'vm-900001-disk-0', 1024,
     );
     is($name, 'vm-900001-disk-0', 'allocated name returned');
     my @lines = command_lines();
     like($lines[0], qr{^/sbin/lvcreate --yes --wipesignatures y -L 4194304K -n sltp-900001 testvg$}, 'backing LV command');
     like($lines[1], qr{^/sbin/lvconvert -y --type thin-pool testvg/sltp-900001$}, 'thin-pool conversion');
-    like($lines[2], qr{--addtag pve-slt-sid-sharedthin-test}, 'storage ownership tag');
+    like($lines[2], qr{--addtag pve-slt-sid-example-storage-02}, 'storage ownership tag');
     like($lines[3], qr{^/sbin/lvcreate --yes --wipesignatures y -V 1024K -n vm-900001-disk-0 --thinpool testvg/sltp-900001$}, 'thin LV allocation');
 };
 
@@ -2464,7 +2464,7 @@ subtest 'proportional allocation creates physical burst headroom under reserve g
     @lvm_results = (
         { testvg => {} },
         { testvg => {
-            'sltp-900001' => { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' },
+            'sltp-900001' => { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' },
         } },
     );
     no warnings 'redefine';
@@ -2472,7 +2472,7 @@ subtest 'proportional allocation creates physical burst headroom under reserve g
         return (400 * 1024**3, 300 * 1024**3, 4 * 1024**2);
     };
     my $name = $class->alloc_image(
-        'sharedthin-test', $policy, 900001, 'raw',
+        'example-storage-02', $policy, 900001, 'raw',
         'vm-900001-disk-0', 64 * 1024 * 1024,
     );
     is($name, 'vm-900001-disk-0', 'allocation completed');
@@ -2489,7 +2489,7 @@ subtest 'multi-disk proportional allocation pre-grows from live usage' => sub {
         'slt-initial-pool-percent' => 50,
         'slt-vg-reserve-gib' => 10,
     };
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     my $disk = { pool_lv => 'sltp-999900' };
     @lvm_results = (
         { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
@@ -2506,7 +2506,7 @@ subtest 'multi-disk proportional allocation pre-grows from live usage' => sub {
         return @{shift @numeric};
     };
     my $name = $class->alloc_image(
-        'sharedthin-test', $policy, 999900, 'raw',
+        'example-storage-02', $policy, 999900, 'raw',
         'vm-999900-disk-1', 64 * 1024 * 1024,
     );
     is($name, 'vm-999900-disk-1', 'second disk allocation completed');
@@ -2519,11 +2519,11 @@ subtest 'multi-disk proportional allocation pre-grows from live usage' => sub {
 subtest 'existing Thin allocation preserves the durable owner boundary' => sub {
     my $pool_unowned = {
         lv_type => 't',
-        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+        tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
     };
     my $pool_owned = {
         lv_type => 't',
-        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+        tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1,pve-slt-owner-node-node1,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
     };
     my $disk = { pool_lv => 'sltp-999900' };
 
@@ -2541,7 +2541,7 @@ subtest 'existing Thin allocation preserves the durable owner boundary' => sub {
         { testvg => { 'sltp-999900' => $pool_unowned, 'vm-999900-disk-0' => $disk } },
     );
     is($class->alloc_image(
-        'sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
+        'example-storage-02', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
     ), 'vm-999900-disk-1', 'offline second disk allocation succeeds');
     is_deeply(\@published, [['testvg', 'sltp-999900', 'vm-999900-disk-1']],
         'an unowned existing pool is republished fully inactive');
@@ -2553,7 +2553,7 @@ subtest 'existing Thin allocation preserves the durable owner boundary' => sub {
         { testvg => { 'sltp-999900' => $pool_owned, 'vm-999900-disk-0' => $disk } },
     );
     is($class->alloc_image(
-        'sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
+        'example-storage-02', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
     ), 'vm-999900-disk-1', 'local-owner hotplug allocation succeeds');
     is_deeply(\@published, [], 'a locally owned active pool is never torn down by hotplug');
 
@@ -2561,7 +2561,7 @@ subtest 'existing Thin allocation preserves the durable owner boundary' => sub {
     @published = ();
     my $pool_foreign = {
         %$pool_owned,
-        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-node2,pve-slt-owner-epoch-abcdef0123456789abcdef0123456789',
+        tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1,pve-slt-owner-node-node2,pve-slt-owner-epoch-abcdef0123456789abcdef0123456789',
     };
     @lvm_results = ({ testvg => {
         'sltp-999900' => $pool_foreign,
@@ -2569,7 +2569,7 @@ subtest 'existing Thin allocation preserves the durable owner boundary' => sub {
     } });
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
+            'example-storage-02', $scfg, 999900, 'raw', 'vm-999900-disk-1', 1024,
         );
         1;
     };
@@ -2587,7 +2587,7 @@ subtest 'inactive pool allocation never repeats headroom growth' => sub {
         'slt-burst-headroom-gib' => 16,
         'slt-vg-reserve-gib' => 10,
     };
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     my $disk = { pool_lv => 'sltp-999900' };
     @lvm_results = (
         { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
@@ -2608,7 +2608,7 @@ subtest 'inactive pool allocation never repeats headroom growth' => sub {
     my $warning = '';
     local $SIG{__WARN__} = sub { $warning .= shift };
     my $name = $class->alloc_image(
-        'sharedthin-test', $policy, 999900, 'raw',
+        'example-storage-02', $policy, 999900, 'raw',
         'vm-999900-disk-1', 32 * 1024 * 1024,
     );
     is($name, 'vm-999900-disk-1', 'allocation can proceed without speculative pre-growth');
@@ -2626,7 +2626,7 @@ subtest 'active hidden pool mapper enables exact import pre-growth' => sub {
         'slt-burst-headroom-gib' => 16,
         'slt-vg-reserve-gib' => 10,
     };
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     my $disk = { pool_lv => 'sltp-999900' };
     @lvm_results = (
         { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
@@ -2650,7 +2650,7 @@ subtest 'active hidden pool mapper enables exact import pre-growth' => sub {
         return { pool_mapper_active => 1, pool_active => 0, active_children => [] };
     };
     my $name = $class->alloc_image(
-        'sharedthin-test', $policy, 999900, 'raw',
+        'example-storage-02', $policy, 999900, 'raw',
         'vm-999900-disk-1', 8 * 1024 * 1024,
     );
     is($name, 'vm-999900-disk-1', 'native import allocation completed');
@@ -2675,7 +2675,7 @@ subtest 'allocation reserve rejection runs zero mutations' => sub {
     };
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $policy, 900001, 'raw',
+            'example-storage-02', $policy, 900001, 'raw',
             'vm-900001-disk-0', 64 * 1024 * 1024,
         );
         1;
@@ -2697,7 +2697,7 @@ subtest 'uncertain allocation pre-grow is never retried or shrunk' => sub {
             'slt-initial-pool-percent' => 50,
             'slt-vg-reserve-gib' => 10,
         };
-        my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+        my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
         my $disk = { pool_lv => 'sltp-999900' };
         @lvm_results = (
             { testvg => { 'sltp-999900' => $pool, 'vm-999900-disk-0' => $disk } },
@@ -2716,7 +2716,7 @@ subtest 'uncertain allocation pre-grow is never retried or shrunk' => sub {
         $command_failure = qr{/sbin/lvextend};
         my $ok = eval {
             $class->alloc_image(
-                'sharedthin-test', $policy, 999900, 'raw',
+                'example-storage-02', $policy, 999900, 'raw',
                 'vm-999900-disk-1', 64 * 1024 * 1024,
             );
             1;
@@ -2748,7 +2748,7 @@ subtest 'unexpected post-allocation reserve loss preserves pool and refuses gues
     };
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $policy, 900001, 'raw',
+            'example-storage-02', $policy, 900001, 'raw',
             'vm-900001-disk-0', 16 * 1024 * 1024,
         );
         1;
@@ -2817,7 +2817,7 @@ subtest 'autoactivation failure preserves allocated guest LV as partial' => sub 
         { testvg => {} },
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
         } },
     );
@@ -2829,7 +2829,7 @@ subtest 'autoactivation failure preserves allocated guest LV as partial' => sub 
     };
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $scfg, 900001, 'raw', 'vm-900001-disk-0', 1024,
+            'example-storage-02', $scfg, 900001, 'raw', 'vm-900001-disk-0', 1024,
         );
         1;
     };
@@ -2849,7 +2849,7 @@ subtest 'resize preserves the autoactivation invariant before mutation' => sub {
     };
     my $ok = eval {
         $class->volume_resize(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 2048, 0, undef,
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 2048, 0, undef,
         );
         1;
     };
@@ -2866,7 +2866,7 @@ subtest 'snapshot autoactivation uncertainty preserves created snapshot' => sub 
     };
     my $ok = eval {
         $class->volume_snapshot(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -2885,7 +2885,7 @@ subtest 'foreign existing pool is rejected before mutation' => sub {
     } });
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $scfg, 900001, 'raw',
+            'example-storage-02', $scfg, 900001, 'raw',
             'vm-900001-disk-0', 1024,
         );
         1;
@@ -2905,13 +2905,13 @@ subtest 'VMID reuse rejects stale owned pool and stale snapshots without mutatio
         reset_mocks();
         @lvm_results = ({ testvg => {
             'sltp-999900' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             %{$case->[1]},
         } });
         my $ok = eval {
             $class->alloc_image(
-                'sharedthin-test', $scfg, 999900, 'raw',
+                'example-storage-02', $scfg, 999900, 'raw',
                 'vm-999900-disk-0', 1024,
             );
             1;
@@ -2929,7 +2929,7 @@ subtest 'VMID reuse rejects a foreign existing LV before pool creation' => sub {
     } });
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $scfg, 999900, 'raw',
+            'example-storage-02', $scfg, 999900, 'raw',
             'vm-999900-disk-0', 1024,
         );
         1;
@@ -2944,19 +2944,19 @@ subtest 'VMID reuse allows adding a disk only to an actively owned pool' => sub 
     @lvm_results = (
         { testvg => {
             'sltp-999900' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-999900-disk-0' => { pool_lv => 'sltp-999900' },
         } },
         { testvg => {
             'sltp-999900' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-999900-disk-0' => { pool_lv => 'sltp-999900' },
         } },
     );
     my $name = $class->alloc_image(
-        'sharedthin-test', $scfg, 999900, 'raw',
+        'example-storage-02', $scfg, 999900, 'raw',
         'vm-999900-disk-1', 1024,
     );
     is($name, 'vm-999900-disk-1', 'second disk allocation allowed');
@@ -2967,7 +2967,7 @@ subtest 'VMID reuse allows adding a disk only to an actively owned pool' => sub 
 subtest 'clean VMID reuse completes two full lifecycles with zero artifacts' => sub {
     reset_mocks();
     my $pool = {
-        lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+        lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
     };
     my $disk = { pool_lv => 'sltp-999900' };
     my $snap = { pool_lv => 'sltp-999900' };
@@ -2991,20 +2991,20 @@ subtest 'clean VMID reuse completes two full lifecycles with zero artifacts' => 
     );
 
     is(
-        $class->alloc_image('sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-0', 1024),
+        $class->alloc_image('example-storage-02', $scfg, 999900, 'raw', 'vm-999900-disk-0', 1024),
         'vm-999900-disk-0',
         'first lifecycle allocated',
     );
-    $class->free_image('sharedthin-test', $scfg, 'vm-999900-disk-0', 0);
+    $class->free_image('example-storage-02', $scfg, 'vm-999900-disk-0', 0);
     is(
-        $class->alloc_image('sharedthin-test', $scfg, 999900, 'raw', 'vm-999900-disk-0', 1024),
+        $class->alloc_image('example-storage-02', $scfg, 999900, 'raw', 'vm-999900-disk-0', 1024),
         'vm-999900-disk-0',
         'same VMID allocated after complete cleanup',
     );
-    $class->volume_snapshot($scfg, 'sharedthin-test', 'vm-999900-disk-0', 'before');
-    $class->volume_snapshot_rollback($scfg, 'sharedthin-test', 'vm-999900-disk-0', 'before');
-    $class->volume_snapshot_delete($scfg, 'sharedthin-test', 'vm-999900-disk-0', 'before');
-    $class->free_image('sharedthin-test', $scfg, 'vm-999900-disk-0', 0);
+    $class->volume_snapshot($scfg, 'example-storage-02', 'vm-999900-disk-0', 'before');
+    $class->volume_snapshot_rollback($scfg, 'example-storage-02', 'vm-999900-disk-0', 'before');
+    $class->volume_snapshot_delete($scfg, 'example-storage-02', 'vm-999900-disk-0', 'before');
+    $class->free_image('example-storage-02', $scfg, 'vm-999900-disk-0', 0);
 
     my @lines = command_lines();
     is(scalar(grep { /lvconvert -y --type thin-pool testvg\/sltp-999900/ } @lines), 2, 'pool created exactly once per lifecycle');
@@ -3020,14 +3020,14 @@ subtest 'failed thin LV allocation preserves the newly-created pool' => sub {
         { testvg => {
             'sltp-900001' => {
                 lv_type => 't',
-                tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
         } },
     );
     $command_failure = qr{/sbin/lvcreate .* -V};
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $scfg, 900001, 'raw',
+            'example-storage-02', $scfg, 900001, 'raw',
             'vm-900001-disk-0', 1024,
         );
         1;
@@ -3036,7 +3036,7 @@ subtest 'failed thin LV allocation preserves the newly-created pool' => sub {
     my @lines = command_lines();
     unlike(join("\n", @lines), qr{/sbin/lvremove}, 'no destructive cleanup attempted');
     like($@, qr/PARTIAL ALLOCATION/, 'partial allocation state reported');
-    like($@, qr/Storage: sharedthin-test.*VMID: 900001.*Object: vm-900001-disk-0.*Pool: sltp-900001/s, 'recovery identity reported');
+    like($@, qr/Storage: example-storage-02.*VMID: 900001.*Object: vm-900001-disk-0.*Pool: sltp-900001/s, 'recovery identity reported');
     like($@, qr/Automatic cleanup was intentionally NOT performed/, 'no-cleanup decision reported');
     like($@, qr/verify VG UUID, PV UUID, WWID, ownership tags, PVE references, quorum, and the storage lock/, 'recovery requirements reported');
 };
@@ -3047,7 +3047,7 @@ subtest 'pool conversion failure preserves the backing LV without cleanup' => su
     $command_failure = qr{/sbin/lvconvert};
     my $ok = eval {
         $class->alloc_image(
-            'sharedthin-test', $scfg, 900001, 'raw',
+            'example-storage-02', $scfg, 900001, 'raw',
             'vm-900001-disk-0', 1024,
         );
         1;
@@ -3066,24 +3066,24 @@ subtest 'free removes disk snapshots, disk and tagged empty pool' => sub {
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
         } },
         { testvg => {
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
         } },
         { testvg => {
             'sltp-900001' => {
                 lv_type => 't',
-                tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
         } },
     );
     $class->free_image(
-        'sharedthin-test', $scfg, 'vm-900001-disk-0', 0,
+        'example-storage-02', $scfg, 'vm-900001-disk-0', 0,
     );
     my @lines = command_lines();
     is_deeply(
@@ -3114,7 +3114,7 @@ subtest 'free refuses a legacy untagged pool without deleting its disk' => sub {
     );
     my $ok = eval {
         $class->free_image(
-            'sharedthin-test', $scfg, 'vm-900001-disk-0', 0,
+            'example-storage-02', $scfg, 'vm-900001-disk-0', 0,
         );
         1;
     };
@@ -3128,12 +3128,12 @@ subtest 'free refuses a volume that is not in the expected pool' => sub {
     @lvm_results = ({ testvg => {
         'vm-900001-disk-0' => { pool_lv => 'foreign-pool' },
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
     } });
     my $ok = eval {
         $class->free_image(
-            'sharedthin-test', $scfg, 'vm-900001-disk-0', 0,
+            'example-storage-02', $scfg, 'vm-900001-disk-0', 0,
         );
         1;
     };
@@ -3147,7 +3147,7 @@ subtest 'free refuses ambiguous snapshot flags before cleanup mutation' => sub {
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3164,7 +3164,7 @@ subtest 'free refuses ambiguous snapshot flags before cleanup mutation' => sub {
     };
 
     my $ok = eval {
-        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
         1;
     };
     ok(!$ok, 'writable/noncanonical snapshot rejected');
@@ -3182,7 +3182,7 @@ subtest 'free refuses a pool tagged for another storage' => sub {
     } });
     my $ok = eval {
         $class->free_image(
-            'sharedthin-test', $scfg, 'vm-900001-disk-0', 0,
+            'example-storage-02', $scfg, 'vm-900001-disk-0', 0,
         );
         1;
     };
@@ -3193,7 +3193,7 @@ subtest 'free refuses a pool tagged for another storage' => sub {
 
 subtest 'one-of-many disk deletion preserves the shared per-VM pool' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -3210,7 +3210,7 @@ subtest 'one-of-many disk deletion preserves the shared per-VM pool' => sub {
             'vm-900001-disk-1' => { pool_lv => 'sltp-900001' },
         } },
     );
-    $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+    $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
     my @lines = command_lines();
     is(scalar(grep { /lvremove/ } @lines), 1, 'only requested disk removed');
     unlike(join("\n", @lines), qr{sltp-900001$}, 'referenced pool preserved');
@@ -3227,12 +3227,12 @@ subtest 'Thin removal preserves the durable owner boundary' => sub {
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
             lv_type => 't',
-            tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-peer01,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+            tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1,pve-slt-owner-node-peer01,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
         },
         'vm-900001-disk-0' => $disk,
     } });
     my $ok = eval {
-        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
         1;
     };
     ok(!$ok, 'foreign-owner removal rejected');
@@ -3243,7 +3243,7 @@ subtest 'Thin removal preserves the durable owner boundary' => sub {
     reset_mocks();
     my $local_pool = {
         lv_type => 't',
-        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1,pve-slt-owner-node-testnode,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
+        tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1,pve-slt-owner-node-testnode,pve-slt-owner-epoch-0123456789abcdef0123456789abcdef',
     };
     @lvm_results = (
         { testvg => { 'sltp-900001' => $local_pool, 'vm-900001-disk-0' => $disk,
@@ -3252,7 +3252,7 @@ subtest 'Thin removal preserves the durable owner boundary' => sub {
             'vm-900001-disk-1' => $disk } },
         { testvg => { 'sltp-900001' => $local_pool, 'vm-900001-disk-1' => $disk } },
     );
-    $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+    $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
     is(scalar(grep { /lvremove -f testvg\/vm-900001-disk-0$/ } command_lines()), 1,
         'local-owner hot-remove deletes only the requested disk');
     unlike(join("\n", command_lines()), qr{lvremove -f testvg/sltp-900001$},
@@ -3261,7 +3261,7 @@ subtest 'Thin removal preserves the durable owner boundary' => sub {
     reset_mocks();
     my $unowned_pool = {
         lv_type => 't',
-        tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+        tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
     };
     @lvm_results = (
         { testvg => { 'sltp-900001' => $unowned_pool,
@@ -3271,7 +3271,7 @@ subtest 'Thin removal preserves the durable owner boundary' => sub {
         { testvg => { 'sltp-900001' => $unowned_pool } },
     );
     $ok = eval {
-        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
         1;
     };
     ok($ok, 'unowned stopped-VM removal remains permitted');
@@ -3279,7 +3279,7 @@ subtest 'Thin removal preserves the durable owner boundary' => sub {
 
 subtest 'unexpected LV reference prevents empty-pool cleanup' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -3294,13 +3294,13 @@ subtest 'unexpected LV reference prevents empty-pool cleanup' => sub {
             'unexpected-reference' => { pool_lv => 'sltp-900001' },
         } },
     );
-    $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+    $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
     unlike(join("\n", command_lines()), qr{lvremove -f testvg/sltp-900001}, 'pool with unknown reference preserved');
 };
 
 subtest 'VG loss after disk delete is UNAVAILABLE and never triggers pool cleanup' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -3313,7 +3313,7 @@ subtest 'VG loss after disk delete is UNAVAILABLE and never triggers pool cleanu
         {},
     );
     my $ok = eval {
-        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
         1;
     };
     ok(!$ok, 'VG loss reported');
@@ -3325,7 +3325,7 @@ subtest 'VG loss after disk delete is UNAVAILABLE and never triggers pool cleanu
 
 subtest 'disk delete failure never broadens cleanup scope' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -3338,7 +3338,7 @@ subtest 'disk delete failure never broadens cleanup scope' => sub {
     );
     $command_failure = qr{/sbin/lvremove -f testvg/vm-900001-disk-0};
     my $ok = eval {
-        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
         1;
     };
     ok(!$ok, 'disk delete failure propagated');
@@ -3349,7 +3349,7 @@ subtest 'disk delete failure never broadens cleanup scope' => sub {
 
 subtest 'pool cleanup failure is reported without retry' => sub {
     reset_mocks();
-    my $pool = { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' };
+    my $pool = { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' };
     @lvm_results = (
         { testvg => {
             'sltp-900001' => $pool,
@@ -3363,7 +3363,7 @@ subtest 'pool cleanup failure is reported without retry' => sub {
     );
     $command_failure = qr{/sbin/lvremove -f testvg/sltp-900001};
     my $ok = eval {
-        $class->free_image('sharedthin-test', $scfg, 'vm-900001-disk-0', 0);
+        $class->free_image('example-storage-02', $scfg, 'vm-900001-disk-0', 0);
         1;
     };
     ok(!$ok, 'pool cleanup failure propagated');
@@ -3375,7 +3375,7 @@ subtest 'pool cleanup failure is reported without retry' => sub {
 subtest 'resize uses an argv array and explicit byte size' => sub {
     reset_mocks();
     $class->volume_resize(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0',
+        $scfg, 'example-storage-02', 'vm-900001-disk-0',
         1073741824, 0, undef,
     );
     is(
@@ -3384,7 +3384,7 @@ subtest 'resize uses an argv array and explicit byte size' => sub {
         'grow command is deterministic',
     );
     is(scalar(@locks), 1, 'resize holds one PVE storage lock');
-    is($locks[0]->[0], 'sharedthin-test', 'correct storage locked');
+    is($locks[0]->[0], 'example-storage-02', 'correct storage locked');
 };
 
 subtest 'Thin resize ambiguity is classified by exact size without retry' => sub {
@@ -3398,7 +3398,7 @@ subtest 'Thin resize ambiguity is classified by exact size without retry' => sub
     };
     my $ok = eval {
         $class->volume_resize(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 1073741824, 0, undef,
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 1073741824, 0, undef,
         );
         1;
     };
@@ -3412,7 +3412,7 @@ subtest 'Thin resize ambiguity is classified by exact size without retry' => sub
         die "smaller than requested\n";
     };
     eval { $class->volume_resize(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 1073741824, 0, undef,
+        $scfg, 'example-storage-02', 'vm-900001-disk-0', 1073741824, 0, undef,
     ) };
     like($@, qr/outcome is UNKNOWN.*no retry or shrink/s,
         'unproven resize preserves the partial state');
@@ -3423,10 +3423,10 @@ subtest 'Thin resize ambiguity is classified by exact size without retry' => sub
 subtest 'snapshot create and delete each hold the PVE storage lock' => sub {
     reset_mocks();
     $class->volume_snapshot(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
     );
     $class->volume_snapshot_delete(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
     );
     is(scalar(@locks), 2, 'one lock per snapshot mutation');
     like(join(' ', @{$commands[0]}), qr{^/sbin/lvcreate }, 'snapshot create executed');
@@ -3441,7 +3441,7 @@ subtest 'rollback materializes replacement before removing current disk' => sub 
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3451,7 +3451,7 @@ subtest 'rollback materializes replacement before removing current disk' => sub 
         } },
     );
     $class->volume_snapshot_rollback(
-        $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+        $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
     );
     my @lines = command_lines();
     like($lines[0], qr{^/sbin/lvcreate -kn -n slt-rb-vm-900001-disk-0-\d+ -s testvg/snap_vm-900001-disk-0_before$}, 'replacement created first');
@@ -3471,7 +3471,7 @@ subtest 'rollback preparation failure leaves current disk untouched' => sub {
         = $record_disable_autoactivation;
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3481,7 +3481,7 @@ subtest 'rollback preparation failure leaves current disk untouched' => sub {
     $command_failure = qr{/sbin/lvcreate -kn};
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3494,12 +3494,12 @@ subtest 'rollback preparation failure leaves current disk untouched' => sub {
 subtest 'rollback owner admission failure precedes every metadata mutation' => sub {
     reset_mocks();
     @lvm_results = ({ testvg => {
-        'sltp-900001' => { lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1' },
+        'sltp-900001' => { lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1' },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
     } });
     $rollback_admission_failure=1;
-    eval { $class->volume_snapshot_rollback($scfg,'sharedthin-test','vm-900001-disk-0','before') };
+    eval { $class->volume_snapshot_rollback($scfg,'example-storage-02','vm-900001-disk-0','before') };
     like($@,qr/rollback owner denied/,'owner rejection propagated');
     is(scalar(@commands),0,'no create/remove/rename without runtime admission');
 };
@@ -3509,7 +3509,7 @@ subtest 'rollback rejects noncanonical snapshot before any mutation' => sub {
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3527,7 +3527,7 @@ subtest 'rollback rejects noncanonical snapshot before any mutation' => sub {
 
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3544,7 +3544,7 @@ subtest 'rollback failure after replacement creation preserves both objects' => 
     my $temporary = "slt-rb-vm-900001-disk-0-$$";
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3555,7 +3555,7 @@ subtest 'rollback failure after replacement creation preserves both objects' => 
     $command_failure = qr{/sbin/lvchange --setautoactivation};
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3577,7 +3577,7 @@ subtest 'rollback origin-delete failure preserves origin and replacement' => sub
     my $temporary = "slt-rb-vm-900001-disk-0-$$";
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3588,7 +3588,7 @@ subtest 'rollback origin-delete failure preserves origin and replacement' => sub
     $command_failure = qr{/sbin/lvremove -f testvg/vm-900001-disk-0};
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3608,7 +3608,7 @@ subtest 'rollback postcondition failure performs no destructive recovery' => sub
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3617,7 +3617,7 @@ subtest 'rollback postcondition failure performs no destructive recovery' => sub
     );
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3639,7 +3639,7 @@ subtest 'rollback final autoactivation uncertainty preserves restored origin' =>
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3650,7 +3650,7 @@ subtest 'rollback final autoactivation uncertainty preserves restored origin' =>
     );
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3669,7 +3669,7 @@ subtest 'rollback rename failure preserves replacement for recovery' => sub {
     my $expected_temporary = "slt-rb-vm-900001-disk-0-$$";
     @lvm_results = ({ testvg => {
         'sltp-900001' => {
-            lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+            lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
         },
         'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
         'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3679,7 +3679,7 @@ subtest 'rollback rename failure preserves replacement for recovery' => sub {
     $command_failure = qr{/sbin/lvrename};
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3698,7 +3698,7 @@ subtest 'rollback rename ambiguity accepts only the exact completed postconditio
     @lvm_results = (
         { testvg => {
             'sltp-900001' => {
-                lv_type => 't', tags => 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+                lv_type => 't', tags => 'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
             },
             'vm-900001-disk-0' => { pool_lv => 'sltp-900001' },
             'snap_vm-900001-disk-0_before' => { pool_lv => 'sltp-900001' },
@@ -3722,7 +3722,7 @@ subtest 'rollback rename ambiguity accepts only the exact completed postconditio
     };
     my $ok = eval {
         $class->volume_snapshot_rollback(
-            $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'before',
+            $scfg, 'example-storage-02', 'vm-900001-disk-0', 'before',
         );
         1;
     };
@@ -3737,19 +3737,19 @@ subtest 'rollback rename ambiguity accepts only the exact completed postconditio
 subtest 'thin volumes advertise zero-initialized copy destinations' => sub {
     ok(
         $class->volume_has_feature(
-            $scfg, 'sparseinit', 'sharedthin-test', 'vm-900001-disk-0', undef, 0,
+            $scfg, 'sparseinit', 'example-storage-02', 'vm-900001-disk-0', undef, 0,
         ),
         'current thin LV advertises sparseinit',
     );
     ok(
         !$class->volume_has_feature(
-            $scfg, 'sparseinit', 'sharedthin-test', 'vm-900001-disk-0', 'before', 0,
+            $scfg, 'sparseinit', 'example-storage-02', 'vm-900001-disk-0', 'before', 0,
         ),
         'snapshot source does not claim to be a new zero-initialized destination',
     );
     ok(
         $class->volume_has_feature(
-            $scfg, 'copy', 'sharedthin-test', 'vm-900001-disk-0', undef, 0,
+            $scfg, 'copy', 'example-storage-02', 'vm-900001-disk-0', undef, 0,
         ),
         'existing copy capability remains enabled',
     );
@@ -6614,8 +6614,8 @@ subtest 'runtime guard releases daemon only after exact mapper teardown and owne
 subtest 'thin claim postcondition failure never guesses a compensating release' => sub {
     reset_mocks();
     my @tags = (
-        'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
-        'pve-slt-sid-sharedthin-test,pve-slt-owner-v1',
+        'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
+        'pve-slt-sid-example-storage-02,pve-slt-owner-v1',
     );
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'node1' };
@@ -6688,7 +6688,7 @@ subtest 'failed target cleanup preserves a foreign owner without error' => sub {
 
 subtest 'thin owner-model adoption is explicit, offline and postcondition verified' => sub {
     reset_mocks();
-    my @tags = ('pve-slt-sid-sharedthin-test', 'pve-slt-sid-sharedthin-test,pve-slt-owner-v1');
+    my @tags = ('pve-slt-sid-example-storage-02', 'pve-slt-sid-example-storage-02,pve-slt-owner-v1');
     no warnings 'redefine';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_pool_tags = sub {
         return shift @tags;
@@ -6702,7 +6702,7 @@ subtest 'thin owner-model adoption is explicit, offline and postcondition verifi
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_disable_and_verify_autoactivation
         = $record_disable_autoactivation;
     is($thin_adopt_owner_model->(
-        $class, $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'ALL-NODES-INACTIVE',
+        $class, $scfg, 'example-storage-02', 'vm-900001-disk-0', 'ALL-NODES-INACTIVE',
     ), 'THIN_OWNER_MODEL_ADOPTED_AND_HARDENED', 'explicit inactive legacy pool adoption succeeds');
     is_deeply([command_lines()], [
         '/sbin/lvchange --setautoactivation n testvg/sltp-900001',
@@ -6713,7 +6713,7 @@ subtest 'thin owner-model adoption is explicit, offline and postcondition verifi
 
     reset_mocks();
     eval { $thin_adopt_owner_model->(
-        $class, $scfg, 'sharedthin-test', 'vm-900001-disk-0', 'YES',
+        $class, $scfg, 'example-storage-02', 'vm-900001-disk-0', 'YES',
     ) };
     like($@, qr/exact confirmation ALL-NODES-INACTIVE/,
         'casual confirmation cannot enter the adoption path');

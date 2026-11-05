@@ -24,14 +24,14 @@ my @modules = sort qw(PVE/Storage.pm PVE/Storage/Plugin.pm PVE/SectionConfig.pm 
 sub request {
     my $r = {
         schema => 'slt-native-config-cas-controller/v1', tx => 'a' x 32, generation => '1', attempt_id => 'b' x 32,
-        executor => {node => 'pve01', boot_id => $boot}, context_sha256 => 'c' x 64,
+        executor => {node => 'node01', boot_id => $boot}, context_sha256 => 'c' x 64,
         candidate => {package => 'pve-sharedlvmthin', version => '5.13-TG35', flavor => 'dual', deb_sha256 => 'd' x 64, artifact_sha256 => 'e' x 64},
         config => {baseline_hex => unpack('H*', $base), target_hex => unpack('H*', $target), baseline_native_digest => 'f' x 40},
         changes => [{storage_id => 'alpha', property => 'slt-vg-layout', old_value => undef, new_value => 'mixed'}],
-        participants => [map {{node => sprintf('pve%02d', $_), boot_id => $boot, role => $_ == 4 ? 'CONTROL_ONLY' : 'SAN_PARTICIPANT'}} 1..4],
+        participants => [map {{node => sprintf('node%02d', $_), boot_id => $boot, role => $_ == 4 ? 'CONTROL_ONLY' : 'SAN_PARTICIPANT'}} 1..4],
         evidence => {barrier_sha256 => 'a' x 64, prepare_manifest_sha256 => 'b' x 64,
-            preinst_sha256 => {map {sprintf('pve%02d', $_) => 'c' x 64} 1..3},
-            payload_sha256 => {map {sprintf('pve%02d', $_) => 'd' x 64} 1..4}},
+            preinst_sha256 => {map {sprintf('node%02d', $_) => 'c' x 64} 1..3},
+            payload_sha256 => {map {sprintf('node%02d', $_) => 'd' x 64} 1..4}},
         serializer => {helper_sha256 => 'e' x 64, perl_sha256 => 'f' x 64,
             perl_hash_seed => '0', perl_perturb_keys => '0',
             modules => [map {{name => $_, path => '/usr/share/perl5/' . $_, sha256 => 'a' x 64}} @modules],
@@ -50,7 +50,7 @@ sub fixture {
     my $s = {raw => $base, writes => 0, clock => 2000000000, checks => 0, records => {}, events => [], locked => 0};
     my $b = {
         sample_clock => sub { return {wall_ns => $s->{clock}, monotonic_ns => $s->{clock}}; },
-        observe_local_identity => sub {return {node => 'pve01', boot_id => $boot, quorate => JSON::PP::true};},
+        observe_local_identity => sub {return {node => 'node01', boot_id => $boot, quorate => JSON::PP::true};},
         verify_admission => sub {$s->{checks}++; return {request_sha256 => SLT::StorageCAS::digest($_[0]), admitted => JSON::PP::true};},
         verify_serializer => sub {return {manifest_sha256 => SLT::StorageCAS::digest($_[0]), verified => JSON::PP::true};},
         with_storage_config_lock => sub {$s->{locked} = 1; push @{$s->{events}}, 'lock'; $_[0]->(); $s->{locked} = 0; push @{$s->{events}}, 'unlock';},

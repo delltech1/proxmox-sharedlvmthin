@@ -19,7 +19,7 @@ class Tests(unittest.TestCase):
         manifest = {"schema": "slt-package-maintenance/v1", "tx": context["tx"],
                     "phase": "CONFIG_COMMITTED", "generation": 38, "issued_at": 100,
                     "expires_at": 300, "cluster_name": "lab", "corosync_conf_sha256": "f" * 64,
-                    "nodes": [{"name": "pve01", "boot_id": "boot"}],
+                    "nodes": [{"name": "node01", "boot_id": "boot"}],
                     "candidate": {key: candidate[key] for key in
                                   ("package", "version", "flavor", "artifact_sha256", "deb_sha256")},
                     "baseline_storage_cfg_sha256": "1" * 64,
@@ -28,7 +28,7 @@ class Tests(unittest.TestCase):
                     "plan_sha256": "2" * 64, "node_evidence": []}
         raw = M.canonical(manifest) + b"\n"
         receipt = {"schema": "slt-package-maintenance-receipt/v1", "tx": context["tx"],
-                   "generation": 38, "phase": "PACKAGE_CONFIGURED_DEFERRED", "node": "pve01",
+                   "generation": 38, "phase": "PACKAGE_CONFIGURED_DEFERRED", "node": "node01",
                    "boot_id": "boot", "package": candidate["package"], "version": candidate["version"],
                    "flavor": "dual", "artifact_sha256": candidate["artifact_sha256"],
                    "manifest_sha256": M.digest(raw), "storage_cfg_sha256": "e" * 64,
@@ -37,7 +37,7 @@ class Tests(unittest.TestCase):
 
     def test_exact_v1_normalizes_without_authorization(self):
         context, manifest, receipt = self.fixture()
-        out = M.adapt(receipt, manifest, context, "pve01", "boot")
+        out = M.adapt(receipt, manifest, context, "node01", "boot")
         self.assertEqual(out["schema"], "slt-package-maintenance-receipt/v2")
         self.assertEqual(out["context_sha256"], context["context_sha256"])
         self.assertNotIn("authorization", out)
@@ -61,13 +61,13 @@ class Tests(unittest.TestCase):
                 receipt["manifest_sha256"] = M.digest(M.canonical(manifest) + b"\n")
             with self.subTest(mutate=mutate), self.assertRaises(M.Refusal):
                 M.adapt(M.canonical(receipt) + b"\n", M.canonical(manifest) + b"\n",
-                        context, "pve01", "boot")
+                        context, "node01", "boot")
 
     def test_duplicate_json_key_refused(self):
         context, manifest, receipt = self.fixture()
         duplicate = receipt[:-2] + b',"tx":"' + b"c" * 32 + b'"}\n'
         with self.assertRaises(M.Refusal):
-            M.adapt(duplicate, manifest, context, "pve01", "boot")
+            M.adapt(duplicate, manifest, context, "node01", "boot")
 
 
 if __name__ == "__main__":

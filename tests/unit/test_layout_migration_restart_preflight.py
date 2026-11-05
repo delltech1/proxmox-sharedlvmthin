@@ -139,10 +139,10 @@ class Tests(unittest.TestCase):
     def test_composer_preserves_recovery_even_in_non_authorizing_draft(self):
         f = self.fixture(); topology = {**f[2], "storage_cfg_sha256": R.digest(f[0])}
         evidence = C.CTX.TOPO.validate(topology, f[0])
-        out = C.compose({"tx": f[3]["tx"], "generation": 1}, topology, evidence, f[4], f[0], f[1], "pve01", f[7])
+        out = C.compose({"tx": f[3]["tx"], "generation": 1}, topology, evidence, f[4], f[0], f[1], "node01", f[7])
         self.assertEqual(len(out["recovery_by_node"]), 3)
         self.assertIsNone(out["prepare"])
-        out = C.compose({"tx": f[3]["tx"], "generation": 1}, topology, evidence, f[4], f[0], f[1], "pve01", f[7],
+        out = C.compose({"tx": f[3]["tx"], "generation": 1}, topology, evidence, f[4], f[0], f[1], "node01", f[7],
             barrier=f[5], adapter_auth_fields={key: f[6][key] for key in ("authorization_id", "issued_at", "expires_at")})
         self.assertEqual(len(out["prepare"]["sidecar"]["plan"]["recovery_by_node"]), 3)
         self.assertFalse(out["execution_authorized"])

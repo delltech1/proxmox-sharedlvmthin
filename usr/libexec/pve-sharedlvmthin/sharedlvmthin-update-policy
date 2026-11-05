@@ -166,6 +166,17 @@ def load_library(path=LIB):
     return module
 
 
+def load_package_executor_fence():
+    """Load the exact adjacent helper even under python isolated mode."""
+    path = pathlib.Path(__file__).resolve().with_name("sharedlvmthin_package_executor_fence.py")
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("adjacent package fence helper is missing or unsafe")
+    spec = importlib.util.spec_from_file_location("slt_package_executor_fence", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def run(argv, *, input_text=None, env=None, timeout=60):
     child_env = {"PATH": SAFE_PATH, "LC_ALL": "C", "LANG": "C"}
     if env:
@@ -173,10 +184,10 @@ def run(argv, *, input_text=None, env=None, timeout=60):
     inherited_fds = ()
     transport = os.environ.get("SLT_PACKAGE_FENCE_FD", "")
     if transport:
-        from sharedlvmthin_package_executor_fence import read_sealed_context
         if not transport.isdigit() or len(transport) > 10:
             raise RuntimeError("invalid inherited package fence transport")
-        context = read_sealed_context(int(transport), pathlib.Path(
+        fence = load_package_executor_fence()
+        context = fence.read_sealed_context(int(transport), pathlib.Path(
             "/proc/sys/kernel/random/boot_id").read_text().strip())
         inherited_fds = (*context["fds"], int(transport))
         child_env["SLT_PACKAGE_FENCE_FD"] = transport
@@ -369,7 +380,22 @@ def freeze_required_holds(record):
     return required
 
 
-def freeze_integrity_v2(freeze, manifest, library):
+def freeze_preinst_observation(targets, manifest, library, source):
+    """Normalize only the exact source package's dpkg preinst transition."""
+    current = package_state_records(targets)
+    transitioning = [row for row in current if row["package"] == source
+                     and row["status"] == "half-installed"]
+    if len(transitioning) > 1:
+        raise RuntimeError("ambiguous source package preinst transition")
+    if transitioning:
+        transitioning[0]["status"] = "installed"
+    present = set(watched_installed(manifest, library))
+    if transitioning:
+        present.add(source)
+    return sorted(present), current
+
+
+def freeze_integrity_v2(freeze, manifest, library, preinst_source=None):
     reasons = []
     missing_holds = []
     if not isinstance(freeze, dict) or freeze.get("schema") != 2 or freeze.get("phase") != "ACTIVE":
@@ -387,7 +413,13 @@ def freeze_integrity_v2(freeze, manifest, library):
         reasons.append("ledger package sets are not canonical")
     if set(owned) & set(preexisting) or set(owned) | set(preexisting) != set(targets):
         reasons.append("owned and preexisting holds do not exactly partition targets")
-    current_targets = watched_installed(manifest, library)
+    try:
+        current_targets, current = (freeze_preinst_observation(targets, manifest, library, preinst_source)
+                                    if preinst_source else
+                                    (watched_installed(manifest, library), package_state_records(targets)))
+    except RuntimeError as exc:
+        current_targets, current = [], None
+        reasons.append(str(exc))
     if current_targets != targets:
         reasons.append("watched installed package inventory changed")
     if freeze.get("manifest_sha256") != library.digest(manifest):
@@ -396,11 +428,6 @@ def freeze_integrity_v2(freeze, manifest, library):
     if not isinstance(generation, str) or len(generation) != 32 \
             or any(char not in "0123456789abcdef" for char in generation):
         reasons.append("freeze generation is invalid")
-    try:
-        current = package_state_records(targets)
-    except RuntimeError as exc:
-        current = None
-        reasons.append(str(exc))
     if current is not None and current != baseline:
         reasons.append("frozen package version, architecture or dpkg state changed")
     if reasons:
@@ -411,7 +438,7 @@ def freeze_integrity_v2(freeze, manifest, library):
             "reasons": [], "missing_holds": missing_holds}
 
 
-def freeze_integrity_v3(freeze, manifest, library):
+def freeze_integrity_v3(freeze, manifest, library, preinst_source=None):
     reasons = []
     if not isinstance(freeze, dict) or freeze.get("schema") != 3 \
             or freeze.get("phase") != "ACTIVE":
@@ -439,7 +466,13 @@ def freeze_integrity_v3(freeze, manifest, library):
         reasons.append("owned and preexisting holds do not exactly partition hold targets")
     if set(preexisting) - set(baseline_targets):
         reasons.append("preexisting hold is absent from baseline targets")
-    current_targets = watched_installed(manifest, library)
+    try:
+        current_targets, current = (freeze_preinst_observation(baseline_targets, manifest, library, preinst_source)
+                                    if preinst_source else
+                                    (watched_installed(manifest, library), package_state_records(baseline_targets)))
+    except RuntimeError as exc:
+        current_targets, current = [], None
+        reasons.append(str(exc))
     if current_targets != baseline_targets:
         reasons.append("watched installed package inventory changed")
     if freeze.get("manifest_sha256") != library.digest(manifest):
@@ -448,11 +481,6 @@ def freeze_integrity_v3(freeze, manifest, library):
     if not isinstance(generation, str) or len(generation) != 32 \
             or any(char not in "0123456789abcdef" for char in generation):
         reasons.append("freeze generation is invalid")
-    try:
-        current = package_state_records(baseline_targets)
-    except RuntimeError as exc:
-        current = None
-        reasons.append(str(exc))
     if current is not None and current != baseline:
         reasons.append("frozen package version, architecture or dpkg state changed")
     if reasons:
@@ -464,10 +492,10 @@ def freeze_integrity_v3(freeze, manifest, library):
             "reasons": [], "missing_holds": missing_holds}
 
 
-def freeze_integrity(freeze, manifest, library):
+def freeze_integrity(freeze, manifest, library, preinst_source=None):
     if isinstance(freeze, dict) and freeze.get("schema") == 2:
-        return freeze_integrity_v2(freeze, manifest, library)
-    return freeze_integrity_v3(freeze, manifest, library)
+        return freeze_integrity_v2(freeze, manifest, library, preinst_source)
+    return freeze_integrity_v3(freeze, manifest, library, preinst_source)
 
 
 def held_packages():
@@ -752,6 +780,10 @@ def prepare_freeze_package(source_package, source_version, target_package,
         "candidate_artifact_sha256": candidate_artifact_sha256.lower(),
         "candidate_manifest_sha256": library.digest(candidate_manifest),
     }
+    pending = read_json(RUNTIME_QUALIFICATION)
+    if isinstance(pending, dict) and pending.get("state") == "PACKAGE_SETTLED_RUNTIME_CLOSED" \
+            and pending.get("boot_id") != receipt["boot_id"]:
+        raise RuntimeError("closed runtime belongs to a previous boot; successor settlement requires recovery")
     existing = read_json(PACKAGE_TRANSITION)
     if existing:
         comparable = dict(existing)
@@ -1395,7 +1427,8 @@ def recovery_carrier_members(path):
     def restrict_output():
         resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
 
-    wanted = {"control", "sharedlvmthin-candidate-update-policy", "sharedlvmthin_update_policy.py"}
+    required = {"control", "sharedlvmthin-candidate-update-policy", "sharedlvmthin_update_policy.py"}
+    wanted = required | {"sharedlvmthin_package_executor_fence.py"}
     with tempfile.TemporaryFile() as archive_file, tempfile.TemporaryFile() as errors:
         result = subprocess.run(["/usr/bin/dpkg-deb", "--ctrl-tarfile", str(path)],
                                 stdin=subprocess.DEVNULL, stdout=archive_file, stderr=errors,
@@ -1426,7 +1459,7 @@ def recovery_carrier_members(path):
                     if len(raw) != member.size:
                         raise RuntimeError("short recovery control member")
                     found[name] = raw
-        if set(found) != wanted:
+        if not required.issubset(found):
             raise RuntimeError("recovery code control archive is incomplete")
         return found
 
@@ -1449,6 +1482,15 @@ def recovery_executor_identity(args):
     if hashlib.sha256(members["sharedlvmthin-candidate-update-policy"]).hexdigest() != helper_digest \
             or hashlib.sha256(members["sharedlvmthin_update_policy.py"]).hexdigest() != core_digest:
         raise RuntimeError("executing recovery code differs from its approved carrier")
+    fence_path = pathlib.Path(__file__).resolve().with_name("sharedlvmthin_package_executor_fence.py")
+    fence_digest = None
+    if "SLT_PACKAGE_FENCE_FD" in os.environ:
+        name = "sharedlvmthin_package_executor_fence.py"
+        if name not in members:
+            raise RuntimeError("approved recovery carrier lacks package fence helper")
+        fence_digest = recovery_file_digest(fence_path, limit=4 * 1024 * 1024)
+        if hashlib.sha256(members[name]).hexdigest() != fence_digest:
+            raise RuntimeError("executing package fence helper differs from its approved carrier")
     try:
         control = members["control"].decode("utf-8")
     except UnicodeError as exc:
@@ -1464,7 +1506,9 @@ def recovery_executor_identity(args):
         raise RuntimeError("recovery code carrier profile/architecture identity differs")
     if recovery_file_digest(carrier, limit=512 * 1024 * 1024) != carrier_digest \
             or recovery_file_digest(__file__, limit=4 * 1024 * 1024) != helper_digest \
-            or recovery_file_digest(LIB, limit=4 * 1024 * 1024) != core_digest:
+            or recovery_file_digest(LIB, limit=4 * 1024 * 1024) != core_digest \
+            or (fence_digest is not None and recovery_file_digest(
+                fence_path, limit=4 * 1024 * 1024) != fence_digest):
         raise RuntimeError("recovery executor changed during identity inspection")
     return {"schema": "sharedlvmthin-recovery-executor/v1",
             "carrier_sha256": carrier_digest, "carrier_package": fields["Package"],
@@ -1741,6 +1785,10 @@ def command_settle_unqualified_freeze_package(args):
             or not re.fullmatch(r"[0-9a-f]{32}", args.txid) \
             or not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
         raise RuntimeError("unqualified package settlement identity is invalid")
+    # A fenced carrier loads its adjacent helper from run(). Bind those bytes
+    # to the approved archive before any such subprocess or helper load.
+    if "SLT_PACKAGE_FENCE_FD" in os.environ:
+        recovery_executor_identity(args)
     manifest, library = manifest_and_lib()
     receipt = read_json(PACKAGE_TRANSITION)
     pending = read_json(RUNTIME_QUALIFICATION)
@@ -1952,18 +2000,56 @@ def recover_prepared_freeze_source(txid, manifest, library):
     if not re.fullmatch(r"[0-9a-f]{32}", txid):
         raise RuntimeError("source recovery transaction identity is invalid")
     archive = PACKAGE_RECOVERY_ARCHIVE / f"{txid}.json"
-    receipt = read_json(PACKAGE_TRANSITION)
-    if receipt is None:
-        completed = read_json(archive)
-        if isinstance(completed, dict) \
-                and completed.get("state") == "SOURCE_REVALIDATED_AFTER_FAILED_TRANSACTION" \
-                and completed.get("txid") == txid:
-            return completed
-        raise RuntimeError("source recovery has no exact prepared transition")
+    active = read_json(PACKAGE_TRANSITION, absent)
+    archived = read_json(archive, absent)
+    if active is absent:
+        if not isinstance(archived, dict):
+            raise RuntimeError("source recovery has no exact prepared transition")
+        receipt = dict(archived)
+        for key in ("recovery_proof", "runtime_release_invalidated", "runtime_release_sha256"):
+            receipt.pop(key, None)
+        receipt["state"] = "PREPARED"
+    else:
+        receipt = active
     if not isinstance(receipt, dict) or receipt.get("schema") != 2 \
             or receipt.get("state") != "PREPARED" \
-            or receipt.get("txid") != txid:
+            or receipt.get("txid") != txid or "kind" in receipt \
+            or receipt.get("source_package") not in PLUGIN_PACKAGES \
+            or receipt.get("target_package") not in PLUGIN_PACKAGES \
+            or any(not isinstance(receipt.get(key), str) or not receipt[key] for key in
+                   ("source_version", "target_version", "target_architecture")) \
+            or any(not isinstance(receipt.get(key), str) or
+                   not re.fullmatch(r"[0-9a-f]{64}", receipt[key]) for key in
+                   ("parent_ledger_sha256", "candidate_sha256", "candidate_artifact_sha256",
+                    "candidate_manifest_sha256")):
         raise RuntimeError("source recovery requires the exact PREPARED transition")
+    release_before = read_json(RUNTIME_RELEASE, absent)
+    if archived is not absent:
+        if not isinstance(archived, dict) or type(archived.get("runtime_release_invalidated")) is not bool:
+            raise RuntimeError("source recovery archive is malformed")
+        completed = dict(receipt, state="SOURCE_REVALIDATED_AFTER_FAILED_TRANSACTION",
+                         recovery_proof="CURRENT_SOURCE_PACKAGE_AND_FROZEN_BASELINE_REVALIDATED",
+                         runtime_release_invalidated=archived["runtime_release_invalidated"])
+        if "runtime_release_sha256" in archived:
+            digest = archived["runtime_release_sha256"]
+            if not archived["runtime_release_invalidated"] or not isinstance(digest, str) \
+                    or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise RuntimeError("source recovery archive release identity is malformed")
+            completed["runtime_release_sha256"] = digest
+        if archived != completed:
+            raise RuntimeError("source recovery archive differs from the prepared transition")
+        if release_before is not absent and (active is absent
+                or not completed["runtime_release_invalidated"]
+                or completed.get("runtime_release_sha256") != library.digest(release_before)):
+            raise RuntimeError("source recovery cannot prove the current runtime release")
+    else:
+        if active is absent:
+            raise RuntimeError("source recovery has no exact prepared transition")
+        completed = dict(receipt, state="SOURCE_REVALIDATED_AFTER_FAILED_TRANSACTION",
+                         recovery_proof="CURRENT_SOURCE_PACKAGE_AND_FROZEN_BASELINE_REVALIDATED",
+                         runtime_release_invalidated=release_before is not absent)
+        if release_before is not absent:
+            completed["runtime_release_sha256"] = library.digest(release_before)
     boot_id = pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     if receipt.get("hostname") != os.uname().nodename \
             or receipt.get("boot_id") != boot_id:
@@ -1988,20 +2074,33 @@ def recover_prepared_freeze_source(txid, manifest, library):
     audit = run(["dpkg", "--audit"])
     if audit.returncode or audit.stdout.strip() or audit.stderr.strip():
         raise RuntimeError("source recovery requires a clean dpkg audit")
-    if gates_pending() or read_json(PACKAGE_TRANSITION) != receipt \
+    if gates_pending() or read_json(PACKAGE_TRANSITION, absent) != active \
             or read_json(FREEZE) != record \
+            or read_json(archive, absent) != archived \
+            or read_json(RUNTIME_RELEASE, absent) != release_before \
             or package_state_records(baseline_targets) != baseline_before \
             or held_packages() != holds_before:
         raise RuntimeError("source recovery CAS changed during proof")
-    completed = dict(receipt)
-    completed.update({
-        "state": "SOURCE_REVALIDATED_AFTER_FAILED_TRANSACTION",
-        "recovery_proof": "CURRENT_SOURCE_PACKAGE_AND_FROZEN_BASELINE_REVALIDATED",
-        "runtime_release_invalidated": read_json(RUNTIME_RELEASE, absent) is not absent,
-    })
-    create_json(archive, completed)
-    unlink_durable(RUNTIME_RELEASE)
-    unlink_durable(PACKAGE_TRANSITION)
+    if archived is absent:
+        create_json(archive, completed)
+
+    def recheck(expected_release):
+        if gates_pending() or read_json(PACKAGE_TRANSITION, absent) != active \
+                or read_json(archive, absent) != completed or read_json(FREEZE) != record \
+                or read_json(RUNTIME_RELEASE, absent) != expected_release \
+                or freeze_integrity(record, manifest, library).get("result") != "PASS" \
+                or package_state_records(baseline_targets) != baseline_before \
+                or held_packages() != holds_before \
+                or package_version(source) != source_version \
+                or (target != source and package_version(target) is not None):
+            raise RuntimeError("source recovery CAS changed before cleanup")
+
+    recheck(release_before)
+    if release_before is not absent:
+        unlink_durable(RUNTIME_RELEASE)
+    recheck(absent)
+    if active is not absent:
+        unlink_durable(PACKAGE_TRANSITION)
     return completed
 
 
@@ -2052,6 +2151,11 @@ def command_verify_prepared_freeze_package(args):
     if receipt.get("parent_generation") != (parent or {}).get("generation") \
             or receipt.get("parent_ledger_sha256") != library.digest(parent):
         raise RuntimeError("prepared FREEZE parent ledger changed before unpack")
+    # The ledger can remain byte-identical while a watched package or hold
+    # changes after prepare. Re-observe the baseline before accepting unpack.
+    # Do not acquire dpkg locks here: this verifier runs inside dpkg preinst.
+    if freeze_integrity(parent, manifest, library, args.source_package)["result"] != "PASS":
+        raise RuntimeError("prepared FREEZE baseline or holds changed before unpack")
     candidate_sha = receipt.get("candidate_sha256")
     if not isinstance(candidate_sha, str) or len(candidate_sha) != 64 \
             or any(c not in "0123456789abcdef" for c in candidate_sha):
@@ -2181,6 +2285,76 @@ def package_version(package):
     result = run(["dpkg-query", "-W", "-f=${Version}|${db:Status-Status}", package])
     fields = result.stdout.split("|")
     return fields[0] if result.returncode == 0 and fields[1:] == ["installed"] else None
+
+
+def candidate_package_inventory(watched, library, preinst_source=None, preinst_target=None):
+    """Observe absence only from one successful, complete dpkg inventory."""
+    result = run(["dpkg-query", "-W", "-f=${Package}|${Version}|${db:Status-Status}\n"])
+    if result.returncode or result.stderr.strip() or not result.stdout.strip():
+        raise RuntimeError("candidate dpkg package inventory is unavailable")
+    versions = {name: None for name in watched}
+    seen = set()
+    for line in result.stdout.splitlines():
+        fields = line.split("|")
+        if len(fields) != 3 or not library.PACKAGE_RE.fullmatch(fields[0]):
+            raise RuntimeError("candidate dpkg package inventory is malformed")
+        name, version, status = fields
+        if name not in versions:
+            continue
+        if name in seen:
+            raise RuntimeError("candidate dpkg package inventory is ambiguous")
+        seen.add(name)
+        if status == "installed" or (status == "half-installed" and name in {preinst_source, preinst_target}):
+            if not library.VERSION_RE.fullmatch(version):
+                raise RuntimeError("candidate dpkg package version is malformed")
+            versions[name] = version
+        elif status not in {"not-installed", "config-files"}:
+            raise RuntimeError("candidate watched package is not fully configured")
+    return versions
+
+
+def command_candidate_runtime_preflight(args):
+    """Observe the candidate tuple without changing policy or qualifying it."""
+    profiles = {"pve-sharedlvmthin": "dual", "pve-sharedlvmthin-thick": "thick-only"}
+    if args.package not in profiles or not re.fullmatch(r"[A-Za-z0-9.+:~_-]{1,128}", args.version):
+        raise RuntimeError("candidate package identity is invalid")
+    library = load_library(str(pathlib.Path(__file__).with_name("sharedlvmthin_update_policy.py")))
+    manifest = library.strict_json(args.manifest)
+    library.validate_candidate_catalogue(manifest)
+    if args.package not in manifest["watched_packages"]:
+        raise RuntimeError("candidate plugin package is not watched by the catalogue")
+    api = run(["perl", "-I/usr/share/perl5", "-MPVE::Storage", "-e", "print PVE::Storage::APIVER()"])
+    if api.returncode or not api.stdout.isdigit():
+        raise RuntimeError("PVE Storage API is unavailable for candidate admission")
+    preinst_source = getattr(args, "preinst_source", None)
+    if preinst_source is not None and preinst_source not in profiles:
+        raise RuntimeError("candidate preinst source package identity is invalid")
+    preinst_target = args.package if getattr(args, "in_preinst", False) is True else None
+    versions = candidate_package_inventory(manifest["watched_packages"], library, preinst_source, preinst_target)
+    versions[args.package] = args.version
+    opposite = "pve-sharedlvmthin-thick" if args.package == "pve-sharedlvmthin" else "pve-sharedlvmthin"
+    if opposite in versions:
+        versions[opposite] = None
+    identity = {"profile": profiles[args.package], "api": int(api.stdout),
+                "running_kernel": os.uname().release, "plugin_package": args.package,
+                "plugin_version": args.version, "versions": versions}
+    print(f"CANDIDATE_RUNTIME_CONTEXT_SHA256={library.digest(identity)}")
+    candidate = library.candidate_runtime_tuple(
+        manifest, versions, profile=profiles[args.package], api=int(api.stdout),
+        running_kernel=os.uname().release, plugin_version=args.version)
+    if candidate is None:
+        observed = library.observed_tuple(
+            manifest, versions, profile=profiles[args.package], api=int(api.stdout),
+            running_kernel=os.uname().release, plugin_version=args.version)
+        if observed is None:
+            print("CANDIDATE_RUNTIME_TUPLE=UNLISTED")
+            return 78
+        print("CANDIDATE_RUNTIME_TUPLE=BLOCKED_OR_UNSUPPORTED")
+        return 79
+    print(f"CANDIDATE_RUNTIME_TUPLE={candidate.get('id', 'UNKNOWN')}")
+    print(f"CANDIDATE_RUNTIME_STATUS={candidate['status']}")
+    print("CANDIDATE_RUNTIME_PREFLIGHT=OBSERVED_NOT_QUALIFIED")
+    return 0
 
 
 def assert_listed_runtime_tuple(manifest, library, expected_package=None,
@@ -2992,6 +3166,13 @@ def main():
     status.add_argument("--expected-post-gate", default=None,
                         help=argparse.SUPPRESS)
     status.set_defaults(func=command_status)
+    candidate_status = subs.add_parser("candidate-runtime-preflight")
+    candidate_status.add_argument("--manifest", required=True)
+    candidate_status.add_argument("--package", required=True)
+    candidate_status.add_argument("--version", required=True)
+    candidate_status.add_argument("--preinst-source", choices=("pve-sharedlvmthin", "pve-sharedlvmthin-thick"), default=None)
+    candidate_status.add_argument("--in-preinst", action="store_true")
+    candidate_status.set_defaults(func=command_candidate_runtime_preflight)
     authorize = subs.add_parser("authorize-proposal")
     authorize.set_defaults(func=command_authorize)
     postcheck = subs.add_parser("postcheck")
@@ -3019,7 +3200,7 @@ def main():
         # Only that exact internal observation skips the redundant child lock.
         internal_postcheck_status = (args.command == "status"
                                      and bool(getattr(args, "expected_post_gate", None)))
-        lock_context = contextlib.nullcontext() if internal_postcheck_status \
+        lock_context = contextlib.nullcontext() if internal_postcheck_status or args.command == "candidate-runtime-preflight" \
             else policy_lock(exclusive=args.command != "status")
         with lock_context:
             result = args.func(args)

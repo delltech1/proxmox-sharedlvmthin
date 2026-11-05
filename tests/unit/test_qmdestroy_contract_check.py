@@ -120,11 +120,11 @@ class QMDestroyContractTests(unittest.TestCase):
             module.qualify(changed, API)
 
     def test_missing_or_duplicate_ipam_cleanup_boundary_is_retested(self):
-        token = "eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) };"
+        snippet = "eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) };"
         with self.assertRaisesRegex(RuntimeError, "absent or reordered"):
-            module.qualify(QEMU.replace(token + "\n", ""), API)
+            module.qualify(QEMU.replace(snippet + "\n", ""), API)
         with self.assertRaisesRegex(RuntimeError, "IPAM cleanup boundary changed"):
-            module.qualify(QEMU.replace(token, token + "\n" + token), API)
+            module.qualify(QEMU.replace(snippet, snippet + "\n" + snippet), API)
 
     def test_native_digest_contract_change_requires_requalification(self):
         changed = API.replace("purge => {}", "purge => {}, digest => {}")

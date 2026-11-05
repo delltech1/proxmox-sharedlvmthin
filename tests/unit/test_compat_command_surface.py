@@ -1,6 +1,9 @@
 import importlib.machinery
 import importlib.util
 import re
+import os
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -19,6 +22,17 @@ def load_inventory():
 
 
 class CompatibilityCommandSurfaceTests(unittest.TestCase):
+    def test_contract_check_refuses_unsupported_plugin_root(self):
+        perl = shutil.which("perl")
+        if perl is None:
+            self.skipTest("Perl is required")
+        env = dict(os.environ, SLT_TEST_EXPECT_API="14", SLT_TEST_PLUGIN_ROOT="/nonexistent")
+        result = subprocess.run(
+            [perl, str(ROOT / "scripts/test-pve-storage-contract.pl")],
+            env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SLT_TEST_PLUGIN_ROOT is not supported", result.stderr)
+
     def test_live_probe_and_fingerprint_cover_the_same_commands(self):
         inventory = load_inventory()
         source = COMPAT.read_text(encoding="utf-8")

@@ -4,6 +4,20 @@ The optional dashboard shows cluster, storage, thin-pool and path health. It
 has no LV create, delete, resize, snapshot, rollback, repair, rescan or service
 restart endpoint.
 
+The **Storage setup guide** provides English and German, administrator-led
+instructions for iSCSI, FC, FCoE and shared SAS. It does not scan devices,
+execute commands or verify answers. Shared SAS is not lab-qualified. The
+language selection is stored in the browser; technical diagnostics originating
+from the host may remain in their original language. Procedures and interface
+labels can change between Proxmox and storage versions.
+
+Terminology reference: [Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf),
+[German Proxmox forum discussion](https://forum.proxmox.com/threads/erfahrungen-mit-lvm-thick-iscsi-multipath-pure-storage-und-volume-chain-snapshots-unter-proxmox-ve-9.175810/),
+and [Red Hat Device Mapper Multipath documentation](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html-single/configuring_device_mapper_multipath/index).
+Protocol names and common abbreviations such as LUN, WWPN, WWID, Multipath,
+PV, VG and LVM remain unchanged. These references do not qualify an untested
+storage configuration.
+
 ## Configure
 
 After installing the package, run as root on each node that should serve the
