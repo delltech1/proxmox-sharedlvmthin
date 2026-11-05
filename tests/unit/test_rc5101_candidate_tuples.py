@@ -14,4 +14,13 @@ class RollingCandidateTests(unittest.TestCase):
  def test_new_rolling_edge_is_unqualified(self):
   e=next(x for x in self.doc['rolling_edges'] if x.get('id')=='rc5101-api15-api16-k28-update')
   self.assertEqual(e['status'],'RETEST_REQUIRED');self.assertEqual(e['directions'],[])
+ def test_new_candidate_preserves_previous_identity_and_refuses_san_qualification(self):
+  versions=('0.9.0~rc5.101~tg53','0.9.0~rc5.102~tg53')
+  rows=[r for r in self.doc['tuples'] if all(v in r.get('plugin_versions',[]) for v in versions)]
+  self.assertEqual(len(rows),10)
+  for row in rows:
+   self.assertEqual(row['status'],'RETEST_REQUIRED')
+   for version in versions:
+    for profile in row['profiles']:
+     self.assertIsNone(self.policy.exact_tuple(self.doc,row['packages'],profile=profile,api=row['api'],running_kernel=row['running_kernel'],plugin_version=version,scope='san-dataplane'))
 if __name__=='__main__':unittest.main()

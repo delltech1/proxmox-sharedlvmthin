@@ -1,4 +1,4 @@
-# RC5.101 TG53 — experimental compatibility and recovery update
+# RC5.102 TG53 — experimental compatibility and recovery update
 
 > [!CAUTION]
 > **Both Thin and Thick, including Eager and Lazy, are experimental. Use only
@@ -9,7 +9,7 @@
 
 Read the [risk and support boundary](RISK-AND-SUPPORT-BOUNDARY.md).
 
-Debian version: `0.9.0~rc5.101~tg53`. Choose either the DUAL package or the
+Debian version: `0.9.0~rc5.102~tg53`. Choose either the DUAL package or the
 Thick-only package; install the same profile and version on participating
 cluster nodes. Both profiles share the Thick implementation and RAW format.
 

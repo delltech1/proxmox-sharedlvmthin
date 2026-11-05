@@ -1,8 +1,8 @@
 # Changelog
 
-## RC5.101 TG53 — experimental compatibility and recovery update
+## RC5.102 TG53 — experimental compatibility and recovery update
 
-Package version: `0.9.0~rc5.101~tg53`.
+Package version: `0.9.0~rc5.102~tg53`.
 
 - Extend exact PVE package/kernel identities and lifecycle adapter checks.
 - Harden package preservation, recovery, health and Thick volume identity
