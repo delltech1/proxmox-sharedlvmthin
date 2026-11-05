@@ -197,3 +197,12 @@
     Until the supported guarded dispatcher is qualified, treat multi-volume
     native destroy as an upstream recovery boundary and retain an independent
     VM configuration/volume inventory before testing it.
+
+25. An unmaterialized Lazy Thick volume can cause native VM snapshot creation
+    to be refused with `snapshot feature is not available`. Materialize the
+    volume through its locally owned active or resumable frontend using
+    `sharedlvmthin thick-lazy-materialize <storage-id> <volume>`, verify its
+    completion, and then retry the snapshot. A stopped, inactive Lazy volume
+    is not automatically activated by that command. An accepted snapshot may
+    still have background generation materialization in progress after the
+    PVE task finishes; check storage health before further mutations.
