@@ -49,6 +49,8 @@ this candidate. Tests do not guarantee against data loss or I/O pauses.
 
 ## Recorded platform versions
 
+### RC5.103 candidate
+
 | Evidence scope | Storage API | Kernel | PVE manager | PVE storage | PVE common | QEMU server | QEMU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Candidate DUAL upgrade and DUAL-to-Thick-only replacement | 16 | 7.0.14-28-pve | 9.2.25 | 9.1.13 | 9.2.7 | 9.2.14 | 11.1.3-1 |
@@ -56,9 +58,30 @@ this candidate. Tests do not guarantee against data loss or I/O pauses.
 The recorded host used LVM `2.03.31-2+pmx1`, thin-provisioning-tools
 `1.1.0-4+b1`, multipath-tools `0.11.1-2`, Corosync `3.1.10-pve3`,
 pve-ha-manager `5.2.5` and libpve-cluster-perl `9.1.8`.
-API14 and API15 interface checks used separate installed or extracted libraries;
-refer to the prior release's platform table for its historical test evidence.
-Do not represent prior release results as tests of this candidate.
+API14 and API15 interface checks used installed or extracted libraries; these
+checks do not by themselves qualify a live upgrade or SAN lifecycle.
+
+### RC5.102 previously recorded qualification
+
+The following results were recorded for the preceding RC5.102 release and are
+included for compatibility history. They are not claims that every scenario was
+repeated on the RC5.103 build.
+
+| Exercised scope | API | Kernel | Manager | Storage | Common | QEMU server | QEMU |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| API14 control-plane package upgrade | 14 | 7.0.2-6-pve | 9.2.2 | 9.1.5 | 9.1.12 | 9.1.15 | 11.0.0-3 |
+| API15 control-plane transition and Eager SAN migration source | 15 | 7.0.14-20-pve | 9.2.21 | 9.1.11 | 9.2.2 | 9.2.10 | 11.0.3-4 |
+| Live plugin upgrade with mixed guest media | 16 | 7.0.14-16-pve | 9.2.18 | 9.1.12 | 9.2.3 | 9.2.10 | 11.0.3-3 |
+| Live plugin upgrade and migration source | 16 | 7.0.14-26-pve | 9.2.25 | 9.1.13 | 9.2.6 | 9.2.14 | 11.1.3-1 |
+| Reboot, migration target and offline lifecycle | 16 | 7.0.14-28-pve | 9.2.25 | 9.1.13 | 9.2.7 | 9.2.14 | 11.1.3-1 |
+
+Recorded SAN dependencies include LVM `2.03.31-2+pmx1`,
+thin-provisioning-tools `1.1.0-4+b1`, multipath-tools `0.11.1-2`,
+Corosync `3.1.10-pve3`, pve-ha-manager `5.2.5` and libpve-cluster-perl
+`9.1.8` on the newer tuple. The API15 migration source used Corosync
+`3.1.10-pve2` and libpve-cluster-perl `9.1.5`; the bounded update changed the
+cluster library to `9.1.8` while leaving Corosync on `3.1.10-pve2`. These
+records do not qualify unlisted versions or workloads.
 
 ## Installation and updates
 
