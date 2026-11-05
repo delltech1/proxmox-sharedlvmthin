@@ -48,7 +48,7 @@ def collect_snapshot(checker, node, boot):
                                "--units", "b", "--nosuffix", vg])
         vg_lines = [row.strip().split("|") for row in vg_evidence.splitlines() if row.strip()]
         if len(vg_lines) != 1 or len(vg_lines[0]) != 2 \
-                or vg_lines[0][0].strip().lower() != expected_vg.lower():
+                or vg_lines[0][0].strip() != expected_vg:
             raise RuntimeError("package scope VG identity mismatch")
         extent = int(vg_lines[0][1].strip())
         if extent < 512 or extent % 512:

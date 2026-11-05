@@ -1563,6 +1563,13 @@ class PvBindingPolicyTests(unittest.TestCase):
         )
         self.assertEqual(status, "PASS")
 
+    def test_uuid_case_mismatch_fails(self):
+        status, _ = self.evaluate(
+            [{"pv_uuid": "Pv-1", "pv_name": "/dev/mapper/3600abcd"}],
+            "pv-1", "3600abcd",
+        )
+        self.assertEqual(status, "FAIL")
+
     def test_duplicate_raw_and_mapper_binding_fails(self):
         status, message = self.evaluate(
             [

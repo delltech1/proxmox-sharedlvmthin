@@ -175,9 +175,18 @@ sharedlvmthin: two
                 with self.assertRaises(RuntimeError):
                     self.checker.thick_alias_group([cfg], "eager", cfg)
 
+    def test_other_vg_case_collision_refuses_even_when_disabled(self):
+        eager = self.thick_cfg("eager", "thick-generations")
+        other = self.thick_cfg("other", "thick-generations", disable="1",
+                               **{"slt-vgname": "other-vg", "slt-expected-vg-uuid": "VG-uuid"})
+        with self.assertRaisesRegex(RuntimeError, "persistent namespace"):
+            self.checker.thick_alias_group([eager, other], "eager", eager)
+
     def test_thick_alias_group_rejects_unsafe_variants(self):
         eager = self.thick_cfg("eager", "thick-generations")
         variants = [
+            [eager, self.thick_cfg("lazy", "thick-generations-lazy", **{"slt-expected-vg-uuid": "VG-uuid"})],
+            [eager, self.thick_cfg("lazy", "thick-generations-lazy", **{"slt-expected-pv-uuid": "PV-uuid"})],
             [eager, self.thick_cfg("lazy", "thick-generations-lazy", nodes="n1")],
             [eager, self.thick_cfg("lazy", "thick-generations-lazy",
                                    **{"slt-tg-region-size-kib": "2048"})],
@@ -797,7 +806,7 @@ sharedlvmthin: two
         self.assertFalse(healthy)
         self.assertIn("local tpool mapper", failures[0])
 
-    def run_main(self, *, actual_wwid="3600abcd", dstate="PASS", transient=0,
+    def run_main(self, *, actual_wwid="3600abcd", actual_vg="vg-uuid", actual_pv="pv-uuid", dstate="PASS", transient=0,
                  allocation_mode="thin", lvs_output=None, referenced=True,
                  vg_tags="", observed_commands=None,
                  expected_wwid="3600abcd", disabled=False,
@@ -822,9 +831,9 @@ sharedlvmthin: two
             joined = " ".join(command)
             out = ""
             if command[0].endswith("vgs"):
-                out = f"testvg|{vg_tags}" if "vg_name,vg_tags" in command else "vg-uuid|4194304"
+                out = f"testvg|{vg_tags}" if "vg_name,vg_tags" in command else f"{actual_vg}|4194304"
             elif command[0].endswith("pvs"):
-                out = f"pv-uuid|/dev/mapper/{actual_wwid}"
+                out = f"{actual_pv}|/dev/mapper/{actual_wwid}"
             elif command[0].endswith("lvs"):
                 out = lvs_output or (
                     "sltp-100|twi-aotz--|||pve-slt-sid-test,pve-slt-owner-v1||20.00\n"
@@ -878,6 +887,15 @@ sharedlvmthin: two
         self.assertEqual(rc, 0)
         self.assertIn("STATE=HEALTHY", output)
         self.assertIn("SAFE_FOR_MUTATION=YES", output)
+
+    def test_lvm_uuid_case_mismatch_blocks_recovery_mutation(self):
+        for kwargs, field in (({"actual_vg": "VG-uuid"}, "VG_UUID_MATCH"),
+                              ({"actual_pv": "PV-uuid"}, "PV_UUID_MATCH")):
+            with self.subTest(field=field):
+                rc, output = self.run_main(**kwargs)
+                self.assertNotEqual(rc, 0)
+                self.assertIn(f"{field}=FAIL", output)
+                self.assertIn("SAFE_FOR_MUTATION=NO", output)
 
     def test_managed_pve_config_lock_blocks_safe_for_mutation(self):
         rc, output = self.run_main(config_lock_status="FAIL")

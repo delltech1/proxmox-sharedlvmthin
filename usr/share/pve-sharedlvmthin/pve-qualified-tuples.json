@@ -95,102 +95,492 @@
   "tuples": [
     {
       "id": "rc597-api16-k20-postupdate",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.97~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.97~tg53"
+      ],
       "api": 16,
-      "packages": {"pve-manager": "9.2.21", "libpve-storage-perl": "9.1.13", "qemu-server": "9.2.11", "pve-qemu-kvm": "11.0.3-4", "libpve-common-perl": "9.2.3"},
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.11",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.3"
+      },
       "running_kernel": "7.0.14-20-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["exact-build-evidence-binding", "post-update-runtime-settlement", "thin-thick-lazy-lifecycle", "backup-restore"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "post-update-runtime-settlement",
+        "thin-thick-lazy-lifecycle",
+        "backup-restore"
+      ]
     },
     {
       "id": "rc597-api16-original-source",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.97~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.97~tg53"
+      ],
       "api": 16,
-      "packages": {"pve-manager": "9.2.18", "libpve-storage-perl": "9.1.12", "qemu-server": "9.2.10", "pve-qemu-kvm": "11.0.3-3", "libpve-common-perl": "9.2.3"},
+      "packages": {
+        "pve-manager": "9.2.18",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.3"
+      },
       "running_kernel": "7.0.14-16-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["exact-build-evidence-binding", "thin-thick-lazy-lifecycle", "post-reboot-san", "backup-restore", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "rc597-api16-k17-source",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.97~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.97~tg53"
+      ],
       "api": 16,
-      "packages": {"pve-manager": "9.2.20", "libpve-storage-perl": "9.1.12", "qemu-server": "9.2.10", "pve-qemu-kvm": "11.0.3-3", "libpve-common-perl": "9.2.3"},
+      "packages": {
+        "pve-manager": "9.2.20",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.3"
+      },
       "running_kernel": "7.0.14-17-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["exact-build-evidence-binding", "thin-thick-lazy-lifecycle", "post-reboot-san", "backup-restore", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "rc597-api14-control",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.97~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.97~tg53"
+      ],
       "api": 14,
       "packages": {
-        "pve-manager": "9.2.2", "libpve-storage-perl": "9.1.5",
-        "qemu-server": "9.1.15", "pve-qemu-kvm": "11.0.0-3",
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
         "libpve-common-perl": "9.1.12"
       },
       "running_kernel": "7.0.2-6-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
-      "excluded_scopes": ["san-dataplane"],
-      "required_tests": ["api14-clean-install", "api14-in-place-upgrade", "dual-thick-profile-parity", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-profile-parity",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "rc597-api15-bridge-source",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.97~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.97~tg53"
+      ],
       "api": 15,
       "packages": {
-        "pve-manager": "9.2.21", "libpve-storage-perl": "9.1.11",
-        "qemu-server": "9.2.10", "pve-qemu-kvm": "11.0.3-4",
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
         "libpve-common-perl": "9.2.2"
       },
       "running_kernel": "7.0.14-20-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["exact-build-evidence-binding", "thin-thick-lazy-lifecycle", "post-reboot-san", "backup-restore", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "rc597-api16-update-source",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.97~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.97~tg53"
+      ],
       "api": 16,
       "packages": {
-        "pve-manager": "9.2.21", "libpve-storage-perl": "9.1.12",
-        "qemu-server": "9.2.10", "pve-qemu-kvm": "11.0.3-4",
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
         "libpve-common-perl": "9.2.3"
       },
       "running_kernel": "7.0.14-20-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["exact-build-evidence-binding", "thin-thick-lazy-lifecycle", "post-reboot-san", "backup-restore", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "rc597-api16-k23-target",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.97~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.97~tg53"
+      ],
       "api": 16,
       "packages": {
-        "pve-manager": "9.2.21", "libpve-storage-perl": "9.1.13",
-        "qemu-server": "9.2.11", "pve-qemu-kvm": "11.0.3-4",
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.11",
+        "pve-qemu-kvm": "11.0.3-4",
         "libpve-common-perl": "9.2.3"
       },
       "running_kernel": "7.0.14-23-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["exact-build-evidence-binding", "thin-thick-lazy-lifecycle", "post-reboot-san", "backup-restore", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
+    },
+    {
+      "id": "rc598-lab2-api16-k23-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.98~tg53~lab2",
+        "0.9.0~rc5.98~tg53~lab3",
+        "0.9.0~rc5.98~tg53~lab4",
+        "0.9.0~rc5.98~tg53~lab5",
+        "0.9.0~rc5.98~tg53~lab6",
+        "0.9.0~rc5.98~tg53~lab7",
+        "0.9.0~rc5.98~tg53~lab8",
+        "0.9.0~rc5.98~tg53~lab9",
+        "0.9.0~rc5.98~tg53~lab10"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.11",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-23-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
+    },
+    {
+      "id": "rc598-lab3-api16-k26-target",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.98~tg53~lab3",
+        "0.9.0~rc5.98~tg53~lab4",
+        "0.9.0~rc5.98~tg53~lab5",
+        "0.9.0~rc5.98~tg53~lab6",
+        "0.9.0~rc5.98~tg53~lab7",
+        "0.9.0~rc5.98~tg53~lab8",
+        "0.9.0~rc5.98~tg53~lab9",
+        "0.9.0~rc5.98~tg53~lab10"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.25",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.14",
+        "pve-qemu-kvm": "11.1.3-1",
+        "libpve-common-perl": "9.2.6"
+      },
+      "running_kernel": "7.0.14-26-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
+    },
+    {
+      "id": "rc598-lab5-api16-k16-peer",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.98~tg53~lab5",
+        "0.9.0~rc5.98~tg53~lab6",
+        "0.9.0~rc5.98~tg53~lab7",
+        "0.9.0~rc5.98~tg53~lab8",
+        "0.9.0~rc5.98~tg53~lab9",
+        "0.9.0~rc5.98~tg53~lab10"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.18",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-16-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
+    },
+    {
+      "id": "rc598-lab5-api16-k17-peer",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.98~tg53~lab5",
+        "0.9.0~rc5.98~tg53~lab6",
+        "0.9.0~rc5.98~tg53~lab7",
+        "0.9.0~rc5.98~tg53~lab8",
+        "0.9.0~rc5.98~tg53~lab9",
+        "0.9.0~rc5.98~tg53~lab10"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.20",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-17-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
+    },
+    {
+      "id": "rc598-lab5-api14-control",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.98~tg53~lab5",
+        "0.9.0~rc5.98~tg53~lab6",
+        "0.9.0~rc5.98~tg53~lab7",
+        "0.9.0~rc5.98~tg53~lab8",
+        "0.9.0~rc5.98~tg53~lab9",
+        "0.9.0~rc5.98~tg53~lab10"
+      ],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-profile-parity",
+        "dual-thick-dual-profile-cycle"
+      ]
+    },
+    {
+      "id": "rc598-lab5-api15-control",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.98~tg53~lab5",
+        "0.9.0~rc5.98~tg53~lab6",
+        "0.9.0~rc5.98~tg53~lab7",
+        "0.9.0~rc5.98~tg53~lab8",
+        "0.9.0~rc5.98~tg53~lab9",
+        "0.9.0~rc5.98~tg53~lab10"
+      ],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.2"
+      },
+      "running_kernel": "7.0.14-20-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "tg52-api14-control-plane",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.35~tg53",
+        "0.9.0~rc5.56~tg53+labclone1",
+        "0.9.0~rc5.57~tg53",
+        "0.9.0~rc5.58~tg53",
+        "0.9.0~rc5.59~tg53",
+        "0.9.0~rc5.60~tg53",
+        "0.9.0~rc5.61~tg53",
+        "0.9.0~rc5.62~tg53",
+        "0.9.0~rc5.63~tg53",
+        "0.9.0~rc5.64~tg53",
+        "0.9.0~rc5.65~tg53",
+        "0.9.0~rc5.66~tg53",
+        "0.9.0~rc5.67~tg53",
+        "0.9.0~rc5.68~tg53",
+        "0.9.0~rc5.69~tg53"
+      ],
       "api": 14,
       "packages": {
         "pve-manager": "9.2.2",
@@ -201,13 +591,38 @@
       },
       "running_kernel": "7.0.2-6-pve",
       "status": "EXACT_LAB_TESTED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
-      "excluded_scopes": ["san-dataplane"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
     },
     {
       "id": "tg52-api15-san-original",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.35~tg53",
+        "0.9.0~rc5.56~tg53+labclone1",
+        "0.9.0~rc5.57~tg53",
+        "0.9.0~rc5.58~tg53",
+        "0.9.0~rc5.59~tg53",
+        "0.9.0~rc5.60~tg53",
+        "0.9.0~rc5.61~tg53",
+        "0.9.0~rc5.62~tg53",
+        "0.9.0~rc5.63~tg53",
+        "0.9.0~rc5.64~tg53",
+        "0.9.0~rc5.65~tg53",
+        "0.9.0~rc5.66~tg53",
+        "0.9.0~rc5.67~tg53",
+        "0.9.0~rc5.68~tg53",
+        "0.9.0~rc5.69~tg53"
+      ],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.18",
@@ -218,12 +633,26 @@
       },
       "running_kernel": "7.0.14-16-pve",
       "status": "EXACT_LAB_TESTED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane", "thin", "thick-eager", "thick-lazy", "migration"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane",
+        "thin",
+        "thick-eager",
+        "thick-lazy",
+        "migration"
+      ]
     },
     {
       "id": "tg53-rc574-api14-candidate",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.74~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.74~tg53"
+      ],
       "api": 14,
       "packages": {
         "pve-manager": "9.2.2",
@@ -234,14 +663,31 @@
       },
       "running_kernel": "7.0.2-6-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
-      "excluded_scopes": ["san-dataplane"],
-      "required_tests": ["api14-clean-install", "api14-in-place-upgrade", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "tg53-rc587-api14-control-candidate",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53", "0.9.0~rc5.89~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.87~tg53",
+        "0.9.0~rc5.88~tg53",
+        "0.9.0~rc5.89~tg53"
+      ],
       "api": 14,
       "packages": {
         "pve-manager": "9.2.2",
@@ -252,8 +698,14 @@
       },
       "running_kernel": "7.0.2-6-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
-      "excluded_scopes": ["san-dataplane"],
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
       "required_tests": [
         "api14-clean-install",
         "api14-in-place-upgrade",
@@ -263,8 +715,28 @@
     },
     {
       "id": "tg53-rc574-api15-san-original-candidate",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53", "0.9.0~rc5.89~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.74~tg53",
+        "0.9.0~rc5.75~tg53",
+        "0.9.0~rc5.76~tg53",
+        "0.9.0~rc5.77~tg53",
+        "0.9.0~rc5.78~tg53",
+        "0.9.0~rc5.79~tg53",
+        "0.9.0~rc5.80~tg53",
+        "0.9.0~rc5.81~tg53",
+        "0.9.0~rc5.82~tg53",
+        "0.9.0~rc5.83~tg53",
+        "0.9.0~rc5.84~tg53",
+        "0.9.0~rc5.85~tg53",
+        "0.9.0~rc5.86~tg53",
+        "0.9.0~rc5.87~tg53",
+        "0.9.0~rc5.88~tg53",
+        "0.9.0~rc5.89~tg53"
+      ],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.18",
@@ -275,13 +747,65 @@
       },
       "running_kernel": "7.0.14-16-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane", "thin", "thick-eager", "thick-lazy", "migration"],
-      "required_tests": ["exact-build-profile-evidence-binding", "thin-thick-lazy-lifecycle", "mixed-node-live-migration"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane",
+        "thin",
+        "thick-eager",
+        "thick-lazy",
+        "migration"
+      ],
+      "required_tests": [
+        "exact-build-profile-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "mixed-node-live-migration"
+      ]
     },
     {
       "id": "tg53-api15-upstream-9.2.20-k17",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.78~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53", "0.9.0~rc5.89~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.35~tg53",
+        "0.9.0~rc5.56~tg53+labclone1",
+        "0.9.0~rc5.57~tg53",
+        "0.9.0~rc5.58~tg53",
+        "0.9.0~rc5.59~tg53",
+        "0.9.0~rc5.60~tg53",
+        "0.9.0~rc5.61~tg53",
+        "0.9.0~rc5.62~tg53",
+        "0.9.0~rc5.63~tg53",
+        "0.9.0~rc5.64~tg53",
+        "0.9.0~rc5.65~tg53",
+        "0.9.0~rc5.66~tg53",
+        "0.9.0~rc5.67~tg53",
+        "0.9.0~rc5.68~tg53",
+        "0.9.0~rc5.69~tg53",
+        "0.9.0~rc5.70~tg53",
+        "0.9.0~rc5.71~tg53",
+        "0.9.0~rc5.72~tg53",
+        "0.9.0~rc5.73~tg53",
+        "0.9.0~rc5.74~tg53",
+        "0.9.0~rc5.75~tg53",
+        "0.9.0~rc5.76~tg53",
+        "0.9.0~rc5.77~tg53",
+        "0.9.0~rc5.78~tg53",
+        "0.9.0~rc5.79~tg53",
+        "0.9.0~rc5.80~tg53",
+        "0.9.0~rc5.81~tg53",
+        "0.9.0~rc5.82~tg53",
+        "0.9.0~rc5.83~tg53",
+        "0.9.0~rc5.84~tg53",
+        "0.9.0~rc5.85~tg53",
+        "0.9.0~rc5.86~tg53",
+        "0.9.0~rc5.87~tg53",
+        "0.9.0~rc5.88~tg53",
+        "0.9.0~rc5.89~tg53"
+      ],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.20",
@@ -292,20 +816,101 @@
       },
       "running_kernel": "7.0.14-17-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
       "operation_qualifications": {
-        "read-only-inventory": {"status": "RETEST_REQUIRED", "evidence": ["runtime-qualification", "upgrade-check-7-of-7"], "required_tests": ["exact-build-evidence-binding"]},
-        "package-lifecycle": {"status": "RETEST_REQUIRED", "evidence": ["rc5.69-in-place-upgrade", "freeze-schema-3-settlement"], "required_tests": ["exact-build-profile-evidence-binding"]},
-        "activation-deactivation": {"status": "RETEST_REQUIRED", "evidence": ["post-upgrade-pvesm-status", "live-migration-return-activation"], "required_tests": ["all-mode-activation-deactivation"]},
-        "allocation-removal": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
-        "snapshot-vmstate": {"status": "BLOCKED", "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait"], "reason": "upstream RAM snapshot failure and empty MTU boundaries remain unresolved"},
-        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["running-and-stopped-resize"]},
-        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["raw-import-export-framing-hash", "vma-file-and-stdin-restore"]},
-        "migration": {"status": "RETEST_REQUIRED", "evidence": ["thick-lazy-live-roundtrip"], "required_tests": ["mixed-node-live-migration"], "reason": "one Thick-Lazy round trip does not qualify every mode and mixed-version edge"},
-        "thin-ownership-autogrow": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
-        "thick-lazy-transition": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]}
+        "read-only-inventory": {
+          "status": "RETEST_REQUIRED",
+          "evidence": [
+            "runtime-qualification",
+            "upgrade-check-7-of-7"
+          ],
+          "required_tests": [
+            "exact-build-evidence-binding"
+          ]
+        },
+        "package-lifecycle": {
+          "status": "RETEST_REQUIRED",
+          "evidence": [
+            "rc5.69-in-place-upgrade",
+            "freeze-schema-3-settlement"
+          ],
+          "required_tests": [
+            "exact-build-profile-evidence-binding"
+          ]
+        },
+        "activation-deactivation": {
+          "status": "RETEST_REQUIRED",
+          "evidence": [
+            "post-upgrade-pvesm-status",
+            "live-migration-return-activation"
+          ],
+          "required_tests": [
+            "all-mode-activation-deactivation"
+          ]
+        },
+        "allocation-removal": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "thin-thick-lazy-lifecycle"
+          ]
+        },
+        "snapshot-vmstate": {
+          "status": "BLOCKED",
+          "required_tests": [
+            "snapshot-vmstate-cleanup",
+            "snapshot-qmp-failure-prefix",
+            "snapshot-finalize-bounded-wait"
+          ],
+          "reason": "upstream RAM snapshot failure and empty MTU boundaries remain unresolved"
+        },
+        "resize": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "running-and-stopped-resize"
+          ]
+        },
+        "move-import-restore": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "raw-import-export-framing-hash",
+            "vma-file-and-stdin-restore"
+          ]
+        },
+        "migration": {
+          "status": "RETEST_REQUIRED",
+          "evidence": [
+            "thick-lazy-live-roundtrip"
+          ],
+          "required_tests": [
+            "mixed-node-live-migration"
+          ],
+          "reason": "one Thick-Lazy round trip does not qualify every mode and mixed-version edge"
+        },
+        "thin-ownership-autogrow": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "thin-thick-lazy-lifecycle"
+          ]
+        },
+        "thick-lazy-transition": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "thin-thick-lazy-lifecycle"
+          ]
+        }
       },
-      "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait", "thin-thick-lazy-lifecycle", "mixed-node-live-migration", "post-reboot-san"],
+      "required_tests": [
+        "snapshot-vmstate-cleanup",
+        "snapshot-qmp-failure-prefix",
+        "snapshot-finalize-bounded-wait",
+        "thin-thick-lazy-lifecycle",
+        "mixed-node-live-migration",
+        "post-reboot-san"
+      ],
       "known_operation_boundaries": [
         "empty running-nets-host-mtu remains writable by upstream RAM snapshot code",
         "savevm-end failure and vmstate deactivation share one upstream eval block",
@@ -314,8 +919,46 @@
     },
     {
       "id": "tg53-api15-upstream-9.2.20-k19",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53", "0.9.0~rc5.79~tg53", "0.9.0~rc5.80~tg53", "0.9.0~rc5.81~tg53", "0.9.0~rc5.82~tg53", "0.9.0~rc5.83~tg53", "0.9.0~rc5.84~tg53", "0.9.0~rc5.85~tg53", "0.9.0~rc5.86~tg53", "0.9.0~rc5.87~tg53", "0.9.0~rc5.88~tg53", "0.9.0~rc5.89~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.35~tg53",
+        "0.9.0~rc5.56~tg53+labclone1",
+        "0.9.0~rc5.57~tg53",
+        "0.9.0~rc5.58~tg53",
+        "0.9.0~rc5.59~tg53",
+        "0.9.0~rc5.60~tg53",
+        "0.9.0~rc5.61~tg53",
+        "0.9.0~rc5.62~tg53",
+        "0.9.0~rc5.63~tg53",
+        "0.9.0~rc5.64~tg53",
+        "0.9.0~rc5.65~tg53",
+        "0.9.0~rc5.66~tg53",
+        "0.9.0~rc5.67~tg53",
+        "0.9.0~rc5.68~tg53",
+        "0.9.0~rc5.69~tg53",
+        "0.9.0~rc5.70~tg53",
+        "0.9.0~rc5.71~tg53",
+        "0.9.0~rc5.72~tg53",
+        "0.9.0~rc5.73~tg53",
+        "0.9.0~rc5.74~tg53",
+        "0.9.0~rc5.75~tg53",
+        "0.9.0~rc5.76~tg53",
+        "0.9.0~rc5.77~tg53",
+        "0.9.0~rc5.79~tg53",
+        "0.9.0~rc5.80~tg53",
+        "0.9.0~rc5.81~tg53",
+        "0.9.0~rc5.82~tg53",
+        "0.9.0~rc5.83~tg53",
+        "0.9.0~rc5.84~tg53",
+        "0.9.0~rc5.85~tg53",
+        "0.9.0~rc5.86~tg53",
+        "0.9.0~rc5.87~tg53",
+        "0.9.0~rc5.88~tg53",
+        "0.9.0~rc5.89~tg53"
+      ],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.20",
@@ -326,20 +969,88 @@
       },
       "running_kernel": "7.0.14-19-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
       "operation_qualifications": {
-        "read-only-inventory": {"status": "RETEST_REQUIRED", "evidence": ["runtime-qualification"], "required_tests": ["exact-build-evidence-binding"]},
-        "package-lifecycle": {"status": "RETEST_REQUIRED", "required_tests": ["post-reboot-san"]},
-        "activation-deactivation": {"status": "RETEST_REQUIRED", "required_tests": ["post-reboot-san"]},
-        "allocation-removal": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
-        "snapshot-vmstate": {"status": "BLOCKED", "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait"], "reason": "upstream RAM snapshot failure and empty MTU boundaries remain unresolved"},
-        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["running-and-stopped-resize"]},
-        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["raw-import-export-framing-hash", "vma-file-and-stdin-restore"]},
-        "migration": {"status": "RETEST_REQUIRED", "required_tests": ["mixed-node-live-migration"]},
-        "thin-ownership-autogrow": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]},
-        "thick-lazy-transition": {"status": "RETEST_REQUIRED", "required_tests": ["thin-thick-lazy-lifecycle"]}
+        "read-only-inventory": {
+          "status": "RETEST_REQUIRED",
+          "evidence": [
+            "runtime-qualification"
+          ],
+          "required_tests": [
+            "exact-build-evidence-binding"
+          ]
+        },
+        "package-lifecycle": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "post-reboot-san"
+          ]
+        },
+        "activation-deactivation": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "post-reboot-san"
+          ]
+        },
+        "allocation-removal": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "thin-thick-lazy-lifecycle"
+          ]
+        },
+        "snapshot-vmstate": {
+          "status": "BLOCKED",
+          "required_tests": [
+            "snapshot-vmstate-cleanup",
+            "snapshot-qmp-failure-prefix",
+            "snapshot-finalize-bounded-wait"
+          ],
+          "reason": "upstream RAM snapshot failure and empty MTU boundaries remain unresolved"
+        },
+        "resize": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "running-and-stopped-resize"
+          ]
+        },
+        "move-import-restore": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "raw-import-export-framing-hash",
+            "vma-file-and-stdin-restore"
+          ]
+        },
+        "migration": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "mixed-node-live-migration"
+          ]
+        },
+        "thin-ownership-autogrow": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "thin-thick-lazy-lifecycle"
+          ]
+        },
+        "thick-lazy-transition": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "thin-thick-lazy-lifecycle"
+          ]
+        }
       },
-      "required_tests": ["snapshot-vmstate-cleanup", "snapshot-qmp-failure-prefix", "snapshot-finalize-bounded-wait", "thin-thick-lazy-lifecycle", "mixed-node-live-migration", "post-reboot-san"],
+      "required_tests": [
+        "snapshot-vmstate-cleanup",
+        "snapshot-qmp-failure-prefix",
+        "snapshot-finalize-bounded-wait",
+        "thin-thick-lazy-lifecycle",
+        "mixed-node-live-migration",
+        "post-reboot-san"
+      ],
       "known_operation_boundaries": [
         "empty running-nets-host-mtu remains writable by upstream RAM snapshot code",
         "savevm-end failure and vmstate deactivation share one upstream eval block",
@@ -348,8 +1059,35 @@
     },
     {
       "id": "tg52-api15-upstream-20260929",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.35~tg53", "0.9.0~rc5.56~tg53+labclone1", "0.9.0~rc5.57~tg53", "0.9.0~rc5.58~tg53", "0.9.0~rc5.59~tg53", "0.9.0~rc5.60~tg53", "0.9.0~rc5.61~tg53", "0.9.0~rc5.62~tg53", "0.9.0~rc5.63~tg53", "0.9.0~rc5.64~tg53", "0.9.0~rc5.65~tg53", "0.9.0~rc5.66~tg53", "0.9.0~rc5.67~tg53", "0.9.0~rc5.68~tg53", "0.9.0~rc5.69~tg53", "0.9.0~rc5.70~tg53", "0.9.0~rc5.71~tg53", "0.9.0~rc5.72~tg53", "0.9.0~rc5.73~tg53", "0.9.0~rc5.74~tg53", "0.9.0~rc5.75~tg53", "0.9.0~rc5.76~tg53", "0.9.0~rc5.77~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.35~tg53",
+        "0.9.0~rc5.56~tg53+labclone1",
+        "0.9.0~rc5.57~tg53",
+        "0.9.0~rc5.58~tg53",
+        "0.9.0~rc5.59~tg53",
+        "0.9.0~rc5.60~tg53",
+        "0.9.0~rc5.61~tg53",
+        "0.9.0~rc5.62~tg53",
+        "0.9.0~rc5.63~tg53",
+        "0.9.0~rc5.64~tg53",
+        "0.9.0~rc5.65~tg53",
+        "0.9.0~rc5.66~tg53",
+        "0.9.0~rc5.67~tg53",
+        "0.9.0~rc5.68~tg53",
+        "0.9.0~rc5.69~tg53",
+        "0.9.0~rc5.70~tg53",
+        "0.9.0~rc5.71~tg53",
+        "0.9.0~rc5.72~tg53",
+        "0.9.0~rc5.73~tg53",
+        "0.9.0~rc5.74~tg53",
+        "0.9.0~rc5.75~tg53",
+        "0.9.0~rc5.76~tg53",
+        "0.9.0~rc5.77~tg53"
+      ],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.21",
@@ -360,18 +1098,75 @@
       },
       "running_kernel": "7.0.14-19-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
       "operation_qualifications": {
-        "read-only-inventory": {"status": "RETEST_REQUIRED", "evidence": ["runtime-qualification", "api15-control-plane"], "required_tests": ["exact-build-evidence-binding"]},
-        "package-lifecycle": {"status": "RETEST_REQUIRED", "evidence": ["rc5.69-legacy-upgrade", "dual-thick-dual-profile-cycle", "thick-only-reboot-requalification"], "required_tests": ["exact-build-profile-evidence-binding"]},
-        "activation-deactivation": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
-        "allocation-removal": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
-        "snapshot-vmstate": {"status": "BLOCKED", "required_tests": ["snapshot-no-nic-e1000-and-qmp-failure"], "reason": "upstream empty running-nets-host-mtu lifecycle is not qualified"},
-        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["running-and-stopped-resize"]},
-        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["raw-import-export-framing-hash", "vma-file-and-stdin-restore"]},
-        "migration": {"status": "RETEST_REQUIRED", "required_tests": ["mixed-version-old-born-and-new-born-migration"]},
-        "thin-ownership-autogrow": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"},
-        "thick-lazy-transition": {"status": "NOT_IN_SCOPE", "reason": "the control-only qualification node has no assigned SAN data plane"}
+        "read-only-inventory": {
+          "status": "RETEST_REQUIRED",
+          "evidence": [
+            "runtime-qualification",
+            "api15-control-plane"
+          ],
+          "required_tests": [
+            "exact-build-evidence-binding"
+          ]
+        },
+        "package-lifecycle": {
+          "status": "RETEST_REQUIRED",
+          "evidence": [
+            "rc5.69-legacy-upgrade",
+            "dual-thick-dual-profile-cycle",
+            "thick-only-reboot-requalification"
+          ],
+          "required_tests": [
+            "exact-build-profile-evidence-binding"
+          ]
+        },
+        "activation-deactivation": {
+          "status": "NOT_IN_SCOPE",
+          "reason": "the control-only qualification node has no assigned SAN data plane"
+        },
+        "allocation-removal": {
+          "status": "NOT_IN_SCOPE",
+          "reason": "the control-only qualification node has no assigned SAN data plane"
+        },
+        "snapshot-vmstate": {
+          "status": "BLOCKED",
+          "required_tests": [
+            "snapshot-no-nic-e1000-and-qmp-failure"
+          ],
+          "reason": "upstream empty running-nets-host-mtu lifecycle is not qualified"
+        },
+        "resize": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "running-and-stopped-resize"
+          ]
+        },
+        "move-import-restore": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "raw-import-export-framing-hash",
+            "vma-file-and-stdin-restore"
+          ]
+        },
+        "migration": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "mixed-version-old-born-and-new-born-migration"
+          ]
+        },
+        "thin-ownership-autogrow": {
+          "status": "NOT_IN_SCOPE",
+          "reason": "the control-only qualification node has no assigned SAN data plane"
+        },
+        "thick-lazy-transition": {
+          "status": "NOT_IN_SCOPE",
+          "reason": "the control-only qualification node has no assigned SAN data plane"
+        }
       },
       "required_tests": [
         "raw-import-export-framing-hash",
@@ -397,8 +1192,14 @@
     },
     {
       "id": "tg53-api15-upstream-20261003",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.88~tg53", "0.9.0~rc5.89~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.88~tg53",
+        "0.9.0~rc5.89~tg53"
+      ],
       "api": 15,
       "packages": {
         "pve-manager": "9.2.21",
@@ -409,18 +1210,82 @@
       },
       "running_kernel": "7.0.14-20-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
       "operation_qualifications": {
-        "read-only-inventory": {"status": "RETEST_REQUIRED", "required_tests": ["exact-build-evidence-binding", "qemu-vma-binary-identity", "kernel-image-module-identity"]},
-        "package-lifecycle": {"status": "RETEST_REQUIRED", "required_tests": ["control-node-upgrade", "one-node-upgrade-reboot", "post-reboot-san"]},
-        "activation-deactivation": {"status": "RETEST_REQUIRED", "required_tests": ["post-reboot-san"]},
-        "allocation-removal": {"status": "RETEST_REQUIRED", "required_tests": ["ten-vm-thin-thick-lazy-wave"]},
-        "snapshot-vmstate": {"status": "RETEST_REQUIRED", "required_tests": ["ram-snapshot-rollback-delete", "snapshot-no-nic-e1000-and-qmp-failure", "ten-vm-thin-thick-lazy-wave"]},
-        "resize": {"status": "RETEST_REQUIRED", "required_tests": ["thin-eager-lazy-grow-zero-tail"]},
-        "move-import-restore": {"status": "RETEST_REQUIRED", "required_tests": ["vma-file-thin-eager-lazy", "vma-stdin-lazy-refusal", "old-new-vma-interoperability"]},
-        "migration": {"status": "RETEST_REQUIRED", "required_tests": ["mixed-version-old-born-and-new-born-migration"]},
-        "thin-ownership-autogrow": {"status": "RETEST_REQUIRED", "required_tests": ["ten-vm-thin-thick-lazy-wave"]},
-        "thick-lazy-transition": {"status": "RETEST_REQUIRED", "required_tests": ["lazy-partial-write-zero-pivot", "post-reboot-san"]}
+        "read-only-inventory": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "exact-build-evidence-binding",
+            "qemu-vma-binary-identity",
+            "kernel-image-module-identity"
+          ]
+        },
+        "package-lifecycle": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "control-node-upgrade",
+            "one-node-upgrade-reboot",
+            "post-reboot-san"
+          ]
+        },
+        "activation-deactivation": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "post-reboot-san"
+          ]
+        },
+        "allocation-removal": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "ten-vm-thin-thick-lazy-wave"
+          ]
+        },
+        "snapshot-vmstate": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "ram-snapshot-rollback-delete",
+            "snapshot-no-nic-e1000-and-qmp-failure",
+            "ten-vm-thin-thick-lazy-wave"
+          ]
+        },
+        "resize": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "thin-eager-lazy-grow-zero-tail"
+          ]
+        },
+        "move-import-restore": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "vma-file-thin-eager-lazy",
+            "vma-stdin-lazy-refusal",
+            "old-new-vma-interoperability"
+          ]
+        },
+        "migration": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "mixed-version-old-born-and-new-born-migration"
+          ]
+        },
+        "thin-ownership-autogrow": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "ten-vm-thin-thick-lazy-wave"
+          ]
+        },
+        "thick-lazy-transition": {
+          "status": "RETEST_REQUIRED",
+          "required_tests": [
+            "lazy-partial-write-zero-pivot",
+            "post-reboot-san"
+          ]
+        }
       },
       "required_tests": [
         "control-node-upgrade",
@@ -443,64 +1308,168 @@
         "a bounded observer timeout is UNKNOWN and cannot prove hydration, pivot or worker failure",
         "no-NIC, e1000-only and ambiguous QMP MTU RAM snapshots are refused before dispatch"
       ]
-    }
-    ,{
+    },
+    {
       "id": "rc593-api14-control-candidate",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.93~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.93~tg53"
+      ],
       "api": 14,
-      "packages": {"pve-manager": "9.2.2", "libpve-storage-perl": "9.1.5", "qemu-server": "9.1.15", "pve-qemu-kvm": "11.0.0-3", "libpve-common-perl": "9.1.12"},
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
       "running_kernel": "7.0.2-6-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks"],
-      "excluded_scopes": ["san-dataplane"],
-      "required_tests": ["api14-clean-install", "api14-in-place-upgrade", "dual-thick-profile-parity", "dual-thick-dual-profile-cycle"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-profile-parity",
+        "dual-thick-dual-profile-cycle"
+      ]
     },
     {
       "id": "rc593-api15-original-candidate",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.93~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.93~tg53"
+      ],
       "api": 15,
-      "packages": {"pve-manager": "9.2.18", "libpve-storage-perl": "9.1.10", "qemu-server": "9.2.7", "pve-qemu-kvm": "11.0.3-3", "libpve-common-perl": "9.2.1"},
+      "packages": {
+        "pve-manager": "9.2.18",
+        "libpve-storage-perl": "9.1.10",
+        "qemu-server": "9.2.7",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.1"
+      },
       "running_kernel": "7.0.14-16-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["api15-in-place-upgrade", "thin-thick-lazy-lifecycle", "mixed-api15-api16-migration"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api15-in-place-upgrade",
+        "thin-thick-lazy-lifecycle",
+        "mixed-api15-api16-migration"
+      ]
     },
     {
       "id": "rc593-api15-k17-candidate",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.93~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.93~tg53"
+      ],
       "api": 15,
-      "packages": {"pve-manager": "9.2.20", "libpve-storage-perl": "9.1.11", "qemu-server": "9.2.10", "pve-qemu-kvm": "11.0.3-3", "libpve-common-perl": "9.2.2"},
+      "packages": {
+        "pve-manager": "9.2.20",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.2"
+      },
       "running_kernel": "7.0.14-17-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["api15-in-place-upgrade", "thin-thick-lazy-lifecycle", "mixed-api15-api16-migration"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api15-in-place-upgrade",
+        "thin-thick-lazy-lifecycle",
+        "mixed-api15-api16-migration"
+      ]
     },
     {
       "id": "rc593-api15-bridge-source",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.93~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.93~tg53"
+      ],
       "api": 15,
-      "packages": {"pve-manager": "9.2.21", "libpve-storage-perl": "9.1.11", "qemu-server": "9.2.10", "pve-qemu-kvm": "11.0.3-4", "libpve-common-perl": "9.2.2"},
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.2"
+      },
       "running_kernel": "7.0.14-20-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["api15-in-place-upgrade", "thin-thick-lazy-lifecycle", "api15-api16-live-io-upgrade"]
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api15-in-place-upgrade",
+        "thin-thick-lazy-lifecycle",
+        "api15-api16-live-io-upgrade"
+      ]
     },
     {
       "id": "rc593-api16-bridge-target",
-      "profiles": ["dual", "thick-only"],
-      "plugin_versions": ["0.9.0~rc5.93~tg53"],
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.93~tg53"
+      ],
       "api": 16,
-      "packages": {"pve-manager": "9.2.21", "libpve-storage-perl": "9.1.12", "qemu-server": "9.2.10", "pve-qemu-kvm": "11.0.3-4", "libpve-common-perl": "9.2.3"},
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.3"
+      },
       "running_kernel": "7.0.14-20-pve",
       "status": "RETEST_REQUIRED",
-      "scopes": ["package-lifecycle", "control-plane", "api-hooks", "san-dataplane"],
-      "required_tests": ["api16-raw-name-reconciliation", "thin-thick-lazy-lifecycle", "api15-api16-live-io-upgrade", "mixed-api15-api16-migration", "backup-restore"]
-    }
-    ,{
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks",
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api16-raw-name-reconciliation",
+        "thin-thick-lazy-lifecycle",
+        "api15-api16-live-io-upgrade",
+        "mixed-api15-api16-migration",
+        "backup-restore"
+      ]
+    },
+    {
       "id": "rc594-api14-control",
       "profiles": [
         "dual",
@@ -745,6 +1714,545 @@
         "mixed-api15-api16-migration",
         "backup-restore"
       ]
+    },
+    {
+      "id": "rc5100-api14-control",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.100~tg53"
+      ],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-profile-parity",
+        "dual-thick-dual-profile-cycle"
+      ]
+    },
+    {
+      "id": "rc5100-api16-k28-target",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.100~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.25",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.14",
+        "pve-qemu-kvm": "11.1.3-1",
+        "libpve-common-perl": "9.2.7"
+      },
+      "running_kernel": "7.0.14-28-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle",
+        "rolling-api15-to-api16",
+        "kernel-28-runtime"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5100-api15-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.100~tg53"
+      ],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.2"
+      },
+      "running_kernel": "7.0.14-20-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5100-api16-k26-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.100~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.25",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.14",
+        "pve-qemu-kvm": "11.1.3-1",
+        "libpve-common-perl": "9.2.6"
+      },
+      "running_kernel": "7.0.14-26-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5100-api16-k26-common927",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.100~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.25",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.14",
+        "pve-qemu-kvm": "11.1.3-1",
+        "libpve-common-perl": "9.2.7"
+      },
+      "running_kernel": "7.0.14-26-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc597-api16-k20-postupdate",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.11",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-20-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "post-update-runtime-settlement",
+        "thin-thick-lazy-lifecycle",
+        "backup-restore",
+        "post-reboot-san"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc597-api16-original-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.18",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-16-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc597-api16-k17-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.20",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-3",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-17-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc597-api15-bridge-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 15,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.11",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.2"
+      },
+      "running_kernel": "7.0.14-20-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc597-api16-update-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.12",
+        "qemu-server": "9.2.10",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-20-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc597-api16-k23-target",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.21",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.11",
+        "pve-qemu-kvm": "11.0.3-4",
+        "libpve-common-perl": "9.2.3"
+      },
+      "running_kernel": "7.0.14-23-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc5100-api14-control",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-profile-parity",
+        "dual-thick-dual-profile-cycle",
+        "exact-build-evidence-binding",
+        "post-reboot-san"
+      ]
+    },
+    {
+      "id": "rc5101-rc5100-api16-k28-target",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.25",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.14",
+        "pve-qemu-kvm": "11.1.3-1",
+        "libpve-common-perl": "9.2.7"
+      },
+      "running_kernel": "7.0.14-28-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle",
+        "rolling-api15-to-api16",
+        "kernel-28-runtime"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc5100-api16-k26-source",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.25",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.14",
+        "pve-qemu-kvm": "11.1.3-1",
+        "libpve-common-perl": "9.2.6"
+      },
+      "running_kernel": "7.0.14-26-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
+    },
+    {
+      "id": "rc5101-rc5100-api16-k26-common927",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.101~tg53",
+        "0.9.0~rc5.102~tg53"
+      ],
+      "api": 16,
+      "packages": {
+        "pve-manager": "9.2.25",
+        "libpve-storage-perl": "9.1.13",
+        "qemu-server": "9.2.14",
+        "pve-qemu-kvm": "11.1.3-1",
+        "libpve-common-perl": "9.2.7"
+      },
+      "running_kernel": "7.0.14-26-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "required_tests": [
+        "exact-build-evidence-binding",
+        "thin-thick-lazy-lifecycle",
+        "post-reboot-san",
+        "backup-restore",
+        "dual-thick-dual-profile-cycle"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ]
     }
   ],
   "known_incompatible": [
@@ -762,8 +2270,18 @@
       "to": "rc597-api16-k20-postupdate",
       "directions": [],
       "status": "RETEST_REQUIRED",
-      "api_transition": {"from": 16, "to": 16, "package": "libpve-storage-perl", "old_version": "9.1.12", "new_version": "9.1.13"},
-      "required_tests": ["exact-candidate-apt-plan", "post-update-runtime-settlement", "exact-build-evidence-binding"]
+      "api_transition": {
+        "from": 16,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.12",
+        "new_version": "9.1.13"
+      },
+      "required_tests": [
+        "exact-candidate-apt-plan",
+        "post-update-runtime-settlement",
+        "exact-build-evidence-binding"
+      ]
     },
     {
       "id": "rc597-api16-postupdate-k20-k23-reboot",
@@ -771,7 +2289,12 @@
       "to": "rc597-api16-k23-target",
       "directions": [],
       "status": "RETEST_REQUIRED",
-      "required_tests": ["exact-candidate-apt-plan", "post-update-runtime-settlement", "post-reboot-san", "exact-build-evidence-binding"]
+      "required_tests": [
+        "exact-candidate-apt-plan",
+        "post-update-runtime-settlement",
+        "post-reboot-san",
+        "exact-build-evidence-binding"
+      ]
     },
     {
       "id": "rc597-api15-api16-k23-update",
@@ -779,8 +2302,20 @@
       "to": "rc597-api16-k23-target",
       "directions": [],
       "status": "RETEST_REQUIRED",
-      "api_transition": {"from": 15, "to": 16, "package": "libpve-storage-perl", "old_version": "9.1.11", "new_version": "9.1.13"},
-      "required_tests": ["plugin-first-api15-api16-live-io-upgrade", "post-update-runtime-settlement", "mixed-api15-api16-migration", "post-reboot-san", "exact-build-evidence-binding"]
+      "api_transition": {
+        "from": 15,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.11",
+        "new_version": "9.1.13"
+      },
+      "required_tests": [
+        "plugin-first-api15-api16-live-io-upgrade",
+        "post-update-runtime-settlement",
+        "mixed-api15-api16-migration",
+        "post-reboot-san",
+        "exact-build-evidence-binding"
+      ]
     },
     {
       "id": "rc597-api16-k20-k23-update",
@@ -788,39 +2323,130 @@
       "to": "rc597-api16-k23-target",
       "directions": [],
       "status": "RETEST_REQUIRED",
-      "api_transition": {"from": 16, "to": 16, "package": "libpve-storage-perl", "old_version": "9.1.12", "new_version": "9.1.13"},
-      "required_tests": ["exact-candidate-apt-plan", "post-update-runtime-settlement", "post-reboot-san", "exact-build-evidence-binding"]
+      "api_transition": {
+        "from": 16,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.12",
+        "new_version": "9.1.13"
+      },
+      "required_tests": [
+        "exact-candidate-apt-plan",
+        "post-update-runtime-settlement",
+        "post-reboot-san",
+        "exact-build-evidence-binding"
+      ]
     },
     {
       "id": "rc594-original-api15-api16",
       "from": "rc594-api15-original-source",
       "to": "rc594-api16-original-target",
       "status": "RETEST_REQUIRED",
-      "api_transition": {"from": 15, "to": 16, "package": "libpve-storage-perl", "old_version": "9.1.10", "new_version": "9.1.12"},
-      "required_tests": ["exact-three-package-apt-plan", "post-update-runtime-settlement", "post-reboot-san", "mixed-api15-api16-migration"]
+      "api_transition": {
+        "from": 15,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.10",
+        "new_version": "9.1.12"
+      },
+      "required_tests": [
+        "exact-three-package-apt-plan",
+        "post-update-runtime-settlement",
+        "post-reboot-san",
+        "mixed-api15-api16-migration"
+      ]
     },
     {
       "id": "rc594-k17-api15-api16",
       "from": "rc594-api15-k17-source",
       "to": "rc594-api16-k17-target",
       "status": "RETEST_REQUIRED",
-      "api_transition": {"from": 15, "to": 16, "package": "libpve-storage-perl", "old_version": "9.1.11", "new_version": "9.1.12"},
-      "required_tests": ["exact-two-package-apt-plan", "post-update-runtime-settlement", "post-reboot-san", "mixed-api15-api16-migration"]
+      "api_transition": {
+        "from": 15,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.11",
+        "new_version": "9.1.12"
+      },
+      "required_tests": [
+        "exact-two-package-apt-plan",
+        "post-update-runtime-settlement",
+        "post-reboot-san",
+        "mixed-api15-api16-migration"
+      ]
     },
     {
       "id": "rc593-api15-api16-bridge",
       "from": "rc593-api15-bridge-source",
       "to": "rc593-api16-bridge-target",
       "status": "RETEST_REQUIRED",
-      "api_transition": {"from": 15, "to": 16, "package": "libpve-storage-perl", "old_version": "9.1.11", "new_version": "9.1.12"},
-      "required_tests": ["api15-api16-live-io-upgrade", "post-update-runtime-settlement", "mixed-api15-api16-migration"]
+      "api_transition": {
+        "from": 15,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.11",
+        "new_version": "9.1.12"
+      },
+      "required_tests": [
+        "api15-api16-live-io-upgrade",
+        "post-update-runtime-settlement",
+        "mixed-api15-api16-migration"
+      ]
     },
     {
       "from": "tg52-api15-san-original",
       "to": "tg52-api15-upstream-20260929",
       "directions": [],
       "status": "RETEST_REQUIRED",
-      "required_tests": ["old-to-new-old-born-migration", "new-to-old-new-born-migration", "old-born-high-slot-hotplug", "one-node-reboot", "mixed-version-recovery"]
+      "required_tests": [
+        "old-to-new-old-born-migration",
+        "new-to-old-new-born-migration",
+        "old-born-high-slot-hotplug",
+        "one-node-reboot",
+        "mixed-version-recovery"
+      ]
+    },
+    {
+      "id": "rc5100-api15-api16-k28-update",
+      "from": "rc5100-api15-source",
+      "to": "rc5100-api16-k28-target",
+      "directions": [],
+      "status": "RETEST_REQUIRED",
+      "api_transition": {
+        "from": 15,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.11",
+        "new_version": "9.1.13"
+      },
+      "required_tests": [
+        "plugin-first-api15-api16-live-io-upgrade",
+        "post-update-runtime-settlement",
+        "mixed-api15-api16-migration",
+        "post-reboot-san",
+        "exact-build-evidence-binding"
+      ]
+    },
+    {
+      "id": "rc5101-api15-api16-k28-update",
+      "from": "rc5101-rc597-api15-bridge-source",
+      "to": "rc5101-rc5100-api16-k28-target",
+      "directions": [],
+      "status": "RETEST_REQUIRED",
+      "api_transition": {
+        "from": 15,
+        "to": 16,
+        "package": "libpve-storage-perl",
+        "old_version": "9.1.11",
+        "new_version": "9.1.13"
+      },
+      "required_tests": [
+        "plugin-first-api15-api16-live-io-upgrade",
+        "post-update-runtime-settlement",
+        "mixed-api15-api16-migration",
+        "post-reboot-san",
+        "exact-build-evidence-binding"
+      ]
     }
   ]
 }

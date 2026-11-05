@@ -1,5 +1,13 @@
 # Thick Generations: experimental design
 
+> **Historical design document:** This page describes an earlier candidate,
+> including proposed same-VG Thin/Thick operation and earlier transition
+> checks. It is not the current installation or compatibility contract. Current
+> releases include Thick-only and DUAL packages, require isolated Thin and
+> Thick VGs, and may differ from the design below. Consult
+> [the Thick-only package guide](thick-only-package.md) and
+> [known issues](known-issues.md) for current boundaries.
+
 The public RC5 line remains thin-only. Thick Generations is developed on a
 separate experimental branch and must pass its complete release gate before it
 is merged or published.

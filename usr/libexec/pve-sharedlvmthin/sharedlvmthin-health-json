@@ -1356,7 +1356,7 @@ def pvs_json():
 
 
 def evaluate_pv_binding(pvs, expected_pv_uuid=None, expected_wwid=None):
-    expected_uuid = str(expected_pv_uuid or "").strip().lower()
+    expected_uuid = str(expected_pv_uuid or "").strip()
     expected_map = (
         "/dev/mapper/" + str(expected_wwid).strip().lower()
         if expected_wwid else None
@@ -1365,14 +1365,14 @@ def evaluate_pv_binding(pvs, expected_pv_uuid=None, expected_wwid=None):
     if expected_uuid:
         candidates = [
             pv for pv in pvs
-            if str(pv.get("pv_uuid") or "").strip().lower() == expected_uuid
+            if str(pv.get("pv_uuid") or "").strip() == expected_uuid
         ]
         if not candidates:
             return "FAIL", "configured PV UUID is not visible"
 
     by_uuid = {}
     for pv in candidates:
-        uuid = str(pv.get("pv_uuid") or "").strip().lower()
+        uuid = str(pv.get("pv_uuid") or "").strip()
         name = str(pv.get("pv_name") or "").strip()
         if uuid:
             by_uuid.setdefault(uuid, set()).add(name)

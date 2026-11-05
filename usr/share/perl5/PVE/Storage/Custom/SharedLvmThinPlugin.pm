@@ -2174,9 +2174,15 @@ sub _thick_set_background_hydration {
                 . "$command_error$verify_error"
             : $verify_error;
     }
-    warn "$description dm-clone background hydration reported an error, but the "
-        . "exact kernel postcondition is proven; continuing without retry: "
-        . $command_error if $command_error ne '';
+    # A matching status is only a point-in-time observation. PVE::Cmd can
+    # abort after a pipe read error while killing only its direct child (the
+    # timeout wrapper), so it does not prove that dmsetup has exited. Do not
+    # let a matching pre-existing state turn that ambiguous command into a
+    # successful transition. The caller must preserve recovery state; this
+    # check alone does not prove that a surviving executor has terminated.
+    die "$description dm-clone background hydration result is UNKNOWN despite "
+        . "the observed kernel state because command termination is unproven; "
+        . "no retry attempted: $command_error" if $command_error ne '';
     return 1;
 }
 
@@ -2761,6 +2767,7 @@ sub _thick_snapshot_name {
 sub _thick_activate_volume {
     my ($class, $storeid, $scfg, $volname, $snapname, $cache) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
+    $class->_verify_same_vg_alias_configuration($storeid, $scfg);
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     $class->_verify_mutation_quorum($storeid, $scfg);
     $class->_verify_storage_identity($storeid, $scfg, $device);
@@ -3409,6 +3416,7 @@ sub _lazy_materialize_volume {
 sub _lazy_materialize_volume_locked {
     my ($class, $scfg, $storeid, $volname) = @_;
     $class->_require_thick_identity_config($storeid, $scfg);
+    $class->_verify_same_vg_alias_configuration($storeid, $scfg);
     my $vg = $scfg->{'slt-vgname'};
     my $device = "/dev/mapper/$scfg->{'slt-expected-wwid'}";
     $class->_assert_no_active_storage_worker($vg);
@@ -4100,12 +4108,27 @@ sub _canonical_node_scope {
 }
 
 sub _verify_same_vg_alias_configuration {
-    my ($class, $storeid, $scfg) = @_;
+    my ($class, $storeid, $scfg, $config_override) = @_;
     my $vg = $scfg->{'slt-vgname'} // die "storage '$storeid' has no VG name\n";
-    my $cfg = PVE::Storage::config();
+    my $cfg = defined($config_override) ? $config_override : PVE::Storage::config();
+    die "PVE storage configuration inventory is unavailable\n" if ref($cfg) ne 'HASH';
     my $ids = $cfg->{ids};
     die "PVE storage configuration inventory is unavailable\n"
         if ref($ids) ne 'HASH';
+
+    # The existing persistent namespace and cluster lock use lc(VG UUID).
+    # Never silently merge two distinct case-sensitive LVM IDs into it.
+    my $pinned_uuid = $scfg->{'slt-expected-vg-uuid'};
+    if (defined($pinned_uuid) && !ref($pinned_uuid) && $pinned_uuid ne '') {
+        for my $other_id (sort keys %$ids) {
+            my $other = $ids->{$other_id};
+            next if ref($other) ne 'HASH' || ($other->{type} // '') ne 'sharedlvmthin';
+            my $other_uuid = $other->{'slt-expected-vg-uuid'};
+            next if !defined($other_uuid) || ref($other_uuid) || $other_uuid eq '';
+            die "storage '$storeid' VG UUID conflicts with storage '$other_id' in the persistent namespace\n"
+                if $pinned_uuid ne $other_uuid && lc($pinned_uuid) eq lc($other_uuid);
+        }
+    }
 
     my @foreign_vg_references = sort grep {
         my $candidate = $ids->{$_};
@@ -4162,7 +4185,9 @@ sub _verify_same_vg_alias_configuration {
             my $value = $candidate->{$field};
             die "same-VG alias '$alias' must pin '$field'\n"
                 if !defined($value) || $value eq '';
-            $identity{$field}->{lc($value)} = 1;
+            # LVM IDs are case-sensitive; WWIDs have separate hex semantics.
+            my $identity_key = $field eq 'slt-expected-wwid' ? lc($value) : $value;
+            $identity{$field}->{$identity_key} = 1;
         }
         my $reserve_key = join('|',
             $candidate->{'slt-vg-reserve-percent'} // '',
@@ -4225,6 +4250,147 @@ sub _verify_same_vg_alias_configuration {
     die "same-VG aliases must use the same PVE node scope\n"
         if keys(%node_scope) != 1;
     return 1;
+}
+
+# PVE calls this under its storage configuration lock before committing the
+# proposed storage. A second PVE::Storage::config() returns the previously
+# committed snapshot, so explicitly include the candidate in a fresh local copy
+# before checking alias parity. This is configuration validation only: it does
+# not establish live SAN identity or replace the runtime admission gates.
+sub _reject_conflicting_vg_uuid_names {
+    my ($class, $storeid, $scfg, $cfg) = @_;
+    die "PVE storage configuration inventory is unavailable\n"
+        if ref($cfg) ne 'HASH' || ref($cfg->{ids}) ne 'HASH';
+    my $uuid = $scfg->{'slt-expected-vg-uuid'};
+    return if !defined($uuid) || ref($uuid) || $uuid eq '';
+    my $vg = $scfg->{'slt-vgname'};
+    die "storage '$storeid' has no unambiguous VG name\n"
+        if !defined($vg) || ref($vg) || $vg eq '';
+    for my $other_id (sort keys %{$cfg->{ids}}) {
+        next if $other_id eq $storeid;
+        my $other = $cfg->{ids}->{$other_id};
+        next if ref($other) ne 'HASH' || ($other->{type} // '') ne 'sharedlvmthin';
+        my $other_uuid = $other->{'slt-expected-vg-uuid'};
+        next if !defined($other_uuid) || ref($other_uuid) || $other_uuid eq '';
+        next if lc($uuid) ne lc($other_uuid);
+        my $other_vg = $other->{'slt-vgname'};
+        die "storage '$storeid' VG UUID conflicts with storage '$other_id' in the persistent namespace\n"
+            if $uuid ne $other_uuid || !defined($other_vg) || ref($other_vg) || $other_vg ne $vg;
+    }
+    return 1;
+}
+
+sub on_add_hook {
+    my ($class, $storeid, $scfg, %param) = @_;
+    die "invalid storage configuration candidate\n" if ref($scfg) ne 'HASH';
+    my $mode = $scfg->{'slt-allocation-mode'};
+    $mode //= $class->_package_flavor() eq 'thick-only' ? 'thick-generations' : 'thin';
+    if ($mode eq 'thick-generations' || $mode eq 'thick-generations-lazy') {
+        die "invalid Thick storage configuration candidate\n"
+            if ($scfg->{type} // '') ne 'sharedlvmthin';
+        $class->_require_thick_identity_config($storeid, $scfg);
+        my $current = PVE::Storage::config();
+        die "PVE storage configuration inventory is unavailable\n"
+            if ref($current) ne 'HASH' || ref($current->{ids}) ne 'HASH';
+        die "storage '$storeid' already exists in the committed configuration\n"
+            if exists($current->{ids}->{$storeid});
+        my $candidate = { %$current, ids => { %{$current->{ids}}, $storeid => $scfg } };
+        $class->_reject_conflicting_vg_uuid_names($storeid, $scfg, $current);
+        $class->_verify_same_vg_alias_configuration($storeid, $scfg, $candidate);
+    } elsif ($mode eq 'thin') {
+        # Preserve ordinary Thin behavior while preventing an uncommitted
+        # Thin candidate from introducing a same-VG Thick conflict. Do not
+        # call _allocation_mode on remote Thin entries: Thick-only nodes must
+        # still be able to parse their cluster configuration.
+        my $vg = $scfg->{'slt-vgname'};
+        die "Thin candidate has no unambiguous VG name\n"
+            if !defined($vg) || ref($vg) || $vg eq '';
+        my $current = PVE::Storage::config();
+        die "PVE storage configuration inventory is unavailable\n"
+            if ref($current) ne 'HASH' || ref($current->{ids}) ne 'HASH';
+        $class->_reject_conflicting_vg_uuid_names($storeid, $scfg, $current);
+        for my $other_id (sort keys %{$current->{ids}}) {
+            my $other = $current->{ids}->{$other_id};
+            die "PVE storage configuration inventory is ambiguous\n"
+                if ref($other) ne 'HASH' || ref($other->{type});
+            next if ($other->{type} // '') ne 'sharedlvmthin';
+            my $candidate_uuid = $scfg->{'slt-expected-vg-uuid'};
+            my $other_uuid = $other->{'slt-expected-vg-uuid'};
+            die "storage '$storeid' VG UUID conflicts with storage '$other_id' in the persistent namespace\n"
+                if defined($candidate_uuid) && !ref($candidate_uuid) && $candidate_uuid ne ''
+                && defined($other_uuid) && !ref($other_uuid) && $other_uuid ne ''
+                && $candidate_uuid ne $other_uuid && lc($candidate_uuid) eq lc($other_uuid);
+            die "SharedLvmThin storage '$other_id' has an ambiguous VG name\n"
+                if !defined($other->{'slt-vgname'}) || ref($other->{'slt-vgname'})
+                || $other->{'slt-vgname'} eq '';
+            next if $other->{'slt-vgname'} ne $vg;
+            my $other_mode = $other->{'slt-allocation-mode'};
+            die "same-VG storage '$other_id' has an unknown allocation mode; "
+                . "cannot prove Thin/Thick isolation\n"
+                if !defined($other_mode) || ref($other_mode)
+                || $other_mode !~ /^(?:thin|thick-generations|thick-generations-lazy)$/;
+            die "VG_MODE_CONFLICT: shared VG '$vg' already contains Thick storage '$other_id'; "
+                . "use physically separate Thin and Thick VGs\n"
+                if $other_mode ne 'thin';
+        }
+    }
+    return $class->SUPER::on_add_hook($storeid, $scfg, %param);
+}
+
+# PVE invokes this inside its storage config lock before committing the PUT.
+# Validate the candidate against the complete committed snapshot, never the
+# client-supplied GUI view. No network or LVM probe is safe under that lock.
+sub on_update_hook_full {
+    my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
+    die "invalid storage update evidence\n"
+        if ref($scfg) ne 'HASH' || ref($update) ne 'HASH'
+        || (defined($delete) && ref($delete) ne 'ARRAY')
+        || (defined($sensitive) && ref($sensitive) ne 'HASH');
+    $delete //= [];
+    $sensitive //= {};
+    # A pure disable remains possible even if the existing group is broken.
+    my @keys = grep { $_ ne 'type' } keys %$update;
+    my $disable_only = @keys == 1 && $keys[0] eq 'disable'
+        && defined($update->{disable}) && "$update->{disable}" eq '1'
+        && (!exists($update->{type}) || ($update->{type} // '') eq 'sharedlvmthin')
+        && !@$delete && !keys(%$sensitive);
+    if (!$disable_only) {
+        my $current = PVE::Storage::config();
+        die "PVE storage configuration inventory is unavailable\n"
+            if ref($current) ne 'HASH' || ref($current->{ids}) ne 'HASH'
+            || ref($current->{ids}->{$storeid}) ne 'HASH';
+        my $candidate = { %$scfg, %$update };
+        delete $candidate->{$_} for @$delete;
+        die "invalid SharedLvmThin update candidate\n"
+            if ($candidate->{type} // '') ne 'sharedlvmthin';
+        my $mode = $candidate->{'slt-allocation-mode'};
+        $mode //= $class->_package_flavor() eq 'thick-only' ? 'thick-generations' : 'thin';
+        my $overlay = { %$current, ids => { %{$current->{ids}}, $storeid => $candidate } };
+        $class->_reject_conflicting_vg_uuid_names($storeid, $candidate, $current);
+        if ($mode eq 'thick-generations' || $mode eq 'thick-generations-lazy') {
+            $class->_require_thick_identity_config($storeid, $candidate);
+            $class->_verify_same_vg_alias_configuration($storeid, $candidate, $overlay);
+        } elsif ($mode eq 'thin') {
+            my $vg = $candidate->{'slt-vgname'} // die "Thin candidate has no VG name\n";
+            for my $other_id (sort keys %{$current->{ids}}) {
+                next if $other_id eq $storeid;
+                my $other = $current->{ids}->{$other_id};
+                die "PVE storage configuration inventory is ambiguous\n" if ref($other) ne 'HASH';
+                next if ($other->{type} // '') ne 'sharedlvmthin';
+                my $u = $candidate->{'slt-expected-vg-uuid'} // '';
+                my $v = $other->{'slt-expected-vg-uuid'} // '';
+                die "storage '$storeid' VG UUID conflicts with storage '$other_id' in the persistent namespace\n"
+                    if $u ne '' && $v ne '' && $u ne $v && lc($u) eq lc($v);
+                next if ($other->{'slt-vgname'} // '') ne $vg;
+                my $other_mode = $other->{'slt-allocation-mode'} // '';
+                die "VG_MODE_CONFLICT: Thin update cannot share a VG with Thick or an unknown mode\n"
+                    if $other_mode ne 'thin';
+            }
+        } else {
+            die "unsupported SharedLvmThin allocation mode\n";
+        }
+    }
+    return $class->SUPER::on_update_hook_full($storeid, $scfg, $update, $delete, $sensitive);
 }
 
 sub _verify_vg_failure_domain_inventory {
@@ -4304,7 +4470,9 @@ sub _thick_foreign_intent_admission {
     $class->_require_thick_identity_config($foreign_sid, $foreign_scfg);
     die "foreign Thick sibling identity differs from the requesting storage\n"
         if grep {
-            lc($foreign_scfg->{$_} // '') ne lc($scfg->{$_} // '')
+            my $left = $foreign_scfg->{$_} // '';
+            my $right = $scfg->{$_} // '';
+            $_ eq 'slt-expected-wwid' ? lc($left) ne lc($right) : $left ne $right;
         } qw(slt-expected-vg-uuid slt-expected-pv-uuid slt-expected-wwid);
 
     my ($state, undef, $anchor) = $class->_thick_read_anchor(
@@ -6055,7 +6223,11 @@ sub _lazy_alloc_image {
 }
 
 sub _verify_storage_identity {
-    my ($class, $storeid, $scfg, $device) = @_;
+    my ($class, $storeid, $scfg, $device, $deadline) = @_;
+    die "invalid identity observation timeout\n"
+        if defined($deadline) && ($deadline !~ /^\d+$/ || $deadline < 5 || $deadline > 600);
+    my @prefix = defined($deadline)
+        ? ('/usr/bin/timeout', '--foreground', '--kill-after=5s', "${deadline}s") : ();
 
     my $expected_vg = $scfg->{'slt-expected-vg-uuid'};
     my $expected_pv = $scfg->{'slt-expected-pv-uuid'};
@@ -6066,7 +6238,7 @@ sub _verify_storage_identity {
         && !defined($expected_wwid);
 
     my $vg = $scfg->{'slt-vgname'};
-    my @vg_command = ('/sbin/vgs', '--readonly');
+    my @vg_command = (@prefix, '/sbin/vgs', '--readonly');
     push @vg_command, ('--devices', $device) if defined($device);
     push @vg_command, ('--noheadings', '-o', 'vg_uuid', $vg);
     my $vg_lines = _command_lines(
@@ -6078,9 +6250,9 @@ sub _verify_storage_identity {
         if @$vg_lines != 1;
 
     die "storage '$storeid' VG UUID mismatch: expected '$expected_vg', found '$vg_lines->[0]'\n"
-        if defined($expected_vg) && lc($vg_lines->[0]) ne lc($expected_vg);
+        if defined($expected_vg) && $vg_lines->[0] ne $expected_vg;
 
-    my @pv_command = ('/sbin/pvs', '--readonly');
+    my @pv_command = (@prefix, '/sbin/pvs', '--readonly');
     push @pv_command, ('--devices', $device) if defined($device);
     push @pv_command, ('--noheadings', '--separator', '|', '-o', 'pv_uuid,pv_name',
         '--select', "vg_name=$vg");
@@ -6099,7 +6271,7 @@ sub _verify_storage_identity {
     }
 
     die "storage '$storeid' PV UUID mismatch: expected '$expected_pv', found '$pv_uuid'\n"
-        if defined($expected_pv) && lc($pv_uuid) ne lc($expected_pv);
+        if defined($expected_pv) && $pv_uuid ne $expected_pv;
 
     if (defined($expected_wwid)) {
         my ($actual_wwid) = $pv_name =~ m{^/dev/mapper/([0-9A-Fa-f]+)$};
@@ -6796,6 +6968,35 @@ sub parse_volname {
     }
 
     die "unable to parse shared LVM thin volume name '$volname'\n";
+}
+
+# PVE's generic path implementation drops the storage ID before calling
+# filesystem_path. Thick aliases share a namespace, so a syntactic path alone
+# cannot prove that this alias owns the requested volume or snapshot.
+sub path {
+    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+    return $class->SUPER::path($scfg, $volname, $storeid, $snapname)
+        if !$class->_is_thick_mode($scfg);
+    die "Thick path requires an explicit storage identity\n"
+        if !defined($storeid) || ref($storeid) || $storeid eq '';
+    my (undef, undef, $vmid) = $class->parse_volname($volname);
+    my $vg = $scfg->{'slt-vgname'} // die "Thick path requires a VG name\n";
+    my $wwid = $scfg->{'slt-expected-wwid'} // die "Thick path requires a pinned WWID\n";
+    die "Thick path requires a valid pinned WWID\n" if $wwid !~ /^[0-9A-Fa-f]+$/;
+    for my $field (qw(slt-expected-vg-uuid slt-expected-pv-uuid)) {
+        die "Thick path requires a pinned $field\n"
+            if !defined($scfg->{$field}) || ref($scfg->{$field}) || $scfg->{$field} eq '';
+    }
+    $class->_verify_storage_identity($storeid, $scfg, "/dev/mapper/$wwid",
+        $class->_thick_command_deadline($scfg));
+    my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, "/dev/mapper/$wwid");
+    $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
+    if (defined($snapname)) {
+        my ($snapshot) = $class->_thick_find_snapshot($storeid, $scfg, $volname, $snapname, $lvs);
+        my $path = "/dev/$vg/$snapshot";
+        return wantarray ? ($path, $vmid, 'images') : $path;
+    }
+    return $class->_thick_filesystem_path($scfg, $volname, undef);
 }
 
 sub filesystem_path {
@@ -8296,6 +8497,75 @@ sub _thick_verify_published_transition_frontend {
     return 1;
 }
 
+sub _thick_rollback_mapper_sample {
+    my ($class, $scfg, $volname) = @_;
+    my $namespace = $class->_thick_namespace($scfg);
+    my $mapper = mapper_name($namespace, $volname);
+    my $uuid = 'SLT-TG2-' . object_key($namespace, $volname);
+    my $deadline = $class->_thick_command_deadline($scfg);
+    my $info = _command_lines(
+        ['/usr/bin/timeout', '--foreground', '--kill-after=5s', "${deadline}s",
+            '/sbin/dmsetup', 'info', '-c', '--noheadings', '--separator', '|',
+            '-o', 'uuid,major,minor', $mapper],
+        "reading rollback frontend '$mapper' identity failed",
+    );
+    die "rollback frontend identity is ambiguous\n" if @$info != 1;
+    my @fields = split(/\|/, $info->[0], -1);
+    s/^\s+|\s+$//g for @fields;
+    die "rollback frontend identity mismatch\n"
+        if @fields != 3 || $fields[0] ne $uuid
+        || $fields[1] !~ /^\d+$/ || $fields[2] !~ /^\d+$/;
+    my ($major, $minor) = @fields[1, 2];
+    my $diskseq_path = "/sys/dev/block/$major:$minor/diskseq";
+    die "rollback frontend diskseq is unavailable\n"
+        if !-f $diskseq_path || -l $diskseq_path;
+    open(my $fh, '<', $diskseq_path) or die "cannot read rollback frontend diskseq: $!\n";
+    my $diskseq = <$fh> // '';
+    close($fh) or die "cannot close rollback frontend diskseq: $!\n";
+    $diskseq =~ s/^\s+|\s+$//g;
+    die "rollback frontend diskseq is invalid\n" if $diskseq !~ /^[1-9][0-9]*$/;
+    return join(':', $major, $minor, $diskseq);
+}
+
+sub _thick_rollback_mapper_identity {
+    my ($class, $scfg, $volname, $head, $size) = @_;
+    die "rollback mapper identity requires a sector-aligned size\n"
+        if !defined($size) || $size !~ /^[0-9]+$/ || !$size || $size % 512;
+    my $before = $class->_thick_rollback_mapper_sample($scfg, $volname);
+    $class->_thick_verify_frontend($scfg, $volname, $head, int($size / 512));
+    my $after = $class->_thick_rollback_mapper_sample($scfg, $volname);
+    die "rollback frontend changed during identity verification\n" if $before ne $after;
+    return $before;
+}
+
+sub _thick_rollback_identity_receipt {
+    my ($class, $state, $head, $anchor, $anchor_info, $source, $source_info) = @_;
+    die "rollback identity receipt requires a materialized anchor\n"
+        if ref($state) ne 'HASH' || ($state->{phase} // '') ne 'MATERIALIZED';
+    die "rollback identity receipt requires exact LV inventory\n"
+        if grep { ref($_) ne 'HASH' } ($head, $anchor_info, $source_info);
+    my @parts = (
+        $anchor, $anchor_info->{lv_uuid}, $anchor_info->{tags},
+        $state->{head}, $state->{generation}, $head->{lv_uuid}, $head->{lv_size}, $head->{tags},
+        $source, $source_info->{lv_uuid}, $source_info->{lv_size}, $source_info->{tags},
+    );
+    die "rollback identity receipt contains missing or ambiguous inventory\n"
+        if grep { !defined($_) || ref($_) || $_ eq '' || /\0/ } @parts;
+    return sha256_hex(join("\0", @parts));
+}
+
+sub _thick_require_rollback_frontend_closed {
+    my ($class, $scfg, $storeid, $volname, $front) = @_;
+    return 1 if !$class->_thick_frontend_present($scfg, $volname);
+    my $open = $class->_thick_frontend_open_count(
+        $front, $class->_thick_command_deadline($scfg),
+    );
+    die "refusing thick-generations rollback while the frontend is open: "
+        . "storage='$storeid' volume='$volname' frontend='$front' open_count=$open\n"
+        if $open != 0;
+    return 1;
+}
+
 sub _thick_volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap, $operation, $materialize_now,
         $expected_tx) = @_;
@@ -8331,21 +8601,27 @@ sub _thick_volume_snapshot {
         ) > 0 ? 1 : 0;
     }
 
-    if ($rollback && $class->_thick_frontend_present($scfg, $volname)) {
-        my $open = $class->_thick_frontend_open_count(
-            $front, $class->_thick_command_deadline($scfg),
-        );
-        die "refusing thick-generations rollback while the frontend is open\n"
-            if $open != 0;
-    }
-
     my $admission_deadline = $class->_thick_progress_clock()
         + ($scfg->{'slt-mutation-admission-timeout'} // 600);
+    my ($close_remaining, $open_since, $wait_receipt, $wait_mapper, $wait_reported);
+    my $begin_close = sub {
+        $close_remaining //= $class->_thick_close_timeout($scfg);
+        $open_since //= $class->_thick_progress_clock();
+    };
+    my $finish_close = sub {
+        return if !defined($open_since);
+        $close_remaining -= $class->_thick_progress_clock() - $open_since;
+        $open_since = undef;
+        die "timed out waiting for rollback frontend to close; no storage mutation was issued\n"
+            if $close_remaining <= 0;
+    };
     my ($previous_blocker, $wait_round) = (undef, 0);
     while (1) {
     my $remaining = $admission_deadline - $class->_thick_progress_clock();
     die "timed out waiting for an exact foreign Thick transition; no storage mutation was issued\n"
         if !$materialize_now && $remaining <= 0;
+    die "timed out waiting for rollback frontend to close; no storage mutation was issued\n"
+        if defined($open_since) && $class->_thick_progress_clock() - $open_since >= $close_remaining;
     my $decision = $class->_with_vg_lock($storeid, $scfg, sub {
         my $existing_intent = $class->_read_vg_intent($scfg, $vg, $device);
         my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
@@ -8372,6 +8648,10 @@ sub _thick_volume_snapshot {
         }
         if (defined($existing_intent)
             && (!$materialize_now || ($existing_intent->{object} // '') eq $this_anchor)) {
+            die "rollback transition changed while waiting for frontend closure\n"
+                if defined($wait_receipt);
+            $class->_thick_require_rollback_frontend_closed($scfg, $storeid, $volname, $front)
+                if $rollback;
             $tr = $class->_thick_resume_transition(
                 $scfg, $storeid, $volname, $snap, $operation, $existing_intent, $lvs,
             );
@@ -8379,6 +8659,8 @@ sub _thick_volume_snapshot {
             return;
         }
         if ($materialize_now) {
+            $class->_thick_require_rollback_frontend_closed($scfg, $storeid, $volname, $front)
+                if $rollback;
             my ($persisted, undef, $persisted_anchor) =
                 $class->_thick_read_anchor($storeid, $scfg, $volname, $lvs);
             if (($persisted->{phase} // '') =~ /^(?:HYDRATING|HYDRATION_COMPLETE|LINEAR_PIVOTED)$/) {
@@ -8404,6 +8686,34 @@ sub _thick_volume_snapshot {
             );
             $class->_thick_verify_snapshot_readonly($scfg, $vg, $source, $device);
             $class->_thick_verify_autoactivation_disabled($scfg, $vg, $source, $device);
+            my $present = $class->_thick_frontend_present($scfg, $volname);
+            die "rollback frontend disappeared while waiting for closure\n"
+                if defined($wait_receipt) && !$present;
+            if ($present) {
+                my $open = $class->_thick_frontend_open_count(
+                    $front, $class->_thick_command_deadline($scfg));
+                $begin_close->() if $open;
+                if ($open || defined($wait_receipt)) {
+                    my $receipt = $class->_thick_rollback_identity_receipt(
+                        $state, $head_info, $anchor, $lvs->{$vg}->{$anchor}, $source, $source_info);
+                    my $mapper = $class->_thick_rollback_mapper_identity(
+                        $scfg, $volname, $state->{head}, $head_info->{lv_size});
+                    $open = $class->_thick_frontend_open_count(
+                        $front, $class->_thick_command_deadline($scfg));
+                    die "rollback frontend changed while observing open count\n"
+                        if $mapper ne $class->_thick_rollback_mapper_sample($scfg, $volname);
+                    die "rollback identity changed while waiting for frontend closure\n"
+                        if defined($wait_receipt)
+                        && ($wait_receipt ne $receipt || $wait_mapper ne $mapper);
+                    $wait_receipt //= $receipt;
+                    $wait_mapper //= $mapper;
+                    if ($open) {
+                        $begin_close->();
+                        return { action => 'WAIT_FRONTEND', receipt => $receipt, mapper => $mapper };
+                    }
+                    $finish_close->();
+                }
+            }
         }
         my $new_gen = $old_gen + 1;
         die "thick-generations generation limit reached\n" if $new_gen > 99_999_999;
@@ -8446,6 +8756,37 @@ sub _thick_volume_snapshot {
             op => ($rollback ? 'DM_PIVOT' : 'DM_CUTOVER'), object => $anchor,
             before => $class->_vg_state_digest($scfg, $vg, $device),
         );
+        # Re-observe after the potentially slow digest and immediately before
+        # issuing a new intent. This is not fencing against external writers.
+        if ($rollback) {
+            my $present = $class->_thick_frontend_present($scfg, $volname);
+            die "rollback frontend disappeared while waiting for closure\n"
+                if defined($wait_receipt) && !$present;
+            if ($present) {
+                my $open = $class->_thick_frontend_open_count(
+                    $front, $class->_thick_command_deadline($scfg));
+                $begin_close->() if $open;
+                if ($open || defined($wait_receipt)) {
+                    my $receipt = $class->_thick_rollback_identity_receipt(
+                        $state, $head_info, $anchor, $lvs->{$vg}->{$anchor}, $source, $source_info);
+                    my $mapper = $class->_thick_rollback_mapper_identity(
+                        $scfg, $volname, $state->{head}, $head_info->{lv_size});
+                    $open = $class->_thick_frontend_open_count(
+                        $front, $class->_thick_command_deadline($scfg));
+                    die "rollback frontend changed while observing open count\n"
+                        if $mapper ne $class->_thick_rollback_mapper_sample($scfg, $volname);
+                    die "rollback identity changed while waiting for frontend closure\n"
+                        if defined($wait_receipt)
+                        && ($wait_receipt ne $receipt || $wait_mapper ne $mapper);
+                    $wait_receipt //= $receipt;
+                    $wait_mapper //= $mapper;
+                    $begin_close->() if $open;
+                    return { action => 'WAIT_FRONTEND', receipt => $receipt, mapper => $mapper }
+                        if $open;
+                    $finish_close->();
+                }
+            }
+        }
         $class->_set_vg_intent($scfg, $vg, %intent, _device => $device);
         $class->_thick_fault_point('C1', $operation, $storeid, $volname);
         my $new_tags = PVE::SharedLvmThinThick::generation_tags(
@@ -8527,6 +8868,23 @@ sub _thick_volume_snapshot {
                 $previous_blocker,
             );
         }));
+    if (ref($decision) eq 'HASH' && ($decision->{action} // '') eq 'WAIT_FRONTEND') {
+        $wait_receipt //= $decision->{receipt};
+        $wait_mapper //= $decision->{mapper};
+        if (!$wait_reported) {
+            warn "waiting for thick-generations rollback frontend to close: "
+                . "storage='$storeid' volume='$volname' frontend='$front'; "
+                . "no storage mutation was issued by this request\n";
+            $wait_reported = 1;
+        }
+        die "timed out waiting for rollback frontend to close; no storage mutation was issued\n"
+            if defined($open_since) && $class->_thick_progress_clock() - $open_since >= $close_remaining;
+        $class->_thick_observation_pause(250);
+        next;
+    }
+    die "rollback admission changed while waiting for frontend closure\n"
+        if defined($wait_receipt) && ref($decision) eq 'HASH'
+        && ($decision->{action} // '') eq 'WAIT_EXACT_FOREIGN';
     last if ref($decision) ne 'HASH'
         || ($decision->{action} // '') ne 'WAIT_EXACT_FOREIGN';
     my $receipt = $decision->{receipt};
@@ -10372,11 +10730,16 @@ sub volume_snapshot {
     if ($class->_is_lazy_mode($scfg)) {
         return $class->_lazy_integration_pending('snapshot')
             if !$class->_lazy_materialized($storeid, $scfg, $volname);
-        return $class->_thick_volume_snapshot($scfg, $storeid, $volname, $snap);
+        return $class->_with_thick_transition_executor_lock($storeid, $scfg, $volname, sub {
+            return $class->_thick_volume_snapshot($scfg, $storeid, $volname, $snap);
+        });
     }
 
-    return $class->_thick_volume_snapshot($scfg, $storeid, $volname, $snap)
-        if $class->_allocation_mode($scfg) eq 'thick-generations';
+    if ($class->_allocation_mode($scfg) eq 'thick-generations') {
+        return $class->_with_thick_transition_executor_lock($storeid, $scfg, $volname, sub {
+            return $class->_thick_volume_snapshot($scfg, $storeid, $volname, $snap);
+        });
+    }
 
     return $class->_with_mutation_lock($storeid, $scfg, sub {
         return $class->_volume_snapshot_locked(
@@ -10866,14 +11229,20 @@ sub volume_snapshot_rollback {
     if ($class->_is_lazy_mode($scfg)) {
         return $class->_lazy_integration_pending('snapshot rollback')
             if !$class->_lazy_materialized($storeid, $scfg, $volname);
-        return $class->_thick_volume_snapshot(
-            $scfg, $storeid, $volname, $snap, 'ROLLBACK',
-        );
+        return $class->_with_thick_transition_executor_lock($storeid, $scfg, $volname, sub {
+            return $class->_thick_volume_snapshot(
+                $scfg, $storeid, $volname, $snap, 'ROLLBACK',
+            );
+        });
     }
 
-    return $class->_thick_volume_snapshot(
-        $scfg, $storeid, $volname, $snap, 'ROLLBACK',
-    ) if $class->_allocation_mode($scfg) eq 'thick-generations';
+    if ($class->_allocation_mode($scfg) eq 'thick-generations') {
+        return $class->_with_thick_transition_executor_lock($storeid, $scfg, $volname, sub {
+            return $class->_thick_volume_snapshot(
+                $scfg, $storeid, $volname, $snap, 'ROLLBACK',
+            );
+        });
+    }
 
     return $class->_with_mutation_lock($storeid, $scfg, sub {
         return $class->_volume_snapshot_rollback_locked(

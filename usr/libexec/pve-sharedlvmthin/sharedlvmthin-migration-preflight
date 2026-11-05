@@ -48,16 +48,39 @@ die "offline migration preflight requires the VM to be stopped\n"
 
 my $conf = PVE::QemuConfig->load_config($vmid);
 my $storecfg = PVE::Storage::config();
-my @volumes;
+my (@volumes, @blocked, @passed);
 PVE::QemuServer::foreach_volid($conf, sub {
     my ($volid, $info) = @_;
+    # QemuMigrate checks every referenced volume, including unused disks,
+    # pending changes and snapshot/vmstate references, before moving a VM.
+    # Checking only attached disks can incorrectly promise a viable target.
+    if ($info->{cdrom} && ($volid eq 'none' || $volid eq 'cdrom')) {
+        push @blocked, "$volid: local CD-ROM cannot be migrated" if $volid eq 'cdrom';
+        return;
+    }
+    if ($volid =~ m|^/|) {
+        push @blocked, "$volid: local path is not marked shared" if !$info->{shared};
+    } else {
+        my $ok = eval {
+            my ($sid) = PVE::Storage::parse_volume_id($volid);
+            PVE::Storage::storage_check_enabled($storecfg, $sid);
+            my $target_cfg = PVE::Storage::storage_check_enabled($storecfg, $sid, $target);
+            my ($vtype) = PVE::Storage::parse_volname($storecfg, $volid);
+            die "content type '$vtype' is unavailable on target storage '$sid'\n"
+                if !$target_cfg->{content}->{$vtype};
+            1;
+        };
+        if (!$ok) {
+            my $error = $@ || 'unknown target storage state';
+            $error =~ s/\s+\z//;
+            push @blocked, "$volid: $error";
+        }
+    }
     return if !$info->{is_attached} || $info->{cdrom} || $info->{is_cloudinit};
     push @volumes, $volid;
 });
 die "VM $vmid has no attached writable volume to qualify\n" if !@volumes;
 
-my @blocked;
-my @passed;
 for my $volid (sort @volumes) {
     my ($storeid, $volname) = PVE::Storage::parse_volume_id($volid);
     my $scfg = PVE::Storage::storage_config($storecfg, $storeid);

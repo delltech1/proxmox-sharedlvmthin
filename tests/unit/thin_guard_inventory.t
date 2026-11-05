@@ -6,7 +6,14 @@ use Test::More;
 use FindBin;
 use lib "$FindBin::Bin/../../usr/share/perl5";
 
-use PVE::SharedLvmThinGuardInventory qw(build_guard_inventory dm_mapper_name dm_pool_uuid);
+use PVE::SharedLvmThinGuardInventory qw(build_guard_inventory dm_mapper_name dm_pool_uuid storage_identity_matches);
+
+my $pin = { 'slt-expected-vg-uuid' => 'Vg-123', 'slt-expected-pv-uuid' => 'Pv-123', 'slt-expected-wwid' => '3600ab' };
+ok(storage_identity_matches($pin, " Vg-123\n", " Pv-123 | /dev/mapper/3600ab\n"), 'exact scoped physical identity accepted');
+ok(!storage_identity_matches($pin, 'vg-123', 'Pv-123|/dev/mapper/3600ab'), 'case-only VG mismatch refused');
+ok(!storage_identity_matches($pin, 'Vg-123', 'pv-123|/dev/mapper/3600ab'), 'case-only PV mismatch refused');
+ok(!storage_identity_matches($pin, 'Vg-123', "Pv-123|/dev/mapper/3600ab\nPv-123|/dev/sda"), 'ambiguous PV evidence refused');
+ok(!storage_identity_matches($pin, 'Vg-123', 'Pv-123|/dev/sda'), 'incorrect backing device refused');
 
 my $vg_uuid = 'teu3K2-pT0R-vUtR-S2vc-KfxJ-Tzy2-4NJgaP';
 my $lv_uuid = 'hiPlfx-4ifc-lEyH-DzCt-f1gV-s2gl-MYxeod';

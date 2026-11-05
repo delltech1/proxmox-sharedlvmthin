@@ -119,3 +119,14 @@ class PackageScopeTests(unittest.TestCase):
         self.configs[1]["slt-expected-pv-uuid"] = "pv-uuid"
         self.configs.append(dict(id="foreign", type="lvm", vgname="vg-a"))
         with self.assertRaises(RuntimeError): self.collect()
+
+    def test_physical_vg_uuid_case_mismatch_refuses(self):
+        original_probe = self.probe
+        def altered_probe(argv):
+            result = original_probe(argv)
+            if argv[0] == '/sbin/vgs' and argv[-1] == 'vg-a':
+                result['out'] = result['out'].upper()
+            return result
+        self.probe = altered_probe
+        with self.assertRaisesRegex(RuntimeError, 'VG identity mismatch'):
+            self.collect()

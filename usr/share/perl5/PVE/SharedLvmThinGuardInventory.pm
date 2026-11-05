@@ -7,7 +7,24 @@ use strict;
 use warnings;
 use Exporter qw(import);
 
-our @EXPORT_OK = qw(build_guard_inventory dm_mapper_name dm_pool_uuid);
+our @EXPORT_OK = qw(build_guard_inventory dm_mapper_name dm_pool_uuid storage_identity_matches);
+
+sub storage_identity_matches {
+    my ($scfg, $vg_identity, $pv_identity) = @_;
+    return 0 if ref($scfg) ne 'HASH' || !defined($vg_identity) || !defined($pv_identity);
+    $vg_identity =~ s/^\s+|\s+$//g;
+    return 0 if $vg_identity eq ''
+        || $vg_identity ne ($scfg->{'slt-expected-vg-uuid'} // $vg_identity);
+    my @rows = grep { $_ ne '' } map { s/^\s+|\s+$//gr } split(/\n/, $pv_identity);
+    return 0 if @rows != 1;
+    my ($pv_uuid, $pv_name, @extra) = split(/\|/, $rows[0], -1);
+    for ($pv_uuid, $pv_name) { $_ //= ''; s/^\s+|\s+$//g; }
+    return 0 if @extra || (defined($scfg->{'slt-expected-pv-uuid'})
+        && $pv_uuid ne $scfg->{'slt-expected-pv-uuid'});
+    my $wwid = $scfg->{'slt-expected-wwid'} // '';
+    return 0 if $wwid ne '' && $pv_name ne "/dev/mapper/$wwid";
+    return 1;
+}
 
 sub dm_mapper_name {
     my ($vg, $pool) = @_;

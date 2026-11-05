@@ -45,6 +45,21 @@ class LifecycleAdapterTests(unittest.TestCase):
             self.module.validate_registry(self.registry, self.catalogue), []
         )
 
+    def test_qemu_9214_exact_candidate_requires_operation_evidence(self):
+        runtime = self.runtime(**{"pve-manager": "9.2.25", "libpve-storage-perl": "9.1.13", "qemu-server": "9.2.14", "pve-qemu-kvm": "11.1.3-1", "libpve-common-perl": "9.2.6"})
+        runtime.update(api=16, apiage=7)
+        result = self.module.resolve(self.registry, runtime)
+        self.assertEqual(result["adapter"], "pve9-api16-qemu9214-candidate-v1")
+        self.assertEqual(result["verdict"], "RETEST_REQUIRED")
+        self.assertIn("ram-snapshot-rollback-delete", result["operations"]["snapshot-vmstate"]["required_tests"])
+        runtime["packages"]["libpve-common-perl"] = "9.2.7"
+        self.assertEqual(self.module.resolve(self.registry, runtime)["verdict"], "RETEST_REQUIRED")
+        runtime["packages"]["libpve-common-perl"] = "9.2.8"
+        self.assertEqual(self.module.resolve(self.registry, runtime)["verdict"], "BLOCKED")
+        runtime["packages"]["libpve-common-perl"] = "9.2.6"
+        runtime["packages"]["qemu-server"] = "9.2.15"
+        self.assertEqual(self.module.resolve(self.registry, runtime)["verdict"], "BLOCKED")
+
     def test_current_qualified_tuple_selects_one_family(self):
         result = self.module.resolve(self.registry, self.runtime())
         self.assertEqual(result["verdict"], "RETEST_REQUIRED")
