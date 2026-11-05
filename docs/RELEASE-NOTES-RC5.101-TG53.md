@@ -27,10 +27,10 @@ cluster nodes. Both profiles share the Thick implementation and RAW format.
 
 The tested candidate source passed **2,664 Python tests** (one skipped) on
 kernel 7.0.14-26-pve and **1,706 Perl tests** across 46 files on kernel
-7.0.14-28-pve. The subsequent
-public source preparation changed documentation and Git attributes; builds
-from that source match the tested package hashes. Package privacy and content
-checks, reproducible builds and shared Thick payload parity also passed.
+7.0.14-28-pve. These lab results apply to the preceding candidate; subsequent
+release preparation changed documentation, Git attributes and the spelling of
+two timeout validation conditions. Package privacy, reproducibility and shared
+Thick payload parity are checked again for the final release artifacts.
 
 Disposable lab checks included:
 

@@ -45,10 +45,10 @@ done
 
 [[ -n "$expected_host" && -n "$expected_profile" && \
    -n "$expected_version" && -n "$previous_boot_id" ]] || { usage >&2; exit 64; }
-[[ "$doctor_timeout_sec" =~ ^[1-9][0-9]{0,4}$ ]] \
-    && (( doctor_timeout_sec >= 60 && doctor_timeout_sec <= 86400 )) || {
+if ! [[ "$doctor_timeout_sec" =~ ^[1-9][0-9]{0,4}$ ]] ||
+    ! (( doctor_timeout_sec >= 60 && doctor_timeout_sec <= 86400 )); then
     echo "doctor timeout must be an integer between 60 and 86400 seconds" >&2; exit 64;
-}
+fi
 case "$expected_profile" in
     dual) expected_package=pve-sharedlvmthin ;;
     thick-only) expected_package=pve-sharedlvmthin-thick ;;

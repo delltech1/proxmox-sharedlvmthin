@@ -82,10 +82,10 @@ while (($#)); do
     esac
 done
 
-[[ "$doctor_timeout_sec" =~ ^[1-9][0-9]{0,4}$ ]] \
-    && (( doctor_timeout_sec >= 60 && doctor_timeout_sec <= 86400 )) || {
+if ! [[ "$doctor_timeout_sec" =~ ^[1-9][0-9]{0,4}$ ]] ||
+    ! (( doctor_timeout_sec >= 60 && doctor_timeout_sec <= 86400 )); then
     echo "doctor timeout must be an integer between 60 and 86400 seconds" >&2; exit 64;
-}
+fi
 clean_env+=("SLT_INSTALL_DOCTOR_TIMEOUT_SEC=$doctor_timeout_sec")
 
 if ((settle_recovery == 1)); then
