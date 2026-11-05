@@ -30,16 +30,22 @@ kernel 7.0.14-26-pve and **1,706 Perl tests** across 46 files on kernel
 7.0.14-28-pve. These lab results apply to the preceding candidate; subsequent
 release preparation changed documentation, Git attributes and the spelling of
 two timeout validation conditions. Package privacy, reproducibility and shared
-Thick payload parity are checked again for the final release artifacts.
+Thick payload parity passed for the RC5.102 release candidate in GitHub CI.
 
 Disposable lab checks included:
 
-- API14 DUAL in-place package upgrade. An immediately preceding candidate also
+- RC5.102 DUAL in-place package upgrade on API14. An immediately preceding candidate also
   completed a DUAL → Thick-only → DUAL profile cycle on API14 without SAN.
-- DUAL upgrades on two SAN nodes while disposable guests performed repeated
+- RC5.102 DUAL upgrades on two SAN nodes while disposable guests performed repeated
   write, flush, read and SHA-256 checks: one guest used Thin, Eager and Lazy
   media, and the other used three Eager disks.
-- Thick-only package replacement on a SAN node, followed by a return to DUAL.
+- A preceding candidate's Thick-only package replacement on a SAN node,
+  followed by a return to DUAL.
+- With RC5.102 installed, an API14 control-plane node without SAN was updated
+  through API15 and API16, with kernel reboots, guarded APT proposals,
+  post-update checks, quorum and pinned Proxmox peer SSH checks. Native
+  Storage API contracts passed on API15 and API16. A guest on another node
+  continued a bounded three-disk read/write/SHA workload during the reboots.
 - Kernel 7.0.14-28-pve installation and reboot on one evacuated node, iSCSI and
   multipath reconnection, peer SSH checks, quorum and runtime settlement.
 - One live migration of a three-disk materialized Thick VM from kernel
@@ -50,16 +56,17 @@ Disposable lab checks included:
 - An offline Thick disk expansion retained the original 256 MiB SHA-256 and
   returned zeroes across the newly added 64 MiB.
 
-API15 hook checks used extracted PVE classes. A full API15-to-API16 rolling
-transition and every possible SAN, guest configuration or failure sequence are
-not established by these checks. `RETEST_REQUIRED` remains the catalogue
-classification for the candidate tuples and rolling edge.
+API15-to-API16 shared-SAN migration, the RC5.102 Thick-only SAN lifecycle, and
+every possible SAN, guest configuration or failure sequence are not established
+by these checks. `RETEST_REQUIRED` remains the catalogue classification for
+the candidate tuples and rolling edge.
 
 ## Recorded platform versions
 
 | Exercised scope | API | Kernel | Manager | Storage | Common | QEMU server | QEMU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | API14 control-plane package upgrade | 14 | 7.0.2-6-pve | 9.2.2 | 9.1.5 | 9.1.12 | 9.1.15 | 11.0.0-3 |
+| API15 control-plane transition, no SAN | 15 | 7.0.14-20-pve | 9.2.21 | 9.1.11 | 9.2.2 | 9.2.10 | 11.0.3-4 |
 | Live plugin upgrade with mixed guest media | 16 | 7.0.14-16-pve | 9.2.18 | 9.1.12 | 9.2.3 | 9.2.10 | 11.0.3-3 |
 | Live plugin upgrade and migration source | 16 | 7.0.14-26-pve | 9.2.25 | 9.1.13 | 9.2.6 | 9.2.14 | 11.1.3-1 |
 | Reboot, migration target and offline lifecycle | 16 | 7.0.14-28-pve | 9.2.25 | 9.1.13 | 9.2.7 | 9.2.14 | 11.1.3-1 |
