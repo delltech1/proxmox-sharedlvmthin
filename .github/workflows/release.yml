@@ -1,86 +1,125 @@
-name: Release
-
+name: Clarify RC5.103 compatibility baseline
 on:
   push:
-    tags:
-      - 'v*'
-
+    branches:
+      - 'maintenance/rc5103-baseline-wording-once'
 permissions:
   contents: write
-
 jobs:
-  build-and-release:
+  update-notes:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install build and test dependencies
-        run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
-
-      - name: Run qualification tests
-        run: |
-          sudo env SLT_PORTABLE_CI=1 python3 -m unittest discover -s tests/unit -v
-          sudo install -d -m 0755 /usr/share/pve-sharedlvmthin
-          printf 'dual\n' | sudo tee /usr/share/pve-sharedlvmthin/package-flavor >/dev/null
-          sudo prove -Itests/unit/lib -v tests/unit/*.t
-          bash -n usr/sbin/* usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check DEBIAN/preinst DEBIAN/postinst DEBIAN/postrm DEBIAN/prerm
-          shellcheck -x scripts/*.sh experiments/thick-generations/*.sh \
-            DEBIAN/preinst DEBIAN/postinst DEBIAN/prerm DEBIAN/postrm \
-            usr/sbin/sharedlvmthin usr/sbin/sharedlvmthin-web-configure \
-            usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check
-          sudo python3 -m py_compile \
-            usr/libexec/pve-sharedlvmthin/sharedlvmthin-web \
-            usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json \
-            usr/libexec/pve-sharedlvmthin/sharedlvmthin-recovery-check
-
-      - name: Build and validate both package profiles
-        run: |
-          python3 scripts/public-source-privacy-scan.py
-          sh scripts/check-reproducible-packages.sh
-          sh scripts/build.sh dist/dual dual
-          sh scripts/build.sh dist/thick-only thick-only
-          dual=$(find dist/dual -maxdepth 1 -name '*.deb' -print -quit)
-          thick=$(find dist/thick-only -maxdepth 1 -name '*.deb' -print -quit)
-          sh scripts/check-release.sh "$dual"
-          sh scripts/check-release.sh "$thick"
-          sh scripts/compare-package-profiles.sh "$dual" "$thick"
-          cp "$dual" dist/
-          cp "$thick" dist/
-
-      - name: Prepare and verify GitHub-safe assets
-        run: |
-          for source in dist/*.deb; do
-            target="$(printf '%s' "$source" | tr '~' '.')"
-            if [ "$target" != "$source" ]; then
-              mv "$source" "$target"
-            fi
-          done
-          (cd dist && sha256sum ./*.deb > SHA256SUMS)
-          (cd dist && sha256sum --check SHA256SUMS)
-
-      - name: Publish prerelease
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - name: Verify existing release and update wording
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag_name="$GITHUB_REF_NAME"
-          case "$tag_name" in
-            v0.9.0-*) release_name="${tag_name#v0.9.0-}" ;;
-            v*) release_name="${tag_name#v}" ;;
-            *) release_name="$tag_name" ;;
-          esac
-          release_name="$(printf '%s' "$release_name" | tr '[:lower:]' '[:upper:]')"
-          notes="docs/RELEASE-NOTES-${release_name}.md"
-          test -f "$notes"
-          # A failed lookup is not evidence that a release is absent. Include
-          # drafts and every page; authentication/network failures abort here.
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" > existing-releases.json
-          python3 scripts/assert-release-absent.py existing-releases.json "$tag_name"
-          # Never edit or replace published assets. A concurrent creation fails
-          # this command with no retry or upload fallback. The pushed tag exists.
-          gh release create "$tag_name" \
-            dist/*.deb dist/SHA256SUMS \
-            --verify-tag \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "SharedLvmThin ${release_name}" \
-            --notes-file "$notes"
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 50a201856136b166771fa57bc7d1124bcdee7050
+          test "$(git diff --name-only HEAD^ HEAD)" = '.github/workflows/release.yml'
+          tag=v0.9.0-rc5.103-tg53
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag" --jq .object.sha)" = b2b32fa770eef7144a830d8fe619f954be452c1c
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$tag" --jq .prerelease)" = true
+          cat > /tmp/bastrix-release-notes.md <<'BASTRIX_NOTES_END'
+          # RC5.103 TG53 — experimental guided storage helper
+          
+          > [!CAUTION]
+          > Thin and Thick, including Eager and Lazy, are experimental. Use only disposable
+          > Proxmox VE hosts, shared storage and guest data. This release is not
+          > production-ready, certified, supported or warranted.
+          
+          ## Guided storage connection wizard
+          
+          The existing web dashboard now includes an English/German guided helper for
+          administrators preparing shared storage. It explains the steps for iSCSI and
+          Fibre Channel/FCoE and offers guidance on discovery and checks.
+          
+          **This is a guide, not a storage configurator.** It does not automatically
+          configure the storage array, create LUNs or volume groups, or establish cluster
+          safety. The administrator remains responsible for completing and verifying each
+          step. Instructions can vary with the storage vendor and Proxmox VE version.
+          
+          ## Upgrade and recovery improvements
+          
+          - Fixed loading of the package-executor verification helper in the isolated
+            Python environment used during candidate package checks.
+          - Preserved the verified package-executor fence context when switching package
+            profiles, so the package operation can retain its intended lock protection.
+          - Improved recovery after an interrupted prepared package transition: the
+            recovery procedure can safely replay the tested steps while keeping runtime
+            admission closed until separately qualified.
+          - Improved checks that the package control helper matches the packaged payload.
+          
+          These improvements were tested in the release candidate. Automatic recovery of a closed, unqualified runtime whose receipt belongs to
+          a previous boot is not implemented.
+          
+          Both Thin and Thick Generations remain experimental. Use only disposable hosts,
+          shared storage and guest data. Consult the project documentation and release
+          compatibility information before testing.
+          
+          ## Validation
+          
+          The candidate source passed selected API14, API15 and API16 interface checks for
+          both package profiles. On an API16 lab host, a DUAL package upgrade and subsequent
+          DUAL-to-Thick-only replacement completed through the package gate. A workload on
+          another cluster node continued recording verified writes during those operations.
+          A DUAL post-reboot check passed after the test iSCSI paths were reconnected.
+          
+          These results describe the tested candidate and bounded scenarios; the final
+          release build has a distinct package identity. Clean Thick-only installation, its post-reboot SAN
+          lifecycle and the API15-to-API16 rolling transition have not been qualified for
+          this candidate. Tests do not guarantee against data loss or I/O pauses.
+          
+          ## Recorded platform versions
+          
+          ### RC5.103 candidate
+          
+          | Evidence scope | Storage API | Kernel | PVE manager | PVE storage | PVE common | QEMU server | QEMU |
+          | --- | --- | --- | --- | --- | --- | --- | --- |
+          | Candidate DUAL upgrade and DUAL-to-Thick-only replacement | 16 | 7.0.14-28-pve | 9.2.25 | 9.1.13 | 9.2.7 | 9.2.14 | 11.1.3-1 |
+          
+          The recorded host used LVM `2.03.31-2+pmx1`, thin-provisioning-tools
+          `1.1.0-4+b1`, multipath-tools `0.11.1-2`, Corosync `3.1.10-pve3`,
+          pve-ha-manager `5.2.5` and libpve-cluster-perl `9.1.8`.
+          API14 and API15 interface checks used installed or extracted libraries; these
+          checks do not by themselves qualify a live upgrade or SAN lifecycle.
+          
+          ### Platform compatibility baseline
+          
+          RC5.103 builds on the RC5.102 compatibility baseline and retains the API14–16
+          platform combinations listed below. This release adds the guided web helper and
+          targeted package-upgrade and recovery improvements. The table records the
+          previously exercised scenarios; RC5.103 candidate checks are listed separately
+          above. The remaining qualification boundaries stated in this release still apply.
+          
+          | Exercised scope | API | Kernel | Manager | Storage | Common | QEMU server | QEMU |
+          | --- | --- | --- | --- | --- | --- | --- | --- |
+          | API14 control-plane package upgrade | 14 | 7.0.2-6-pve | 9.2.2 | 9.1.5 | 9.1.12 | 9.1.15 | 11.0.0-3 |
+          | API15 control-plane transition and Eager SAN migration source | 15 | 7.0.14-20-pve | 9.2.21 | 9.1.11 | 9.2.2 | 9.2.10 | 11.0.3-4 |
+          | Live plugin upgrade with mixed guest media | 16 | 7.0.14-16-pve | 9.2.18 | 9.1.12 | 9.2.3 | 9.2.10 | 11.0.3-3 |
+          | Live plugin upgrade and migration source | 16 | 7.0.14-26-pve | 9.2.25 | 9.1.13 | 9.2.6 | 9.2.14 | 11.1.3-1 |
+          | Reboot, migration target and offline lifecycle | 16 | 7.0.14-28-pve | 9.2.25 | 9.1.13 | 9.2.7 | 9.2.14 | 11.1.3-1 |
+          
+          Recorded SAN dependencies include LVM `2.03.31-2+pmx1`,
+          thin-provisioning-tools `1.1.0-4+b1`, multipath-tools `0.11.1-2`,
+          Corosync `3.1.10-pve3`, pve-ha-manager `5.2.5` and libpve-cluster-perl
+          `9.1.8` on the newer tuple. The API15 migration source used Corosync
+          `3.1.10-pve2` and libpve-cluster-perl `9.1.5`; the bounded update changed the
+          cluster library to `9.1.8` while leaving Corosync on `3.1.10-pve2`. These
+          records do not qualify unlisted versions or workloads.
+          
+          ## Installation and updates
+          
+          Choose either the DUAL or Thick-only package and install the same profile and
+          version on participating Proxmox VE cluster nodes. Verify release checksums and
+          follow the installation guide. Thin and Thick require separate dedicated shared
+          VGs; Eager and Lazy may share a dedicated Thick VG. Select the update policy
+          deliberately and review compatibility information before changing PVE packages.
+          
+          Feedback, code review and sanitized reproducible reports are welcome.
+          
+          
+          BASTRIX_NOTES_END
+          gh release edit "$tag" --notes-file /tmp/bastrix-release-notes.md
