@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - 'publish/rc5.103-tg53-once'
 
 permissions:
   contents: write
@@ -13,6 +13,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Verify exact release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          target=b2b32fa770eef7144a830d8fe619f954be452c1c
+          test "$(git rev-parse HEAD^)" = "$target"
+          test "$(git diff --name-only HEAD^ HEAD)" = '.github/workflows/release.yml'
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$target"
 
       - name: Install build and test dependencies
         run: sudo apt-get update && sudo apt-get install -y lvm2 multipath-tools perl shellcheck
@@ -62,25 +73,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag_name="$GITHUB_REF_NAME"
-          case "$tag_name" in
-            v0.9.0-*) release_name="${tag_name#v0.9.0-}" ;;
-            v*) release_name="${tag_name#v}" ;;
-            *) release_name="$tag_name" ;;
-          esac
-          release_name="$(printf '%s' "$release_name" | tr '[:lower:]' '[:upper:]')"
-          notes="docs/RELEASE-NOTES-${release_name}.md"
-          test -f "$notes"
-          # A failed lookup is not evidence that a release is absent. Include
-          # drafts and every page; authentication/network failures abort here.
+          target=b2b32fa770eef7144a830d8fe619f954be452c1c
+          tag_name=v0.9.0-rc5.103-tg53
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)" = "$target"
+          printf '%s  %s\n' \
+            5b15ad9a39790b961a6005b5c6f92a4a63ce82fd422d492abc8e78acbe15fb0e dist/pve-sharedlvmthin_0.9.0.rc5.103.tg53_all.deb \
+            b398721b499039a89b0fb15b72bf0e686a3d3120c356a5178dee025cb51c5de1 dist/pve-sharedlvmthin-thick_0.9.0.rc5.103.tg53_all.deb | sha256sum --check
           gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases" > existing-releases.json
           python3 scripts/assert-release-absent.py existing-releases.json "$tag_name"
-          # Never edit or replace published assets. A concurrent creation fails
-          # this command with no retry or upload fallback. The pushed tag exists.
-          gh release create "$tag_name" \
-            dist/*.deb dist/SHA256SUMS \
-            --verify-tag \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --title "SharedLvmThin ${release_name}" \
-            --notes-file "$notes"
+          gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/$tag_name" > existing-tags.json
+          python3 -c 'import json,sys; refs=json.load(open("existing-tags.json")); sys.exit(any(x.get("ref")==("refs/tags/"+sys.argv[1]) for x in refs))' "$tag_name"
+          gh release create "$tag_name" dist/*.deb dist/SHA256SUMS \
+            --target "$target" --prerelease \
+            --title "SharedLvmThin RC5.103-TG53" \
+            --notes-file docs/RELEASE-NOTES-RC5.103-TG53.md
