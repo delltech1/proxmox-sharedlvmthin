@@ -50,6 +50,14 @@ Disposable lab checks included:
   multipath reconnection, peer SSH checks, quorum and runtime settlement.
 - One live migration of a three-disk materialized Thick VM from kernel
   7.0.14-26-pve to 7.0.14-28-pve.
+- One materialized Eager Thick VM migrated live from an API15 node to an
+  API16 node on shared SAN. The API15 node was then updated to API16 and
+  rebooted with its SAN attached; the VM migrated back after post-update and
+  post-reboot checks. Its guest boot ID and in-memory marker survived both
+  migrations. A separate guest on another node continued a bounded three-disk
+  write, flush, read and SHA-256 workload across the reboots. The migrated
+  guest did not itself run a continuous disk-write workload. The test's two
+  logical SAN paths shared a network and backing device.
 - On kernel 7.0.14-28-pve, an offline five-disk OVMF/Q35 snapshot, rollback and
   snapshot deletion; full-disk SHA-256 matched on all five disks. The disks
   were not deliberately changed between snapshot and rollback.
@@ -69,8 +77,9 @@ package, storage identity, path and peer-SSH checks. The test restarted each
 guest and checked a small host-side disk region; it did not exercise a guest
 filesystem workload during that profile replacement.
 
-API15-to-API16 shared-SAN migration, multi-node Thick-only SAN operation, and
-every possible SAN, guest configuration or failure sequence are not established
+Thin or unmaterialized Lazy migration across API versions, multi-node
+Thick-only SAN operation, and every possible SAN, guest configuration or failure
+sequence are not established
 by these checks. `RETEST_REQUIRED` remains the catalogue classification for
 the candidate tuples and rolling edge.
 
@@ -79,7 +88,7 @@ the candidate tuples and rolling edge.
 | Exercised scope | API | Kernel | Manager | Storage | Common | QEMU server | QEMU |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | API14 control-plane package upgrade | 14 | 7.0.2-6-pve | 9.2.2 | 9.1.5 | 9.1.12 | 9.1.15 | 11.0.0-3 |
-| API15 control-plane transition, no SAN | 15 | 7.0.14-20-pve | 9.2.21 | 9.1.11 | 9.2.2 | 9.2.10 | 11.0.3-4 |
+| API15 control-plane transition and Eager SAN migration source | 15 | 7.0.14-20-pve | 9.2.21 | 9.1.11 | 9.2.2 | 9.2.10 | 11.0.3-4 |
 | Live plugin upgrade with mixed guest media | 16 | 7.0.14-16-pve | 9.2.18 | 9.1.12 | 9.2.3 | 9.2.10 | 11.0.3-3 |
 | Live plugin upgrade and migration source | 16 | 7.0.14-26-pve | 9.2.25 | 9.1.13 | 9.2.6 | 9.2.14 | 11.1.3-1 |
 | Reboot, migration target and offline lifecycle | 16 | 7.0.14-28-pve | 9.2.25 | 9.1.13 | 9.2.7 | 9.2.14 | 11.1.3-1 |
