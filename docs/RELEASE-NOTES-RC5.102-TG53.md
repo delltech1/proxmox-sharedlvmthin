@@ -96,7 +96,10 @@ the candidate tuples and rolling edge.
 Recorded SAN dependencies include LVM `2.03.31-2+pmx1`,
 thin-provisioning-tools `1.1.0-4+b1`, multipath-tools `0.11.1-2`,
 Corosync `3.1.10-pve3`, pve-ha-manager `5.2.5` and libpve-cluster-perl
-`9.1.8`. These records do not qualify unlisted versions or workloads.
+`9.1.8` on the newer tuple. The API15 migration source used Corosync
+`3.1.10-pve2` and libpve-cluster-perl `9.1.5`; the bounded update changed the
+cluster library to `9.1.8` while leaving Corosync on `3.1.10-pve2`. These
+records do not qualify unlisted versions or workloads.
 
 ## Installation and updates
 
