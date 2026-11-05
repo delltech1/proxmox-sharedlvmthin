@@ -33,7 +33,7 @@ sub run_case {
     local *PVE::Storage::config = sub { return {}; };
     local *PVE::Storage::storage_config = sub {
         my ($cfg, $storeid) = @_;
-        die "unknown storage '$storeid'\n" if $storeid ne 'sharedthin-test';
+        die "unknown storage '$storeid'\n" if $storeid ne 'example-storage-02';
         return {
             type => 'sharedlvmthin', shared => 1,
             'slt-vgname' => 'testvg',
@@ -82,7 +82,7 @@ sub run_case {
         my $line = join(' ', @$command);
         push @reads, $line;
         return (
-            $case{locked_tag} // 'pve-slt-sid-sharedthin-test',
+            $case{locked_tag} // 'pve-slt-sid-example-storage-02',
             $case{needs_check} ? 'twi-cotz--'
                 : $case{metadata_readonly} ? 'twi-aotzM-'
                 : $case{out_of_data} ? 'twi---tzD-'
@@ -106,7 +106,7 @@ sub run_case {
         my ($command, %options) = @_;
         push @commands, join(' ', @$command);
         if (join(' ', @$command) =~ /lv_tags/) {
-            $options{outfunc}->('pve-slt-sid-sharedthin-test') if $options{outfunc};
+            $options{outfunc}->('pve-slt-sid-example-storage-02') if $options{outfunc};
             return;
         }
         die "lvextend timeout\n" if $case{extend_error};
@@ -175,7 +175,7 @@ subtest 'pinned thin autogrow uses the canonical VG mutation lock' => sub {
     is(scalar(@{$r->{locks}}), 1, 'exactly one cluster lock was acquired');
     like($r->{locks}->[0], qr/^slt-vg-[0-9a-f]{32}$/,
         'autogrow shares the canonical VG lock with Thick Generations');
-    unlike($r->{locks}->[0], qr/sharedthin-test/,
+    unlike($r->{locks}->[0], qr/example-storage-02/,
         'canonical lock is independent of the storage alias');
 };
 

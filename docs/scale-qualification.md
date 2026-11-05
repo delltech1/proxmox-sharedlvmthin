@@ -277,7 +277,7 @@ stopped or that its mutation failed.
 
 ## 2026-09-18 8-TiB Thin control-plane lifecycle gate
 
-A disposable Thin volume was allocated at 8 TiB on `slt-scale-thin`, attached
+A disposable Thin volume was allocated at 8 TiB on `example-storage-03`, attached
 to an exact stopped PVE VM configuration, and resized through `qm resize` by
 1 GiB. The resulting block-device size was exactly 8,797,166,764,032 bytes and
 the PVE configuration reported `size=8193G`. The per-VM pool remained a 1-GiB

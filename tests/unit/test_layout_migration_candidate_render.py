@@ -108,7 +108,7 @@ sub lookup { return $changed ? 'Foreign' : 'PVE::Storage::Custom::SharedLvmThinP
 sub parse_config {
     my ($class, $file, $raw) = @_;
     my %ids = map { $_ => { type => 'sharedlvmthin' } }
-        qw(slt-scale-thick slt-scale-thin slt-tg-thick slt-tg-thin);
+        qw(slt-scale-thick example-storage-03 slt-tg-thick example-storage-04);
     if ($raw eq 'target') { $_->{'slt-vg-layout'} = 'mixed' for values %ids }
     $ids{'slt-tg-thick'}->{foreign} = 1 if $scenario eq 'semantic' && $raw eq 'target';
     return {ids => \%ids, digest => 'a' x 40};
