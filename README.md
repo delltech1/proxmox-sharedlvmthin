@@ -6,6 +6,10 @@ shared LVM volume group backed by FC, FCoE or iSCSI SAN storage. This project
 was originally published as SharedLvmThin; the existing package, command and
 storage-plugin identifiers remain compatible.
 
+RC5.104 TG54 adds Thick setup assistance. Its API 14 control-plane tuple is
+`RETEST_REQUIRED`; live upgrade and SAN lifecycle use on this build have not
+been qualified. See [release notes](docs/RELEASE-NOTES-RC5.104-TG54.md).
+
 > [!CAUTION]
 > **BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL SOFTWARE FOR DISPOSABLE
 > LABORATORY SYSTEMS AND DISPOSABLE DATA ONLY.** Neither allocation mode is

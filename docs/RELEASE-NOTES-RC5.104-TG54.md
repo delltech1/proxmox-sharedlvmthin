@@ -26,14 +26,14 @@ it does not initialize disks, configure the SAN or register storage itself.
 
 ## Important update limitation
 
-This candidate's new package version is not present in its exact runtime
-compatibility catalogue. Candidate preflight reports it as unlisted on the
-tested API 14 platform. Depending on update policy, installation can be
-refused or leave the runtime closed pending qualification. A live upgrade
-from RC5.103 and post-reboot storage operation have not been verified for this
-candidate. Do not assume an existing cluster can be upgraded without
-interruption. Retain the previous package and follow the documented recovery
-and compatibility procedures.
+The exact API 14 control-plane tuple below is listed as `RETEST_REQUIRED`;
+the listing permits candidate admission subject to the existing runtime gates
+and does not establish SAN qualification. Other tuples can be unlisted and
+refused or left closed depending on update policy. A live upgrade from RC5.103
+and post-reboot storage operation have not been verified for this candidate.
+Do not assume an existing cluster can be upgraded without interruption.
+Retain the previous package and follow the documented recovery and
+compatibility procedures.
 
 ## Verification scope
 

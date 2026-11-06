@@ -1,5 +1,13 @@
 # Compatibility
 
+## RC5.104 TG54 Thick candidate
+
+The exact recorded API 14 control-plane tuple is listed as `RETEST_REQUIRED`.
+SAN dataplane, in-place upgrade and post-reboot behavior require further tests;
+this listing is not evidence that they passed. Other platform combinations
+must be evaluated against the runtime catalogue. See the
+[release notes](RELEASE-NOTES-RC5.104-TG54.md).
+
 ## RC5.103 TG53 experimental bridge
 
 The current build recognizes Storage API 14, 15 and 16. Its exact lab-tested
