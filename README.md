@@ -126,7 +126,8 @@ probably do not need this project.
 candidate with guided storage setup assistance. See its [release notes](docs/RELEASE-NOTES-RC5.104-TG54.md)
 for the recorded API 14 control-plane tuple and remaining qualification.
 The [RC5.104 TG54 pre-release](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.104-tg54)
-provides the Thick-only package and checksum.
+provides `pve-sharedlvmthin-thick_0.9.0.rc5.104.tg54_all.deb` and
+`SHA256SUMS`. No new DUAL package is published in this release.
 
 The preceding release remains available:
 
