@@ -16,7 +16,8 @@ SCRIPT = ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-upgrade-check"
     "requires POSIX executable scripts and Bash",
 )
 class UpgradeCheckTests(unittest.TestCase):
-    def run_check(self, config, checker, *arguments, inventory_failure=False):
+    def run_check(self, config, checker, *arguments, inventory_failure=False,
+                  fence=False, pvesm_output=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             storage = root / "storage.cfg"
@@ -39,6 +40,17 @@ class UpgradeCheckTests(unittest.TestCase):
                 encoding="utf-8",
             )
             update_policy.chmod(0o755)
+            env = os.environ.copy()
+            if fence:
+                # The recovery command is a fixture. Real fence validation is
+                # covered by the executor and recovery checker tests.
+                env['SLT_PACKAGE_FENCE_FD'] = 'fixture'
+            if pvesm_output is not None:
+                pvesm = root / 'pvesm'
+                pvesm.write_text('#!/bin/sh\nprintf "%s\\n" ' +
+                                 repr(pvesm_output) + '\n', encoding='utf-8')
+                pvesm.chmod(0o755)
+                env['PATH'] = str(root) + os.pathsep + env.get('PATH', '')
             test_script = root / "upgrade-check"
             source = SCRIPT.read_text(encoding="utf-8")
             source = source.replace(
@@ -62,6 +74,7 @@ class UpgradeCheckTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 check=False,
+                env=env,
             )
             invoked = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
             return result, invoked
@@ -120,6 +133,21 @@ class UpgradeCheckTests(unittest.TestCase):
         self.assertEqual(invoked, ["--runtime-qualification"])
         self.assertIn("UPDATE_POLICY_STATUS=HELD_BY_RUNTIME_GATE", result.stdout)
         self.assertIn("RUNTIME_QUALIFICATION_READY=YES", result.stdout)
+
+    def test_fenced_runtime_operational_requires_active_pve_storage(self):
+        config = 'sharedlvmthin: thick-store\n        slt-allocation-mode thick-generations\n'
+        preservation = ('echo THICK_ANCHORS_HEALTHY=PASS\n'
+                        'echo VG_INTENT_CLEAR=PASS\n'
+                        'echo PACKAGE_PRESERVATION_READY=YES\n'
+                        'echo SAFE_FOR_MUTATION=NO\n')
+        for output, expected in (('thick-store sharedlvmthin active', 0),
+                                 ('thick-store sharedlvmthin inactive', 2), ('', 2)):
+            with self.subTest(output=output):
+                result, invoked = self.run_check(config, preservation, '--runtime-operational',
+                                                 fence=True, pvesm_output=output)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertEqual(invoked, ['--package-preservation'])
+                self.assertIn('UPGRADE_SAFE=' + ('YES' if expected == 0 else 'NO'), result.stdout)
 
     def test_disabled_storage_with_recovery_evidence_blocks_upgrade(self):
         result, invoked = self.run_check(

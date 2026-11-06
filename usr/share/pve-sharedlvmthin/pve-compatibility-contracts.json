@@ -39,6 +39,7 @@
       "/usr/sbin/modinfo": "dm.clone-semantics",
       "/usr/sbin/modprobe": "dm.clone-semantics",
       "/usr/sbin/multipathd": "transport.identity-and-paths",
+      "/sbin/multipathd": "transport.identity-and-paths",
       "/usr/bin/mv": "package.dual-lifecycle",
       "/usr/bin/openssl": "package.dual-lifecycle",
       "/usr/sbin/pct": "pve.storage.api-hooks",
@@ -88,6 +89,7 @@
       "/usr/bin/systemctl": "systemd.worker-cgroup",
       "/usr/bin/systemd-run": "systemd.worker-cgroup",
       "/usr/bin/timeout": "systemd.worker-cgroup",
+      "/usr/bin/true": "cluster.mutation-admission",
       "/usr/sbin/blkdiscard": "dm.clone-semantics",
       "/usr/sbin/blockdev": "lvm.inventory-and-mutation",
       "/usr/sbin/dmsetup": "dm.clone-semantics",
@@ -178,6 +180,7 @@
       "qm.status": "pve.qemu-raw-lifecycle",
       "qm.stop": "pve.qemu-raw-lifecycle",
       "pvesh.get": "pve.storage.api-hooks",
+      "pvesm.add": "pve.storage.api-hooks",
       "pvesm.path": "pve.storage.api-hooks",
       "pvesm.status": "pve.storage.api-hooks",
       "pvecm.status": "cluster.mutation-admission"
@@ -228,6 +231,7 @@
       "qm.status": {"contract": "pve.qemu-raw-lifecycle", "static_test": "tests/unit/plugin_lifecycle.t", "lab_test": "vm-create-start-stop", "parser_revision": 1},
       "qm.stop": {"contract": "pve.qemu-raw-lifecycle", "static_test": "tests/unit/plugin_lifecycle.t", "lab_test": "vm-create-start-stop", "parser_revision": 1},
       "pvesh.get": {"contract": "pve.storage.api-hooks", "static_test": "tests/unit/plugin_lifecycle.t", "lab_test": "web-ui-registration", "parser_revision": 1},
+      "pvesm.add": {"contract": "pve.storage.api-hooks", "static_test": "tests/integration/thick_config_add_hook.t", "lab_test": "pvesm-lifecycle", "parser_revision": 1},
       "pvesm.path": {"contract": "pve.storage.api-hooks", "static_test": "tests/unit/plugin_lifecycle.t", "lab_test": "pvesm-lifecycle", "parser_revision": 1},
       "pvesm.status": {"contract": "pve.storage.api-hooks", "static_test": "tests/unit/plugin_lifecycle.t", "lab_test": "pvesm-lifecycle", "parser_revision": 1},
       "pvecm.status": {"contract": "cluster.mutation-admission", "static_test": "tests/unit/mutation_admission.t", "lab_test": "lost-lock-refusal", "parser_revision": 1}
@@ -239,7 +243,7 @@
       "revision": 1,
       "scope": ["dual", "thick-only"],
       "dependencies": ["libpve-storage-perl", "PVE::Storage", "PVE::Storage::Plugin"],
-      "static_tests": ["tests/unit/plugin_lifecycle.t", "tests/unit/test_upstream_inventory.py"],
+      "static_tests": ["tests/unit/plugin_lifecycle.t", "tests/unit/test_upstream_inventory.py", "tests/integration/thick_config_add_hook.t"],
       "read_only_checks": ["upstream-inventory:pve_storage_api"],
       "lab_tests": ["pvesm-lifecycle", "web-ui-registration"]
     },

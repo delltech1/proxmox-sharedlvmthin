@@ -2,7 +2,8 @@
 Description=SharedLvmThin Read-Only Health Dashboard
 Documentation=man:systemd.service(5)
 After=network-online.target pve-cluster.service
-Wants=network-online.target
+Wants=network-online.target pve-sharedlvmthin-registration.socket
+After=pve-sharedlvmthin-registration.socket
 
 [Service]
 Type=simple

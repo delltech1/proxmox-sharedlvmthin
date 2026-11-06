@@ -5,11 +5,44 @@ has no LV create, delete, resize, snapshot, rollback, repair, rescan or service
 restart endpoint.
 
 The **Storage setup guide** provides English and German, administrator-led
-instructions for iSCSI, FC, FCoE and shared SAS. It does not scan devices,
-execute commands or verify answers. Shared SAS is not lab-qualified. The
-language selection is stored in the browser; technical diagnostics originating
-from the host may remain in their original language. Procedures and interface
-labels can change between Proxmox and storage versions.
+instructions for iSCSI, FC, FCoE and shared SAS. Its read-only discovery button
+uses a fixed, separately sandboxed collector to observe cluster membership,
+peer SSH, existing PVE definitions, LVM and multipath on participating nodes.
+It does not log in to iSCSI targets, initialize devices, execute commands
+supplied by a browser, register storage or verify an administrator's answers.
+The collector may use LVM runtime locks and LVM may update or invalidate its
+runtime hints. Its LVM probes bypass hints so a newly shared PV is less likely
+to be omitted, which can read more permitted devices and take longer. LVM
+filters, devices files, missing paths and other visibility restrictions still
+apply. Separate observations are not an atomic storage snapshot; probe errors
+or timeouts leave discovery unverified. Shared SAS is not lab-qualified; SAS
+transport detection reports the host's transport hint only. Independently
+verify vendor-supported multi-host access and failover. An
+FC transport observation alone does not distinguish physical FC from FCoE.
+The language selection is stored in the browser; technical diagnostics
+originating from the host may remain in their original language. Procedures
+and interface labels can change between Proxmox and storage versions.
+
+Discovery requires a currently authenticated PVE administrator with the
+required effective permissions. It uses pinned PVE SSH host keys and must be
+able to authenticate noninteractively between participating nodes. A missing
+peer, failed host-key check, incomplete observation or unavailable service is
+reported as unknown, not as an empty storage inventory or proof of fencing.
+The web service retains its existing `ProtectHome` restriction; the separate
+fixed collector has read-only access to its own SSH key and permits the LVM
+runtime lock directories needed by observational commands. This separation
+limits what the dashboard requests; it is not a
+replacement for protecting root, the collector executable or the PVE cluster.
+
+The command builder may also import the JSON output of
+`sharedlvmthin-register-preview --discover-only` from a trusted node. Imported
+JSON is not authenticated by the dashboard. Both automatically collected and
+imported observations are point-in-time information; discovery is not a
+transaction lock or a fencing proof. Review the identifiers, node scope and
+reserve, recheck the environment before use, and execute the suggested
+commands yourself. Copying a command does not execute it or confirm success.
+The first iteration only generates commands for an empty, unregistered
+single-PV Thick VG; existing aliases and nonempty VGs need explicit review.
 
 Terminology reference: [Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf),
 [German Proxmox forum discussion](https://forum.proxmox.com/threads/erfahrungen-mit-lvm-thick-iscsi-multipath-pure-storage-und-volume-chain-snapshots-unter-proxmox-ve-9.175810/),

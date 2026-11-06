@@ -2114,6 +2114,42 @@
       ]
     },
     {
+      "id": "rc5104-api14-control",
+      "profiles": [
+        "dual",
+        "thick-only"
+      ],
+      "plugin_versions": [
+        "0.9.0~rc5.104~tg54"
+      ],
+      "api": 14,
+      "packages": {
+        "pve-manager": "9.2.2",
+        "libpve-storage-perl": "9.1.5",
+        "qemu-server": "9.1.15",
+        "pve-qemu-kvm": "11.0.0-3",
+        "libpve-common-perl": "9.1.12"
+      },
+      "running_kernel": "7.0.2-6-pve",
+      "status": "RETEST_REQUIRED",
+      "scopes": [
+        "package-lifecycle",
+        "control-plane",
+        "api-hooks"
+      ],
+      "excluded_scopes": [
+        "san-dataplane"
+      ],
+      "required_tests": [
+        "api14-clean-install",
+        "api14-in-place-upgrade",
+        "dual-thick-profile-parity",
+        "dual-thick-dual-profile-cycle",
+        "exact-build-evidence-binding",
+        "post-reboot-san"
+      ]
+    },
+    {
       "id": "rc5101-rc5100-api14-control",
       "profiles": [
         "dual",

@@ -4,6 +4,7 @@ import runpy
 import tempfile
 import threading
 import unittest
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -11,6 +12,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB = ROOT / "usr/libexec/pve-sharedlvmthin/sharedlvmthin-web"
+sys.path.insert(0, str(WEB.parent))
 
 
 def load_web(extra=""):
@@ -44,6 +46,61 @@ collector_timeout_seconds=120
 
 
 class WebConfigurationTests(unittest.TestCase):
+    def test_registration_inventory_requires_session_and_fresh_pve_permissions(self):
+        web = load_web()
+        handler = web['H'].__new__(web['H'])
+        handler.path = '/api/registration/inventory'
+        handler.headers = {'Sec-Fetch-Site': 'same-origin'}
+        handler.send_json = mock.Mock()
+        inventory = mock.Mock()
+        inventory.observe.return_value = {'result': 'OBSERVED'}
+        scope = handler.do_GET.__globals__
+        with mock.patch.dict(scope, {'session_from': lambda headers: (None, None),
+                                     'registration_inventory': inventory}):
+            handler.do_GET()
+        handler.send_json.assert_called_with({'error': 'unauthorized'}, 401)
+        inventory.observe.assert_not_called()
+
+        handler.send_json.reset_mock()
+        session = {'user': 'member@pve', 'auth': 'pve-group:readers', 'pve_ticket': 'ticket'}
+        with mock.patch.dict(scope, {'session_from': lambda headers: ('token', session), 'PVE_SSL': SimpleNamespace(verify_mode=2),
+                                     'pve': lambda *a, **kw: {'/': {'Sys.Audit': 1}},
+                                     'registration_inventory': inventory}):
+            handler.do_GET()
+        handler.send_json.assert_called_with({'error': 'administrator privileges required'}, 403)
+        inventory.observe.assert_not_called()
+
+        handler.send_json.reset_mock()
+        session = {'user': 'root@pam', 'pve_ticket': 'ticket'}
+        with mock.patch.dict(scope, {'session_from': lambda headers: ('token', session), 'PVE_SSL': SimpleNamespace(verify_mode=2),
+                                     'pve': lambda *a, **kw: {}, 'registration_inventory': inventory}):
+            handler.do_GET()
+        handler.send_json.assert_called_with({'result': 'OBSERVED'})
+        inventory.observe.assert_called_once_with()
+
+        handler.send_json.reset_mock()
+        inventory.reset_mock()
+        with mock.patch.dict(scope, {'session_from': lambda headers: ('token', session),
+                                     'PVE_SSL': SimpleNamespace(verify_mode=0),
+                                     'registration_inventory': inventory}):
+            handler.do_GET()
+        handler.send_json.assert_called_with({'error': 'verified PVE authorization unavailable'}, 503)
+        inventory.observe.assert_not_called()
+
+    def test_registration_inventory_rejects_cross_site_and_query_parameters(self):
+        web = load_web()
+        handler = web['H'].__new__(web['H'])
+        handler.send_json = mock.Mock()
+        scope = handler.do_GET.__globals__
+        session = {'user': 'root@pam', 'pve_ticket': 'ticket'}
+        for path, headers in [('/api/registration/inventory?node=other', {}),
+                              ('/api/registration/inventory', {'Sec-Fetch-Site': 'cross-site'})]:
+            with self.subTest(path=path, headers=headers):
+                handler.path, handler.headers = path, headers
+                with mock.patch.dict(scope, {'session_from': lambda h: ('token', session)}):
+                    handler.do_GET()
+                handler.send_json.assert_called_with({'error': 'invalid request'}, 403)
+
     def test_redirect_has_explicit_empty_body_length(self):
         web = load_web()
         handler = web["H"].__new__(web["H"])

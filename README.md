@@ -6,6 +6,10 @@ shared LVM volume group backed by FC, FCoE or iSCSI SAN storage. This project
 was originally published as SharedLvmThin; the existing package, command and
 storage-plugin identifiers remain compatible.
 
+RC5.104 TG54 adds Thick setup assistance. Its API 14 control-plane tuple is
+`RETEST_REQUIRED`; live upgrade and SAN lifecycle use on this build have not
+been qualified. See [release notes](docs/RELEASE-NOTES-RC5.104-TG54.md).
+
 > [!CAUTION]
 > **BOTH THIN AND THICK GENERATIONS ARE EXPERIMENTAL SOFTWARE FOR DISPOSABLE
 > LABORATORY SYSTEMS AND DISPOSABLE DATA ONLY.** Neither allocation mode is
@@ -117,6 +121,15 @@ If you already use Ceph, NFS or a suitable vendor-native Proxmox plugin, you
 probably do not need this project.
 
 ## Release status
+
+**RC5.104 TG54** (`0.9.0~rc5.104~tg54`) is an experimental Thick-only
+candidate with guided storage setup assistance. See its [release notes](docs/RELEASE-NOTES-RC5.104-TG54.md)
+for the recorded API 14 control-plane tuple and remaining qualification.
+The [RC5.104 TG54 pre-release](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.104-tg54)
+provides `pve-sharedlvmthin-thick_0.9.0.rc5.104.tg54_all.deb` and
+`SHA256SUMS`. No new DUAL package is published in this release.
+
+The preceding release remains available:
 
 **RC5.103 TG53** (`0.9.0~rc5.103~tg53`) is an experimental API 14–16 bridge.
 It extends package preservation, recovery and compatibility checks, including

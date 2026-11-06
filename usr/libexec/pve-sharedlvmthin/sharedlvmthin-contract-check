@@ -35,6 +35,7 @@ NATIVE_OPERATION_PATTERNS = {
     "qm.status": re.compile(r"\bqm\s+status\b"),
     "qm.stop": re.compile(r"\bqm\s+stop\b"),
     "pvesh.get": re.compile(r"\bpvesh\s+get\b"),
+    "pvesm.add": re.compile(r"\bpvesm\s+add\b"),
     "pvesm.path": re.compile(r"\bpvesm\s+path\b"),
     "pvesm.status": re.compile(r"\bpvesm\s+status\b"),
     "pvecm.status": re.compile(r"\bpvecm\s+status\b"),

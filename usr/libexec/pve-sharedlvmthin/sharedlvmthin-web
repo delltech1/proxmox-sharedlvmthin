@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
+from sharedlvmthin_registration_service import InventoryClient, InventoryUnavailable, may_discover
 
 CONFIG=os.environ.get("SHAREDLVMTHIN_WEB_CONFIG","/etc/pve-sharedlvmthin/web.conf"); WEBROOT="/usr/share/pve-sharedlvmthin/web"
 COLLECTOR="/usr/libexec/pve-sharedlvmthin/sharedlvmthin-health-json"
@@ -47,6 +48,7 @@ if ACCESS_MODE == "group" and not ACCESS_GROUP:
     raise RuntimeError("auth.group is required for group access mode")
 
 sessions={}; pending={}; attempts=defaultdict(deque); lock=threading.RLock()
+registration_inventory=InventoryClient()
 
 def pve_ctx():
     ca="/etc/pve/pve-root-ca.pem"
@@ -278,7 +280,7 @@ class H(SimpleHTTPRequestHandler):
     def send_html(self,s,status=200):
         b=s.encode(); self.send_response(status); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
     def send_json(self,d,status=200):
-        b=json.dumps(d).encode(); self.send_response(status); self.send_header("Content-Type","application/json"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
+        b=json.dumps(d).encode(); self.send_response(status); self.send_header("Content-Type","application/json"); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
     def redirect(self,p,cookie=None):
         self.send_response(303); self.send_header("Location",p)
         if cookie: self.send_header("Set-Cookie",cookie)
@@ -303,6 +305,22 @@ class H(SimpleHTTPRequestHandler):
             _,s=session_from(self.headers)
             if not s: return self.send_json({"error":"unauthorized"},401)
             return self.send_json(self.server.health_cache.snapshot())
+        if p=="/api/registration/inventory":
+            _,s=session_from(self.headers)
+            if not s: return self.send_json({"error":"unauthorized"},401)
+            if urlparse(self.path).query or self.headers.get("Sec-Fetch-Site", "same-origin") not in {"same-origin", "none"}:
+                return self.send_json({"error":"invalid request"},403)
+            if not s.get("pve_ticket") or PVE_SSL.verify_mode != ssl.CERT_REQUIRED:
+                return self.send_json({"error":"verified PVE authorization unavailable"},503)
+            try:
+                permissions=pve("/access/permissions?"+urllib.parse.urlencode({"path":"/"}), ticket=s.get("pve_ticket"))
+                if not may_discover(s,permissions,REQUIRED): return self.send_json({"error":"administrator privileges required"},403)
+                return self.send_json(registration_inventory.observe())
+            except InventoryUnavailable as exc:
+                code=exc.code if exc.code in {'peer_ssh_unverified','quorum_unverified','nodes_unverified'} else 'unavailable'
+                return self.send_json({"error":"inventory unavailable or already running","code":code},503)
+            except Exception:
+                return self.send_json({"error":"PVE authorization unavailable"},503)
         if p=="/api/version":
             _,s=session_from(self.headers)
             if not s: return self.send_json({"error":"unauthorized"},401)
@@ -333,7 +351,7 @@ class H(SimpleHTTPRequestHandler):
                 user=a.get("username") or user; ok,why=authorized(user,a["ticket"])
                 if not ok: return self.send_html(login("Authenticated, but PVE administrator privileges are required.",user),403)
                 tok=secrets.token_urlsafe(32)
-                with lock: sessions[tok]={"user":user,"auth":why,"seen":time.monotonic()}
+                with lock: sessions[tok]={"user":user,"auth":why,"pve_ticket":a["ticket"],"seen":time.monotonic()}
                 attempts.pop(ip,None)
                 return self.redirect("/",session_cookie(tok))
             except Exception:
@@ -355,7 +373,7 @@ class H(SimpleHTTPRequestHandler):
                     return self.send_html(login("Authenticated, but PVE administrator privileges are required.",user),403)
                 tok=secrets.token_urlsafe(32)
                 with lock:
-                    pending.pop(pid,None); sessions[tok]={"user":user,"auth":why,"seen":time.monotonic()}
+                    pending.pop(pid,None); sessions[tok]={"user":user,"auth":why,"pve_ticket":a["ticket"],"seen":time.monotonic()}
                 attempts.pop(ip,None)
                 return self.redirect("/",session_cookie(tok))
             except Exception:
