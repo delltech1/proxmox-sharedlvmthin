@@ -122,6 +122,14 @@ probably do not need this project.
 
 ## Release status
 
+**RC5.104 TG54** (`0.9.0~rc5.104~tg54`) is an experimental Thick-only
+candidate with guided storage setup assistance. See its [release notes](docs/RELEASE-NOTES-RC5.104-TG54.md)
+for the recorded API 14 control-plane tuple and remaining qualification.
+The [RC5.104 TG54 pre-release](https://github.com/delltech1/proxmox-sharedlvmthin/releases/tag/v0.9.0-rc5.104-tg54)
+provides the Thick-only package and checksum.
+
+The preceding release remains available:
+
 **RC5.103 TG53** (`0.9.0~rc5.103~tg53`) is an experimental API 14–16 bridge.
 It extends package preservation, recovery and compatibility checks, including
 testing on kernel 7.0.14-28-pve. See the

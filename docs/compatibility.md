@@ -10,7 +10,7 @@ must be evaluated against the runtime catalogue. See the
 
 ## RC5.103 TG53 experimental bridge
 
-The current build recognizes Storage API 14, 15 and 16. Its exact lab-tested
+RC5.103 recognizes Storage API 14, 15 and 16. Its recorded lab-tested
 package and kernel combinations and operation scope are listed in the
 [release notes](RELEASE-NOTES-RC5.103-TG53.md). Catalogue identities remain
 `RETEST_REQUIRED`; recognizing a tuple does not certify every storage operation
