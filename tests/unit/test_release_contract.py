@@ -195,9 +195,9 @@ class ReleaseContractTests(unittest.TestCase):
 
     def test_rc597_metadata_and_notes_preserve_scoped_experimental_release(self):
         thick = (ROOT / "packaging/thick-only/control").read_text(encoding="utf-8")
-        # The next development candidate currently advances only the Thick
-        # profile; the DUAL control file still describes the published build.
-        self.assertIn("Version: 0.9.0~rc5.104~tg54~dev1\n", thick)
+        # Profiles share an internal build version, even when only the Thick
+        # package is published as a release asset.
+        self.assertIn("Version: 0.9.0~rc5.104~tg54\n", thick)
         notes = (ROOT / "docs/RELEASE-NOTES-RC5.97-TG53.md").read_text(encoding="utf-8")
         self.assertIn("experimental API14–16 bridge", notes)
         self.assertIn("RETEST_REQUIRED", notes)
