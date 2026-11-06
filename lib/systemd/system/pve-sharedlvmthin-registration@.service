@@ -1,0 +1,24 @@
+[Unit]
+Description=SharedLvmThin read-only registration inventory
+After=network-online.target pve-cluster.service
+
+[Service]
+Type=simple
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+ExecStart=/usr/bin/python3 /usr/libexec/pve-sharedlvmthin/sharedlvmthin-registration-cluster-inventory.py
+RuntimeMaxSec=180
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=-/run/lock/lvm -/run/lvm
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictSUIDSGID=true

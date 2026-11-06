@@ -192,7 +192,11 @@ for PROGRAM in \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-thick-materialize" \
     "$STAGE/usr/share/initramfs-tools/hooks/zz-pve-sharedlvmthin-lvm-prune" \
     "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-web" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-registration-cluster-inventory.py" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-registration-local-inventory.py" \
+    "$STAGE/usr/libexec/pve-sharedlvmthin/sharedlvmthin-registration-plan.py" \
     "$STAGE/usr/sbin/sharedlvmthin" \
+    "$STAGE/usr/sbin/sharedlvmthin-register-preview" \
     "$STAGE/usr/sbin/sharedlvmthin-migrate-bridge" \
     "$STAGE/usr/sbin/sharedlvmthin-web-configure"
 do

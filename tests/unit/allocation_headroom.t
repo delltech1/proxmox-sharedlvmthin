@@ -226,4 +226,18 @@ subtest 'reserve calculation includes overhead and extent rounding' => sub {
     ok(!$blocked->{allowed}, 'extent-rounded allocation crossing reserve is blocked');
 };
 
+subtest 'zero reserve still enforces physical capacity and fixed reserve' => sub {
+    my %base = (vg_size => 100 * $gib, vg_free => 10 * $gib,
+        growth_bytes => 9 * $gib, overhead_bytes => $gib,
+        extent_bytes => 4 * 1024 * 1024, reserve_percent => 0, reserve_gib => 0);
+    my $exact = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(%base);
+    ok($exact->{allowed}, 'zero reserve permits exact physical fit');
+    is($exact->{free_after_bytes}, 0, 'exact fit leaves zero free bytes');
+    my $short = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(%base, growth_bytes => 9 * $gib + 1);
+    ok(!$short->{allowed}, 'zero reserve rejects extent-rounded shortage');
+    my $fixed = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(%base, reserve_gib => 1);
+    is($fixed->{reserve_bytes}, $gib, 'fixed GiB reserve still applies when percent is zero');
+    ok(!$fixed->{allowed}, 'fixed reserve protects space despite zero percent');
+};
+
 done_testing();

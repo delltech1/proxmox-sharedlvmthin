@@ -534,13 +534,13 @@ sub properties {
             maximum => 64,
         },
         'slt-vg-reserve-percent' => {
-            description => 'Physical VG reserve percentage protected from automatic thin-pool growth.',
+            description => 'Physical VG free-space reserve percentage protected during Thin pool growth and Thick allocation admission.',
             type => 'integer',
             minimum => 0,
             maximum => 50,
         },
         'slt-vg-reserve-gib' => {
-            description => 'Fixed physical VG reserve in GiB protected from automatic thin-pool growth.',
+            description => 'Fixed physical VG free-space reserve in GiB protected during Thin pool growth and Thick allocation admission.',
             type => 'integer',
             minimum => 0,
             maximum => 1048576,

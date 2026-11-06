@@ -1,0 +1,101 @@
+#!/usr/bin/python3
+"""Discover a dedicated Thick VG and print a registration plan; no writes."""
+import argparse
+import importlib.util
+import json
+import os
+import pathlib
+import sys
+
+LIB = pathlib.Path('/usr/libexec/pve-sharedlvmthin')
+
+
+def load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, LIB / filename)
+    if spec is None or spec.loader is None:
+        raise RuntimeError('registration helper is unavailable')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner):
+    if not isinstance(observed, dict) or observed.get('result') != 'OBSERVED':
+        raise ValueError('cluster discovery did not complete')
+    candidates = [c for c in observed.get('candidates', [])
+                  if c.get('name') == vg_name and c.get('eligible_for_new_vg_registration') is True]
+    if len(candidates) != 1:
+        raise ValueError('VG is not uniquely eligible; existing or unverified LVs need review')
+    c = candidates[0]
+    nodes = observed['nodes']
+    aliases = {}
+    if eager_id:
+        aliases['eager'] = eager_id
+    if lazy_id:
+        aliases['lazy'] = lazy_id
+    identity = {key: c[key] for key in ('vg_uuid', 'pv_uuid', 'wwid', 'size_bytes')}
+    peers = {node: {**identity, 'complete': True, 'peer_ssh_verified': True,
+                    'mapper_verified': True, 'healthy_paths': c['paths_by_node'][node]}
+             for node in nodes}
+    vg = {**identity, 'name': vg_name, 'pv_count': 1, 'dedicated': True,
+          'free_bytes': c['free_bytes']}
+    evidence = {'quorate': True, 'inventory_complete': True, 'members': {n: True for n in nodes},
+                'vg': vg, 'node_evidence': peers,
+                'storage_definitions': observed['storage_definitions']}
+    return planner.plan({'nodes': nodes, 'vg': vg_name, 'aliases': aliases,
+                         'reserve_percent': reserve}, evidence)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--vg', help='dedicated VG name (prompts if omitted)')
+    parser.add_argument('--mode', choices=('eager', 'lazy', 'both'), default='both')
+    parser.add_argument('--eager-id', default='bastrix-eager')
+    parser.add_argument('--lazy-id', default='bastrix-lazy')
+    parser.add_argument('--reserve-percent', type=int, default=5)
+    parser.add_argument('--discover-only', action='store_true', help='print read-only inventory as JSON')
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.exit(1, 'Run as root on a participating Proxmox VE node.\n')
+    try:
+        inventory = load('registration_inventory', 'sharedlvmthin-registration-cluster-inventory.py')
+        planner = load('registration_plan', 'sharedlvmthin-registration-plan.py')
+        observed = inventory.collect()
+        if args.discover_only:
+            print(json.dumps(observed, sort_keys=True, indent=2))
+            return 0
+        eligible = [c for c in observed['candidates'] if c['eligible_for_new_vg_registration']]
+        if not eligible:
+            raise ValueError('no empty, unregistered shared Thick VG passed all checks')
+        print('Verified observations on participating nodes (not fencing):')
+        for c in eligible:
+            print('  {}: {} GiB free, {} healthy paths per node'.format(
+                c['name'], round(c['free_bytes'] / (1024 ** 3), 2), c['paths_by_node']))
+        selected = args.vg
+        if selected is None:
+            if len(eligible) == 1:
+                selected = eligible[0]['name']
+                print('Selected the only eligible VG: ' + selected)
+            else:
+                selected = input('Enter one of the displayed VG names: ').strip()
+        result = build_plan(observed, selected,
+                            args.eager_id if args.mode in ('eager', 'both') else None,
+                            args.lazy_id if args.mode in ('lazy', 'both') else None,
+                            args.reserve_percent, planner)
+        print('\nPREVIEW ONLY. No storage was registered or modified.')
+        print('Reserve: {}% of VG capacity. Snapshot/rollback may need additional free space.'.format(args.reserve_percent))
+        if args.reserve_percent == 0:
+            print('WARNING: zero protected reserve permits consuming all free VG extents; future snapshot, rollback or growth may be refused.')
+        print('A single path is not redundant. Verify quorum, fencing and vendor policy independently.')
+        print('Review the identities, node list, reserve and commands below before running them as root:')
+        for entry in result['definitions']:
+            print('\n' + entry['cli'])
+        print('\nIf registration partially succeeds or returns an unclear result, inspect it before retrying.')
+        return 0
+    except (ValueError, OSError, KeyError, ImportError, RuntimeError) as exc:
+        print('REFUSED: ' + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

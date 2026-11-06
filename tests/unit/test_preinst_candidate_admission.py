@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @unittest.skipUnless(os.name == "posix", "requires a POSIX shell")
 class CandidatePreinstAdmissionTests(unittest.TestCase):
-    def run_admission(self, rc, *, preflight=0, prepared=0, status="", missing=False):
+    def run_admission(self, rc, *, preflight=0, prepared=0, status="", status_rc=0, missing=False):
         source = (ROOT / "DEBIAN/preinst").read_text()
         block = source.split("# Candidate-owned admission", 1) if "# Candidate-owned admission" in source else source.split("# Candidate-side admission", 1)
         self.assertEqual(len(block), 2)
@@ -24,7 +24,7 @@ class CandidatePreinstAdmissionTests(unittest.TestCase):
             if not missing:
                 helper.write_text(f"raise SystemExit({rc})\n")
             cmd = root / "sharedlvmthin"
-            cmd.write_text("#!/bin/sh\nprintf '%s\\n' \"$TEST_FREEZE_STATUS\"\n")
+            cmd.write_text("#!/bin/sh\nprintf '%s\\n' \"$TEST_FREEZE_STATUS\"\nexit \"$TEST_FREEZE_STATUS_RC\"\n")
             cmd.chmod(0o755)
             variables = {"CANDIDATE_UPDATE_POLICY": str(helper),
                          "CANDIDATE_UPDATE_POLICY_LIB": str(root / "sharedlvmthin_update_policy.py"),
@@ -34,6 +34,7 @@ class CandidatePreinstAdmissionTests(unittest.TestCase):
                          "PREFLIGHT_ONLY": str(preflight), "FREEZE_PACKAGE_PREPARED": str(prepared),
                          "INSTALLED_FLAVOR": "",
                          "TEST_FREEZE_STATUS": status,
+                         "TEST_FREEZE_STATUS_RC": str(status_rc),
                          "PATH": tmp + os.pathsep + os.environ["PATH"]}
             script = "set -eu\nread_identity_line() { cat \"$1\"; }\n" + block + "\necho ADMITTED\n"
             return subprocess.run(["/bin/sh", "-c", script], env={**os.environ, **variables},
@@ -49,4 +50,16 @@ class CandidatePreinstAdmissionTests(unittest.TestCase):
         self.assertNotEqual(self.run_admission(78, preflight=1, status=status + "\nUPDATE_POLICY=WARN").returncode, 0)
         self.assertNotEqual(self.run_admission(79, preflight=1, status=status).returncode, 0)
         self.assertEqual(self.run_admission(78, prepared=1).returncode, 0)
+
+    def test_closed_status_preflight_does_not_admit_an_unlisted_successor(self):
+        # Intact FREEZE output is not sufficient when status itself reports a
+        # closed/error state. This is the real preflight block, with every
+        # external command supplied by disposable fixtures.
+        status = ("UPDATE_POLICY=FREEZE\nFREEZE_INTEGRITY=PASS\n"
+                  "RUNTIME_QUALIFICATION=UNQUALIFIED\nRUNTIME_FINALIZATION_PENDING=YES")
+        result = self.run_admission(78, preflight=1, status=status, status_rc=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("package unpack refused", result.stderr)
+        self.assertNotIn("ADMITTED", result.stdout)
+        self.assertNotIn("CANDIDATE_RUNTIME=UNLISTED_FREEZE_CLOSED_ONLY", result.stdout)
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=SharedLvmThin read-only registration inventory socket
+PartOf=pve-sharedlvmthin-web.service
+
+[Socket]
+ListenStream=/run/pve-sharedlvmthin-registration.sock
+SocketMode=0600
+Accept=yes
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target

@@ -1,7 +1,8 @@
 """Render real login/TFA pages with a temporary, nonfunctional test config."""
-import json, os, runpy, tempfile
+import json, os, runpy, tempfile, sys
 from pathlib import Path
 root=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(root/'usr/libexec/pve-sharedlvmthin'))
 with tempfile.NamedTemporaryFile('w',encoding='utf-8',delete=False) as f:
     f.write('[web]\naddress=127.0.0.1\nport=9443\n[tls]\ncertificate=/none\nprivate_key=/none\n')
     name=f.name

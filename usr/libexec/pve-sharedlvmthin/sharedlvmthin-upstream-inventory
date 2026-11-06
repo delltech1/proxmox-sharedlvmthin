@@ -30,7 +30,7 @@ COMMANDS = (
     "bash", "sh", "perl", "python3", "pvesm", "pvesh", "pvecm", "corosync-quorumtool", "qm", "pct", "lvs", "vgs",
     "pvs", "lvcreate", "lvremove", "lvchange", "lvextend", "lvconvert",
     "lvrename", "vgchange", "vgcfgbackup", "dmsetup", "multipath", "multipathd",
-    "iscsiadm", "qemu-img", "qemu-io", "timeout", "systemctl", "ssh",
+    "iscsiadm", "qemu-img", "qemu-io", "timeout", "systemctl", "ssh", "true",
     "systemd-run", "blockdev", "blkdiscard", "thin_check", "dd", "env", "stat",
     "sha256sum", "sharedlvmthin", "lsinitramfs", "update-initramfs", "modinfo",
     "modprobe", "apt-cache", "apt-config", "dpkg", "dpkg-deb", "dpkg-query",

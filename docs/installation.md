@@ -36,6 +36,37 @@ The storage/SAN administrator must first:
 The plugin does not create sessions, zoning, ACLs or multipath policy. Do not
 use a raw `/dev/sdX` path when the LUN is multipathed.
 
+### Cluster peer SSH prerequisite
+
+Before shared Thick lifecycle and migration operations, verify noninteractive
+root SSH between every participating node using the peer identity and trusted
+host keys managed by Proxmox VE. Some Thick peer checks use PVE's SSH helper;
+the migration bridge uses the target node's PVE `ssh_known_hosts` file. An SSH
+failure or untrusted key can block an operation even when quorum and storage
+paths are healthy. Test each direction, for example:
+
+```bash
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=<PEER_NODE> \
+  -o UserKnownHostsFile=/etc/pve/nodes/<PEER_NODE>/ssh_known_hosts \
+  -o GlobalKnownHostsFile=none root@<PEER_ADDRESS> hostname
+```
+
+Replace the placeholders using the cluster's actual peer name and address.
+Independently verify host-key fingerprints before correcting trust and use the
+documented PVE cluster repair procedures. Do not disable host-key verification
+or interpret an unreachable peer as proof of fencing or safe takeover.
+
+For example, on the peer's trusted local console, display its public key
+fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` and compare
+it with the corresponding PVE-managed key using an independent trusted channel.
+Use the actual key type presented by the peer if it differs. Do not accept a
+new fingerprint solely because `ssh-keyscan` returned it over the same network.
+When a node has been removed and rejoined with the same name or address, the
+[Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf)
+documents `pvecm updatecerts` on the rejoined node to update its fingerprint
+cluster-wide. This is a PVE administrative change, not a diagnostic command;
+follow the guide for the specific situation and recheck both SSH directions.
+
 For worked transport examples, continue with
 [iSCSI, FC and FCoE setup examples](transport-setup-examples.md), then return
 to this guide for common PV/VG and plugin configuration.
@@ -165,6 +196,45 @@ wizard.
 
 ## 6. Register the existing VG in PVE
 
+For an empty, unregistered dedicated Thick VG, the read-only helper
+`sharedlvmthin-register-preview` can discover matching multipath/PV/VG
+identities across online cluster nodes and print suggested commands. It does
+not execute them, initialize storage, establish fencing, or guarantee that a
+later operation will succeed. Run it as root on one participating PVE node,
+review the identified VG, nodes and reserve, and independently validate the
+storage and cluster state immediately before executing a command. Use
+`--discover-only` for a JSON observation that can be imported into the
+dashboard's command builder; imported data can be edited or become stale and
+is not independently authenticated by the dashboard. The helper deliberately
+refuses automatic registration planning for nonempty or already registered
+VGs until their provenance and aliases have been reviewed.
+
+The dashboard's storage guide can request a fresh read-only cluster inventory
+and prepare separate Eager and Lazy command previews. Administrator
+authorization and verified PVE peer SSH host keys are required for automatic
+discovery. The dashboard does not execute these commands. Execute a reviewed
+command once from one participating node, then inspect the resulting PVE
+storage configuration. Eager and Lazy are separate changes: if a command is
+interrupted or its result is unclear, inspect the existing definition before
+continuing. Do not blindly repeat either command. A discovered definition is
+not by itself proof that its options match or that the storage is healthy.
+When an existing association is observed, the guide displays its reported type
+and allocation mode and offers a copyable, read-only `pvesh get` command for
+the administrator to inspect. Missing fields remain unknown; the guide does
+not automatically plan a second alias for an already registered VG.
+The wizard compares observed transport hints on all nodes with the chosen
+guide. A SCSI `fc` hint can represent native FC or FCoE and is not proof of
+either physical transport or an operational fabric; verify those separately.
+
+The cluster inventory uses noninteractive SSH in every peer direction and
+checks each peer against the Proxmox-managed node host-key file. Independently
+verify host-key fingerprints before repairing trust; do not turn off host-key
+checking. As described in the [Proxmox VE administration guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf),
+noninteractive SSH can run shell startup commands. Ensure root shell startup
+files do not run interactive or state-changing commands for such sessions.
+SSH failure can also indicate a network or authentication problem; it does
+not by itself identify which condition occurred or prove a peer is fenced.
+
 Use a neutral storage ID and substitute the identities recorded above. A
 representative PVE CLI definition is:
 
@@ -264,6 +334,16 @@ Move for an explicit Thin-to-Thick or Thick-to-Thin conversion.
 Both package profiles operate only with `slt-vg-layout isolated`. Eager and Lazy
 Thick aliases may share the dedicated Thick VG because both reserve their full
 capacity and use the same Thick lifecycle. Thin must use another VG.
+
+Thick storage requires an explicitly configured VG reserve, expressed as a
+percentage, fixed GiB, or both. If both are set, the larger reserve applies.
+The command helper suggests 5%; an administrator may choose another value,
+including zero. A zero effective reserve allows allocations to consume all
+free extents. Future snapshots, rollback or disk growth may then be refused
+for lack of space. A reserve alone does not guarantee that a particular
+generation fits: plan for the full expected generation and its metadata above
+the protected reserve. Monitor free VG extents and PV metadata independently.
+Upgrades do not silently change an existing reserve.
 
 ## 7. Validate before storing a VM
 
