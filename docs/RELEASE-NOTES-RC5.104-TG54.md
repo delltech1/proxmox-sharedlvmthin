@@ -28,8 +28,9 @@ it does not initialize disks, configure the SAN or register storage itself.
 
 The exact API 14 control-plane tuple below is listed as `RETEST_REQUIRED`;
 the listing permits candidate admission subject to the existing runtime gates
-and does not establish SAN qualification. Other tuples can be unlisted and
-refused or left closed depending on update policy. A live upgrade from RC5.103
+and does not establish SAN qualification. No API 15 or API 16 tuple is listed
+for this candidate; their preflight is expected to refuse or remain closed
+depending on update policy. A live upgrade from RC5.103
 and post-reboot storage operation have not been verified for this candidate.
 Do not assume an existing cluster can be upgraded without interruption.
 Retain the previous package and follow the documented recovery and
