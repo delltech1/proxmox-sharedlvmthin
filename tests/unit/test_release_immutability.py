@@ -53,6 +53,13 @@ class ReleaseImmutabilityTests(unittest.TestCase):
         self.assertIn('cp "$thick" dist/', workflow)
         self.assertNotIn('cp "$dual" dist/', workflow)
 
+    def test_ci_checks_independent_profile_versions(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+        self.assertIn('dpkg-deb -f "$dual" Version)" = "$dual_version"', workflow)
+        self.assertIn('dpkg-deb -f "$thick" Version)" = "$thick_version"', workflow)
+        self.assertIn('dpkg --compare-versions "$thick_version" ge "$dual_version"', workflow)
+
 
 if __name__ == '__main__':
     unittest.main()
+
