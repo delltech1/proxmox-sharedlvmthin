@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import patch
 
 PATH = pathlib.Path(__file__).resolve().parents[2] / 'usr/libexec/pve-sharedlvmthin/sharedlvmthin-registration-cluster-inventory.py'
 SPEC = importlib.util.spec_from_file_location('registration_cluster_inventory', PATH)
@@ -28,6 +29,121 @@ def evidence():
 
 
 class ClusterInventoryTests(unittest.TestCase):
+    def test_optional_pve_parser_failure_keeps_ordinary_discovery_without_resume(self):
+        members, observations, storage = evidence()
+        status = [{'type': 'cluster', 'quorate': 1, 'nodes': 2},
+                  *[{'type': 'node', 'name': n, 'ip': a, 'online': 1} for n, a in members.items()]]
+        with patch.object(MOD, 'run_json', side_effect=[status, storage, status]), \
+             patch.object(MOD, 'complete_pve_storage_config', side_effect=MOD.InventoryError('unavailable')), \
+             patch.object(MOD.pathlib.Path, 'read_bytes', return_value=b'stable'), \
+             patch.object(MOD.pathlib.Path, 'read_text', return_value='helper'), \
+             patch.object(MOD.os, 'uname', return_value=SimpleNamespace(nodename='node-a'), create=True), \
+             patch.object(MOD, 'verify_peer_matrix', return_value={('node-a','node-b'),('node-b','node-a')}), \
+             patch.object(MOD, 'collect_node_observations', return_value=observations):
+            report, raw = MOD.collect_evidence(include_full_config=True)
+        self.assertEqual(report['result'], 'OBSERVED')
+        self.assertIsNone(raw['pve_parsed_config'])
+        with patch.object(MOD, 'collect_evidence', return_value=(report, raw)), \
+             patch.object(MOD, 'complete_pve_storage_config', side_effect=AssertionError('must not load')):
+            result = MOD.collect()
+        self.assertEqual(result, report)
+        self.assertTrue(all('resume_preview' not in row for row in result['candidates']))
+
+    def test_optional_resume_enrichment_exception_cannot_leak_partial_preview(self):
+        members, observations, storage = evidence()
+        storage.append({'storage': 'eager', 'type': 'sharedlvmthin', 'slt-vgname': 'test-vg',
+                        'slt-allocation-mode': 'thick-generations'})
+        report = MOD.correlate(members, observations, storage)
+        raw = {'config_after': __import__('hashlib').sha256(b'stable').hexdigest(),
+               'started_monotonic': time.monotonic()}
+        def broken(copy_report, *_):
+            copy_report['candidates'][0]['resume_preview'] = {'authority': 'bad'}
+            raise ValueError('failed after partial enrichment')
+        with patch.object(MOD, 'collect_evidence', return_value=(report, raw)), \
+             patch.object(MOD.pathlib.Path, 'read_bytes', return_value=b'stable'), \
+             patch.object(MOD, 'complete_pve_storage_config', return_value=[]), \
+             patch.object(MOD, '_load_file_module', return_value=object()), \
+             patch.object(MOD, 'add_resume_previews', side_effect=broken):
+            result = MOD.collect()
+        self.assertEqual(result, report)
+        self.assertNotIn('resume_preview', result['candidates'][0])
+
+    def test_optional_parser_failure_with_partial_alias_preserves_discovery(self):
+        members, observations, storage = evidence()
+        storage.append({'storage': 'eager', 'type': 'sharedlvmthin', 'slt-vgname': 'test-vg',
+                        'slt-allocation-mode': 'thick-generations'})
+        report = MOD.correlate(members, observations, storage)
+        raw = {'config_after': __import__('hashlib').sha256(b'stable').hexdigest(),
+               'started_monotonic': time.monotonic()}
+        with patch.object(MOD, 'collect_evidence', return_value=(report, raw)), \
+             patch.object(MOD.pathlib.Path, 'read_bytes', return_value=b'stable'), \
+             patch.object(MOD, 'complete_pve_storage_config', side_effect=MOD.InventoryError('unavailable')):
+            result = MOD.collect()
+        self.assertEqual(result, report)
+        self.assertNotIn('resume_preview', result['candidates'][0])
+
+    def test_resume_observation_config_change_always_blocks_even_on_parser_error(self):
+        members, observations, storage = evidence()
+        storage.append({'storage': 'eager', 'type': 'sharedlvmthin', 'slt-vgname': 'test-vg',
+                        'slt-allocation-mode': 'thick-generations'})
+        report = MOD.correlate(members, observations, storage)
+        for values, parser_failure in (([b'changed'], False), ([b'stable', b'changed'], False),
+                                       ([b'stable', b'changed'], True), ([b'stable', OSError('unreadable')], True)):
+            with self.subTest(values=values, parser_failure=parser_failure):
+                raw = {'config_after': __import__('hashlib').sha256(b'stable').hexdigest(),
+                       'started_monotonic': time.monotonic()}
+                parser = MOD.InventoryError('unavailable') if parser_failure else None
+                with patch.object(MOD, 'collect_evidence', return_value=(report, raw)), \
+                     patch.object(MOD.pathlib.Path, 'read_bytes', side_effect=values), \
+                     patch.object(MOD, 'complete_pve_storage_config', return_value=[], side_effect=parser), \
+                     patch.object(MOD, '_load_file_module', return_value=object()), \
+                     patch.object(MOD, 'add_resume_previews', return_value=copy.deepcopy(report)):
+                    with self.assertRaises((MOD.InventoryError, OSError)):
+                        MOD.collect()
+
+    def test_slow_discovery_skips_optional_parser_and_preserves_report(self):
+        members, observations, storage = evidence()
+        storage.append({'storage': 'eager', 'type': 'sharedlvmthin', 'slt-vgname': 'test-vg',
+                        'slt-allocation-mode': 'thick-generations'})
+        report = MOD.correlate(members, observations, storage)
+        raw = {'started_monotonic': time.monotonic() - MOD.RESUME_LATEST_START_SEC - 1}
+        with patch.object(MOD, 'collect_evidence', return_value=(report, raw)), \
+             patch.object(MOD, 'complete_pve_storage_config', side_effect=AssertionError('must be skipped')):
+            self.assertEqual(MOD.collect(), report)
+        self.assertNotIn('resume_preview', report['candidates'][0])
+
+    def test_optional_parser_is_bounded_to_ten_seconds(self):
+        members, observations, storage = evidence()
+        storage.append({'storage': 'eager', 'type': 'sharedlvmthin', 'slt-vgname': 'test-vg',
+                        'slt-allocation-mode': 'thick-generations'})
+        report = MOD.correlate(members, observations, storage)
+        raw = {'config_after': __import__('hashlib').sha256(b'stable').hexdigest(),
+               'started_monotonic': time.monotonic()}
+        with patch.object(MOD, 'collect_evidence', return_value=(report, raw)), \
+             patch.object(MOD.pathlib.Path, 'read_bytes', return_value=b'stable'), \
+             patch.object(MOD, 'complete_pve_storage_config', side_effect=MOD.InventoryError('timeout')) as parser:
+            self.assertEqual(MOD.collect(), report)
+        parser.assert_called_once_with(timeout=10)
+
+    def test_late_optional_result_is_dropped_without_affecting_discovery(self):
+        members, observations, storage = evidence()
+        storage.append({'storage': 'eager', 'type': 'sharedlvmthin', 'slt-vgname': 'test-vg',
+                        'slt-allocation-mode': 'thick-generations'})
+        report = MOD.correlate(members, observations, storage)
+        raw = {'config_after': __import__('hashlib').sha256(b'stable').hexdigest(),
+               'started_monotonic': time.monotonic()}
+        def enrich(copy_report, *_):
+            copy_report['candidates'][0]['resume_preview'] = {'synthetic': True}
+            return copy_report
+        with patch.object(MOD, 'collect_evidence', return_value=(report, raw)), \
+             patch.object(MOD.pathlib.Path, 'read_bytes', return_value=b'stable'), \
+             patch.object(MOD, 'complete_pve_storage_config', return_value=[]), \
+             patch.object(MOD, '_load_file_module', return_value=object()), \
+             patch.object(MOD, 'add_resume_previews', side_effect=enrich), \
+             patch.object(MOD, 'RESUME_FINISH_CUTOFF_SEC', 0):
+            result = MOD.collect()
+        self.assertEqual(result, report)
+        self.assertNotIn('resume_preview', result['candidates'][0])
     @unittest.skipUnless(os.name == 'posix', 'POSIX pipe selector implementation')
     def test_run_json_bounds_both_pipes_and_timeout(self):
         child = lambda source: [sys.executable, '-c', source]

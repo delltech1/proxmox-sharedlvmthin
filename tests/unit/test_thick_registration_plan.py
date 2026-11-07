@@ -26,6 +26,57 @@ def sample():
 
 
 class RegistrationPlanTests(unittest.TestCase):
+    def resume_fixture(self):
+        request, evidence = sample()
+        request = {'nodes': request['nodes'], 'vg': request['vg'], 'missing_id': 'demo-lazy'}
+        evidence['config_snapshot_complete'] = True
+        evidence['vg']['empty_on_all_nodes'] = True
+        for peer in evidence['node_evidence'].values(): peer['empty_vg'] = True
+        config = {'storage': 'demo-eager', 'type': 'sharedlvmthin', 'shared': 1, 'content': 'images,rootdir',
+                  'nodes': 'node-a,node-b', 'slt-vgname': 'test_vg',
+                  'slt-vg-layout': 'isolated', 'slt-allocation-mode': 'thick-generations',
+                  'slt-expected-vg-uuid': evidence['vg']['vg_uuid'],
+                  'slt-expected-pv-uuid': evidence['vg']['pv_uuid'],
+                  'slt-expected-wwid': evidence['vg']['wwid'], 'slt-vg-reserve-percent': 0,
+                  'slt-expected-min-paths': 2}
+        evidence['storage_definitions'] = [{'id': 'demo-eager', 'type': 'sharedlvmthin',
+              'vg_name': 'test_vg', 'vg_uuid': config['slt-expected-vg-uuid'],
+              'pv_uuid': config['slt-expected-pv-uuid'], 'wwid': config['slt-expected-wwid'],
+              'allocation_mode': 'thick-generations'}]
+        return request, evidence, config
+
+    def test_resume_empty_vg_copies_explicit_policy_and_retains_implicit_defaults(self):
+        request, evidence, config = self.resume_fixture()
+        config.update({'slt-vg-reserve-gib': 3, 'slt-lock-timeout': 46,
+                       'slt-tg-command-deadline-sec': 45})
+        result = MOD.resume_plan(request, evidence, config)
+        self.assertEqual(result['authority'], 'NONE')
+        self.assertEqual(result['missing_mode'], 'lazy')
+        cfg = result['api_parameters']
+        self.assertEqual(cfg['slt-vg-reserve-gib'], 3)
+        self.assertEqual(cfg['slt-lock-timeout'], 46)
+        self.assertEqual(cfg['slt-tg-command-deadline-sec'], 45)
+        self.assertNotIn('slt-lock-yield-ms', cfg)
+        self.assertEqual(cfg['slt-expected-min-paths'], 2)
+        self.assertIn('--slt-allocation-mode thick-generations-lazy', result['cli'])
+
+    def test_resume_refuses_each_ambiguous_or_changed_condition(self):
+        cases = [('config_snapshot_complete', False), ('empty_on_all_nodes', False),
+                 ('empty_vg', False), ('wwid', '3600000000000002'), ('shared', 0),
+                 ('nodes', 'node-a'), ('content', 'images'), ('slt-expected-min-paths', 3), ('slt-vg-layout', 'mixed'),
+                 ('slt-allocation-mode', 'thin'), ('slt-lock-timeout', True),
+                 ('slt-unknown-policy', 1), ('duplicate', True)]
+        for key, value in cases:
+            request, evidence, config = self.resume_fixture()
+            if key == 'config_snapshot_complete': evidence[key] = value
+            elif key == 'empty_on_all_nodes': evidence['vg'][key] = value
+            elif key == 'empty_vg': evidence['node_evidence']['node-a'][key] = value
+            elif key == 'wwid': config['slt-expected-wwid'] = value
+            elif key == 'duplicate': evidence['storage_definitions'].append(copy.deepcopy(evidence['storage_definitions'][0]))
+            else: config[key] = value
+            with self.subTest(key=key), self.assertRaises(MOD.Refusal):
+                MOD.resume_plan(request, evidence, config)
+
     def test_minimum_path_count_obeys_plugin_option_limit(self):
         request, evidence = sample()
         for peer in evidence['node_evidence'].values():

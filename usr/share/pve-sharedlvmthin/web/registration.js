@@ -9,6 +9,46 @@
   const observedVgName = /^(?!\.{1,2}(?![\s\S]))[A-Za-z0-9_.+][A-Za-z0-9_.+-]{0,127}(?![\s\S])/;
   const lvmUuid = /^[A-Za-z0-9]{6}(?:-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}(?![\s\S])/;
   const wwidPattern = /^[0-9a-fA-F]{16,128}(?![\s\S])/;
+  const resumeOptions=new Set(['--slt-vgname','--slt-allocation-mode','--slt-vg-layout','--slt-expected-vg-uuid','--slt-expected-pv-uuid','--slt-expected-wwid','--slt-expected-min-paths','--slt-vg-reserve-percent','--slt-vg-reserve-gib','--slt-lock-timeout','--slt-lock-yield-ms','--slt-bridge-admission-timeout','--slt-tg-close-timeout','--slt-tg-command-deadline-sec','--slt-tg-max-active-materializations','--slt-tg-region-size-kib','--slt-tg-hydration-timeout','--slt-tg-hydration-threshold','--slt-tg-hydration-batch-size','--slt-mutation-admission-timeout','--slt-tg-online-materialization','--nodes','--shared','--content']);
+  const resumeNumeric={'slt-expected-min-paths':[1,64],'slt-vg-reserve-percent':[0,50],'slt-vg-reserve-gib':[0,1048576],'slt-lock-timeout':[10,86400],'slt-lock-yield-ms':[0,5000],'slt-bridge-admission-timeout':[60,604800],'slt-tg-close-timeout':[1,300],'slt-tg-command-deadline-sec':[5,600],'slt-tg-max-active-materializations':[1,64],'slt-tg-region-size-kib':[64,4096],'slt-tg-hydration-timeout':[60,86400],'slt-tg-hydration-threshold':[1,256],'slt-tg-hydration-batch-size':[1,256],'slt-mutation-admission-timeout':[10,86400]};
+  function verifiedResumeArgv(candidate,alias,nodes){
+    const p=candidate.resume_preview;
+    if(!p||p.existing_id!==alias.id||typeof p.placeholder!=='string'||!safeName.test(p.placeholder)||!Array.isArray(p.argv)||p.argv.length<6||(p.argv.length-4)%2!==0||
+       p.argv[0]!=='pvesm'||p.argv[1]!=='add'||p.argv[2]!=='sharedlvmthin'||p.argv[3]!==p.placeholder)return null;
+    const flags=new Map();
+    for(let i=4;i<p.argv.length;i+=2){const key=p.argv[i],value=p.argv[i+1];
+      if(!resumeOptions.has(key)||flags.has(key)||typeof value!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_.:,+-]*(?![\s\S])/.test(value))return null;
+      flags.set(key,value);
+    }
+    const cfg=p.existing_config;
+    if(!cfg||typeof cfg!=='object'||Array.isArray(cfg)||!(/^[0-9a-f]{64}(?![\s\S])/.test(p.config_sha256))||
+       cfg.storage!==alias.id||cfg.type!=='sharedlvmthin'||![1,'1'].includes(cfg.shared)||
+       (cfg.disable!==undefined&&![0,'0'].includes(cfg.disable))||cfg['slt-vgname']!==candidate.name||
+       cfg['slt-vg-layout']!=='isolated'||cfg['slt-allocation-mode']!==alias.allocation_mode||
+       cfg['slt-expected-vg-uuid']!==candidate.vg_uuid||cfg['slt-expected-pv-uuid']!==candidate.pv_uuid||
+       cfg['slt-expected-wwid']!==candidate.wwid||typeof cfg.nodes!=='string'||
+       cfg.nodes.split(',').sort().join(',')!==[...nodes].sort().join(',')||
+       typeof cfg.content!=='string'||cfg.content.split(',').sort().join(',')!=='images,rootdir')return null;
+    const cfgAllowed=new Set(['storage','type','shared','disable','nodes','content','slt-vgname','slt-vg-layout','slt-allocation-mode','slt-expected-vg-uuid','slt-expected-pv-uuid','slt-expected-wwid','slt-tg-online-materialization',...Object.keys(resumeNumeric)]);
+    if(Object.keys(cfg).some(k=>!cfgAllowed.has(k)))return null;
+    for(const [key,[min,max]] of Object.entries(resumeNumeric)){
+      const present=Object.prototype.hasOwnProperty.call(cfg,key), flag=flags.get('--'+key);
+      if(!present){if(flag!==undefined)return null;continue}
+      const raw=String(cfg[key]);
+      if(!/^(?:0|[1-9][0-9]*)(?![\s\S])/.test(raw)||!Number.isSafeInteger(Number(raw))||Number(raw)<min||Number(raw)>max||flag!==raw)return null;
+    }
+    const online=cfg['slt-tg-online-materialization'];
+    if(online===undefined?flags.has('--slt-tg-online-materialization'):
+       (!['asynchronous','synchronous'].includes(online)||flags.get('--slt-tg-online-materialization')!==online))return null;
+    const mode=alias.allocation_mode==='thick-generations'?'lazy':'eager';
+    const expectedMode=mode==='lazy'?'thick-generations-lazy':'thick-generations';
+    if(p.missing_mode!==mode||flags.get('--slt-allocation-mode')!==expectedMode||flags.get('--slt-vg-layout')!=='isolated'||
+       flags.get('--slt-vgname')!==candidate.name||flags.get('--slt-expected-vg-uuid')!==candidate.vg_uuid||
+       flags.get('--slt-expected-pv-uuid')!==candidate.pv_uuid||flags.get('--slt-expected-wwid')!==candidate.wwid||
+       flags.get('--nodes')!==[...nodes].sort().join(',')||flags.get('--shared')!=='1'||
+       flags.get('--content')!=='images,rootdir'||(!flags.has('--slt-vg-reserve-percent')&&!flags.has('--slt-vg-reserve-gib')))return null;
+    return [...p.argv];
+  }
   const messages = {
     en: { title:'Build Thick registration commands', intro:'Discover the cluster read-only, or run the helper on a trusted node and paste its JSON report below. The dashboard does not register storage.', paste:'Paste discovery report', load:'Read report', vg:'Dedicated VG', mode:'Allocation mode', both:'Eager and Lazy', eager:'Eager only', lazy:'Lazy only', eagerId:'Eager storage ID', lazyId:'Lazy storage ID', reserve:'VG reserve (%)', generate:'Generate commands', copy:'Copy CLI Command', copied:'Copied', invalid:'Invalid, incomplete or conflicting report. Run discovery again and review the result.', noCandidates:'No empty, unregistered VG passed all checks. Existing or unverified LVs require review.', warning:'Imported reports are not authenticated by this page and can become stale. Verify the source and identities, re-run discovery before use, and review every command. Never use the reserve as a guarantee that a snapshot will fit.', once:'Observation and command generation do not guarantee VG identity or emptiness at execution time. Before each command, recheck the VG identity and state on every node, including whether it is empty and existing storage definitions. Eager and Lazy registrations are not atomic. If the result is partial or uncertain, inspect it; do not retry blindly.', helper:'sharedlvmthin-register-preview --discover-only', detected:'Detected in imported report', configured:'Already configured in imported report', unverified:'Unverified — review required', transport:'Observed transport', paths:'Healthy paths' },
     de: { title:'Thick-Registrierungsbefehle erstellen', intro:'Untersuchen Sie den Cluster lesend oder führen Sie den Helfer auf einem vertrauenswürdigen Knoten aus und fügen Sie den JSON-Bericht unten ein. Das Dashboard registriert keinen Storage.', paste:'Discovery-Bericht einfügen', load:'Bericht lesen', vg:'Dedizierte VG', mode:'Allokationsmodus', both:'Eager und Lazy', eager:'Nur Eager', lazy:'Nur Lazy', eagerId:'Eager-Storage-ID', lazyId:'Lazy-Storage-ID', reserve:'VG-Reserve (%)', generate:'Befehle erstellen', copy:'CLI-Befehl kopieren', copied:'Kopiert', invalid:'Ungültiger, unvollständiger oder widersprüchlicher Bericht. Discovery erneut ausführen und Ergebnis prüfen.', noCandidates:'Keine leere, unregistrierte VG hat alle Prüfungen bestanden. Vorhandene oder ungeprüfte LVs müssen geprüft werden.', warning:'Importierte Berichte werden von dieser Seite nicht authentifiziert und können veralten. Quelle und Identitäten prüfen, Discovery vor der Verwendung erneut ausführen und jeden Befehl kontrollieren. Eine Reserve garantiert keinen erfolgreichen Snapshot.', once:'Beobachtung und Befehlserzeugung garantieren weder VG-Identität noch Leere zum Ausführungszeitpunkt. Vor jedem Befehl VG-Identität und Zustand auf allen Knoten erneut prüfen, einschließlich Leere und vorhandener Storage-Definitionen. Eager- und Lazy-Registrierung sind nicht atomar. Bei teilweisem oder unklarem Ergebnis prüfen; nicht blind wiederholen.', helper:'sharedlvmthin-register-preview --discover-only', detected:'Im importierten Bericht erkannt', configured:'Im importierten Bericht bereits konfiguriert', unverified:'Nicht verifiziert — Prüfung erforderlich', transport:'Beobachteter Transport', paths:'Gesunde Pfade' }
@@ -119,6 +159,30 @@
               }
             }
             row.append(el('span',language==='de'?'Prüfen Sie die vollständige Konfiguration und den Zustand. Ein gefundener Eintrag bestätigt keine erfolgreiche Registrierung oder Kompatibilität.':'Inspect the full configuration and health. A found entry does not prove successful registration or compatibility.'));
+            // This command only requests a fresh read-only CLI preview. It
+            // does not reuse the browser report as proof or create storage.
+            const alias=c.existing_aliases.length===1?c.existing_aliases[0]:null;
+            if(c.empty_on_all_nodes===true&&c.canonical_mapper_on_all_nodes===true&&safeName.test(c.name)&&
+               alias&&typeof alias==='object'&&typeof alias.id==='string'&&safeName.test(alias.id)&&alias.type==='sharedlvmthin'&&
+               ['thick-generations','thick-generations-lazy'].includes(alias.allocation_mode)){
+              const label=el('label',language==='de'?'Name des fehlenden Storage':'Missing storage ID');
+              const field=el('input');field.type='text';field.id=`registration-resume-${alias.id}`;label.htmlFor=field.id;field.value=alias.allocation_mode==='thick-generations'?'bastrix-lazy':'bastrix-eager';
+              const template=source==='collector'?verifiedResumeArgv(c,alias,data.nodes):null;
+              const make=el('button',template?(language==='de'?'Fehlenden Alias vorbereiten':'Prepare missing alias'):(language==='de'?'Fortsetzungsprüfung vorbereiten':'Prepare continuation check'));make.type='button';
+              const out=el('pre');out.className='guide-command';out.hidden=true;
+              const copy=el('button',template?(language==='de'?'CLI-Befehl kopieren — fehlender Alias':'Copy CLI Command — missing alias'):(language==='de'?'Fortsetzungsprüfung kopieren':'Copy continuation check'));copy.type='button';copy.hidden=true;
+              const resumeGeneration=discoveryGeneration;
+              let command='';const clear=()=>{window.BastrixGuide.invalidateClipboard();command='';out.textContent='';out.hidden=true;copy.hidden=true;};
+              field.addEventListener('input',clear);
+              const fresh=()=>resumeGeneration===discoveryGeneration&&Date.now()-observed<=300000&&observed<=Date.now()+120000&&row.isConnected;
+              make.onclick=()=>{clear();if(!fresh()||!safeName.test(field.value)||data.storage_definitions.some(d=>d.id===field.value)){state.textContent=t.invalid;return}
+                if(template){const argv=[...template];argv[3]=field.value;command=argv.join(' ')}
+                else command=`sharedlvmthin-register-preview --vg ${c.name} --resume-existing ${alias.id} --missing-id ${field.value}`;
+                out.textContent=command;out.hidden=false;copy.hidden=false;
+                state.textContent=template?(language==='de'?'Nur Vorschau – vor der Ausführung erneut prüfen.':'Preview only — recheck before execution.'):(language==='de'?'Nur lesende Prüfung: Der Helfer prüft erneut und erstellt höchstens eine Vorschau.':'Read-only check: the helper rechecks and produces a preview only.');};
+              copy.onclick=()=>window.BastrixGuide.copyCommand(command,copy,state,undefined,fresh);
+              row.append(el('span',language==='de'?'Bei einer unterbrochenen Registrierung kann der Helfer die vollständige Konfiguration erneut prüfen. Das gilt nur für leere VGs.':'After partial registration, the helper can recheck the full configuration. This is limited to empty VGs.'),label,field,make,out,copy);
+            }
           }
           if(c.paths_by_node&&typeof c.paths_by_node==='object')row.append(el('span',`${t.paths}: ${Object.entries(c.paths_by_node).map(([n,p])=>`${n} ${p}`).join(', ')}`));
           if(c.transport_by_node&&typeof c.transport_by_node==='object')row.append(el('span',`${t.transport}: ${Object.entries(c.transport_by_node).map(([n,p])=>`${n} ${p}`).join(', ')}`));

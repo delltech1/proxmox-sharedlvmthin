@@ -19,16 +19,20 @@ def load(name, filename):
     return module
 
 
-def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner, collected):
+def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner, collected, *, resume_existing=None):
     if not isinstance(observed, dict) or observed.get('result') != 'OBSERVED':
         raise ValueError('cluster discovery did not complete')
     if not isinstance(observed.get('candidates'), list) or any(not isinstance(c, dict) for c in observed['candidates']):
         raise ValueError('cluster candidate list invalid')
-    candidates = [c for c in observed['candidates']
-                  if c.get('name') == vg_name and c.get('eligible_for_new_vg_registration') is True]
+    candidates = [c for c in observed['candidates'] if c.get('name') == vg_name and
+                  (resume_existing is not None or c.get('eligible_for_new_vg_registration') is True)]
     if len(candidates) != 1:
         raise ValueError('VG is not uniquely eligible; existing or unverified LVs need review')
     c = candidates[0]
+    if resume_existing is not None and (not isinstance(c.get('existing_aliases'), list)
+            or len(c['existing_aliases']) != 1 or not isinstance(c['existing_aliases'][0], dict)
+            or c['existing_aliases'][0].get('id') != resume_existing):
+        raise ValueError('exactly one matching existing alias is required')
     if c.get('empty_on_all_nodes') is not True or c.get('canonical_mapper_on_all_nodes') is not True:
         raise ValueError('VG emptiness or canonical mapper not proven')
     nodes = observed['nodes']
@@ -66,14 +70,67 @@ def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner, collected
             raise ValueError('node VG identity mismatch')
         peers[node] = {key: row[key] for key in identity}
         peers[node].update(complete=True, peer_ssh_verified=True,
-                           mapper_verified=row['canonical_mapper_present'], healthy_paths=row.get('healthy_paths'))
+                           mapper_verified=row['canonical_mapper_present'], healthy_paths=row.get('healthy_paths'),
+                           empty_vg=row.get('empty_vg'))
     vg = {**identity, 'name': vg_name, 'pv_count': 1, 'dedicated': True,
+          'empty_on_all_nodes': c['empty_on_all_nodes'],
           'free_bytes': c['free_bytes']}
     evidence = {'quorate': True, 'inventory_complete': True, 'members': {n: True for n in nodes},
                 'vg': vg, 'node_evidence': peers,
                 'storage_definitions': observed['storage_definitions']}
+    if resume_existing is not None:
+        if len(aliases) != 1:
+            raise ValueError('exactly one missing ID must be requested')
+        parsed = collected.get('pve_parsed_config')
+        if not isinstance(parsed, list) or any(not isinstance(row, dict) for row in parsed):
+            raise ValueError('PVE parsed configuration is unavailable')
+        definitions = observed['storage_definitions']
+        parsed_ids = [row.get('storage') for row in parsed]
+        if any(not isinstance(sid, str) for sid in parsed_ids) or len(set(parsed_ids)) != len(parsed_ids) \
+                or set(parsed_ids) != {row.get('id') for row in definitions}:
+            raise ValueError('PVE parser and storage API differ in definition coverage')
+        parsed_by_id = {row['storage']: row for row in parsed}
+        for definition in definitions:
+            original = parsed_by_id[definition['id']]
+            if original.get('type') != definition.get('type'):
+                raise ValueError('PVE parser and storage API disagree on type')
+            kind = original.get('type')
+            if kind in ('sharedlvmthin', 'lvm', 'lvmthin'):
+                parsed_vg = original.get('slt-vgname') if kind == 'sharedlvmthin' else original.get('vgname')
+                if parsed_vg != definition.get('vg_name'):
+                    raise ValueError('PVE parser and storage API disagree on VG')
+        rows = [row for row in parsed if row.get('storage') == resume_existing]
+        if len(rows) != 1:
+            raise ValueError('PVE parsed alias is missing or ambiguous')
+        config = normalize_pve_config(rows[0])
+        evidence['config_snapshot_complete'] = True
+        result = planner.resume_plan({'nodes': nodes, 'vg': vg_name,
+                                      'missing_id': next(iter(aliases.values()))}, evidence, config)
+        if result['missing_mode'] not in aliases:
+            raise ValueError('requested mode is not the missing alias mode')
+        return result
     return planner.plan({'nodes': nodes, 'vg': vg_name, 'aliases': aliases,
                          'reserve_percent': reserve}, evidence)
+
+
+def normalize_pve_config(row):
+    """Normalize only PVE parser's documented scalar/node/content shapes."""
+    if not isinstance(row, dict):
+        raise ValueError('PVE parsed alias is invalid')
+    output = dict(row)
+    for key in ('nodes', 'content'):
+        value = output.get(key)
+        if isinstance(value, dict):
+            if not value or any(not isinstance(k, str) or v not in (1, '1', True) for k, v in value.items()):
+                raise ValueError('PVE ' + key + ' is ambiguous')
+            output[key] = ','.join(sorted(value))
+        elif isinstance(value, list):
+            if not value or any(not isinstance(v, str) for v in value) or len(value) != len(set(value)):
+                raise ValueError('PVE ' + key + ' is ambiguous')
+            output[key] = ','.join(sorted(value))
+        elif not isinstance(value, str):
+            raise ValueError('explicit PVE ' + key + ' is required')
+    return output
 
 
 def require_unchanged_selection(before, after, vg_name):
@@ -108,15 +165,44 @@ def main():
     parser.add_argument('--lazy-id', default='bastrix-lazy')
     parser.add_argument('--reserve-percent', type=int, default=0)
     parser.add_argument('--discover-only', action='store_true', help='print read-only inventory as JSON')
+    parser.add_argument('--resume-existing', help='existing Thick alias to review after partial registration')
+    parser.add_argument('--missing-id', help='new storage ID to propose for the missing mode')
     args = parser.parse_args()
+    if bool(args.resume_existing) != bool(args.missing_id) or \
+            (args.resume_existing and (not args.vg or args.discover_only)):
+        parser.error('--resume-existing and --missing-id require --vg and cannot be used with --discover-only')
     if os.geteuid() != 0:
         parser.exit(1, 'Run as root on a participating Proxmox VE node.\n')
     try:
         inventory = load('registration_inventory', 'sharedlvmthin-registration-cluster-inventory.py')
         planner = load('registration_plan', 'sharedlvmthin-registration-plan.py')
-        observed, initial_evidence = inventory.collect_evidence()
+        observed, initial_evidence = (inventory.collect_evidence(include_full_config=True)
+                                      if args.resume_existing else inventory.collect_evidence())
         if args.discover_only:
             print(json.dumps(observed, sort_keys=True, indent=2))
+            return 0
+        if args.resume_existing:
+            inventory.validate_evidence(observed, initial_evidence)
+            refreshed, collected = inventory.collect_evidence(include_full_config=True)
+            inventory.validate_evidence(refreshed, collected)
+            if initial_evidence.get('config_before') != collected.get('config_before') or \
+                    initial_evidence.get('members_before') != collected.get('members_before') or \
+                    initial_evidence.get('pve_parsed_config') != collected.get('pve_parsed_config'):
+                raise ValueError('PVE configuration or membership changed; rerun discovery')
+            require_unchanged_selection(observed, refreshed, args.vg)
+            parsed = collected.get('pve_parsed_config')
+            matches = [row for row in parsed if isinstance(row, dict) and row.get('storage') == args.resume_existing] \
+                if isinstance(parsed, list) else []
+            if len(matches) != 1:
+                raise ValueError('existing PVE alias is unavailable or ambiguous')
+            mode = matches[0].get('slt-allocation-mode')
+            eager = args.missing_id if mode == 'thick-generations-lazy' else None
+            lazy = args.missing_id if mode == 'thick-generations' else None
+            result = build_plan(refreshed, args.vg, eager, lazy, 0, planner, collected,
+                                resume_existing=args.resume_existing)
+            print('PREVIEW ONLY: no storage was registered or modified.')
+            print(result['warning'])
+            print(result['cli'])
             return 0
         eligible = [c for c in observed['candidates'] if c['eligible_for_new_vg_registration']]
         if not eligible:

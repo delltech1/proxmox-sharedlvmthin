@@ -16,6 +16,10 @@ storage definition itself.
 - The registration preview checks observed identities, existing definitions
   and eligible dedicated Thick VGs, and prepares Eager and Lazy commands.
   Observations can become stale; copying a command does not execute it.
+- After a partial Eager/Lazy registration, a fresh read-only discovery can
+  suggest the missing alias when the VG is empty and the existing alias has a
+  complete, compatible identity and policy. The administrator reviews and
+  runs the command; incomplete or conflicting configurations are refused.
 - Peer SSH checks use strict host-key verification and fresh connections.
   The guide explains fingerprint verification and recovery when trust or
   connectivity is unavailable. SSH failure is not proof of fencing.

@@ -211,6 +211,23 @@ const server=http.createServer((req,res)=>{
     assert(sshCheck.includes('ControlPath=none'));
     assert(sshCheck.includes('/etc/pve/nodes/node-b/ssh_known_hosts'));
     assert(sshCheck.includes('root@192.0.2.11 /usr/bin/true'));
+    // Editing the SSH destination while an earlier clipboard write is pending
+    // must hide the command and warn even when that old write succeeds later.
+    await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:value=>new Promise(resolve=>{window.__finishAddressCopy=()=>{window.__copied=value;resolve()}})},configurable:true}));
+    await page.getByRole('button',{name:'Copied',exact:true}).click();
+    await page.locator('#guide-peer-address').fill('192.0.2.12');
+    assert(!(await page.getByRole('button',{name:'Copy SSH check'}).isVisible()));
+    assert((await page.locator('#guide-clipboard-warning').innerText()).includes('may contain an old command'));
+    await page.evaluate(()=>window.__finishAddressCopy());
+    await page.waitForTimeout(0);
+    assert.strictEqual(await page.evaluate(()=>window.__copied),sshCheck);
+    assert(!(await page.getByRole('button',{name:'Copy SSH check'}).isVisible()));
+    await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async value=>{window.__copied=value}},configurable:true}));
+    await page.locator('#guide-peer-address').fill('192.0.2.11');
+    await page.getByRole('button',{name:'Build SSH check'}).click();
+    await page.getByRole('button',{name:'Copy SSH check'}).click();
+    assert.strictEqual(await page.evaluate(()=>window.__copied),sshCheck);
+    assert(!(await page.locator('#guide-clipboard-warning').isVisible()));
     await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:value=>new Promise(resolve=>{window.__finishHelperCopy=()=>{window.__copied=value;resolve()}})},configurable:true}));
     await page.getByRole('button',{name:'Copied',exact:true}).click();
     await page.selectOption('#pageLanguage','de');
@@ -426,6 +443,73 @@ const server=http.createServer((req,res)=>{
       await page.locator('#registration-inventory').fill(JSON.stringify(fixture));await page.getByRole('button',{name:'Read report',exact:true}).click();
       assert.strictEqual(await page.locator('.registration-fields').isVisible(),count===64,`path count ${count}`);
     }
+    // A successful first Eager registration followed by an unknown or failed
+    // Lazy registration must not turn into an unverified Lazy-only command.
+    const partialPair=JSON.parse(JSON.stringify(observation));
+    partialPair.observed_at=new Date().toISOString();
+    partialPair.storage_definitions.push({id:'bastrix-eager',type:'sharedlvmthin',vg_name:'example_vg'});
+    partialPair.candidates[0].existing_aliases=[{id:'bastrix-eager',type:'sharedlvmthin',allocation_mode:'thick-generations'}];
+    partialPair.candidates[0].eligible_for_new_vg_registration=false;
+    await page.locator('#registration-inventory').fill(JSON.stringify(partialPair));
+    await page.getByRole('button',{name:'Read report',exact:true}).click();
+    assert((await page.locator('.registration-summary').innerText()).includes('bastrix-eager · sharedlvmthin · thick-generations'));
+    assert.strictEqual(await page.locator('.registration-fields').isVisible(),false,'existing Eager alias must not allow Lazy-only generation');
+    assert.strictEqual(await page.locator('.registration-commands button').count(),0);
+    await page.getByRole('button',{name:'Copy inspection command — bastrix-eager',exact:true}).click();
+    assert.strictEqual(await page.evaluate(()=>window.__copied),'pvesh get /storage/bastrix-eager --output-format json');
+    await page.getByRole('button',{name:'Prepare continuation check',exact:true}).click();
+    await page.getByRole('button',{name:'Copy continuation check',exact:true}).click();
+    assert.strictEqual(await page.evaluate(()=>window.__copied),
+      'sharedlvmthin-register-preview --vg example_vg --resume-existing bastrix-eager --missing-id bastrix-lazy');
+    assert(!String(await page.evaluate(()=>window.__copied)).includes('pvesm add'));
+    const missingId=page.getByLabel('Missing storage ID');
+    await missingId.fill('lazy;bad');
+    await page.getByRole('button',{name:'Prepare continuation check',exact:true}).click();
+    assert(!(await page.getByRole('button',{name:'Copy continuation check',exact:true}).isVisible()));
+    // Only the live collector can provide a server-validated partial preview.
+    partialPair.candidates[0].resume_preview={existing_id:'bastrix-eager',missing_mode:'lazy',placeholder:'slt-resume-preview',config_sha256:'a'.repeat(64),existing_config:{storage:'bastrix-eager',type:'sharedlvmthin',shared:1,nodes:'node-a,node-b',content:'images,rootdir','slt-vgname':'example_vg','slt-vg-layout':'isolated','slt-allocation-mode':'thick-generations','slt-expected-vg-uuid':partialPair.candidates[0].vg_uuid,'slt-expected-pv-uuid':partialPair.candidates[0].pv_uuid,'slt-expected-wwid':partialPair.candidates[0].wwid,'slt-expected-min-paths':1,'slt-vg-reserve-percent':0},argv:[
+      'pvesm','add','sharedlvmthin','slt-resume-preview','--slt-vgname','example_vg',
+      '--slt-allocation-mode','thick-generations-lazy','--slt-vg-layout','isolated',
+      '--slt-expected-vg-uuid',partialPair.candidates[0].vg_uuid,'--slt-expected-pv-uuid',partialPair.candidates[0].pv_uuid,
+      '--slt-expected-wwid',partialPair.candidates[0].wwid,'--slt-expected-min-paths','1',
+      '--slt-vg-reserve-percent','0','--nodes','node-a,node-b','--shared','1','--content','images,rootdir']};
+    inventoryFixture=partialPair;
+    await page.getByRole('button',{name:'Discover cluster',exact:true}).click();
+    await page.getByRole('button',{name:'Prepare missing alias',exact:true}).click();
+    await page.getByRole('button',{name:'Copy CLI Command — missing alias',exact:true}).click();
+    const missingCommand=await page.evaluate(()=>window.__copied);
+    assert(missingCommand.startsWith('pvesm add sharedlvmthin bastrix-lazy '));
+    assert(missingCommand.includes('--slt-allocation-mode thick-generations-lazy'));
+    await page.getByLabel('Missing storage ID').fill('lazy;bad');
+    await page.getByRole('button',{name:'Prepare missing alias',exact:true}).click();
+    assert(!(await page.getByRole('button',{name:'Copy CLI Command — missing alias',exact:true}).isVisible()));
+    // Tampered server argv is not a command template, even on the live path.
+    const unsafePreview=JSON.parse(JSON.stringify(partialPair));
+    unsafePreview.candidates[0].resume_preview.argv.push('--unknown-option','value');
+    inventoryFixture=unsafePreview;
+    await page.getByRole('button',{name:'Discover cluster',exact:true}).click();
+    assert.strictEqual(await page.getByRole('button',{name:'Prepare missing alias',exact:true}).count(),0);
+    for(const [key,value] of [['--slt-lock-timeout','9'],['--slt-tg-region-size-kib','4097'],['--slt-vg-reserve-percent','51'],['--slt-expected-min-paths','65']]){
+      const bad=JSON.parse(JSON.stringify(partialPair));const argv=bad.candidates[0].resume_preview.argv;
+      const index=argv.indexOf(key);if(index<0)argv.push(key,value);else argv[index+1]=value;
+      bad.candidates[0].resume_preview.existing_config[key.slice(2)]=Number(value);
+      inventoryFixture=bad;await page.getByRole('button',{name:'Discover cluster',exact:true}).click();
+      assert.strictEqual(await page.getByRole('button',{name:'Prepare missing alias',exact:true}).count(),0,`unsafe ${key}=${value}`);
+    }
+    const wrongConfig=JSON.parse(JSON.stringify(partialPair));
+    wrongConfig.candidates[0].resume_preview.existing_config['slt-vg-reserve-percent']=5;
+    inventoryFixture=wrongConfig;await page.getByRole('button',{name:'Discover cluster',exact:true}).click();
+    assert.strictEqual(await page.getByRole('button',{name:'Prepare missing alias',exact:true}).count(),0,'argv/config parity mismatch');
+    const newlinePreview=JSON.parse(JSON.stringify(partialPair));
+    newlinePreview.candidates[0].resume_preview.argv.push('--slt-lock-timeout','30\n');
+    inventoryFixture=newlinePreview;
+    await page.getByRole('button',{name:'Discover cluster',exact:true}).click();
+    assert.strictEqual(await page.getByRole('button',{name:'Prepare missing alias',exact:true}).count(),0);
+    inventoryFixture=null;
+    partialPair.candidates[0].empty_on_all_nodes=false;
+    await page.locator('#registration-inventory').fill(JSON.stringify(partialPair));
+    await page.getByRole('button',{name:'Read report',exact:true}).click();
+    assert.strictEqual(await page.getByRole('button',{name:'Prepare continuation check',exact:true}).count(),0);
     observation.storage_definitions.push({id:'other',type:'lvm',vg_name:'example_vg'});
     observation.candidates[0].existing_aliases=[{id:'other',type:'lvm',allocation_mode:null}];
     observation.candidates[0].eligible_for_new_vg_registration=false;

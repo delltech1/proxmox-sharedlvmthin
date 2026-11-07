@@ -5,7 +5,10 @@ No device initialization, login, multipath changes, or storage writes. This
 is evidence for a preview only; it is not fencing or a mutation authorization.
 """
 import ipaddress
+import copy
 import hashlib
+import importlib.machinery
+import importlib.util
 import datetime
 import json
 import os
@@ -26,6 +29,12 @@ class InventoryError(ValueError):
 
 MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 64 * 1024
+# Leave at least 30 seconds of the socket's 180-second budget after the
+# optional 10-second parser. Slow ordinary observations skip enrichment.
+RESUME_LATEST_START_SEC = 140
+RESUME_PARSER_TIMEOUT_SEC = 10
+RESUME_FINISH_CUTOFF_SEC = 160
+RESUME_MAX_CANDIDATES = 64
 
 
 def require_fresh_duration(elapsed):
@@ -336,7 +345,33 @@ def collect_node_observations(members, local, helper, runner=None):
         pool.shutdown(wait=True, cancel_futures=True)
 
 
-def collect_evidence():
+def complete_pve_storage_config(*, timeout=30):
+    """Read PVE's parsed SharedLvmThin configuration; never mutate it."""
+    code = r'''
+        use strict; use warnings; use PVE::Cluster; use PVE::Storage; use JSON::PP;
+        PVE::Cluster::cfs_update();
+        my $cfg = PVE::Storage::config();
+        die "invalid PVE storage configuration" unless ref($cfg) eq 'HASH' && ref($cfg->{ids}) eq 'HASH';
+        my @rows;
+        for my $sid (sort keys %{$cfg->{ids}}) {
+            my $row = $cfg->{ids}->{$sid};
+            die "ambiguous PVE storage definition" unless ref($row) eq 'HASH';
+            die "storage type unavailable" unless defined($row->{type}) && !ref($row->{type});
+            if ($row->{type} eq 'sharedlvmthin') {
+                push @rows, { %$row, storage => $sid };
+            } else {
+                push @rows, { storage => $sid, type => $row->{type}, vgname => $row->{vgname} };
+            }
+        }
+        print JSON::PP->new->canonical(1)->encode(\@rows);
+    '''
+    rows = run_json(['/usr/bin/perl', '-I/usr/share/perl5', '-e', code], timeout=timeout)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise InventoryError('PVE parsed configuration unavailable')
+    return rows
+
+
+def collect_evidence(*, include_full_config=False):
     # observed_at must describe the oldest possible evidence, not the end of
     # a potentially slow multi-node scan. A slow scan is not a failed disk.
     started = datetime.datetime.now(datetime.timezone.utc)
@@ -346,6 +381,14 @@ def collect_evidence():
     config_path = pathlib.Path('/etc/pve/storage.cfg')
     before_config = hashlib.sha256(config_path.read_bytes()).hexdigest()
     storage = run_json(['/usr/bin/pvesh', 'get', '/storage', '--output-format', 'json'])
+    parsed_config = None
+    if include_full_config:
+        try:
+            parsed_config = complete_pve_storage_config()
+        except (InventoryError, OSError, ValueError):
+            # Additional resume evidence is optional; normal discovery keeps
+            # its original checks and no resume preview can be issued.
+            parsed_config = None
     helper = pathlib.Path(__file__).with_name('sharedlvmthin-registration-local-inventory.py').read_text(encoding='utf-8')
     local = os.uname().nodename.split('.')[0]
     if local not in members:
@@ -363,16 +406,95 @@ def collect_evidence():
     require_fresh_duration(elapsed)
     result = correlate(members, observations, storage)
     result['observed_at'] = started.isoformat()
-    return result, {'members_before': members, 'members_after': current_members,
+    evidence = {'members_before': members, 'members_after': current_members,
                     'status_before': status_before, 'status_after': status_after,
                     'config_before': before_config, 'config_after': after_config,
                     'peer_pairs': peer_pairs, 'observations': observations, 'storage': storage,
                     'started_monotonic': started_monotonic, 'started_wall_utc': started.isoformat()}
+    if include_full_config:
+        evidence['pve_parsed_config'] = parsed_config
+    return result, evidence
+
+
+def add_resume_previews(report, evidence, planner, preview):
+    """Attach safe empty-VG-only previews; never dispatch a command."""
+    validate_evidence(report, evidence)
+    existing_ids = {row.get('id') for row in report['storage_definitions']}
+    placeholder = 'slt-resume-preview'
+    while placeholder in existing_ids:
+        placeholder += 'x'
+        if len(placeholder) > 63:
+            raise InventoryError('unable to select preview placeholder')
+    for candidate in report['candidates']:
+        if time.monotonic() - evidence['started_monotonic'] >= RESUME_FINISH_CUTOFF_SEC:
+            raise InventoryError('optional resume preview budget expired')
+        aliases = candidate.get('existing_aliases')
+        if candidate.get('empty_on_all_nodes') is not True or not isinstance(aliases, list) \
+                or len(aliases) != 1 or not isinstance(aliases[0], dict):
+            continue
+        alias = aliases[0]
+        mode = alias.get('allocation_mode')
+        eager = placeholder if mode == 'thick-generations-lazy' else None
+        lazy = placeholder if mode == 'thick-generations' else None
+        if eager is None and lazy is None:
+            continue
+        try:
+            result = preview.build_plan(report, candidate['name'], eager, lazy, 0,
+                                        planner, evidence, resume_existing=alias['id'])
+        except (ValueError, KeyError, TypeError):
+            continue
+        candidate['resume_preview'] = {'existing_id': result['existing_id'],
+            'missing_mode': result['missing_mode'], 'placeholder': placeholder,
+            'argv': result['argv'], 'config_sha256': evidence['config_after'],
+            'existing_config': result['existing_config']}
+    return report
+
+
+def _load_file_module(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    if spec is None:
+        raise InventoryError('registration planner unavailable')
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def collect():
-    # Preserve the existing public, read-only report schema.
-    return collect_evidence()[0]
+    report, evidence = collect_evidence()
+    # Keep ordinary discovery available if optional parser/preview work fails.
+    # Build on a copy so an exception cannot leak a partial preview.
+    needs_resume = any(c.get('empty_on_all_nodes') is True and
+                       isinstance(c.get('existing_aliases'), list) and
+                       len(c['existing_aliases']) == 1 and
+                       isinstance(c['existing_aliases'][0], dict) and
+                       c['existing_aliases'][0].get('type') == 'sharedlvmthin' and
+                       c['existing_aliases'][0].get('allocation_mode') in
+                       ('thick-generations', 'thick-generations-lazy')
+                       for c in report['candidates'])
+    elapsed = time.monotonic() - evidence['started_monotonic']
+    if needs_resume and elapsed < RESUME_LATEST_START_SEC and len(report['candidates']) <= RESUME_MAX_CANDIDATES:
+        path = pathlib.Path('/etc/pve/storage.cfg')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != evidence['config_after']:
+            raise InventoryError('storage configuration changed before resume observation')
+        enriched = None
+        try:
+            evidence['pve_parsed_config'] = complete_pve_storage_config(timeout=RESUME_PARSER_TIMEOUT_SEC)
+            planner = _load_file_module('registration_resume_planner',
+                pathlib.Path(__file__).with_name('sharedlvmthin-registration-plan.py'))
+            preview = _load_file_module('registration_resume_cli',
+                pathlib.Path(__file__).resolve().parents[2] / 'sbin/sharedlvmthin-register-preview')
+            enriched = add_resume_previews(copy.deepcopy(report), evidence, planner, preview)
+        except Exception:
+            # The parser or optional planner may fail without suppressing the
+            # ordinary report, but only if configuration is still provably stable.
+            enriched = None
+        if hashlib.sha256(path.read_bytes()).hexdigest() != evidence['config_after']:
+            raise InventoryError('storage configuration changed during resume observation')
+        if enriched is not None and time.monotonic() - evidence['started_monotonic'] < RESUME_FINISH_CUTOFF_SEC:
+            report = enriched
+    require_fresh_duration(time.monotonic() - evidence['started_monotonic'])
+    return report
 
 
 if __name__ == '__main__':

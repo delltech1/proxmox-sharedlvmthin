@@ -46,6 +46,90 @@ class PreviewTests(unittest.TestCase):
                 'peer_pairs': {(a, b) for a in nodes for b in nodes if a != b},
                 'observations': {n: {'result': 'OBSERVED', 'candidates': [{**row, 'healthy_paths': c['paths_by_node'][n]}]} for n in nodes}}
 
+    def partial(self):
+        report = self.inventory()
+        c = report['candidates'][0]
+        definition = {'id': 'present-eager', 'type': 'sharedlvmthin', 'vg_name': 'labvg',
+                      'vg_uuid': c['vg_uuid'], 'pv_uuid': c['pv_uuid'], 'wwid': c['wwid'],
+                      'allocation_mode': 'thick-generations'}
+        report['storage_definitions'] = [definition]
+        c['existing_aliases'] = [copy.deepcopy(definition)]
+        c['eligible_for_new_vg_registration'] = False
+        raw = self.collected(report)
+        raw['pve_parsed_config'] = [{'storage': 'present-eager', 'type': 'sharedlvmthin',
+            'shared': 1, 'nodes': {'node-a': 1, 'node-b': 1},
+            'content': {'images': 1, 'rootdir': 1}, 'slt-vgname': 'labvg',
+            'slt-allocation-mode': 'thick-generations', 'slt-vg-layout': 'isolated',
+            'slt-expected-vg-uuid': c['vg_uuid'], 'slt-expected-pv-uuid': c['pv_uuid'],
+            'slt-expected-wwid': c['wwid'], 'slt-vg-reserve-percent': 0,
+            'slt-expected-min-paths': 1, 'slt-lock-timeout': 42}]
+        return report, raw
+
+    def test_resume_uses_complete_parsed_policy_and_preserves_defaults(self):
+        report, raw = self.partial()
+        result = HELPER.build_plan(report, 'labvg', None, 'missing-lazy', 0,
+                                   PLANNER, raw, resume_existing='present-eager')
+        self.assertEqual(result['authority'], 'NONE')
+        self.assertEqual(result['missing_mode'], 'lazy')
+        self.assertEqual(result['api_parameters']['slt-lock-timeout'], 42)
+        self.assertNotIn('slt-lock-yield-ms', result['api_parameters'])
+        self.assertIn('--slt-allocation-mode thick-generations-lazy', result['cli'])
+
+    def test_resume_refuses_missing_parser_alias_conflicts_and_nonempty_peer(self):
+        for change in ('parser', 'scope', 'alias', 'nonempty', 'mode', 'unknown', 'policy'):
+            report, raw = self.partial()
+            if change == 'parser': del raw['pve_parsed_config']
+            elif change == 'scope': raw['pve_parsed_config'][0]['nodes'] = {'node-a': 1}
+            elif change == 'alias': report['candidates'][0]['existing_aliases'].append({'id': 'other'})
+            elif change == 'nonempty': raw['observations']['node-b']['candidates'][0]['empty_vg'] = False
+            elif change == 'mode': raw['pve_parsed_config'][0]['slt-allocation-mode'] = 'thin'
+            elif change == 'unknown': raw['pve_parsed_config'][0]['slt-unreviewed'] = 'x'
+            else: raw['pve_parsed_config'][0]['slt-expected-min-paths'] = 2
+            with self.subTest(change=change), self.assertRaises((ValueError, PLANNER.Refusal)):
+                HELPER.build_plan(report, 'labvg', None, 'missing-lazy', 0,
+                                  PLANNER, raw, resume_existing='present-eager')
+
+    def test_resume_cli_uses_two_identical_observations_without_writes(self):
+        report, raw = self.partial()
+        inventory = SimpleNamespace(collect_evidence=lambda **kwargs: (copy.deepcopy(report), copy.deepcopy(raw)),
+                                    validate_evidence=lambda *_: None)
+        out = StringIO()
+        with patch.object(HELPER.os, 'geteuid', return_value=0, create=True), \
+             patch.object(HELPER.sys, 'argv', ['helper', '--vg', 'labvg',
+                          '--resume-existing', 'present-eager', '--missing-id', 'missing-lazy']), \
+             patch.object(HELPER, 'load', side_effect=[inventory, PLANNER]), \
+             patch.object(HELPER.sys, 'stdout', out):
+            self.assertEqual(HELPER.main(), 0)
+        self.assertIn('PREVIEW ONLY', out.getvalue())
+        self.assertEqual(out.getvalue().count('pvesm add sharedlvmthin'), 1)
+
+    def test_live_collector_attaches_one_partial_preview_from_validated_evidence(self):
+        source, raw = self.partial()
+        members = {'node-a': '192.0.2.1', 'node-b': '192.0.2.2'}
+        status = [{'type': 'cluster', 'quorate': 1, 'nodes': 2},
+                  *[{'type': 'node', 'name': n, 'ip': a, 'online': 1} for n, a in members.items()]]
+        for obs in raw['observations'].values():
+            obs['candidates'][0].update(free_bytes=900000, transport='iscsi')
+        storage = [{k: v for k, v in raw['pve_parsed_config'][0].items()
+                    if k not in ('nodes', 'content')}]
+        report = INVENTORY.correlate(members, raw['observations'], storage)
+        raw.update(members_before=members, members_after=members, status_before=status,
+                   status_after=copy.deepcopy(status), config_before='a'*64, config_after='a'*64,
+                   storage=storage, started_monotonic=time.monotonic(), started_wall_utc=report['observed_at'])
+        result = INVENTORY.add_resume_previews(report, raw, PLANNER, HELPER)
+        preview = result['candidates'][0]['resume_preview']
+        self.assertEqual(preview['existing_id'], 'present-eager')
+        self.assertEqual(preview['missing_mode'], 'lazy')
+        self.assertEqual(preview['argv'][:4], ['pvesm', 'add', 'sharedlvmthin', preview['placeholder']])
+        self.assertIn('--slt-lock-timeout', preview['argv'])
+
+    def test_collector_never_previews_conflicting_parsed_config(self):
+        report, raw = self.partial()
+        raw['pve_parsed_config'][0]['slt-expected-vg-uuid'] = 'FEDCBA-abcd-1234-ABCD-5678-aaaa-123456'
+        with self.assertRaises(ValueError):
+            HELPER.build_plan(report, 'labvg', None, 'missing-lazy', 0,
+                              PLANNER, raw, resume_existing='present-eager')
+
     def test_build_plan_preserves_identity_and_observed_minimum_paths(self):
         inventory = self.inventory()
         result = HELPER.build_plan(inventory, 'labvg', 'eager', 'lazy', 5, PLANNER, self.collected(inventory))
