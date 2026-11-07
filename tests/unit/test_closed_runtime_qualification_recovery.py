@@ -116,6 +116,18 @@ class ClosedRuntimeQualificationRecoveryTests(unittest.TestCase):
         self.assertEqual(self.store, before)
         self.assertEqual(self.store[self.m.RUNTIME_RELEASE]['qualified'], 'UNQUALIFIED')
 
+    def test_closed_unqualified_receipt_cannot_use_normal_boot_requalification(self):
+        # A completed closed package transition is not a previously qualified
+        # release, even when the host later boots with unchanged package bytes.
+        before = copy.deepcopy(self.store)
+        with mock.patch.object(self.m.pathlib.Path, 'exists', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'previous qualified runtime receipt'):
+                self.m.command_requalify_boot(types.SimpleNamespace(previous_boot_id=None))
+        self.assertEqual(self.store, before)
+        self.assertEqual(self.store[self.m.RUNTIME_QUALIFICATION]['state'],
+                         'PACKAGE_SETTLED_RUNTIME_CLOSED')
+        self.assertEqual(self.store[self.m.RUNTIME_RELEASE]['qualified'], 'UNQUALIFIED')
+
 
 if __name__ == '__main__':
     unittest.main()

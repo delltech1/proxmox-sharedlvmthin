@@ -2,6 +2,8 @@ import copy
 import importlib.util
 import pathlib
 import subprocess
+import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -63,6 +65,17 @@ class LocalInventoryTests(unittest.TestCase):
         self.assertFalse(entry['empty_vg'])
         self.assertEqual(entry['existing_lv_count'], 1)
 
+    def test_unattributable_lv_never_proves_vg_empty(self):
+        for row in ({'lv_name': 'existing'}, {'vg_name': '', 'lv_name': 'existing'},
+                    {'vg_name': '  ', 'lv_name': 'existing'}, {'vg_name': None, 'lv_name': 'existing'},
+                    {'vg_name': 'vg'}, {'vg_name': 'vg', 'lv_name': ''},
+                    {'vg_name': 'vg', 'lv_name': 17}):
+            with self.subTest(row=row):
+                data = fixtures()
+                data['/sbin/lvs']['report'][0]['lv'] = [row]
+                with self.assertRaises(MOD.InventoryError):
+                    read_fixture(data)
+
     def test_multipv_and_unmatched_mapper_are_not_candidates(self):
         data = fixtures()
         data['/sbin/vgs']['report'][0]['vg'][0]['pv_count'] = '2'
@@ -82,9 +95,22 @@ class LocalInventoryTests(unittest.TestCase):
         command = ['/sbin/vgs', '--readonly', '--nohints', '--reportformat', 'json']
         for error in (subprocess.CalledProcessError(2, command),
                       subprocess.TimeoutExpired(command, 30)):
-            with self.subTest(error=type(error).__name__), patch.object(MOD.subprocess, 'run', side_effect=error):
+            with self.subTest(error=type(error).__name__), patch.object(MOD.subprocess, 'Popen', side_effect=error):
                 with self.assertRaises(MOD.InventoryError):
                     MOD.run_json(command)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'pipe selector requires Linux')
+    def test_run_json_bounds_both_streams_and_deadline(self):
+        python = sys.executable
+        self.assertEqual(MOD.run_json([python, '-c', 'print("{\\\"ok\\\": true}")'], timeout=3), {'ok': True})
+        for stream, limit in (('stdout', MOD.MAX_STDOUT_BYTES), ('stderr', MOD.MAX_STDERR_BYTES)):
+            code = 'import sys; sys.' + stream + '.write("x" * ' + str(limit + 1) + '); sys.' + stream + '.flush()'
+            with self.subTest(stream=stream), self.assertRaises(MOD.InventoryError):
+                MOD.run_json([python, '-c', code], timeout=3)
+        started = time.monotonic()
+        with self.assertRaises(MOD.InventoryError):
+            MOD.run_json([python, '-c', 'import time; time.sleep(10)'], timeout=0.2)
+        self.assertLess(time.monotonic() - started, 3)
 
     def test_invalid_numeric_and_path_rows_refuse(self):
         data = fixtures()

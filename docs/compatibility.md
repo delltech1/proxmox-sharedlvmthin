@@ -44,9 +44,12 @@ artifact completed its recorded API 15 package, rolling-reboot, recovery and
 targeted three-mode SAN gates; that evidence does not qualify an unlisted
 tuple or operation. API 14 retains source/control-plane compatibility, but the
 RC5.89 candidate has an exact API14 package/control-plane tuple marked
-`RETEST_REQUIRED`; it does not claim an API14 SAN dataplane. Its runtime
-qualification gate must therefore remain fail-closed as
-`RETEST_REQUIRED`. PVE 8 and earlier are
+`RETEST_REQUIRED`; it does not claim an API14 SAN dataplane. This status is a
+qualification boundary, not an automatic block on every storage operation:
+the runtime identity gate can accept a listed `RETEST_REQUIRED` tuple after
+its separate checks, while the operation matrix below is advisory. A runtime
+receipt marked `QUALIFIED` identifies that checked runtime; it does not prove
+that the outstanding operation tests passed. PVE 8 and earlier are
 unsupported. A package being installable or compiling is not evidence that a
 new PVE package tuple is compatible with storage mutations.
 

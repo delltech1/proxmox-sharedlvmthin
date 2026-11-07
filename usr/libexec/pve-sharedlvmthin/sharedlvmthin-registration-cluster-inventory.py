@@ -5,30 +5,103 @@ No device initialization, login, multipath changes, or storage writes. This
 is evidence for a preview only; it is not fencing or a mutation authorization.
 """
 import ipaddress
+import copy
 import hashlib
+import importlib.machinery
+import importlib.util
 import datetime
 import json
 import os
 import pathlib
 import re
+import selectors
 import shlex
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class InventoryError(ValueError):
     pass
 
 
+MAX_STDOUT_BYTES = 1024 * 1024
+MAX_STDERR_BYTES = 64 * 1024
+# Leave at least 30 seconds of the socket's 180-second budget after the
+# optional 10-second parser. Slow ordinary observations skip enrichment.
+RESUME_LATEST_START_SEC = 140
+RESUME_PARSER_TIMEOUT_SEC = 10
+RESUME_FINISH_CUTOFF_SEC = 160
+RESUME_MAX_CANDIDATES = 64
+
+
+def require_fresh_duration(elapsed):
+    if type(elapsed) not in (float, int) or not 0 <= elapsed < 300:
+        raise InventoryError('cluster discovery exceeded observation freshness limit; retry when ready')
+
+
 def run_json(args, timeout=45):
+    """Bound both pipes and wait time; timeout does not fence remote children."""
+    if type(timeout) not in (int, float) or not 0 < timeout <= 300:
+        raise InventoryError('read-only inventory command failed')
+    process = None
     try:
-        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, check=True, timeout=timeout,
-                                env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
-        return json.loads(result.stdout)
-    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        deadline = time.monotonic() + timeout
+        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, bufsize=0,
+                                   env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
+        buffers = {'stdout': bytearray(), 'stderr': bytearray()}
+        limits = {'stdout': MAX_STDOUT_BYTES, 'stderr': MAX_STDERR_BYTES}
+        with selectors.DefaultSelector() as selector:
+            for name in ('stdout', 'stderr'):
+                stream = getattr(process, name)
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, name)
+            while selector.get_map() or process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                if not selector.get_map():
+                    # Pipes may close before the child exits.
+                    try:
+                        process.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        raise
+                    break
+                for key, _ in selector.select(min(remaining, 0.25)):
+                    try:
+                        chunk = os.read(key.fileobj.fileno(), min(65536, limits[key.data] - len(buffers[key.data]) + 1))
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                    else:
+                        buffers[key.data].extend(chunk)
+                        if len(buffers[key.data]) > limits[key.data]:
+                            raise InventoryError('read-only inventory output exceeded limit')
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, args)
+        return json.loads(buffers['stdout'].decode('utf-8'))
+    except (subprocess.SubprocessError, OSError, UnicodeError, ValueError) as exc:
         raise InventoryError('read-only inventory command failed') from exc
+    finally:
+        if process is not None:
+            # Terminate only the direct child. Remote descendants may continue;
+            # timeout is not proof of their exit and is never mutation authority.
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 def members_from_status(status):
@@ -58,7 +131,7 @@ def members_from_status(status):
 def correlate(members, observations, storage):
     if not isinstance(storage, list) or any(not isinstance(x, dict) for x in storage):
         raise InventoryError('PVE storage inventory incomplete')
-    if set(observations) != set(members):
+    if not isinstance(members, dict) or not isinstance(observations, dict) or set(observations) != set(members):
         raise InventoryError('node observations incomplete')
     definitions = []
     seen = set()
@@ -82,6 +155,15 @@ def correlate(members, observations, storage):
         candidates = result['candidates']
         if any(not isinstance(c, dict) for c in candidates):
             raise InventoryError('invalid node candidate')
+        # Check every observed candidate, including ones absent on peers.
+        # Otherwise filtering to common VGs could hide a conflicting identity.
+        for field in ('vg_uuid', 'pv_uuid', 'wwid'):
+            values = [c.get(field) for c in candidates]
+            if any(not isinstance(v, str) or not v for v in values):
+                raise InventoryError('candidate identity incomplete')
+            normalized = [v.casefold() if field in ('vg_uuid', 'wwid') else v for v in values]
+            if len(set(normalized)) != len(normalized):
+                raise InventoryError('conflicting candidate ' + field)
         ids = [c.get('vg_uuid') for c in candidates]
         if any(not isinstance(v, str) or not v for v in ids) or len(ids) != len(set(ids)):
             raise InventoryError('ambiguous VG identities')
@@ -104,7 +186,12 @@ def correlate(members, observations, storage):
                for row in observations_for_vg.values()):
             unverified_reasons.add('healthy_paths_unverified')
             continue
-        aliases = [d for d in definitions if d.get('vg_name') == ref['name'] or d.get('vg_uuid') == uuid]
+        def same_fold(left, right):
+            return isinstance(left, str) and isinstance(right, str) and left.casefold() == right.casefold()
+        aliases = [d for d in definitions if d.get('vg_name') == ref['name']
+                   or same_fold(d.get('vg_uuid'), uuid)
+                   or (isinstance(d.get('pv_uuid'), str) and d['pv_uuid'] == ref.get('pv_uuid'))
+                   or same_fold(d.get('wwid'), ref.get('wwid'))]
         # Existing LVs need the plugin's full provenance validation; do not
         # treat their names or tags alone as evidence of exclusive ownership.
         empty_everywhere = all(row.get('empty_vg') is True for row in observations_for_vg.values())
@@ -126,6 +213,7 @@ def correlate(members, observations, storage):
 
 def ssh_command(node, address):
     return ['/usr/bin/ssh', '-n', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+            '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
             '-o', 'ConnectTimeout=5', '-o', 'HostKeyAlias=' + node,
             '-o', 'UserKnownHostsFile=/etc/pve/nodes/' + node + '/ssh_known_hosts',
             '-o', 'GlobalKnownHostsFile=none', 'root@' + address]
@@ -136,53 +224,277 @@ def require_stable_snapshot(before_members, after_members, before_config, after_
         raise InventoryError('cluster membership or storage configuration changed during discovery')
 
 
+def validate_evidence(report, evidence):
+    """Recheck in-process observations; not authentication or a storage lock."""
+    if not isinstance(report, dict) or not isinstance(evidence, dict):
+        raise InventoryError('cluster evidence unavailable')
+    before = members_from_status(evidence.get('status_before'))
+    after = members_from_status(evidence.get('status_after'))
+    if before != evidence.get('members_before') or after != evidence.get('members_after'):
+        raise InventoryError('cluster status evidence inconsistent')
+    if not isinstance(evidence.get('config_before'), str) or not re.fullmatch(r'[0-9a-f]{64}', evidence['config_before']):
+        raise InventoryError('storage configuration digest unavailable')
+    require_stable_snapshot(before, after, evidence.get('config_before'), evidence.get('config_after'))
+    started = evidence.get('started_monotonic')
+    if type(started) not in (int, float):
+        raise InventoryError('observation start unavailable')
+    require_fresh_duration(time.monotonic() - started)
+    wall_start = evidence.get('started_wall_utc')
+    if not isinstance(wall_start, str) or report.get('observed_at') != wall_start:
+        raise InventoryError('observation timestamp inconsistent')
+    try:
+        parsed_start = datetime.datetime.fromisoformat(wall_start)
+        if parsed_start.utcoffset() != datetime.timedelta(0) or parsed_start.isoformat() != wall_start:
+            raise ValueError('timestamp is not canonical UTC')
+    except ValueError as exc:
+        raise InventoryError('observation timestamp invalid') from exc
+    expected_pairs = {(a, b) for a in before for b in before if a != b}
+    if evidence.get('peer_pairs') != expected_pairs:
+        raise InventoryError('peer SSH coverage incomplete')
+    reconstructed = correlate(before, evidence.get('observations'), evidence.get('storage'))
+    if {k: v for k, v in report.items() if k != 'observed_at'} != {k: v for k, v in reconstructed.items() if k != 'observed_at'}:
+        raise InventoryError('cluster report differs from observed evidence')
+
+
 def verify_peer_matrix(members, local, runner=subprocess.run):
     """Prove current PVE-pinned SSH authentication from each peer to each peer.
 
     This does not prove future reachability, authorization to mutate, or
     fencing. Bounded concurrency avoids a burst of sessions on large clusters.
     """
+    if not isinstance(members, dict) or not members or local not in members:
+        raise InventoryError('invalid peer SSH matrix membership')
+    failed = threading.Event()
     def probe(pair):
+        if failed.is_set():
+            raise InventoryError('peer SSH inventory cancelled after failure')
         source, target = pair
         target_cmd = ssh_command(target, members[target]) + ['/usr/bin/true']
         args = target_cmd if source == local else ssh_command(source, members[source]) + [shlex.join(target_cmd)]
         try:
-            result = runner(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, timeout=20, check=False,
-                            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
-        except (subprocess.SubprocessError, OSError) as exc:
+            try:
+                result = runner(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=20, check=False,
+                                env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
+            except (subprocess.SubprocessError, OSError) as exc:
+                raise InventoryError('peer SSH proof unavailable') from exc
+            if result.returncode != 0:
+                raise InventoryError('peer SSH proof failed for ' + source + ' to ' + target)
+        except Exception as exc:
+            failed.set()
+            if isinstance(exc, InventoryError):
+                raise
             raise InventoryError('peer SSH proof unavailable') from exc
-        if result.returncode != 0:
-            raise InventoryError('peer SSH proof failed for ' + source + ' to ' + target)
+        except BaseException:
+            failed.set()
+            raise
     pairs = [(a, b) for a in sorted(members) for b in sorted(members) if a != b]
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(probe, pairs))
+    pool = ThreadPoolExecutor(max_workers=4)
+    futures = []
+    try:
+        futures = [pool.submit(probe, pair) for pair in pairs]
+        for future in as_completed(futures):
+            future.result()
+    except BaseException:
+        failed.set()
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    return frozenset(pairs)
 
 
-def collect():
-    members = members_from_status(run_json(['/usr/bin/pvesh', 'get', '/cluster/status', '--output-format', 'json']))
-    config_path = pathlib.Path('/etc/pve/storage.cfg')
-    before_config = hashlib.sha256(config_path.read_bytes()).hexdigest()
-    storage = run_json(['/usr/bin/pvesh', 'get', '/storage', '--output-format', 'json'])
-    helper = pathlib.Path(__file__).with_name('sharedlvmthin-registration-local-inventory.py').read_text(encoding='utf-8')
-    local = os.uname().nodename.split('.')[0]
-    if local not in members:
-        raise InventoryError('local node missing from cluster membership')
-    verify_peer_matrix(members, local)
-    observations = {}
-    for node, address in sorted(members.items()):
+def collect_node_observations(members, local, helper, runner=None):
+    """Read each participating node once, with bounded parallel fan-out."""
+    if not isinstance(members, dict) or not members or local not in members or not isinstance(helper, str) or not helper:
+        raise InventoryError('invalid node inventory request')
+    if runner is None:
+        runner = run_json
+    failed = threading.Event()
+    def probe(item):
+        if failed.is_set():
+            raise InventoryError('node inventory cancelled after a peer failure')
+        node, address = item
         if node == local:
             args = ['/usr/bin/python3', '-c', helper]
         else:
             args = ssh_command(node, address) + ['/usr/bin/python3 -c ' + shlex.quote(helper)]
-        observations[node] = run_json(args, timeout=60)
+        try:
+            return node, runner(args, timeout=60)
+        except BaseException:
+            failed.set()
+            raise
+    # Observe failures as they complete, instead of waiting behind an earlier
+    # slow node in lexical order. Cancel work that has not started; already
+    # running read-only probes must finish or reach their own timeout.
+    pool = ThreadPoolExecutor(max_workers=4)
+    futures = []
+    try:
+        futures = [pool.submit(probe, item) for item in sorted(members.items())]
+        results = {}
+        for future in as_completed(futures):
+            node, value = future.result()
+            results[node] = value
+        return {node: results[node] for node in sorted(results)}
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def complete_pve_storage_config(*, timeout=30):
+    """Read PVE's parsed SharedLvmThin configuration; never mutate it."""
+    code = r'''
+        use strict; use warnings; use PVE::Cluster; use PVE::Storage; use JSON::PP;
+        PVE::Cluster::cfs_update();
+        my $cfg = PVE::Storage::config();
+        die "invalid PVE storage configuration" unless ref($cfg) eq 'HASH' && ref($cfg->{ids}) eq 'HASH';
+        my @rows;
+        for my $sid (sort keys %{$cfg->{ids}}) {
+            my $row = $cfg->{ids}->{$sid};
+            die "ambiguous PVE storage definition" unless ref($row) eq 'HASH';
+            die "storage type unavailable" unless defined($row->{type}) && !ref($row->{type});
+            if ($row->{type} eq 'sharedlvmthin') {
+                push @rows, { %$row, storage => $sid };
+            } else {
+                push @rows, { storage => $sid, type => $row->{type}, vgname => $row->{vgname} };
+            }
+        }
+        print JSON::PP->new->canonical(1)->encode(\@rows);
+    '''
+    rows = run_json(['/usr/bin/perl', '-I/usr/share/perl5', '-e', code], timeout=timeout)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise InventoryError('PVE parsed configuration unavailable')
+    return rows
+
+
+def collect_evidence(*, include_full_config=False):
+    # observed_at must describe the oldest possible evidence, not the end of
+    # a potentially slow multi-node scan. A slow scan is not a failed disk.
+    started = datetime.datetime.now(datetime.timezone.utc)
+    started_monotonic = time.monotonic()
+    status_before = run_json(['/usr/bin/pvesh', 'get', '/cluster/status', '--output-format', 'json'])
+    members = members_from_status(status_before)
+    config_path = pathlib.Path('/etc/pve/storage.cfg')
+    before_config = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    storage = run_json(['/usr/bin/pvesh', 'get', '/storage', '--output-format', 'json'])
+    parsed_config = None
+    if include_full_config:
+        try:
+            parsed_config = complete_pve_storage_config()
+        except (InventoryError, OSError, ValueError):
+            # Additional resume evidence is optional; normal discovery keeps
+            # its original checks and no resume preview can be issued.
+            parsed_config = None
+    helper = pathlib.Path(__file__).with_name('sharedlvmthin-registration-local-inventory.py').read_text(encoding='utf-8')
+    local = os.uname().nodename.split('.')[0]
+    if local not in members:
+        raise InventoryError('local node missing from cluster membership')
+    peer_pairs = verify_peer_matrix(members, local)
+    observations = collect_node_observations(members, local, helper)
     # A concurrent config or membership change invalidates the preview.
-    current_members = members_from_status(run_json(['/usr/bin/pvesh', 'get', '/cluster/status', '--output-format', 'json']))
+    status_after = run_json(['/usr/bin/pvesh', 'get', '/cluster/status', '--output-format', 'json'])
+    current_members = members_from_status(status_after)
     after_config = hashlib.sha256(config_path.read_bytes()).hexdigest()
     if not isinstance(storage, list) or any(not isinstance(row, dict) for row in storage):
         raise InventoryError('PVE storage inventory incomplete')
     require_stable_snapshot(members, current_members, before_config, after_config)
-    return correlate(members, observations, storage)
+    elapsed = time.monotonic() - started_monotonic
+    require_fresh_duration(elapsed)
+    result = correlate(members, observations, storage)
+    result['observed_at'] = started.isoformat()
+    evidence = {'members_before': members, 'members_after': current_members,
+                    'status_before': status_before, 'status_after': status_after,
+                    'config_before': before_config, 'config_after': after_config,
+                    'peer_pairs': peer_pairs, 'observations': observations, 'storage': storage,
+                    'started_monotonic': started_monotonic, 'started_wall_utc': started.isoformat()}
+    if include_full_config:
+        evidence['pve_parsed_config'] = parsed_config
+    return result, evidence
+
+
+def add_resume_previews(report, evidence, planner, preview):
+    """Attach safe empty-VG-only previews; never dispatch a command."""
+    validate_evidence(report, evidence)
+    existing_ids = {row.get('id') for row in report['storage_definitions']}
+    placeholder = 'slt-resume-preview'
+    while placeholder in existing_ids:
+        placeholder += 'x'
+        if len(placeholder) > 63:
+            raise InventoryError('unable to select preview placeholder')
+    for candidate in report['candidates']:
+        if time.monotonic() - evidence['started_monotonic'] >= RESUME_FINISH_CUTOFF_SEC:
+            raise InventoryError('optional resume preview budget expired')
+        aliases = candidate.get('existing_aliases')
+        if candidate.get('empty_on_all_nodes') is not True or not isinstance(aliases, list) \
+                or len(aliases) != 1 or not isinstance(aliases[0], dict):
+            continue
+        alias = aliases[0]
+        mode = alias.get('allocation_mode')
+        eager = placeholder if mode == 'thick-generations-lazy' else None
+        lazy = placeholder if mode == 'thick-generations' else None
+        if eager is None and lazy is None:
+            continue
+        try:
+            result = preview.build_plan(report, candidate['name'], eager, lazy, 0,
+                                        planner, evidence, resume_existing=alias['id'])
+        except (ValueError, KeyError, TypeError):
+            continue
+        candidate['resume_preview'] = {'existing_id': result['existing_id'],
+            'missing_mode': result['missing_mode'], 'placeholder': placeholder,
+            'argv': result['argv'], 'config_sha256': evidence['config_after'],
+            'existing_config': result['existing_config']}
+    return report
+
+
+def _load_file_module(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    if spec is None:
+        raise InventoryError('registration planner unavailable')
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def collect():
+    report, evidence = collect_evidence()
+    # Keep ordinary discovery available if optional parser/preview work fails.
+    # Build on a copy so an exception cannot leak a partial preview.
+    needs_resume = any(c.get('empty_on_all_nodes') is True and
+                       isinstance(c.get('existing_aliases'), list) and
+                       len(c['existing_aliases']) == 1 and
+                       isinstance(c['existing_aliases'][0], dict) and
+                       c['existing_aliases'][0].get('type') == 'sharedlvmthin' and
+                       c['existing_aliases'][0].get('allocation_mode') in
+                       ('thick-generations', 'thick-generations-lazy')
+                       for c in report['candidates'])
+    elapsed = time.monotonic() - evidence['started_monotonic']
+    if needs_resume and elapsed < RESUME_LATEST_START_SEC and len(report['candidates']) <= RESUME_MAX_CANDIDATES:
+        path = pathlib.Path('/etc/pve/storage.cfg')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != evidence['config_after']:
+            raise InventoryError('storage configuration changed before resume observation')
+        enriched = None
+        try:
+            evidence['pve_parsed_config'] = complete_pve_storage_config(timeout=RESUME_PARSER_TIMEOUT_SEC)
+            planner = _load_file_module('registration_resume_planner',
+                pathlib.Path(__file__).with_name('sharedlvmthin-registration-plan.py'))
+            preview = _load_file_module('registration_resume_cli',
+                pathlib.Path(__file__).resolve().parents[2] / 'sbin/sharedlvmthin-register-preview')
+            enriched = add_resume_previews(copy.deepcopy(report), evidence, planner, preview)
+        except Exception:
+            # The parser or optional planner may fail without suppressing the
+            # ordinary report, but only if configuration is still provably stable.
+            enriched = None
+        if hashlib.sha256(path.read_bytes()).hexdigest() != evidence['config_after']:
+            raise InventoryError('storage configuration changed during resume observation')
+        if enriched is not None and time.monotonic() - evidence['started_monotonic'] < RESUME_FINISH_CUTOFF_SEC:
+            report = enriched
+    require_fresh_duration(time.monotonic() - evidence['started_monotonic'])
+    return report
 
 
 if __name__ == '__main__':

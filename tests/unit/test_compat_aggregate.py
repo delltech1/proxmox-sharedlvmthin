@@ -1,10 +1,17 @@
 import importlib.machinery
 import importlib.util
+import contextlib
 import datetime
+import io
 import json
 import hashlib
+import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -24,6 +31,112 @@ class CompatibilityAggregateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_module()
+
+    def test_cli_without_candidate_preserves_original_schema_fields(self):
+        expected = {"kind", "schema", "phase", "run_id", "collection_plan_sha256",
+                    "cluster_id_sha256", "upgrade_plan_sha256", "lab_runner_sha256",
+                    "plugin_artifacts", "required_transitions", "class_descriptors",
+                    "catalogue_sha256", "scenario_registry_sha256", "collected_at",
+                    "verdict", "cluster_upgrade_authorized", "expected_nodes",
+                    "observed_nodes", "classes", "errors", "limitations"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            common = ["--collection-plan", str(root / "missing-plan"),
+                      "--node-result", str(root / "missing-node")]
+            output = root / "result.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = self.module.main(common + ["--output", str(output)])
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(status, 2)
+            self.assertEqual(set(result), expected)
+            self.assertFalse(result["cluster_upgrade_authorized"])
+            output = root / "candidate-result.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = self.module.main(common + ["--output", str(output),
+                    "--candidate-deb", str(root / "candidate.deb"),
+                    "--candidate-package", "sample-test"])
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(status, 2)
+            self.assertEqual(set(result), expected | {"local_candidate_verified"})
+            self.assertIsNone(result["local_candidate_verified"])
+            self.assertFalse(result["cluster_upgrade_authorized"])
+
+    @unittest.skipUnless(os.name == "posix" and os.path.exists("/usr/bin/dpkg-deb")
+                         and os.path.isdir("/proc/self/fd"), "requires Linux dpkg-deb")
+    def test_local_candidate_archive_is_bound_to_exact_plan_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pkg" / "DEBIAN").mkdir(parents=True)
+            (root / "pkg" / "DEBIAN" / "control").write_text(
+                "Package: sample-test\nVersion: 1.0\nArchitecture: all\n"
+                "Maintainer: Test\nDescription: test\n", encoding="utf-8")
+            deb = root / "candidate.deb"
+            subprocess.run(["/usr/bin/dpkg-deb", "--build", str(root / "pkg"), str(deb)],
+                           check=True, stdout=subprocess.DEVNULL)
+            row = {"package": "sample-test", "version": "1.0", "architecture": "all",
+                   "sha256": hashlib.sha256(deb.read_bytes()).hexdigest()}
+            plan = {"candidate_packages": [row]}
+            self.assertEqual(self.module.verify_candidate_deb(deb, "sample-test", plan), row)
+            for key, value in (("sha256", "a" * 64), ("version", "2.0"),
+                               ("architecture", "amd64")):
+                with self.subTest(key=key):
+                    changed = dict(row, **{key: value})
+                    with self.assertRaisesRegex(ValueError, "differs from plan"):
+                        self.module.verify_candidate_deb(deb, "sample-test", {"candidate_packages": [changed]})
+            with self.assertRaisesRegex(ValueError, "identity differs"):
+                self.module.verify_candidate_deb(deb, "other-package", {"candidate_packages": [
+                    dict(row, package="other-package")]})
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                self.module.verify_candidate_deb(deb, "sample-test", {"candidate_packages": [row, row]})
+            link = root / "link.deb"
+            link.symlink_to(deb)
+            with self.assertRaises(OSError):
+                self.module.verify_candidate_deb(link, "sample-test", plan)
+            oversized = root / "oversized.deb"
+            with oversized.open("wb") as handle:
+                handle.truncate(512 * 1024 * 1024 + 1)
+            with self.assertRaisesRegex(ValueError, "bounded regular"):
+                self.module.verify_candidate_deb(oversized, "sample-test", plan)
+            with mock.patch.object(self.module.selectors.DefaultSelector, "select", return_value=[]):
+                with self.assertRaisesRegex(ValueError, "timed out"):
+                    self.module.verify_candidate_deb(deb, "sample-test", plan)
+
+            real_popen = subprocess.Popen
+            def substituted(code):
+                def launch(_argv, **kwargs):
+                    return real_popen([sys.executable, "-c", code], **kwargs)
+                return launch
+
+            for code, reason in (("import sys; sys.stdout.write('x'*5000)", "exceeds limit"),
+                                 ("raise SystemExit(7)", "inspection failed")):
+                with self.subTest(reason=reason), mock.patch.object(
+                        self.module.subprocess, "Popen", side_effect=substituted(code)):
+                    with self.assertRaisesRegex(ValueError, reason):
+                        self.module.verify_candidate_deb(deb, "sample-test", plan)
+
+            pidfile = root / "child.pid"
+            code = ("import os,time; child=os.fork(); "
+                    f"open({str(pidfile)!r},'w').write(str(child)) if child else None; "
+                    "os._exit(0) if child else time.sleep(60)")
+            with mock.patch.object(self.module.subprocess, "Popen", side_effect=substituted(code)):
+                with self.assertRaisesRegex(ValueError, "timed out"):
+                    self.module.verify_candidate_deb(deb, "sample-test", plan, subprocess_timeout=0.5)
+            child_pid = int(pidfile.read_text())
+            for _ in range(100):
+                statfile = Path(f"/proc/{child_pid}/stat")
+                if not statfile.exists() or statfile.read_text().split(") ", 1)[1][0] == "Z":
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("timed-out dpkg-deb descendant remains live")
+
+            def replace_path(argv, **kwargs):
+                deb.rename(root / "original.deb")
+                deb.write_bytes(b"replacement")
+                return real_popen(argv, **kwargs)
+            with mock.patch.object(self.module.subprocess, "Popen", side_effect=replace_path):
+                with self.assertRaisesRegex(ValueError, "path changed"):
+                    self.module.verify_candidate_deb(deb, "sample-test", plan)
 
     @staticmethod
     def node(host, fingerprint="a" * 64, candidates=None):

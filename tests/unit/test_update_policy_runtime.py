@@ -1382,7 +1382,8 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         receipt = {"schema": 1, "plan_digest": "a" * 64, "actions": []}
         self.module.atomic_json(self.module.POST_GATE, receipt)
         args = mock.Mock(expected_post_gate="a" * 64)
-        observed = {"id": "qualified", "status": "RETEST_REQUIRED"}
+        observed = {"id": "qualified", "status": "RETEST_REQUIRED",
+                    "required_tests": ["fixture-test"], "excluded_scopes": ["san-dataplane"]}
         library = mock.Mock()
         library.observed_tuple.return_value = observed
         common = (
@@ -1391,8 +1392,13 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
             mock.patch.object(self.module, "package_version", return_value="1"),
             mock.patch.object(self.module, "run", return_value=mock.Mock(returncode=0, stdout="15")),
         )
-        with common[0], common[1], common[2], common[3], redirect_stdout(io.StringIO()):
+        output = io.StringIO()
+        with common[0], common[1], common[2], common[3], redirect_stdout(output):
             self.assertEqual(self.module.command_status(args), 0)
+        self.assertIn('RUNTIME_COMPATIBILITY=RETEST_REQUIRED', output.getvalue())
+        self.assertIn('RUNTIME_RECEIPT_SCOPE=IDENTITY_AND_PREFLIGHT_NOT_OPERATION_EVIDENCE', output.getvalue())
+        self.assertIn('RUNTIME_REQUIRED_TESTS_COUNT=1', output.getvalue())
+        self.assertIn('RUNTIME_EXCLUDED_SCOPES_COUNT=1', output.getvalue())
         args.expected_post_gate = "b" * 64
         common = (
             mock.patch.object(self.module, "manifest_and_lib", return_value=(self.manifest(), library)),
@@ -1418,6 +1424,30 @@ class UpdatePolicyRuntimeTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("FREEZE_INTEGRITY=FAIL_MISSING_HOLD", output.getvalue())
         self.assertIn("MISSING_REQUIRED_HOLDS=qemu-server", output.getvalue())
+
+    def test_status_does_not_treat_missing_scope_evidence_as_zero(self):
+        library = mock.Mock()
+        library.observed_tuple.return_value = {"id": "fixture", "status": "RETEST_REQUIRED"}
+        output = io.StringIO()
+        args = mock.Mock(expected_post_gate=None)
+        with mock.patch.object(self.module, "manifest_and_lib", return_value=(self.manifest(), library)), \
+                mock.patch.object(self.module.pathlib.Path, "read_text", return_value="dual"), \
+                mock.patch.object(self.module, "package_version", return_value="1"), \
+                mock.patch.object(self.module, "run", return_value=mock.Mock(returncode=0, stdout="15")), \
+                redirect_stdout(output):
+            self.assertEqual(self.module.command_status(args), 0)
+        self.assertIn('RUNTIME_REQUIRED_TESTS_COUNT=UNKNOWN', output.getvalue())
+        self.assertIn('RUNTIME_EXCLUDED_SCOPES_COUNT=UNKNOWN', output.getvalue())
+
+    def test_status_observer_failure_reports_unknown_diagnostics(self):
+        output = io.StringIO()
+        with mock.patch.object(self.module, 'manifest_and_lib', side_effect=RuntimeError('fixture failure')), \
+                mock.patch.object(self.module.pathlib.Path, 'read_text', return_value='fixture'), \
+                redirect_stdout(output):
+            self.assertEqual(self.module.command_status(mock.Mock(expected_post_gate=None)), 1)
+        for field in ('OPERATION_QUALIFICATION', 'RUNTIME_REQUIRED_TESTS_COUNT',
+                      'RUNTIME_EXCLUDED_SCOPES_COUNT'):
+            self.assertIn(field + '=UNKNOWN', output.getvalue())
 
     def test_reselect_never_masks_package_baseline_drift(self):
         manifest = self.manifest()

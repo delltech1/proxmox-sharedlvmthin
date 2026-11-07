@@ -41,8 +41,15 @@ imported observations are point-in-time information; discovery is not a
 transaction lock or a fencing proof. Review the identifiers, node scope and
 reserve, recheck the environment before use, and execute the suggested
 commands yourself. Copying a command does not execute it or confirm success.
-The first iteration only generates commands for an empty, unregistered
-single-PV Thick VG; existing aliases and nonempty VGs need explicit review.
+For an empty, unregistered single-PV Thick VG, the builder can suggest Eager
+and Lazy registrations. If exactly one compatible Thick alias already exists
+on an empty VG, a fresh cluster discovery can also suggest the missing alias.
+The existing alias must have a complete, compatible configuration and the
+same identity and node scope; otherwise the guide refuses that suggestion.
+Imported reports do not provide this direct continuation. Nonempty VGs and
+ambiguous or conflicting configurations require separate review. These
+observations do not reserve the VG or prevent another administrator from
+changing it before a command is run.
 
 Terminology reference: [Proxmox VE Administration Guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.pdf),
 [German Proxmox forum discussion](https://forum.proxmox.com/threads/erfahrungen-mit-lvm-thick-iscsi-multipath-pure-storage-und-volume-chain-snapshots-unter-proxmox-ve-9.175810/),

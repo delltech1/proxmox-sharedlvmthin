@@ -303,7 +303,17 @@ subtest 'all configured peers must positively report absence' => sub {
     };
     ok($class->_thick_tree_peer_absence($cfg, $vol, $plan), 'exact configured peer checked');
     is(scalar(@probes), 1, 'one bounded probe for one peer');
-    like(join(' ', @{$probes[0]}), qr/BatchMode=yes.*ConnectTimeout=3/, 'noninteractive bounded SSH');
+    like(join(' ', @{$probes[0]}), qr/BatchMode=yes.*ConnectTimeout=5/, 'noninteractive bounded SSH');
+    for my $option ('StrictHostKeyChecking=yes', 'ControlMaster=no', 'ControlPath=none') {
+        ok(scalar(grep { $_ eq $option } @{$probes[0]}), "peer SSH explicitly sets $option");
+    }
+    {
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_tree_kernel_rows = sub {
+            die "simulated SSH host key failure\n";
+        };
+        eval { $class->_thick_tree_peer_absence($cfg, $vol, $plan) };
+        like($@, qr/simulated SSH host key failure/, 'SSH failure never proves peer absence');
+    }
     $members->{peer}->{online} = 0;
     eval { $class->_thick_tree_peer_absence($cfg, $vol, $plan) };
     like($@, qr/offline or unknown/, 'offline is UNKNOWN, never fenced');
@@ -315,6 +325,74 @@ subtest 'all configured peers must positively report absence' => sub {
     $nodes = ['local', 'local'];
     eval { $class->_thick_tree_peer_absence($cfg, $vol, $plan) };
     like($@, qr/ambiguous/, 'duplicate node list refused');
+};
+
+subtest 'peer observation deadlines preserve the total budget' => sub {
+    my $plan = $class->_thick_tree_plan($sid, $cfg, $vol, fixture());
+    my $members = { local => { online => 1, ip => '192.0.2.1' },
+        peer1 => { online => 1, ip => '192.0.2.2' },
+        peer2 => { online => 1, ip => '192.0.2.3' } };
+    my $nodes = ['local', 'peer1'];
+    my $clock = 100;
+    my (@calls, @advance);
+    no warnings 'redefine';
+    local *PVE::Cluster::cfs_update = sub { 1 };
+    local *PVE::Cluster::get_members = sub { $members };
+    local *PVE::Cluster::get_nodelist = sub { $nodes };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thin_local_node = sub { 'local' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_progress_clock = sub { $clock };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_tree_kernel_rows = sub {
+        push @calls, { ssh => [@{$_[1]}], timeout => $_[2] };
+        $clock += shift(@advance) // 0;
+        return [];
+    };
+    for my $case ([undef, 30, 5], [5, 5, 4], [8, 8, 5], [600, 60, 5]) {
+        my ($setting, $expected, $connect) = @$case;
+        my %config = %$cfg;
+        $config{'slt-tg-command-deadline-sec'} = $setting if defined $setting;
+        @calls = (); $clock = 100;
+        ok($class->_thick_tree_peer_absence(\%config, $vol, $plan), 'valid peer deadline accepted');
+        is($calls[0]->{timeout}, $expected, 'whole-probe timeout bounded by setting and total budget');
+        ok(scalar(grep { $_ eq "ConnectTimeout=$connect" } @{$calls[0]->{ssh}}), 'connect timeout leaves room for observation');
+    }
+    for my $bad (4, 601) {
+        my %config = (%$cfg, 'slt-tg-command-deadline-sec' => $bad);
+        @calls = (); $clock = 100;
+        eval { $class->_thick_tree_peer_absence(\%config, $vol, $plan) };
+        like($@, qr/invalid thick-generations command observation timeout/, 'invalid setting refused');
+        is(scalar @calls, 0, 'invalid setting dispatches no peer');
+    }
+    $nodes = ['local', 'peer1', 'peer2'];
+    @calls = (); @advance = (52, 0); $clock = 100;
+    ok($class->_thick_tree_peer_absence($cfg, $vol, $plan), 'two peers within budget accepted');
+    is_deeply([map { $_->{timeout} } @calls], [30, 8], 'second timeout clamped to remaining budget');
+    @calls = (); @advance = (59, 0); $clock = 100;
+    eval { $class->_thick_tree_peer_absence($cfg, $vol, $plan) };
+    like($@, qr/observation budget/, 'insufficient remaining time refused');
+    is(scalar @calls, 1, 'insufficient time dispatches no second peer');
+    $nodes = ['local', 'peer1'];
+    for my $elapsed (60, 61) {
+        @calls = (); @advance = ($elapsed); $clock = 100;
+        eval { $class->_thick_tree_peer_absence($cfg, $vol, $plan) };
+        like($@, qr/observation budget/, 'late final peer is refused');
+    }
+};
+
+subtest 'kernel inventory local and remote timeouts' => sub {
+    my @timeouts;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
+        my ($argv, %opts) = @_;
+        push @timeouts, $opts{timeout};
+    };
+    $class->_thick_tree_kernel_rows();
+    $class->_thick_tree_kernel_rows(['/usr/bin/ssh', 'peer'], 17);
+    is_deeply(\@timeouts, [5, 17], 'local remains five seconds and remote receives its budget');
+    for my $invalid (0, -1, 601, '1.5', 'bad', "5\n") {
+        my $ok = eval { $class->_thick_tree_kernel_rows(['/usr/bin/ssh', 'peer'], $invalid); 1 };
+        ok(!$ok, "invalid deadline '$invalid' refuses before command dispatch");
+    }
+    is_deeply(\@timeouts, [5, 17], 'invalid deadlines never dispatch inventory');
 };
 
 subtest 'materialized Lazy keeps executor then VG dispatch without recursive executor' => sub {

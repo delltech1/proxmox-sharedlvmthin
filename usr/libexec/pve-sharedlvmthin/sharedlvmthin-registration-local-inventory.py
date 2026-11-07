@@ -9,22 +9,74 @@ import decimal
 import json
 import os
 import re
+import selectors
 import subprocess
 import sys
+import time
 
 
 class InventoryError(ValueError):
     pass
 
 
-def run_json(args):
+MAX_STDOUT_BYTES = 1024 * 1024
+MAX_STDERR_BYTES = 64 * 1024
+
+
+def run_json(args, timeout=30):
+    """Bound both pipes; stopping the direct child does not fence descendants."""
+    if type(timeout) not in (int, float) or not 0 < timeout <= 300:
+        raise InventoryError('inventory command failed: ' + args[0])
+    proc = None
     try:
-        proc = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=30, check=True, text=True,
-                              env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
-        return json.loads(proc.stdout)
-    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        deadline = time.monotonic() + timeout
+        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, bufsize=0,
+                                env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'})
+        buffers = {'stdout': bytearray(), 'stderr': bytearray()}
+        limits = {'stdout': MAX_STDOUT_BYTES, 'stderr': MAX_STDERR_BYTES}
+        with selectors.DefaultSelector() as selector:
+            for name in buffers:
+                stream = getattr(proc, name)
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, name)
+            while selector.get_map() or proc.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                if not selector.get_map():
+                    proc.wait(timeout=remaining)
+                    break
+                for key, _ in selector.select(min(remaining, 0.25)):
+                    try:
+                        chunk = os.read(key.fileobj.fileno(), min(65536, limits[key.data] - len(buffers[key.data]) + 1))
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                    else:
+                        buffers[key.data].extend(chunk)
+                        if len(buffers[key.data]) > limits[key.data]:
+                            raise InventoryError('inventory output exceeded limit')
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, args)
+        return json.loads(buffers['stdout'].decode('utf-8'))
+    except (subprocess.SubprocessError, OSError, UnicodeError, ValueError) as exc:
         raise InventoryError('inventory command failed: ' + args[0]) from exc
+    finally:
+        if proc is not None:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
 
 
 def rows(report, key):
@@ -77,6 +129,11 @@ def collect(run=run_json, realpath=os.path.realpath, isblock=None, mapper_uuid=d
                         'pv_name,pv_uuid,vg_name,vg_uuid']), 'pv')
     lv_rows = rows(run(['/sbin/lvs', '--readonly', '--nohints', '-a', '--reportformat', 'json', '-o',
                         'vg_name,lv_name']), 'lv')
+    # A malformed LV row cannot be attributed to a VG. Ignoring it could make
+    # a VG with existing data appear empty and eligible for registration.
+    if any(not isinstance(row.get(key), str) or not row[key].strip()
+           for row in lv_rows for key in ('vg_name', 'lv_name')):
+        raise InventoryError('invalid LV identity in inventory')
     scsi = run(['/usr/bin/lsblk', '--scsi', '--json', '-o', 'NAME,TRAN'])
     scsi = scsi.get('blockdevices') if isinstance(scsi, dict) else None
     if not isinstance(scsi, list) or any(not isinstance(row, dict) for row in scsi):

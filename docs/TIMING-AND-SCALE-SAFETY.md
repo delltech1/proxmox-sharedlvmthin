@@ -120,7 +120,13 @@ not prove that the kernel rejected it.
 The dm-clone status and event observations, hydration enable/disable messages,
 and both flush-capable snapshot table-boundary suspends have an independent
 userspace deadline configured by
-`slt-tg-command-deadline-sec` (default 30 seconds, range 5--600). The default
+`slt-tg-command-deadline-sec` (default 30 seconds, range 5--600). Thick tree
+deletion also uses this setting for each remote peer observation, with all
+peers sharing a 60-second total budget; the local inventory retains its
+five-second limit. Expiry is UNKNOWN and refuses deletion, not proof of peer
+absence or fencing. Raising this setting also affects the control commands
+described here; it does not increase the total peer budget.
+The default
 is a bounded control-plane responsiveness value, not a claim about acceptable
 storage latency and not a safety boundary. Operators may raise it from measured
 control-plane latency without changing the independently qualified no-progress

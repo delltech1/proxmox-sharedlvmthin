@@ -44,7 +44,9 @@ jobs:
           sh scripts/check-release.sh "$dual"
           sh scripts/check-release.sh "$thick"
           sh scripts/compare-package-profiles.sh "$dual" "$thick"
-          cp "$dual" dist/
+          # Build and compare both profiles, but this release publishes only
+          # the requested Thick-only profile. The DUAL build stays in its
+          # private build directory and is not included in release assets.
           cp "$thick" dist/
 
       - name: Prepare and verify GitHub-safe assets

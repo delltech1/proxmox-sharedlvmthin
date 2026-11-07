@@ -54,7 +54,13 @@ jobs:
           test "$(dpkg-deb -f "$thick" Package)" = pve-sharedlvmthin-thick
           dpkg-deb -f "$dual" Conflicts | grep -qw pve-sharedlvmthin-thick
           dpkg-deb -f "$thick" Conflicts | grep -qw pve-sharedlvmthin
-          test "$(dpkg-deb -f "$dual" Version)" = "$(dpkg-deb -f "$thick" Version)"
+          # Thick-only releases may advance independently. Verify both exact
+          # source identities and prohibit an older Thick profile here.
+          dual_version=$(sed -n 's/^Version: //p' DEBIAN/control)
+          thick_version=$(sed -n 's/^Version: //p' packaging/thick-only/control)
+          test "$(dpkg-deb -f "$dual" Version)" = "$dual_version"
+          test "$(dpkg-deb -f "$thick" Version)" = "$thick_version"
+          dpkg --compare-versions "$thick_version" ge "$dual_version"
       - name: Upload package candidates
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -62,3 +68,4 @@ jobs:
           path: |
             dist/thick-only/*.deb
             dist/thick-only/SHA256SUMS
+

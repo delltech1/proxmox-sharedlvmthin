@@ -8,8 +8,12 @@ import json
 import os
 import pathlib
 import re
+import selectors
+import signal
 import stat
+import subprocess
 import sys
+import time
 
 REQUIRED_STEPS = {
     "contract-catalogue", "qmdestroy-contract", "upstream-inventory", "compat-check", "upgrade-check",
@@ -80,8 +84,94 @@ def sha256(path):
     return hashlib.sha256(read_regular(path, 4 * 1024 * 1024)).hexdigest()
 
 
-def load_plan(path, now):
-    plan = strict_load(path)
+def verify_candidate_deb(path, package, plan, *, subprocess_timeout=30):
+    """Verify a local archive against exactly one planned package, without authority."""
+    rows = [row for row in plan["candidate_packages"] if row["package"] == package]
+    if len(rows) != 1:
+        raise ValueError("candidate package must select exactly one plan row")
+    if not os.path.isabs(path):
+        raise ValueError("candidate path must be absolute")
+    if not all(hasattr(os, name) for name in ("O_NOFOLLOW", "waitid", "WNOWAIT", "P_PID")) \
+            or not os.path.isdir("/proc/self/fd"):
+        raise ValueError("safe candidate descriptor inspection is unavailable")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    process = None
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= 512 * 1024 * 1024:
+            raise ValueError("candidate is not a bounded regular file")
+        digest = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(fd, min(1024 * 1024, remaining))
+            if not chunk:
+                raise ValueError("candidate ended during hashing")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if os.read(fd, 1):
+            raise ValueError("candidate grew during hashing")
+        if digest.hexdigest() != rows[0]["sha256"]:
+            raise ValueError("candidate SHA-256 differs from plan")
+        os.lseek(fd, 0, os.SEEK_SET)
+        process = subprocess.Popen(
+            ["/usr/bin/dpkg-deb", "--show", "--showformat=${Package}\\n${Version}\\n${Architecture}\\n",
+             f"/proc/self/fd/{fd}"], pass_fds=(fd,), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, start_new_session=True, env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"})
+        deadline = time.monotonic() + subprocess_timeout
+        output = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise ValueError("candidate dpkg-deb inspection timed out")
+                chunk = os.read(process.stdout.fileno(), 4097 - len(output))
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if len(output) > 4096:
+                    raise ValueError("candidate dpkg-deb output exceeds limit")
+        # Observe exit without reaping: the unreaped leader reserves its PID,
+        # so the process group cannot be reused before descendant cleanup.
+        while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            if time.monotonic() >= deadline:
+                raise ValueError("candidate dpkg-deb inspection timed out")
+            time.sleep(0.01)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        rc = process.wait(timeout=0.1)
+        if rc != 0:
+            raise ValueError("candidate dpkg-deb inspection failed")
+        fields = output.decode("utf-8").splitlines()
+        if fields != [rows[0]["package"], rows[0]["version"], rows[0]["architecture"]]:
+            raise ValueError("candidate Debian identity differs from plan")
+        after = os.fstat(fd)
+        named = os.stat(path, follow_symlinks=False)
+        if (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("candidate path changed during inspection")
+        attrs = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode")
+        if any(getattr(before, key) != getattr(after, key) for key in attrs):
+            raise ValueError("candidate changed during inspection")
+        return dict(rows[0])
+    finally:
+        if process is not None and process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
+        if process is not None and process.stdout is not None:
+            process.stdout.close()
+        os.close(fd)
+
+
+def load_plan(path, now, *, plan_bytes=None):
+    plan = strict_load(path) if plan_bytes is None else strict_load_bytes(plan_bytes)
     expected_keys = {
         "kind", "schema", "run_id", "phase", "cluster_id_sha256",
         "upgrade_plan_sha256", "collector_sha256", "valid_from", "valid_until",
@@ -460,7 +550,11 @@ def main(argv=None):
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-age-sec", type=int, default=3600)
     parser.add_argument("--max-spread-sec", type=int, default=900)
+    parser.add_argument("--candidate-deb")
+    parser.add_argument("--candidate-package")
     args = parser.parse_args(argv)
+    if bool(args.candidate_deb) != bool(args.candidate_package):
+        parser.error("--candidate-deb and --candidate-package must be provided together")
     if args.max_age_sec < 60 or args.max_age_sec > 86400:
         parser.error("max-age-sec must be between 60 and 86400")
     if args.max_spread_sec < 1 or args.max_spread_sec > 3600:
@@ -471,15 +565,22 @@ def main(argv=None):
     now = datetime.datetime.now(datetime.timezone.utc)
     errors = []
     nodes = []
+    candidate_verified = None
     try:
-        plan = load_plan(args.collection_plan, now)
+        plan_bytes = read_regular(args.collection_plan, 4 * 1024 * 1024)
+        plan = load_plan(args.collection_plan, now, plan_bytes=plan_bytes)
         expected = sorted(plan["_nodes"])
-        plan_sha256 = sha256(args.collection_plan)
+        plan_sha256 = hashlib.sha256(plan_bytes).hexdigest()
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         plan = None
         expected = []
         plan_sha256 = None
         errors.append(f"expected node inventory unavailable: {exc}")
+    if args.candidate_deb and plan is not None:
+        try:
+            candidate_verified = verify_candidate_deb(args.candidate_deb, args.candidate_package, plan)
+        except (OSError, ValueError, UnicodeError) as exc:
+            errors.append(f"local candidate rejected: {exc}")
     for path in args.node_result:
         try:
             if plan is None:
@@ -539,6 +640,8 @@ def main(argv=None):
             "a clean aggregate remains RETEST_REQUIRED and cannot authorize an upgrade",
         ],
     }
+    if args.candidate_deb:
+        document["local_candidate_verified"] = candidate_verified
     temporary = pathlib.Path(f"{output}.tmp.{os.getpid()}")
     with open(temporary, "x", encoding="utf-8") as handle:
         json.dump(document, handle, sort_keys=True, indent=2)
