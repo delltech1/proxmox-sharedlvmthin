@@ -723,6 +723,9 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
             'peer proof cannot fall back to an interactive password prompt');
         like(join(' ', @{$probe->{command}}), qr/NumberOfPasswordPrompts=0/,
             'peer proof permits no password prompt');
+        for my $option ('StrictHostKeyChecking=yes', 'ControlMaster=no', 'ControlPath=none') {
+            ok(scalar(grep { $_ eq $option } @{$probe->{command}}), "peer SSH explicitly sets $option");
+        }
     }
 
     local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub {
@@ -739,6 +742,10 @@ subtest 'PVE-native LeaseGuard remote mapper audit is opt-in and fail-closed' =>
     eval { $thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef) };
     like($@, qr/cannot prove mapper absence.*peer timeout/s,
         'unreachable peer remains UNKNOWN and blocks activation');
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::run_command = sub { die "SSH host key verification failed\n" };
+    eval { $thin_remote_mapper_audit_locked->($class, $guarded, 'testvg', 'sltp-100', undef) };
+    like($@, qr/cannot prove mapper absence.*host key verification failed/s,
+        'SSH host key failure remains UNKNOWN and blocks activation');
 };
 
 subtest 'Thin peer probe timing is bounded and internally consistent' => sub {
@@ -8600,6 +8607,67 @@ subtest 'Thick capacity admission is scoped to the pinned device' => sub {
         'capacity query is deadline-bounded and pinned to the exact multipath device');
 };
 
+subtest 'Thick capacity gate rounds each new LV independently' => sub {
+    my $mib = 1024 * 1024;
+    my $cfg = { 'slt-vgname' => 'testvg', 'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-percent' => 0 };
+    my $free = 16 * $mib;
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_numeric_fields = sub {
+        return (256 * $mib, $free, 16 * $mib);
+    };
+    eval { $class->_thick_capacity_gate('thick-a', $cfg, 1024) };
+    like($@, qr/allocation rejected.*no LV was created/s,
+        'small head and separate anchor cannot share an extent');
+    $free = 48 * $mib;
+    eval { $class->_thick_capacity_gate('thick-a', $cfg, 16 * 1024,
+        [20 * $mib, 8 * $mib]) };
+    like($@, qr/allocation rejected.*no LV was created/s,
+        'lazy metadata and anchor each consume their own extents');
+    $free = 64 * $mib;
+    my $result = $class->_thick_capacity_gate('thick-a', $cfg, 16 * 1024,
+        [20 * $mib, 8 * $mib]);
+    is($result->{required_physical_bytes}, 64 * $mib, 'exactly sufficient capacity passes');
+    $cfg->{'slt-vg-reserve-percent'} = 25;
+    $free = 128 * $mib;
+    $result = $class->_thick_capacity_gate('thick-a', $cfg, 16 * 1024,
+        [20 * $mib, 8 * $mib]);
+    is($result->{free_after_bytes}, 64 * $mib, 'exact protected reserve remains available');
+    $free -= 16 * $mib;
+    eval { $class->_thick_capacity_gate('thick-a', $cfg, 16 * 1024,
+        [20 * $mib, 8 * $mib]) };
+    like($@, qr/allocation rejected/, 'one extent below protected reserve is rejected');
+};
+
+subtest 'Eager and Lazy allocation refuse shortage before lvcreate' => sub {
+    my $mib = 1024 * 1024;
+    my $cfg = { 'slt-vgname' => 'testvg', 'slt-expected-wwid' => '3600abcd',
+        'slt-vg-reserve-percent' => 0 };
+    my $free = 16 * $mib;
+    reset_mocks();
+    no warnings 'redefine';
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_namespace = sub { 'vg-uuid' };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_new_transaction_id = sub { '0' x 32 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_no_vg_intent = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_thick_allocation_admission = sub { $_[4]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_with_vg_lock = sub { $_[3]->() };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_allocation_numeric_fields = sub {
+        return (256 * $mib, $free, 16 * $mib);
+    };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_efi_allocation_requires_eager = sub { 0 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_prepare_move_allocation = sub { undef };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_prepare_restore_allocation = sub { undef };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_lazy_refuse_unqualified_native_import = sub { 1 };
+    eval { $class->_thick_alloc_image('thick-a', $cfg, 101, 'raw', 'vm-101-disk-0', 1024) };
+    like($@, qr/allocation rejected/, 'eager shortage is refused by real allocator');
+    $free = 48 * $mib;
+    eval { $class->_lazy_alloc_image('thick-a', $cfg, 101, 'raw', 'vm-101-disk-0', 16 * 1024) };
+    like($@, qr/allocation rejected/, 'lazy shortage is refused by real allocator');
+    is(scalar(grep { join(' ', @$_) =~ m{/sbin/lvcreate} } @commands), 0,
+        'neither rejected allocator dispatches lvcreate');
+};
+
 subtest 'Thick autoactivation is deadline bounded and ambiguity reconciled once' => sub {
     my $cfg = {
         'slt-tg-command-deadline-sec' => 42,
@@ -9183,8 +9251,9 @@ subtest 'unmaterialized Lazy volumes keep mutation capabilities fail closed' => 
         'slt-expected-wwid' => '3600abcd',
     };
     no warnings 'redefine';
+    my $lazy_phase = 'LAZY_DORMANT';
     local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_read_anchor = sub {
-        return ({ v => 6, phase => 'LAZY_DORMANT' }, {}, 'sltg-a-anchor');
+        return ({ v => 6, phase => $lazy_phase }, {}, 'sltg-a-anchor');
     };
     ok(!$class->volume_has_feature($cfg, 'snapshot', 'lazy-a', 'vm-902-disk-0'),
         'clone-backed Lazy volume does not advertise snapshot');
@@ -9205,6 +9274,28 @@ subtest 'unmaterialized Lazy volumes keep mutation capabilities fail closed' => 
         ok(!$ok, "$operation is refused before materialization");
         like($@, qr/requires completed materialization/,
             "$operation reports the explicit Lazy integration boundary");
+    }
+    # Also exercise the live v6 phase and direct snapshot activation paths;
+    # PVE feature discovery alone is not an authorization boundary.
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_require_thick_identity_config = sub { 1 };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_activate_volume = sub { die "unexpected Thick activation\n" };
+    local *PVE::Storage::Custom::SharedLvmThinPlugin::_thick_deactivate_volume = sub { die "unexpected Thick deactivation\n" };
+    for $lazy_phase ('LAZY_DORMANT', 'LAZY_ACTIVE') {
+        ok(!$class->volume_has_feature($cfg, 'snapshot', 'lazy-a', 'vm-902-disk-0'),
+            "$lazy_phase does not advertise snapshot");
+        for my $case (
+            ['snapshot', sub { $class->volume_snapshot($cfg, 'lazy-a', 'vm-902-disk-0', 'snap1') }],
+            ['snapshot delete', sub { $class->volume_snapshot_delete($cfg, 'lazy-a', 'vm-902-disk-0', 'snap1') }],
+            ['snapshot rollback', sub { $class->volume_snapshot_rollback($cfg, 'lazy-a', 'vm-902-disk-0', 'snap1') }],
+            ['snapshot activation', sub { $class->_lazy_activate_volume_locked('lazy-a', $cfg, 'vm-902-disk-0', 'snap1', undef) }],
+            ['snapshot deactivation', sub { $class->_lazy_deactivate_volume_locked('lazy-a', $cfg, 'vm-902-disk-0', 'snap1', undef) }],
+        ) {
+            my ($operation, $code) = @$case;
+            my $ok = eval { $code->(); 1 };
+            ok(!$ok, "$lazy_phase $operation refuses direct dispatch");
+            like($@, qr/(?:requires completed materialization|snapshots are unavailable until explicit materialization)/,
+                "$lazy_phase $operation reports the materialization boundary");
+        }
     }
 };
 

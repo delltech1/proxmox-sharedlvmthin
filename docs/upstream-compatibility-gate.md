@@ -141,6 +141,17 @@ implicit report discovery, which keeps fanout orchestration separate and
 bounded for large clusters. Its observed contract classes are not qualified
 classes; its maximum verdict remains `RETEST_REQUIRED`.
 
+For an additional local archive check, pass `--candidate-deb /absolute/file.deb`
+and `--candidate-package PACKAGE` together to `compatibility-aggregate`. The
+package name must select exactly one candidate row in the collection plan;
+the archive's SHA-256 and Debian package, version and architecture must match
+that row. A mismatch blocks the aggregate. This optional check does not prove
+that the archive was installed or loaded by a lab participant and does not
+authenticate evidence or authorize an upgrade. Inspection requires Linux
+`/proc/self/fd` and `dpkg-deb` and refuses a symlink as the archive itself.
+The 30-second deadline applies only to the `dpkg-deb` subprocess, not to
+opening, reading or hashing the archive; blocked filesystem I/O can exceed it.
+
 `sharedlvmthin lab-evidence-check` derives exact class and directed-transition
 obligations from the versioned catalogue and collection plan. It opens every
 explicitly referenced bounded regular evidence file, verifies size and SHA-256,

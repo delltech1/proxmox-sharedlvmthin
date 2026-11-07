@@ -295,4 +295,75 @@ is_deeply($saved, $original, 'Thin collision refusal leaves committed config unc
 }
 
 
+# Instrument the real PVE API create path; both lock implementations, storage
+# activation, and the configuration writer are isolated in-memory doubles.
+# This proves ordering at this API boundary, not distributed exclusion or
+# safety against LVM/SAN writers which do not take the same locks.
+{
+    my $original_hook = $class->can('on_add_hook');
+    for my $failure ('none', 'hook', 'activation') {
+        my $memory = { ids => {} };
+        my (@events, $vg_held, $config_held, $writes);
+        local *PVE::Storage::config = sub { return dclone($memory) };
+        local *PVE::Storage::lock_storage_config = sub {
+            die "unexpected config lock ordering\n" if !$vg_held || $config_held;
+            $config_held = 1;
+            push @events, 'config-acquire';
+            my $ok = eval { $_[0]->(); 1 };
+            my $err = $@;
+            push @events, 'config-release';
+            $config_held = 0;
+            die $err if !$ok;
+        };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::cluster_lock_storage = sub {
+            my ($klass, $id, $shared, $timeout, $code) = @_;
+            die "unexpected or recursive VG lock\n" if $vg_held || $config_held;
+            die "wrong VG lock identity\n" if $id ne $class->_canonical_vg_lock_id($eager) || !$shared;
+            $vg_held = 1;
+            push @events, 'vg-acquire';
+            my $ok = eval { $code->(); 1 };
+            my $err = $@;
+            push @events, 'vg-release';
+            $vg_held = 0;
+            die $err if !$ok;
+        };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::on_add_hook = sub {
+            die "hook outside both locks\n" if !$vg_held || !$config_held;
+            push @events, 'hook';
+            die "injected hook failure\n" if $failure eq 'hook';
+            return $original_hook->(@_);
+        };
+        local *PVE::Storage::Custom::SharedLvmThinPlugin::on_delete_hook = sub { return };
+        local *PVE::Storage::storage_check_enabled = sub { return 1 };
+        local *PVE::Storage::activate_storage = sub {
+            die "activation outside both locks\n" if !$vg_held || !$config_held;
+            push @events, 'activate';
+            die "injected activation failure\n" if $failure eq 'activation';
+        };
+        local *PVE::Storage::write_config = sub {
+            die "write outside both locks\n" if !$vg_held || !$config_held;
+            push @events, 'write';
+            $memory = dclone($_[0]); $writes++;
+        };
+        local *PVE::Storage::Plugin::lookup = sub { return $class };
+        my $candidate = { %$eager, storage => 'test-order' };
+        my $ok = eval {
+            $class->cluster_lock_storage($class->_canonical_vg_lock_id($eager), 1, 30, sub {
+                PVE::API2::Storage::Config->create($candidate);
+            });
+            1;
+        };
+        my @expected = ('vg-acquire', 'config-acquire', 'hook');
+        push @expected, 'activate' if $failure ne 'hook';
+        push @expected, 'write' if $failure eq 'none';
+        push @expected, 'config-release', 'vg-release';
+        is_deeply(\@events, \@expected, "$failure: VG then config locks enclose hook and commit");
+        is(!!$ok, $failure eq 'none', "$failure: create outcome");
+        is($writes // 0, $failure eq 'none' ? 1 : 0, "$failure: no write on pre-commit failure");
+        is(exists($memory->{ids}->{'test-order'}) ? 1 : 0, $failure eq 'none' ? 1 : 0,
+            "$failure: in-memory committed state");
+    }
+}
+
+
 done_testing();

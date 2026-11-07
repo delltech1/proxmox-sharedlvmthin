@@ -47,6 +47,12 @@ class ReleaseImmutabilityTests(unittest.TestCase):
         self.assertIn('tag_name="$GITHUB_REF_NAME"', workflow)
         self.assertNotIn('${GITHUB_REF_NAME##*/}', workflow)
 
+    def test_workflow_publishes_only_thick_profile(self):
+        workflow = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
+        self.assertIn('sh scripts/compare-package-profiles.sh "$dual" "$thick"', workflow)
+        self.assertIn('cp "$thick" dist/', workflow)
+        self.assertNotIn('cp "$dual" dist/', workflow)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -46,12 +46,15 @@ failure or untrusted key can block an operation even when quorum and storage
 paths are healthy. Test each direction, for example:
 
 ```bash
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=<PEER_NODE> \
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o ControlMaster=no -o ControlPath=none -o HostKeyAlias=<PEER_NODE> \
   -o UserKnownHostsFile=/etc/pve/nodes/<PEER_NODE>/ssh_known_hosts \
   -o GlobalKnownHostsFile=none root@<PEER_ADDRESS> hostname
 ```
 
 Replace the placeholders using the cluster's actual peer name and address.
+The two Control options prevent reuse of an existing multiplexed SSH session,
+so this check establishes a new connection using the specified peer host-key file.
 Independently verify host-key fingerprints before correcting trust and use the
 documented PVE cluster repair procedures. Do not disable host-key verification
 or interpret an unreachable peer as proof of fencing or safe takeover.
@@ -147,6 +150,25 @@ VG must be dedicated to SharedLvmThin and must not contain unrelated LVs.
 Resolve delayed SAN discovery, LVM device filtering and multipath problems
 before registering the plugin.
 
+If the correct mapper and its PV/VG UUIDs are visible with `pvs --nohints`
+and `vgs --nohints`, but ordinary LVM commands or storage status cannot find
+the new VG, a peer's local LVM hints can be stale. On each affected node,
+first recheck that the mapper WWID and the PV and VG UUIDs match the intended
+dedicated LUN. Then refresh that specific device's local LVM cache once:
+
+```bash
+pvscan --cache /dev/mapper/<VERIFIED_WWID>
+pvs -o pv_name,pv_uuid,vg_name
+vgs -o vg_name,vg_uuid,pv_count,vg_size,vg_free
+pvesm status
+```
+
+`pvscan --cache` updates local LVM runtime state; it is not a read-only
+observation. Do not use it as a substitute for matching identities or as an
+automatic recovery of an unknown device. If the VG remains missing or the
+identities differ, stop and investigate rather than repeating initialization.
+Depending on LVM state, `vgscan --cache` alone may not refresh stale hints.
+
 ## 5. Install the plugin on every node
 
 Choose exactly one package profile and install the same version one node at a
@@ -202,8 +224,11 @@ identities across online cluster nodes and print suggested commands. It does
 not execute them, initialize storage, establish fencing, or guarantee that a
 later operation will succeed. Run it as root on one participating PVE node,
 review the identified VG, nodes and reserve, and independently validate the
-storage and cluster state immediately before executing a command. Use
-`--discover-only` for a JSON observation that can be imported into the
+storage and cluster state immediately before executing a command.
+The helper repeats read-only discovery after VG selection and refuses the
+preview if the selected identity, paths, cluster membership or storage
+definitions changed. This is a point-in-time check, not a lock or fencing.
+Use `--discover-only` for a JSON observation that can be imported into the
 dashboard's command builder; imported data can be edited or become stale and
 is not independently authenticated by the dashboard. The helper deliberately
 refuses automatic registration planning for nonempty or already registered
@@ -337,12 +362,17 @@ capacity and use the same Thick lifecycle. Thin must use another VG.
 
 Thick storage requires an explicitly configured VG reserve, expressed as a
 percentage, fixed GiB, or both. If both are set, the larger reserve applies.
-The command helper suggests 5%; an administrator may choose another value,
-including zero. A zero effective reserve allows allocations to consume all
+The command helper defaults to 0%; an administrator may choose a reserve,
+for example 5%. A zero effective reserve allows allocations to consume all
 free extents. Future snapshots, rollback or disk growth may then be refused
 for lack of space. A reserve alone does not guarantee that a particular
 generation fits: plan for the full expected generation and its metadata above
-the protected reserve. Monitor free VG extents and PV metadata independently.
+the protected reserve. Each separately created LVM volume consumes whole VG
+extents, so small data or auxiliary volumes can require more physical space
+than their requested byte size. The Thick admission check accounts for these
+individual allocations; a preview is not a reservation and concurrent or
+external changes may still cause a later allocation to fail. Monitor free VG
+extents and PV metadata independently.
 Upgrades do not silently change an existing reserve.
 
 ## 7. Validate before storing a VM

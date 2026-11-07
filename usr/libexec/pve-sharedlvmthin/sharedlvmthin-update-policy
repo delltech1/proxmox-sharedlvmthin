@@ -2180,6 +2180,7 @@ def command_status(args):
         (freeze or {}).get("hold_targets", (freeze or {}).get("targets", []))))
     print(f"POST_GATE_REQUIRED={'YES' if post else 'NO'}")
     print(f"RUNTIME_QUALIFICATION={(runtime_release or {}).get('qualified', 'ABSENT')}")
+    print("RUNTIME_RECEIPT_SCOPE=IDENTITY_AND_PREFLIGHT_NOT_OPERATION_EVIDENCE")
     qualified_boot = (runtime_release or {}).get("boot_id")
     current_boot = pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     boot_match = bool(qualified_boot and qualified_boot == current_boot)
@@ -2227,9 +2228,19 @@ def command_status(args):
         )
         print(f"RUNTIME_TUPLE={(observed or {}).get('id', 'UNLISTED')}")
         print(f"RUNTIME_COMPATIBILITY={(observed or {}).get('status', 'UNKNOWN')}")
+        advisory = manifest.get('operation_qualification_mode') == 'ADVISORY_ONLY' \
+            and manifest.get('operation_authorization') == 'NONE'
+        print(f"OPERATION_QUALIFICATION={'ADVISORY_ONLY' if advisory else 'UNKNOWN'}")
+        required = (observed or {}).get('required_tests')
+        excluded = (observed or {}).get('excluded_scopes')
+        print(f"RUNTIME_REQUIRED_TESTS_COUNT={len(required) if isinstance(required, list) else 'UNKNOWN'}")
+        print(f"RUNTIME_EXCLUDED_SCOPES_COUNT={len(excluded) if isinstance(excluded, list) else 'UNKNOWN'}")
     except Exception as exc:
         observed = None
         print("RUNTIME_TUPLE=UNKNOWN")
+        print("OPERATION_QUALIFICATION=UNKNOWN")
+        print("RUNTIME_REQUIRED_TESTS_COUNT=UNKNOWN")
+        print("RUNTIME_EXCLUDED_SCOPES_COUNT=UNKNOWN")
         print(f"RUNTIME_OBSERVER_ERROR={exc}")
     expected_post_gate = getattr(args, "expected_post_gate", None)
     post_is_expected = bool(post and expected_post_gate

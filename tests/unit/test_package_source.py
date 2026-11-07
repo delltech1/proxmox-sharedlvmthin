@@ -2324,6 +2324,8 @@ exit 2
         self.assertIn("slt-thin-peer-probe-timeout", inventory)
         self.assertIn("BatchMode=yes", inventory)
         self.assertIn("NumberOfPasswordPrompts=0", inventory)
+        for option in ("StrictHostKeyChecking=yes", "ControlMaster=no", "ControlPath=none"):
+            self.assertIn(option, inventory)
         self.assertNotIn("ConnectTimeout=5'", inventory)
         self.assertIn("capture_json(1300", daemon)
 
@@ -4536,7 +4538,9 @@ exit 2
         self.assertIn("@$nodes > 16", peers)
         self.assertIn("offline or unknown", peers)
         self.assertIn("+ 60", peers)
-        self.assertIn("timeout => 5", bodies["_thick_tree_kernel_rows"])
+        self.assertIn("$timeout //= 5", bodies["_thick_tree_kernel_rows"])
+        self.assertIn("timeout => $timeout", bodies["_thick_tree_kernel_rows"])
+        self.assertIn("_thick_command_deadline($scfg)", peers)
         admission = bodies["_thick_tree_delete_admission"]
         self.assertIn("_thick_pve_reference_files($storeid, $volname)", admission)
         self.assertIn("_thick_validate_destroy_frames(", admission)

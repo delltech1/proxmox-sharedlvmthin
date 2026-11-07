@@ -46,7 +46,7 @@ def plan(request, evidence):
     aliases = {mode: _name(sid, 'storage ID') for mode, sid in aliases.items()}
     if len(set(aliases.values())) != len(aliases):
         raise Refusal('duplicate requested storage ID')
-    reserve = request.get('reserve_percent', 5)
+    reserve = request.get('reserve_percent', 0)
     if type(reserve) is not int or not 0 <= reserve <= 50:
         raise Refusal('new registration reserve must be between 0 and 50 percent')
     expected = evidence.get('vg')
@@ -77,16 +77,31 @@ def plan(request, evidence):
         if type(paths) is not int or paths < 1 or item.get('mapper_verified') is not True:
             raise Refusal('multipath identity or healthy path missing')
         path_counts.append(paths)
+    if min(path_counts) > 64:
+        raise Refusal('minimum path count exceeds plugin limit of 64')
     existing = evidence.get('storage_definitions')
     if not isinstance(existing, list):
         raise Refusal('storage definitions unavailable')
+    seen_ids = set()
     for item in existing:
         if not isinstance(item, dict) or not isinstance(item.get('id'), str):
             raise Refusal('storage definition ambiguous')
+        if item['id'] in seen_ids:
+            raise Refusal('duplicate storage definition')
+        seen_ids.add(item['id'])
         same_name = item.get('vg_name') == vg
-        same_uuid = item.get('vg_uuid') == vg_uuid
+        existing_uuid = item.get('vg_uuid')
+        existing_pv = item.get('pv_uuid')
+        existing_wwid = item.get('wwid')
+        if ((existing_uuid is not None and not isinstance(existing_uuid, str)) or
+                (existing_pv is not None and not isinstance(existing_pv, str)) or
+                (existing_wwid is not None and not isinstance(existing_wwid, str))):
+            raise Refusal('storage identity is ambiguous')
+        same_uuid = isinstance(existing_uuid, str) and existing_uuid.casefold() == vg_uuid.casefold()
+        same_pv = isinstance(existing_pv, str) and existing_pv == pv_uuid
+        same_wwid = isinstance(existing_wwid, str) and existing_wwid.casefold() == wwid.casefold()
         requested_id = item['id'] in aliases.values()
-        if requested_id or same_name or same_uuid:
+        if requested_id or same_name or same_uuid or same_pv or same_wwid:
             # A matching name and identity alone do not prove same-VG alias
             # policy parity. Until every effective plugin option is validated,
             # require manual review instead of inferring an idempotent match.

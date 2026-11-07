@@ -381,7 +381,7 @@ sub properties {
             default => 3600,
         },
         'slt-tg-command-deadline-sec' => {
-            description => 'Userspace observation deadline in seconds for one dm-clone control command. Expiry makes the outcome UNKNOWN; it is not a storage-failure threshold and cannot terminate kernel D-state I/O.',
+            description => 'Userspace deadline in seconds for Thick control commands and each remote tree peer observation. Peer observations also share a 60-second total budget. Expiry is UNKNOWN; it cannot terminate kernel D-state I/O.',
             type => 'integer',
             minimum => 5,
             maximum => 600,
@@ -5049,9 +5049,11 @@ sub _thick_capacity_gate {
     );
     my $bytes = int($size_kib) * 1024;
     $overhead_bytes = 8 * 1024 * 1024 if !defined($overhead_bytes);
+    my $overheads = ref($overhead_bytes) eq 'ARRAY' ? $overhead_bytes : [$overhead_bytes];
     my $decision = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(
         vg_size => int($vg_size), vg_free => int($vg_free),
-        growth_bytes => $bytes, overhead_bytes => $overhead_bytes,
+        growth_bytes => $bytes, overhead_bytes => 0,
+        allocation_components => [$bytes, @$overheads],
         extent_bytes => int($extent_size),
         reserve_percent => $scfg->{'slt-vg-reserve-percent'} // 0,
         reserve_gib => $scfg->{'slt-vg-reserve-gib'} // 0,
@@ -6051,7 +6053,7 @@ sub _lazy_alloc_image {
         $geometry = $class->_thick_new_geometry($scfg, $allocated_bytes);
         $class->_thick_capacity_gate(
             $storeid, $scfg, int(($allocated_bytes + 1023) / 1024),
-            $geometry->{metadata_bytes} + 8 * 1024 * 1024,
+            [$geometry->{metadata_bytes}, 8 * 1024 * 1024],
         );
         my $lvs = $class->_thick_list_volumes_scoped($scfg, $vg, $device);
         my $objects = $lvs->{$vg} // {};
@@ -6501,7 +6503,8 @@ sub _thin_remote_mapper_audit_locked {
         my $ssh = PVE::SSHInfo::ssh_info_to_command({
             name => $peer->{node}, ip => $peer->{ip},
         }, '-o', "ConnectTimeout=$connect_timeout", '-o', 'BatchMode=yes',
-            '-o', 'NumberOfPasswordPrompts=0');
+            '-o', 'NumberOfPasswordPrompts=0', '-o', 'StrictHostKeyChecking=yes',
+            '-o', 'ControlMaster=no', '-o', 'ControlPath=none');
         push @$ssh, '--',
             '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence',
             $mapper, $expected_uuid;
@@ -9637,11 +9640,14 @@ sub _thick_tree_plan {
 # A complete kernel inventory, not /dev symlink absence. No activation or
 # remote shell interpolation is used; names/UUIDs are compared locally.
 sub _thick_tree_kernel_rows {
-    my ($class, $ssh) = @_;
+    my ($class, $ssh, $timeout) = @_;
+    $timeout //= 5;
+    die "invalid Thick tree kernel inventory deadline\n"
+        if ref($timeout) || $timeout !~ /\A\d+\z/ || $timeout < 1 || $timeout > 600;
     my @command = (@{$ssh // []}, '/usr/bin/env', 'LC_ALL=C', '/sbin/dmsetup',
         'info', '-c', '--noheadings', '--separator=:', '-o', 'name,uuid,open');
     my (@rows, @errors);
-    run_command(\@command, timeout => 5,
+    run_command(\@command, timeout => $timeout,
         outfunc => sub { push @rows, $_[0]; die "oversized Thick tree kernel inventory\n" if @rows > 8192; },
         errfunc => sub { push @errors, $_[0]; });
     die "Thick tree kernel inventory has diagnostics\n" if @errors;
@@ -9708,6 +9714,7 @@ sub _thick_tree_peer_absence {
         if ref($members) ne 'HASH' || ref($nodes) ne 'ARRAY' || !@$nodes || @$nodes > 16;
     my %seen;
     my $deadline = $class->_thick_progress_clock() + 60;
+    my $peer_timeout = $class->_thick_command_deadline($scfg);
     for my $node (sort @$nodes) {
         die "Thick tree cluster node identity is ambiguous\n"
             if $node !~ /^[A-Za-z0-9][A-Za-z0-9_.-]*$/ || $seen{$node}++;
@@ -9716,14 +9723,20 @@ sub _thick_tree_peer_absence {
         die "Thick tree peer '$node' is offline or unknown\n"
             if ref($member) ne 'HASH' || !$member->{online}
             || ($member->{ip} // '') !~ /^[A-Fa-f0-9:.]+$/;
-        die "Thick tree peer proof exceeded its observation budget\n"
-            if $class->_thick_progress_clock() >= $deadline;
+        my $remaining = int($deadline - $class->_thick_progress_clock());
+        die "Thick tree peer proof exceeded its observation budget\n" if $remaining < 2;
+        my $timeout = $remaining < $peer_timeout ? $remaining : $peer_timeout;
+        my $connect_timeout = $timeout - 1 < 5 ? $timeout - 1 : 5;
         my $ssh = PVE::SSHInfo::ssh_info_to_command(
             { name => $node, ip => $member->{ip} }, '-o', 'BatchMode=yes',
-            '-o', 'ConnectTimeout=3', '-o', 'NumberOfPasswordPrompts=0');
+            '-o', "ConnectTimeout=$connect_timeout", '-o', 'NumberOfPasswordPrompts=0',
+            '-o', 'StrictHostKeyChecking=yes', '-o', 'ControlMaster=no',
+            '-o', 'ControlPath=none');
         push @$ssh, '--';
         $class->_thick_tree_check_kernel_rows($scfg, $volname, $plan,
-            $class->_thick_tree_kernel_rows($ssh), 1);
+            $class->_thick_tree_kernel_rows($ssh, $timeout), 1);
+        die "Thick tree peer proof exceeded its observation budget\n"
+            if $class->_thick_progress_clock() >= $deadline;
     }
     die "Thick tree local node is absent from configured membership\n" if !$seen{$local};
     return 1;

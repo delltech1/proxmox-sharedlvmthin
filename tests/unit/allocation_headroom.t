@@ -226,6 +226,26 @@ subtest 'reserve calculation includes overhead and extent rounding' => sub {
     ok(!$blocked->{allowed}, 'extent-rounded allocation crossing reserve is blocked');
 };
 
+subtest 'separate thick LVs each consume whole extents' => sub {
+    my $mib = 1024 * 1024;
+    my %base = (vg_size => 256 * $mib, vg_free => 48 * $mib,
+        growth_bytes => 16 * $mib, overhead_bytes => 0,
+        extent_bytes => 16 * $mib, reserve_percent => 0, reserve_gib => 0);
+    my $lazy = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(
+        %base, allocation_components => [16 * $mib, 20 * $mib, 8 * $mib]);
+    is($lazy->{required_physical_bytes}, 64 * $mib, 'lazy data, metadata and anchor rounded separately');
+    ok(!$lazy->{allowed}, 'lazy allocation fails when independently rounded LVs do not fit');
+    my $eager = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(
+        %base, vg_free => 16 * $mib, allocation_components => [$mib, 8 * $mib]);
+    is($eager->{required_physical_bytes}, 32 * $mib, 'head and anchor rounded separately');
+    ok(!$eager->{allowed}, 'small eager allocation rejected before allocation');
+    eval { PVE::SharedLvmThinSafety::evaluate_allocation_reserve(%base, allocation_components => [1, -1]) };
+    like($@, qr/invalid allocation component/, 'invalid component fails closed');
+    my $legacy = PVE::SharedLvmThinSafety::evaluate_allocation_reserve(
+        %base, growth_bytes => 0.5, overhead_bytes => 0);
+    ok(defined $legacy->{allowed}, 'legacy decimal input remains accepted without components');
+};
+
 subtest 'zero reserve still enforces physical capacity and fixed reserve' => sub {
     my %base = (vg_size => 100 * $gib, vg_free => 10 * $gib,
         growth_bytes => 9 * $gib, overhead_bytes => $gib,

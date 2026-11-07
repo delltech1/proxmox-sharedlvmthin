@@ -308,6 +308,27 @@ class LabEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden"):
             self.validate(execution, obligation)
 
+    def test_execution_rejects_changed_participant_runtime_identity(self):
+        obligation = {"contract_id": "lvm.basic", "revision": 1,
+                      "test_id": "allocate", "test_revision": 1,
+                      "transition_id": None, "classes": ["a" * 64],
+                      "source_class": None, "destination_class": None,
+                      "peer_classes": [], "fault_required": False,
+                      "transition_direction": None, "transition_order": None,
+                      "class_descriptors": {"a" * 64: {
+                          "contract_fingerprint": "a" * 64, "package_flavor": "thick-only",
+                          "running_kernel": "test", "plugin_payload_sha256": "1" * 64}},
+                      "required_parameters": ["fixture_bytes", "io_sector_bytes", "concurrency"]}
+        self.assertIsNone(self.validate(self.execution(obligation), obligation))
+        for field, replacement in (("running_kernel", "other-kernel"),
+                                   ("plugin_payload_sha256", "2" * 64),
+                                   ("contract_fingerprint", "b" * 64)):
+            with self.subTest(field=field):
+                execution = self.execution(obligation)
+                execution["participants"][0][field] = replacement
+                with self.assertRaisesRegex(ValueError, "software tuple"):
+                    self.validate(execution, obligation)
+
     def test_required_fault_must_be_confirmed(self):
         obligation = {"contract_id": "dm.clone", "revision": 1,
                       "test_id": "path-loss", "test_revision": 1,

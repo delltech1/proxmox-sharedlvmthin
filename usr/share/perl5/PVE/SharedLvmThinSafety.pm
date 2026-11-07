@@ -156,8 +156,18 @@ sub evaluate_allocation_reserve {
     my $percent_bytes = int(($args{vg_size} * $args{reserve_percent} + 99) / 100);
     my $fixed_bytes = int($args{reserve_gib} * $gib);
     my $reserve = $percent_bytes > $fixed_bytes ? $percent_bytes : $fixed_bytes;
-    my $raw_required = $args{growth_bytes} + $args{overhead_bytes};
-    my $required_extents = int(($raw_required + $args{extent_bytes} - 1) / $args{extent_bytes});
+    my $required_extents = 0;
+    if (exists $args{allocation_components}) {
+        my $components = $args{allocation_components};
+        die "invalid allocation_components\n" if ref($components) ne 'ARRAY' || !@$components;
+        for my $component (@$components) {
+            die "invalid allocation component\n" if !defined($component) || $component !~ /^\d+$/;
+            $required_extents += int(($component + $args{extent_bytes} - 1) / $args{extent_bytes});
+        }
+    } else {
+        my $raw_required = $args{growth_bytes} + $args{overhead_bytes};
+        $required_extents = int(($raw_required + $args{extent_bytes} - 1) / $args{extent_bytes});
+    }
     my $required = $required_extents * $args{extent_bytes};
     my $after = $args{vg_free} - $required;
 

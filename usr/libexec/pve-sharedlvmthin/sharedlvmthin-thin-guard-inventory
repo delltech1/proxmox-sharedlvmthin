@@ -213,7 +213,8 @@ eval {
             my $ssh = PVE::SSHInfo::ssh_info_to_command({
                 name => $peer->{node}, ip => $peer->{ip},
             }, '-o', "ConnectTimeout=$peer_connect_timeout", '-o', 'BatchMode=yes',
-                '-o', 'NumberOfPasswordPrompts=0');
+                '-o', 'NumberOfPasswordPrompts=0', '-o', 'StrictHostKeyChecking=yes',
+                '-o', 'ControlMaster=no', '-o', 'ControlPath=none');
             push @$ssh, '--',
                 '/usr/libexec/pve-sharedlvmthin/sharedlvmthin-remote-thin-evidence',
                 $pool->{mapper_name}, $pool->{mapper_uuid};

@@ -26,6 +26,18 @@ def sample():
 
 
 class RegistrationPlanTests(unittest.TestCase):
+    def test_minimum_path_count_obeys_plugin_option_limit(self):
+        request, evidence = sample()
+        for peer in evidence['node_evidence'].values():
+            peer['healthy_paths'] = 64
+        self.assertEqual(MOD.plan(request, evidence)['expected_min_paths'], 64)
+        for peer in evidence['node_evidence'].values():
+            peer['healthy_paths'] = 65
+        with self.assertRaises(MOD.Refusal):
+            MOD.plan(request, evidence)
+        evidence['node_evidence']['node-a']['healthy_paths'] = 1
+        self.assertEqual(MOD.plan(request, evidence)['expected_min_paths'], 1)
+
     def test_two_modes_produce_preview_only_and_same_identity(self):
         request, evidence = sample()
         output = MOD.plan(request, evidence)
@@ -33,7 +45,7 @@ class RegistrationPlanTests(unittest.TestCase):
         configs = [item['api_parameters'] for item in output['definitions']]
         self.assertEqual({c['slt-allocation-mode'] for c in configs}, {'thick-generations', 'thick-generations-lazy'})
         self.assertTrue(all(c['slt-expected-vg-uuid'] == evidence['vg']['vg_uuid'] for c in configs))
-        self.assertTrue(all(c['slt-vg-reserve-percent'] == 5 for c in configs))
+        self.assertTrue(all(c['slt-vg-reserve-percent'] == 0 for c in configs))
         self.assertTrue(all('pvesm add sharedlvmthin' in item['cli'] for item in output['definitions']))
 
     def test_mismatched_identity_and_missing_paths_are_refused(self):
@@ -71,6 +83,9 @@ class RegistrationPlanTests(unittest.TestCase):
         request['reserve_percent'] = 0
         result = MOD.plan(request, evidence)
         self.assertTrue(all(row['api_parameters']['slt-vg-reserve-percent'] == 0 for row in result['definitions']))
+        request['reserve_percent'] = 5
+        result = MOD.plan(request, evidence)
+        self.assertTrue(all(row['api_parameters']['slt-vg-reserve-percent'] == 5 for row in result['definitions']))
         request['reserve_percent'] = 51
         with self.assertRaises(MOD.Refusal): MOD.plan(request, evidence)
 
@@ -89,6 +104,20 @@ class RegistrationPlanTests(unittest.TestCase):
     def test_unresolved_association_is_refused(self):
         request, evidence = sample()
         evidence['storage_definitions'] = [{'id': 'unknown', 'type': 'lvm'}]
+        with self.assertRaises(MOD.Refusal): MOD.plan(request, evidence)
+
+    def test_existing_identity_conflicts_are_refused_case_insensitively(self):
+        for field in ('vg_uuid', 'wwid'):
+            with self.subTest(field=field):
+                request, evidence = sample()
+                evidence['storage_definitions'] = [{'id': 'other', field: evidence['vg'][field].swapcase()}]
+                with self.assertRaises(MOD.Refusal): MOD.plan(request, evidence)
+
+    def test_pv_identity_conflict_and_duplicate_definitions_refused(self):
+        request, evidence = sample()
+        evidence['storage_definitions'] = [{'id': 'other', 'pv_uuid': evidence['vg']['pv_uuid']}]
+        with self.assertRaises(MOD.Refusal): MOD.plan(request, evidence)
+        evidence['storage_definitions'] = [{'id': 'other'}, {'id': 'other'}]
         with self.assertRaises(MOD.Refusal): MOD.plan(request, evidence)
 
 

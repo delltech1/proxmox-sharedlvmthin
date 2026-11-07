@@ -19,14 +19,18 @@ def load(name, filename):
     return module
 
 
-def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner):
+def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner, collected):
     if not isinstance(observed, dict) or observed.get('result') != 'OBSERVED':
         raise ValueError('cluster discovery did not complete')
-    candidates = [c for c in observed.get('candidates', [])
+    if not isinstance(observed.get('candidates'), list) or any(not isinstance(c, dict) for c in observed['candidates']):
+        raise ValueError('cluster candidate list invalid')
+    candidates = [c for c in observed['candidates']
                   if c.get('name') == vg_name and c.get('eligible_for_new_vg_registration') is True]
     if len(candidates) != 1:
         raise ValueError('VG is not uniquely eligible; existing or unverified LVs need review')
     c = candidates[0]
+    if c.get('empty_on_all_nodes') is not True or c.get('canonical_mapper_on_all_nodes') is not True:
+        raise ValueError('VG emptiness or canonical mapper not proven')
     nodes = observed['nodes']
     aliases = {}
     if eager_id:
@@ -34,9 +38,35 @@ def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner):
     if lazy_id:
         aliases['lazy'] = lazy_id
     identity = {key: c[key] for key in ('vg_uuid', 'pv_uuid', 'wwid', 'size_bytes')}
-    peers = {node: {**identity, 'complete': True, 'peer_ssh_verified': True,
-                    'mapper_verified': True, 'healthy_paths': c['paths_by_node'][node]}
-             for node in nodes}
+    if not isinstance(collected, dict):
+        raise ValueError('collected peer evidence missing')
+    before, after = collected.get('members_before'), collected.get('members_after')
+    if not isinstance(before, dict) or before != after or set(before) != set(nodes):
+        raise ValueError('cluster membership evidence inconsistent')
+    if not collected.get('config_before') or collected.get('config_before') != collected.get('config_after'):
+        raise ValueError('storage configuration evidence inconsistent')
+    pairs = {(source, target) for source in nodes for target in nodes if source != target}
+    if collected.get('peer_pairs') != pairs:
+        raise ValueError('peer SSH coverage incomplete')
+    raw = collected.get('observations')
+    if not isinstance(raw, dict) or set(raw) != set(nodes):
+        raise ValueError('per-node observations missing')
+    peers = {}
+    for node in nodes:
+        observation = raw[node]
+        if not isinstance(observation, dict) or observation.get('result') != 'OBSERVED' or not isinstance(observation.get('candidates'), list):
+            raise ValueError('node observation incomplete')
+        matches = [row for row in observation['candidates'] if isinstance(row, dict) and row.get('name') == vg_name]
+        if len(matches) != 1:
+            raise ValueError('node VG observation not unique')
+        row = matches[0]
+        if type(row.get('pv_count')) is not int or row['pv_count'] != 1 or row.get('empty_vg') is not True or row.get('canonical_mapper_present') is not True:
+            raise ValueError('node VG is not an empty single-PV canonical mapper')
+        if any(row.get(key) != identity[key] for key in identity):
+            raise ValueError('node VG identity mismatch')
+        peers[node] = {key: row[key] for key in identity}
+        peers[node].update(complete=True, peer_ssh_verified=True,
+                           mapper_verified=row['canonical_mapper_present'], healthy_paths=row.get('healthy_paths'))
     vg = {**identity, 'name': vg_name, 'pv_count': 1, 'dedicated': True,
           'free_bytes': c['free_bytes']}
     evidence = {'quorate': True, 'inventory_complete': True, 'members': {n: True for n in nodes},
@@ -46,13 +76,37 @@ def build_plan(observed, vg_name, eager_id, lazy_id, reserve, planner):
                          'reserve_percent': reserve}, evidence)
 
 
+def require_unchanged_selection(before, after, vg_name):
+    """Reject changed choices after input; a name alone is not identity."""
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise ValueError('cluster discovery unavailable')
+    if before.get('result') != 'OBSERVED' or after.get('result') != 'OBSERVED':
+        raise ValueError('cluster discovery incomplete')
+    if before.get('nodes') != after.get('nodes') or before.get('storage_definitions') != after.get('storage_definitions'):
+        raise ValueError('cluster membership or storage definitions changed; rerun discovery')
+    def selected(report):
+        candidates = report.get('candidates')
+        if not isinstance(candidates, list):
+            raise ValueError('cluster candidates unavailable')
+        matches = [c for c in candidates if isinstance(c, dict) and c.get('name') == vg_name]
+        if len(matches) != 1:
+            raise ValueError('VG is not uniquely visible; rerun discovery')
+        return matches[0]
+    old, new = selected(before), selected(after)
+    keys = ('vg_uuid', 'pv_uuid', 'wwid', 'size_bytes', 'paths_by_node',
+            'transport_by_node', 'empty_on_all_nodes', 'canonical_mapper_on_all_nodes',
+            'eligible_for_new_vg_registration', 'existing_aliases')
+    if any(key not in old or key not in new or old[key] != new[key] for key in keys):
+        raise ValueError('VG identity or eligibility changed; rerun discovery')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vg', help='dedicated VG name (prompts if omitted)')
     parser.add_argument('--mode', choices=('eager', 'lazy', 'both'), default='both')
     parser.add_argument('--eager-id', default='bastrix-eager')
     parser.add_argument('--lazy-id', default='bastrix-lazy')
-    parser.add_argument('--reserve-percent', type=int, default=5)
+    parser.add_argument('--reserve-percent', type=int, default=0)
     parser.add_argument('--discover-only', action='store_true', help='print read-only inventory as JSON')
     args = parser.parse_args()
     if os.geteuid() != 0:
@@ -60,14 +114,14 @@ def main():
     try:
         inventory = load('registration_inventory', 'sharedlvmthin-registration-cluster-inventory.py')
         planner = load('registration_plan', 'sharedlvmthin-registration-plan.py')
-        observed = inventory.collect()
+        observed, initial_evidence = inventory.collect_evidence()
         if args.discover_only:
             print(json.dumps(observed, sort_keys=True, indent=2))
             return 0
         eligible = [c for c in observed['candidates'] if c['eligible_for_new_vg_registration']]
         if not eligible:
             raise ValueError('no empty, unregistered shared Thick VG passed all checks')
-        print('Verified observations on participating nodes (not fencing):')
+        print('Initial observations on participating nodes (not fencing; will be refreshed):')
         for c in eligible:
             print('  {}: {} GiB free, {} healthy paths per node'.format(
                 c['name'], round(c['free_bytes'] / (1024 ** 3), 2), c['paths_by_node']))
@@ -78,19 +132,32 @@ def main():
                 print('Selected the only eligible VG: ' + selected)
             else:
                 selected = input('Enter one of the displayed VG names: ').strip()
-        result = build_plan(observed, selected,
+        # An operator may spend an arbitrary amount of time at the prompt.
+        refreshed, collected = inventory.collect_evidence()
+        inventory.validate_evidence(refreshed, collected)
+        if (initial_evidence.get('members_before') != collected.get('members_before') or
+                initial_evidence.get('config_before') != collected.get('config_before')):
+            raise ValueError('cluster membership or storage configuration changed; rerun discovery')
+        require_unchanged_selection(observed, refreshed, selected)
+        fresh_candidate = next(c for c in refreshed['candidates'] if c.get('name') == selected)
+        print('Refreshed free capacity: {} GiB (read-only point-in-time observation).'.format(
+            round(fresh_candidate['free_bytes'] / (1024 ** 3), 2)))
+        result = build_plan(refreshed, selected,
                             args.eager_id if args.mode in ('eager', 'both') else None,
                             args.lazy_id if args.mode in ('lazy', 'both') else None,
-                            args.reserve_percent, planner)
+                            args.reserve_percent, planner, collected)
         print('\nPREVIEW ONLY. No storage was registered or modified.')
         print('Reserve: {}% of VG capacity. Snapshot/rollback may need additional free space.'.format(args.reserve_percent))
         if args.reserve_percent == 0:
             print('WARNING: zero protected reserve permits consuming all free VG extents; future snapshot, rollback or growth may be refused.')
         print('A single path is not redundant. Verify quorum, fencing and vendor policy independently.')
+        print('Observation and command generation do not guarantee VG identity or emptiness at execution time.')
+        print('Before each command, recheck the VG identity and state on every node, including whether it is empty and existing storage definitions.')
+        print('Eager and Lazy registrations are not atomic; the first can succeed even if the second fails.')
         print('Review the identities, node list, reserve and commands below before running them as root:')
         for entry in result['definitions']:
             print('\n' + entry['cli'])
-        print('\nIf registration partially succeeds or returns an unclear result, inspect it before retrying.')
+        print('\nIf registration partially succeeds or returns an unclear result, inspect it; do not retry blindly.')
         return 0
     except (ValueError, OSError, KeyError, ImportError, RuntimeError) as exc:
         print('REFUSED: ' + str(exc), file=sys.stderr)
